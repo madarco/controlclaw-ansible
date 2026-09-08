@@ -80,32 +80,35 @@
   register: openclaw_token_b64
   no_log: true
 
-# `config get` redacts secrets (gateway.auth.token comes back as __OPENCLAW_REDACTED__), so the
-# token itself cannot be used as the idempotency signal. Check the non-secret keys instead: they
-# are written by the same patch, so if they match, the token was applied too. The token is
-# generated once and never rotated, so it cannot drift out from under this check.
-- name: Read the current gateway settings
-  ansible.builtin.command:
-    cmd: /usr/bin/openclaw config get {{ item }}
-  become: true
-  become_user: "{{ controlclaw_user }}"
-  environment:
-    HOME: "{{ controlclaw_home }}"
-  loop:
-    - gateway.mode
-    - gateway.bind
-    - gateway.port
-    - gateway.auth.mode
-  register: openclaw_current
-  changed_when: false
+# Read the config file directly rather than shelling out to `openclaw config get`: each CLI call
+# pays Node's startup cost (~4s), and four of them made this the 5th most expensive task in the
+# whole provision. The file also carries the real token, whereas `config get` redacts it - so this
+# is both faster and a more accurate check.
+- name: Read the current OpenClaw config
+  ansible.builtin.slurp:
+    src: "{{ controlclaw_home }}/.openclaw/openclaw.json"
+  register: openclaw_config_raw
   failed_when: false
+  no_log: true
 
+# Compare only the fields we own, not the whole gateway block: OpenClaw writes to this file
+# itself (it added a top-level `plugins` key on its own), and the agent-https plan will add
+# `gateway.publicOrigin`. A strict equality check would then re-patch and restart the gateway on
+# every boot.
 - name: Decide whether the gateway config needs writing
   ansible.builtin.set_fact:
     openclaw_config_ok: >-
-      {{ (openclaw_current.results | map(attribute='rc') | select('ne', 0) | list | length == 0) and
-         (openclaw_current.results | map(attribute='stdout') | map('trim') | list
-          == ['local', 'loopback', openclaw_gateway_port | string, 'token']) }}
+      {{ openclaw_config_raw.content is defined and
+         openclaw_gateway_current.mode | default('') == 'local' and
+         openclaw_gateway_current.bind | default('') == 'loopback' and
+         openclaw_gateway_current.port | default(0) == openclaw_gateway_port | int and
+         openclaw_gateway_current.auth.mode | default('') == 'token' and
+         openclaw_gateway_current.auth.token | default('') == (openclaw_token_b64.content | b64decode | trim) }}
+  vars:
+    openclaw_gateway_current: >-
+      {{ (openclaw_config_raw.content | default('') | b64decode | from_json).gateway
+         if openclaw_config_raw.content is defined else {} }}
+  no_log: true
 
 # `config patch` is a single validated write against OpenClaw's own schema - better than
 # templating openclaw.json ourselves, which would rot the moment the schema changes.
