@@ -28,6 +28,10 @@
   ansible.builtin.include_tasks: vm-agent.yml
   when: vm_id is defined and box_role != 'mitm'
 
+- name: Include OpenClaw gateway install (systemd unit the vm-agent drives)
+  ansible.builtin.include_tasks: openclaw.yml
+  when: vm_id is defined and box_role != 'mitm'
+
 - name: Include OpenClaw egress wiring (route through the org mitm box)
   ansible.builtin.include_tasks: openclaw-egress.yml
   when:

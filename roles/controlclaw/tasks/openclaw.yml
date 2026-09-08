@@ -1,0 +1,183 @@
+---
+# Install the OpenClaw gateway and run it under systemd.
+#
+# The unit is named `openclaw` on purpose: packages/vm-agent/src/routes/openclaw.ts hardcodes
+# `const SERVICE = "openclaw"` and the console's start/stop buttons shell out to
+# `sudo systemctl <action> openclaw`. The matching sudoers lines live in user.yml. Those three
+# places must agree or the buttons return HTTP 500.
+#
+# The gateway binds loopback and is deliberately NOT opened in UFW. Reach it with
+# `ssh -N -L 18789:127.0.0.1:18789 root@<box>` until the agent-https plan puts Caddy in front.
+
+- name: Assert node satisfies OpenClaw's engines range
+  ansible.builtin.command: node --version
+  register: openclaw_node_version
+  changed_when: false
+
+# npm picks the newest `openclaw` your node can run, so node 22 silently yields an old
+# OpenClaw instead of failing. Fail loudly here rather than shipping a surprise version.
+- name: Fail early when node is too old for OpenClaw
+  ansible.builtin.assert:
+    that:
+      - openclaw_node_version.stdout | regex_replace('^v', '') is version('24.16.0', '>=')
+    fail_msg: >-
+      node {{ openclaw_node_version.stdout }} is too old for OpenClaw (needs >=24.16.0).
+      Bump nodejs_version in roles/controlclaw/defaults/main.yml.
+
+- name: Create OpenClaw config directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ controlclaw_home }}/.openclaw", mode: '0755' }
+    - { path: "{{ controlclaw_home }}/.openclaw/credentials", mode: '0700' }
+
+- name: Install OpenClaw globally from npm
+  ansible.builtin.command:
+    cmd: npm install -g openclaw@latest
+  register: openclaw_npm_install
+  changed_when: "'up to date' not in openclaw_npm_install.stdout"
+
+# The plan and the agent-https doc both assume /usr/bin/openclaw. NodeSource sets npm's prefix
+# to /usr so that holds, but assert it rather than baking an unverified path into ExecStart.
+- name: Locate the openclaw binary
+  ansible.builtin.stat:
+    path: /usr/bin/openclaw
+  register: openclaw_bin
+
+- name: Fail when the openclaw binary is not where the unit expects it
+  ansible.builtin.assert:
+    that:
+      - openclaw_bin.stat.exists
+    fail_msg: "openclaw was installed but is not at /usr/bin/openclaw - check npm's global prefix."
+
+- name: Check for an existing gateway token
+  ansible.builtin.stat:
+    path: /opt/controlclaw/keys/openclaw_gateway_token
+  register: openclaw_token_file
+
+# Generated once and never rotated: ansible-pull re-runs on every boot, and rotating the token
+# would silently break whatever link the customer saved.
+- name: Generate the gateway token on first provision
+  ansible.builtin.shell:
+    cmd: openssl rand -hex 32 > /opt/controlclaw/keys/openclaw_gateway_token
+  when: not openclaw_token_file.stat.exists
+  no_log: true
+
+- name: Secure the gateway token file
+  ansible.builtin.file:
+    path: /opt/controlclaw/keys/openclaw_gateway_token
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '0600'
+
+- name: Read the gateway token
+  ansible.builtin.slurp:
+    src: /opt/controlclaw/keys/openclaw_gateway_token
+  register: openclaw_token_b64
+  no_log: true
+
+# `config get` redacts secrets (gateway.auth.token comes back as __OPENCLAW_REDACTED__), so the
+# token itself cannot be used as the idempotency signal. Check the non-secret keys instead: they
+# are written by the same patch, so if they match, the token was applied too. The token is
+# generated once and never rotated, so it cannot drift out from under this check.
+- name: Read the current gateway settings
+  ansible.builtin.command:
+    cmd: /usr/bin/openclaw config get {{ item }}
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment:
+    HOME: "{{ controlclaw_home }}"
+  loop:
+    - gateway.mode
+    - gateway.bind
+    - gateway.port
+    - gateway.auth.mode
+  register: openclaw_current
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether the gateway config needs writing
+  ansible.builtin.set_fact:
+    openclaw_config_ok: >-
+      {{ (openclaw_current.results | map(attribute='rc') | select('ne', 0) | list | length == 0) and
+         (openclaw_current.results | map(attribute='stdout') | map('trim') | list
+          == ['local', 'loopback', openclaw_gateway_port | string, 'token']) }}
+
+# `config patch` is a single validated write against OpenClaw's own schema - better than
+# templating openclaw.json ourselves, which would rot the moment the schema changes.
+# gateway.mode=local is required, otherwise `gateway run` refuses to start without
+# --allow-unconfigured. The JSON is built as text so `port` stays a number: piping a dict
+# through `to_json` would emit "18789" as a string and fail schema validation.
+- name: Configure the gateway (loopback, token auth)
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s'
+      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}}}'
+      | /usr/bin/openclaw config patch --stdin
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment:
+    HOME: "{{ controlclaw_home }}"
+  when: not openclaw_config_ok | bool
+  no_log: true
+  notify: restart openclaw
+
+# Node does not read the OS trust store, so on a secured box every outbound TLS call from
+# OpenClaw would fail against the mitm proxy without this. Conditional because node refuses to
+# start when NODE_EXTRA_CA_CERTS points at a file that does not exist.
+- name: Check for the mitm CA certificate
+  ansible.builtin.stat:
+    path: /usr/local/share/ca-certificates/controlclaw-mitm.crt
+  register: openclaw_mitm_ca
+
+# PrivateTmp is left off deliberately: OpenClaw writes its logs to /tmp/openclaw/, and a
+# private namespace would hide them from an operator on the box (and from `openclaw
+# diagnostics`). Revisit if the log path becomes configurable.
+- name: Create the openclaw systemd service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/openclaw.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=OpenClaw AI Gateway
+      After=network-online.target docker.service
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User={{ controlclaw_user }}
+      Group={{ controlclaw_user }}
+      WorkingDirectory={{ controlclaw_home }}
+      Environment=HOME={{ controlclaw_home }}
+      {% if openclaw_mitm_ca.stat.exists %}
+      Environment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/controlclaw-mitm.crt
+      {% endif %}
+      ExecStart=/usr/bin/openclaw gateway run
+      Restart=always
+      RestartSec=10
+      StandardOutput=journal
+      StandardError=journal
+      SyslogIdentifier=openclaw
+      NoNewPrivileges=true
+      PrivateTmp=false
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: restart openclaw
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Enable and start the openclaw service
+  ansible.builtin.systemd:
+    name: openclaw
+    state: started
+    enabled: true
+  when: not ci_test

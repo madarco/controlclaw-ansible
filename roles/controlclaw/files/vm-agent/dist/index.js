@@ -1,6 +1,6 @@
 // src/index.ts
 import { createServer } from "http";
-import { readFileSync as readFileSync5 } from "fs";
+import { readFileSync as readFileSync6 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -322,9 +322,12 @@ function handleHealth(res) {
 
 // src/routes/openclaw.ts
 import { execSync as execSync2 } from "child_process";
+import { readFileSync as readFileSync5 } from "fs";
+import { join } from "path";
 var SERVICE = "openclaw";
 var EXEC_TIMEOUT_MS = 5e3;
 var ACTION_TIMEOUT_MS = 3e4;
+var GATEWAY_PORT = 18789;
 function runIsActive() {
   try {
     return execSync2(`systemctl is-active ${SERVICE}`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }).trim();
@@ -390,12 +393,30 @@ function handleStatus(res) {
     message: summary
   });
 }
+function handleGatewayToken(res) {
+  const keysDir = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
+  let token;
+  try {
+    token = readFileSync5(join(keysDir, "openclaw_gateway_token"), "utf-8").trim();
+  } catch {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "No gateway token on this box" }));
+    return;
+  }
+  if (!token) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "No gateway token on this box" }));
+    return;
+  }
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ token, port: GATEWAY_PORT }));
+}
 
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 try {
-  const saasPublicKey2 = readFileSync5(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync6(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -438,6 +459,10 @@ var server = createServer(async (req, res) => {
   }
   if (url.pathname === "/status" && req.method === "GET") {
     handleStatus(res);
+    return;
+  }
+  if (url.pathname === "/gateway-token" && req.method === "GET") {
+    handleGatewayToken(res);
     return;
   }
   res.writeHead(404, { "Content-Type": "application/json" });

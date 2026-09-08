@@ -52,13 +52,16 @@
     content: |
       # ControlClaw sudo permissions (scoped for security)
 
-      # Service control - controlclaw service only
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start controlclaw
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop controlclaw
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart controlclaw
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status controlclaw
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable controlclaw
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable controlclaw
+      # Service control - the OpenClaw gateway only. The vm-agent runs as this user and
+      # shells out to `sudo systemctl <action> openclaw` for the console's start/stop
+      # buttons (packages/vm-agent/src/routes/openclaw.ts). The unit name is the contract:
+      # these lines and that SERVICE constant must agree.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start openclaw
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop openclaw
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart openclaw
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status openclaw
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable openclaw
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable openclaw
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 
       # Tailscale - diagnostics + connect/disconnect
@@ -70,8 +73,9 @@
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale ping *
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale whois *
 
-      # Journal access - controlclaw logs only
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u controlclaw *
+      # Journal access - the two ControlClaw-managed units only
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u openclaw *
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u controlclaw-agent *
 
       # Mitm CA install - fixed root script (copies a fixed path into the trust store +
       # update-ca-certificates). Hygiene bound; the trust check is the signature/pin in the agent.
