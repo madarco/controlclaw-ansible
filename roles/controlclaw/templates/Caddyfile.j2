@@ -1,0 +1,31 @@
+# Managed by Ansible (roles/controlclaw/templates/Caddyfile.j2). Do not edit on the box.
+{
+    email {{ caddy_acme_email }}
+    # Pinned so a Let's Encrypt failure never silently falls back to another issuer.
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+}
+
+{{ vm_hostname }} {
+    # Control plane -> vm-agent (bearer JWT checked by the vm-agent itself)
+    handle /__cc/agent/* {
+        uri strip_prefix /__cc/agent
+        reverse_proxy 127.0.0.1:3100
+    }
+
+    # ControlClaw login shim (login page, session exchange, logout)
+    handle /__cc/* {
+        reverse_proxy 127.0.0.1:3100
+    }
+
+    # Everything else is OpenClaw, gated by the ControlClaw session cookie. On 401 the
+    # vm-agent's "open this agent from your console" page is relayed to the browser.
+    # The upgrade headers are stripped for the auth call: the check must answer 2xx, never 101.
+    handle {
+        forward_auth 127.0.0.1:3100 {
+            uri /__cc/verify
+            header_up -Connection
+            header_up -Upgrade
+        }
+        reverse_proxy 127.0.0.1:{{ openclaw_gateway_port }}
+    }
+}

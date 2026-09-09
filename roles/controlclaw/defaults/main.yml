@@ -26,13 +26,28 @@ browser_cdp_port: 9222
 browser_vnc_port: 5900
 browser_novnc_port: 6080
 
-# Box role: "openclaw" (agent zone, default) or "mitm" (secret zone — egress proxy + secrets).
+# Box role: "openclaw" (agent zone, default), "proxy" (blind L4 proxy in front of the agents)
+# or "mitm" (secret zone — egress proxy + secrets).
 box_role: openclaw
 
-# OpenClaw gateway. Loopback-only by design - no UFW rule, reachable via SSH tunnel
-# (and later the agent-https plan). The systemd unit is named `openclaw` because that is
+# Open TCP 22 in UFW. Mirrors the Hetzner firewall flag (agent_ssh_debug in Terraform), which
+# is the real gate; this keeps the box consistent if the Hetzner firewall is ever detached.
+ssh_debug: true
+
+# OpenClaw gateway. Loopback-only by design; Caddy terminates TLS on 443 in front of it and the
+# proxy box is the only allowed source. The systemd unit is named `openclaw` because that is
 # what the vm-agent drives; do not rename it without changing vm-agent's SERVICE constant.
 openclaw_gateway_port: 18789
+
+# Agent hostname and access path (openclaw boxes). vm_hostname is passed per box by the
+# control plane (<slug><vm_domain_suffix>); without it Caddy is installed but not configured.
+vm_domain_suffix: ".vm.controlclaw.com"
+proxy_ip: ""                          # public IP of the proxy box; UFW allows 80/443 from it only
+caddy_acme_email: "ops@controlclaw.com"
+
+# Proxy box (box_role=proxy)
+hcloud_read_token: ""                 # READ-ONLY Hetzner token for route discovery
+proxy_routes_interval_sec: 20
 
 # mitm box settings (secret zone)
 mitm_proxy_port: 8080

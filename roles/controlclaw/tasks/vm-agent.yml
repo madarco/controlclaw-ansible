@@ -40,6 +40,15 @@
     mode: '0644'
   when: vm_id is defined
 
+- name: Write the agent hostname
+  ansible.builtin.copy:
+    dest: /opt/controlclaw/keys/vm_hostname
+    content: "{{ vm_hostname }}"
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '0644'
+  when: vm_hostname is defined
+
 - name: Write config API URL
   ansible.builtin.copy:
     dest: /opt/controlclaw/keys/config_api_url
@@ -119,17 +128,20 @@
       Environment=HOME={{ controlclaw_home }}
       Environment=KEYS_DIR=/opt/controlclaw/keys
       Environment=AGENT_PORT=3100
+      Environment=AGENT_BIND=127.0.0.1
 
       [Install]
       WantedBy=multi-user.target
   notify: restart controlclaw-agent
 
-- name: Allow agent port 3100 in UFW
+# 3100 is loopback-only: the control plane reaches the vm-agent through Caddy on 443
+# (/__cc/agent/*). Boxes provisioned before this had a public 3100 rule; drop it.
+- name: Remove the legacy public 3100 UFW rule
   community.general.ufw:
     rule: allow
     port: '3100'
     proto: tcp
-    comment: 'ControlClaw Agent'
+    delete: true
 
 - name: Reload systemd daemon
   ansible.builtin.systemd:

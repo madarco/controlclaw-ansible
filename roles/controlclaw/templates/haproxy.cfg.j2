@@ -1,0 +1,67 @@
+# Managed by Ansible (roles/controlclaw/templates/haproxy.cfg.j2). Do not edit on the box.
+#
+# Blind L4 proxy for *{{ vm_domain_suffix }}: routes by SNI, forwards ciphertext, never holds
+# a certificate. Destinations come from /etc/haproxy/routes.map ("<hostname> <ip>" lines),
+# kept in sync from Hetzner labels by cc-proxy-routes.timer.
+
+global
+    log /dev/log local0
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+    maxconn 20000
+
+defaults
+    log     global
+    option  dontlognull
+    timeout connect 5s
+    timeout client  60s
+    timeout server  60s
+
+# ---------------------------------------------------------------------------------------------
+# 443: TLS passthrough by SNI. Per-source-IP limits on new connections and concurrency.
+# `accept` must stay the LAST content rule: nothing after it is evaluated.
+# ---------------------------------------------------------------------------------------------
+frontend https_in
+    bind :443
+    mode tcp
+    option tcplog
+    tcp-request inspect-delay 5s
+    stick-table type ip size 100k expire 60s store conn_rate(10s),conn_cur
+    tcp-request connection track-sc0 src
+    tcp-request connection reject if { sc_conn_rate(0) gt 60 } || { sc_conn_cur(0) gt 100 }
+    tcp-request content reject unless { req.ssl_hello_type 1 }
+    tcp-request content set-var(txn.box) req.ssl_sni,lower,map_str_ip(/etc/haproxy/routes.map)
+    tcp-request content reject unless { var(txn.box) -m found }
+    tcp-request content set-dst var(txn.box)
+    tcp-request content accept
+    default_backend boxes
+
+backend boxes
+    mode tcp
+    timeout tunnel 1h
+    timeout client-fin 30s
+    # 0.0.0.0 = use the destination set by set-dst; the port stays 443.
+    server box 0.0.0.0:443
+
+# ---------------------------------------------------------------------------------------------
+# 80: only Let's Encrypt HTTP-01 challenges, relayed by Host header. Everything else is 404 so
+# this box is not a generic HTTP relay. Caddy on the agent box owns the HTTPS redirect.
+# ---------------------------------------------------------------------------------------------
+frontend http_in
+    bind :80
+    mode http
+    option httplog
+    timeout http-request 5s
+    http-request deny deny_status 404 unless { path_beg /.well-known/acme-challenge/ }
+    http-request set-var(txn.box) req.hdr(host),lower,host_only,map_str_ip(/etc/haproxy/routes.map)
+    http-request deny deny_status 404 unless { var(txn.box) -m found }
+    http-request set-dst var(txn.box)
+    default_backend boxes_http
+
+backend boxes_http
+    mode http
+    server box 0.0.0.0:80

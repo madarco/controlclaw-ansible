@@ -1,0 +1,132 @@
+---
+# The blind L4 proxy (box_role=proxy). HAProxy forwards 443 by SNI to the agent box that owns
+# the name and relays ACME challenges on 80 by Host header. It never terminates TLS on 443.
+# The route map is rebuilt from Hetzner server labels (cc-role=agent, cc-host=<slug>) by a timer
+# using a READ-ONLY token. Design: docs/plans/blind-proxy-and-remote-access.md.
+
+- name: Assert the proxy has a Hetzner read token
+  ansible.builtin.assert:
+    that: hcloud_read_token | length > 0
+    fail_msg: "box_role=proxy needs hcloud_read_token (a read-only Hetzner API token)"
+
+- name: Install HAProxy
+  ansible.builtin.apt:
+    name: haproxy
+    state: present
+    update_cache: true
+
+- name: Create the ControlClaw config directory
+  ansible.builtin.file:
+    path: /etc/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Write the Hetzner read token
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/hcloud_read_token
+    content: "{{ hcloud_read_token }}"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Ensure the route map exists
+  ansible.builtin.copy:
+    dest: /etc/haproxy/routes.map
+    content: ""
+    owner: root
+    group: root
+    mode: '0644'
+    force: false
+
+- name: Write the HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/sbin/haproxy -c -q -f %s
+  notify: reload haproxy
+
+- name: Install the route sync script
+  ansible.builtin.copy:
+    src: cc-proxy-routes.py
+    dest: /usr/local/bin/cc-proxy-routes
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Write the route sync environment
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/proxy-routes.env
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      CC_DOMAIN_SUFFIX={{ vm_domain_suffix }}
+      CC_TOKEN_FILE=/etc/controlclaw/hcloud_read_token
+      CC_ROUTES_MAP=/etc/haproxy/routes.map
+
+- name: Install the route sync service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-proxy-routes.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw proxy route sync (Hetzner labels -> HAProxy map)
+      After=network-online.target haproxy.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      EnvironmentFile=/etc/controlclaw/proxy-routes.env
+      ExecStart=/usr/bin/python3 /usr/local/bin/cc-proxy-routes
+
+- name: Install the route sync timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-proxy-routes.timer
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Run the ControlClaw proxy route sync every {{ proxy_routes_interval_sec }}s
+
+      [Timer]
+      OnBootSec=10s
+      OnUnitActiveSec={{ proxy_routes_interval_sec }}s
+      AccuracySec=1s
+
+      [Install]
+      WantedBy=timers.target
+
+- name: Enable HAProxy
+  ansible.builtin.systemd:
+    name: haproxy
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ci_test
+
+- name: Enable the route sync timer
+  ansible.builtin.systemd:
+    name: cc-proxy-routes.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ci_test
+
+- name: Run the route sync once now
+  ansible.builtin.command: /usr/bin/python3 /usr/local/bin/cc-proxy-routes
+  environment:
+    CC_DOMAIN_SUFFIX: "{{ vm_domain_suffix }}"
+    CC_TOKEN_FILE: /etc/controlclaw/hcloud_read_token
+    CC_ROUTES_MAP: /etc/haproxy/routes.map
+  register: proxy_routes_first
+  changed_when: "'updated' in proxy_routes_first.stdout"
+  when: not ci_test

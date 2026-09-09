@@ -89,12 +89,52 @@
     - { direction: 'outgoing', policy: 'allow' }
     - { direction: 'routed', policy: 'deny' }
 
-- name: Allow SSH on port 22
+# The Hetzner firewall (Terraform var agent_ssh_debug) is the real SSH gate; this mirrors it.
+- name: Allow SSH on port 22 (ssh_debug)
   community.general.ufw:
     rule: allow
     port: '22'
     proto: tcp
     comment: 'SSH'
+  when: ssh_debug | bool
+
+- name: Remove the SSH rule when ssh_debug is off
+  community.general.ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+    delete: true
+  when: not ssh_debug | bool
+
+# Agent boxes: 80 (ACME) and 443 (dashboard + control plane) only from the proxy box. Without a
+# proxy_ip (base-image build, CI) fall back to any source; the Hetzner firewall still applies.
+- name: Allow HTTP/HTTPS from the proxy box only (agent)
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ proxy_ip }}"
+    port: "{{ item }}"
+    proto: tcp
+    comment: 'via proxy'
+  loop: ['80', '443']
+  when: box_role == 'openclaw' and proxy_ip | length > 0
+
+- name: Allow HTTP/HTTPS from anywhere (agent without a known proxy)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    comment: 'HTTP/HTTPS'
+  loop: ['80', '443']
+  when: box_role == 'openclaw' and proxy_ip | length == 0
+
+- name: Allow HTTP/HTTPS from anywhere (proxy)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    comment: 'proxy'
+  loop: ['80', '443']
+  when: box_role == 'proxy'
 
 - name: Allow Tailscale UDP port 41641
   community.general.ufw:

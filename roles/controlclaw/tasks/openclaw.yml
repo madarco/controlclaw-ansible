@@ -6,8 +6,9 @@
 # `sudo systemctl <action> openclaw`. The matching sudoers lines live in user.yml. Those three
 # places must agree or the buttons return HTTP 500.
 #
-# The gateway binds loopback and is deliberately NOT opened in UFW. Reach it with
-# `ssh -N -L 18789:127.0.0.1:18789 root@<box>` until the agent-https plan puts Caddy in front.
+# The gateway binds loopback and is deliberately NOT opened in UFW. Caddy (caddy.yml) terminates
+# TLS on 443 in front of it, behind the proxy box. `ssh -N -L 18789:127.0.0.1:18789 root@<box>`
+# still works while SSH is open (ssh_debug).
 
 - name: Assert node satisfies OpenClaw's engines range
   ansible.builtin.command: node --version
@@ -127,7 +128,11 @@
          openclaw_gateway_current.bind | default('') == 'loopback' and
          openclaw_gateway_current.port | default(0) == openclaw_gateway_port | int and
          openclaw_gateway_current.auth.mode | default('') == 'token' and
-         openclaw_gateway_current.auth.token | default('') == (openclaw_token_b64.content | b64decode | trim) }}
+         openclaw_gateway_current.auth.token | default('') == (openclaw_token_b64.content | b64decode | trim) and
+         (vm_hostname is not defined or (
+           openclaw_gateway_current.publicOrigin | default('') == 'https://' ~ vm_hostname and
+           openclaw_gateway_current.trustedProxies | default([]) == ['127.0.0.1'] and
+           openclaw_gateway_current.controlUi.allowedOrigins | default([]) == ['https://' ~ vm_hostname)) }}
   vars:
     openclaw_gateway_current: >-
       {{ (openclaw_config_raw.content | default('') | b64decode | from_json).gateway
@@ -139,12 +144,18 @@
 # gateway.mode=local is required, otherwise `gateway run` refuses to start without
 # --allow-unconfigured. The JSON is built as text so `port` stays a number: piping a dict
 # through `to_json` would emit "18789" as a string and fail schema validation.
-- name: Configure the gateway (loopback, token auth)
+# With a hostname, OpenClaw also learns its public origin (Caddy in front on 443), trusts the
+# loopback proxy for forwarded headers, and allows the browser origin for its WebSocket.
+- name: Configure the gateway (loopback, token auth, public origin)
   ansible.builtin.shell:
     cmd: >-
       printf '%s'
-      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}}}'
+      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}{{ openclaw_origin_json }}}}'
       | /usr/bin/openclaw config patch --stdin
+  vars:
+    openclaw_origin_json: >-
+      {{ ',"publicOrigin":"https://' ~ vm_hostname ~ '","trustedProxies":["127.0.0.1"],"controlUi":{"allowedOrigins":["https://' ~ vm_hostname ~ '"]}'
+         if vm_hostname is defined else '' }}
   become: true
   become_user: "{{ controlclaw_user }}"
   environment:

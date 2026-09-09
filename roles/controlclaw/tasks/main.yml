@@ -1,4 +1,10 @@
 ---
+# box_role selects what this box is:
+#   openclaw (default) - agent box: docker, node, vm-agent, OpenClaw gateway, Caddy in front
+#   proxy              - the blind L4 proxy in front of every agent box (HAProxy)
+#   mitm               - per-org egress proxy / secret zone
+# system tools, the service user and the firewall apply to every role.
+
 - name: Include system tools installation tasks
   ansible.builtin.include_tasks: system-tools.yml
 
@@ -11,7 +17,7 @@
 
 - name: Include Docker installation tasks
   ansible.builtin.include_tasks: docker-linux.yml
-  when: not ci_test
+  when: not ci_test and box_role != 'proxy'
 
 - name: Include firewall configuration tasks
   ansible.builtin.include_tasks: firewall-linux.yml
@@ -19,24 +25,33 @@
 
 - name: Include Node.js installation tasks
   ansible.builtin.include_tasks: nodejs.yml
+  when: box_role != 'proxy'
 
 - name: Include browser streaming tasks
   ansible.builtin.include_tasks: browser-stream.yml
-  when: browser_stream_enabled | bool
+  when: browser_stream_enabled | bool and box_role == 'openclaw'
 
 - name: Include VM agent tasks (OpenClaw box)
   ansible.builtin.include_tasks: vm-agent.yml
-  when: vm_id is defined and box_role != 'mitm'
+  when: vm_id is defined and box_role == 'openclaw'
 
 - name: Include OpenClaw gateway install (systemd unit the vm-agent drives)
   ansible.builtin.include_tasks: openclaw.yml
-  when: vm_id is defined and box_role != 'mitm'
+  when: vm_id is defined and box_role == 'openclaw'
+
+- name: Include Caddy (TLS termination + auth shim in front of OpenClaw)
+  ansible.builtin.include_tasks: caddy.yml
+  when: box_role == 'openclaw'
 
 - name: Include OpenClaw egress wiring (route through the org mitm box)
   ansible.builtin.include_tasks: openclaw-egress.yml
   when:
-    - box_role != 'mitm'
+    - box_role == 'openclaw'
     - mitm_box_private_ip | default('') | length > 0
+
+- name: Include proxy box tasks (blind L4 proxy)
+  ansible.builtin.include_tasks: proxy.yml
+  when: box_role == 'proxy'
 
 - name: Include mitm box tasks (secret zone)
   ansible.builtin.include_tasks: mitmbox.yml

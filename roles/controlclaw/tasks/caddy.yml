@@ -1,0 +1,54 @@
+---
+# Caddy on the agent box: terminates TLS for <vm_hostname> with its own Let's Encrypt
+# certificate (HTTP-01, relayed by the proxy box on port 80) and routes:
+#   /__cc/login, /__cc/session, /__cc/verify  -> vm-agent (ControlClaw login shim, no bearer)
+#   /__cc/agent/*  (prefix stripped)           -> vm-agent (control plane, bearer JWT)
+#   everything else, after forward_auth        -> OpenClaw gateway on loopback
+# The install half runs always (so the base image carries the package); the config half needs
+# vm_hostname, which the control plane passes per box.
+
+- name: Install Caddy apt repository key
+  ansible.builtin.get_url:
+    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+    dest: /usr/share/keyrings/caddy-stable-archive-keyring.asc
+    mode: '0644'
+
+- name: Add Caddy apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
+    filename: caddy-stable
+    state: present
+
+- name: Install Caddy
+  ansible.builtin.apt:
+    name: caddy
+    state: present
+    update_cache: true
+
+# The package ships an enabled unit serving a static site on :80. Keep it down until we have a
+# hostname to configure; an image build must not leave a listener behind.
+- name: Stop and disable Caddy until configured
+  ansible.builtin.systemd:
+    name: caddy
+    state: stopped
+    enabled: false
+  when: vm_hostname is not defined
+
+- name: Write the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/bin/caddy validate --config %s --adapter caddyfile
+  when: vm_hostname is defined
+  notify: restart caddy
+
+- name: Enable and start Caddy
+  ansible.builtin.systemd:
+    name: caddy
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: vm_hostname is defined and not ci_test
