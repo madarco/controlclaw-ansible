@@ -1,6 +1,6 @@
 // src/index.ts
 import { createServer } from "http";
-import { readFileSync as readFileSync8 } from "fs";
+import { readFileSync as readFileSync9 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -297,26 +297,42 @@ async function handleAccess(req, res, pathname) {
   json(res, 404, { error: "Not found" });
 }
 
-// src/ready.ts
+// src/box-token.ts
 import { readFileSync as readFileSync3 } from "fs";
 import { importPKCS8, SignJWT as SignJWT2 } from "jose";
-var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
-function readKeyFile(name) {
+function readKeyFile(keysDir2, name) {
   try {
-    return readFileSync3(`${KEYS_DIR}/${name}`, "utf-8").trim();
+    return readFileSync3(`${keysDir2}/${name}`, "utf-8").trim();
   } catch {
     return null;
   }
 }
-async function signReadyToken(vmId, privateKeyPem) {
+async function signBoxToken(vmId, privateKeyPem) {
   const key = await importPKCS8(privateKeyPem, "EdDSA");
   return new SignJWT2({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
 }
+function makeBoxTokenSigner(keysDir2) {
+  return async () => {
+    const vmId = readKeyFile(keysDir2, "vm_id");
+    const pem = readKeyFile(keysDir2, "vm_private_key.pem");
+    if (!vmId || !pem) throw new Error("missing vm_id / vm_private_key.pem in KEYS_DIR");
+    return signBoxToken(vmId, pem);
+  };
+}
+function saasBaseUrl(keysDir2) {
+  if (process.env.CONTROLCLAW_URL) return process.env.CONTROLCLAW_URL.replace(/\/$/, "");
+  const configUrl = readKeyFile(keysDir2, "config_api_url");
+  return configUrl ? configUrl.replace(/\/api\/.*$/, "") : null;
+}
+
+// src/ready.ts
+var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
+var readKeyFile2 = (name) => readKeyFile(KEYS_DIR, name);
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function reportReady() {
-  const vmId = readKeyFile("vm_id");
-  const readyUrl = readKeyFile("ready_api_url");
-  const privateKey = readKeyFile("vm_private_key.pem");
+  const vmId = readKeyFile2("vm_id");
+  const readyUrl = readKeyFile2("ready_api_url");
+  const privateKey = readKeyFile2("vm_private_key.pem");
   if (!vmId || !readyUrl || !privateKey) {
     console.warn(
       "[ready] missing vm_id / ready_api_url / vm_private_key.pem in KEYS_DIR \u2014 skipping ready report"
@@ -326,7 +342,7 @@ async function reportReady() {
   const maxAttempts = 20;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const token = await signReadyToken(vmId, privateKey);
+      const token = await signBoxToken(vmId, privateKey);
       const res = await fetch(readyUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` }
@@ -426,7 +442,6 @@ function sha256Hex(s) {
 // src/mitm-ca.ts
 import { readFileSync as readFileSync5, writeFileSync as writeFileSync3, existsSync as existsSync3 } from "fs";
 import { execFileSync } from "child_process";
-import { importPKCS8 as importPKCS82, SignJWT as SignJWT3 } from "jose";
 function readFile2(path) {
   try {
     return readFileSync5(path, "utf8").trim();
@@ -435,10 +450,6 @@ function readFile2(path) {
   }
 }
 var sleep3 = (ms) => new Promise((r) => setTimeout(r, ms));
-async function signVmToken(vmId, privateKeyPem) {
-  const key = await importPKCS82(privateKeyPem, "EdDSA");
-  return new SignJWT3({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
-}
 async function ensureMitmCaInstalled(keysDir2) {
   const mitmIp = readFile2(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
@@ -457,7 +468,7 @@ async function ensureMitmCaInstalled(keysDir2) {
   const maxAttempts = 60;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const token = await signVmToken(vmId, privateKey);
+      const token = await signBoxToken(vmId, privateKey);
       const res = await fetch(configUrl, { headers: { Authorization: `Bearer ${token}` } });
       if (res.ok) {
         const cfg = await res.json();
@@ -1039,12 +1050,592 @@ function followCli(onLine, onExit) {
   };
 }
 
+// src/gateway.ts
+var GATEWAY_SCOPES = ["operator.read", "operator.approvals", "operator.admin"];
+var PROTOCOL = 4;
+var CONNECT_TIMEOUT_MS = 1e4;
+var DEFAULT_CALL_TIMEOUT_MS = 1e4;
+var GatewayClient = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.backoff = opts.minBackoffMs ?? 1e3;
+  }
+  ws = null;
+  seq = 0;
+  pending = /* @__PURE__ */ new Map();
+  handlers = /* @__PURE__ */ new Map();
+  connectHandlers = /* @__PURE__ */ new Set();
+  backoff;
+  reconnectTimer = null;
+  stopped = false;
+  outageLogged = false;
+  _connected = false;
+  get connected() {
+    return this._connected;
+  }
+  start() {
+    this.stopped = false;
+    this.connect();
+  }
+  stop() {
+    this.stopped = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.ws?.close();
+  }
+  /** Subscribe to a gateway event by name. Returns the unsubscribe function. */
+  on(event, handler) {
+    let set = this.handlers.get(event);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.handlers.set(event, set);
+    }
+    set.add(handler);
+    return () => set?.delete(handler);
+  }
+  /** Runs after every successful handshake (initial and each reconnect). */
+  onConnected(handler) {
+    this.connectHandlers.add(handler);
+    return () => this.connectHandlers.delete(handler);
+  }
+  async call(method, params = {}, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== ws.OPEN) throw new Error("gateway not connected");
+    return this.send(ws, method, params, timeoutMs);
+  }
+  send(ws, method, params, timeoutMs) {
+    const id = String(++this.seq);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`gateway call ${method} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        ws.send(JSON.stringify({ type: "req", id, method, params }));
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err);
+      }
+    });
+  }
+  log(msg) {
+    (this.opts.log ?? console.log)(`[gateway] ${msg}`);
+  }
+  connect() {
+    if (this.stopped) return;
+    const Impl = this.opts.WebSocketImpl ?? WebSocket;
+    let ws;
+    try {
+      ws = new Impl(this.opts.url);
+    } catch (err) {
+      this.scheduleReconnect(err.message);
+      return;
+    }
+    this.ws = ws;
+    const connectTimer = setTimeout(() => {
+      if (!this._connected) ws.close();
+    }, CONNECT_TIMEOUT_MS);
+    ws.onopen = () => {
+      this.send(
+        ws,
+        "connect",
+        {
+          minProtocol: PROTOCOL,
+          maxProtocol: PROTOCOL,
+          client: { id: "gateway-client", version: "controlclaw-vm-agent", platform: "linux", mode: "backend" },
+          role: "operator",
+          scopes: this.opts.scopes ?? GATEWAY_SCOPES,
+          caps: ["approvals", "exec-approvals"],
+          auth: { token: this.opts.token }
+        },
+        CONNECT_TIMEOUT_MS
+      ).then(() => {
+        clearTimeout(connectTimer);
+        this._connected = true;
+        this.backoff = this.opts.minBackoffMs ?? 1e3;
+        this.outageLogged = false;
+        this.log("connected");
+        for (const h of this.connectHandlers) {
+          try {
+            h();
+          } catch (err) {
+            this.log(`connect handler failed: ${err.message}`);
+          }
+        }
+      }).catch((err) => {
+        this.log(`handshake failed: ${err.message}`);
+        ws.close();
+      });
+    };
+    ws.onmessage = (m) => {
+      let frame;
+      try {
+        frame = JSON.parse(String(m.data));
+      } catch {
+        return;
+      }
+      if (frame.type === "res") {
+        const p = this.pending.get(frame.id);
+        if (!p) return;
+        this.pending.delete(frame.id);
+        clearTimeout(p.timer);
+        if (frame.ok) p.resolve(frame.payload);
+        else p.reject(new Error(frame.error?.message ?? frame.error?.code ?? "gateway error"));
+        return;
+      }
+      if (frame.type === "event") {
+        const set = this.handlers.get(frame.event);
+        if (!set) return;
+        for (const h of set) {
+          try {
+            h(frame.payload);
+          } catch (err) {
+            this.log(`handler for ${frame.event} failed: ${err.message}`);
+          }
+        }
+      }
+    };
+    ws.onerror = () => {
+    };
+    ws.onclose = () => {
+      clearTimeout(connectTimer);
+      const wasConnected = this._connected;
+      this._connected = false;
+      if (this.ws === ws) this.ws = null;
+      for (const [id, p] of this.pending) {
+        clearTimeout(p.timer);
+        p.reject(new Error("gateway disconnected"));
+        this.pending.delete(id);
+      }
+      this.scheduleReconnect(wasConnected ? "connection closed" : "gateway unreachable");
+    };
+  }
+  scheduleReconnect(reason) {
+    if (this.stopped) return;
+    if (!this.outageLogged) {
+      this.log(`down (${reason}); retrying in the background`);
+      this.outageLogged = true;
+    }
+    const delay = this.backoff;
+    this.backoff = Math.min(this.backoff * 2, this.opts.maxBackoffMs ?? 3e4);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+};
+
+// src/audit.ts
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync8, renameSync, writeFileSync as writeFileSync4 } from "fs";
+import { dirname } from "path";
+var PAGE_LIMIT = 500;
+var MAX_PAGES = 10;
+var AFTER_SLACK_MS = 6e4;
+var MIN_BACKOFF_MS = 5e3;
+var MAX_BACKOFF_MS = 6e4;
+function mapAuditEvent(ev) {
+  if (ev.kind !== "tool_action" && ev.kind !== "agent_run") return null;
+  if (typeof ev.sequence !== "number" || typeof ev.eventId !== "string" || typeof ev.occurredAt !== "number") return null;
+  if (ev.kind === "tool_action" && !ev.toolCallId) return null;
+  if (ev.kind === "agent_run" && !ev.runId) return null;
+  const rec = {
+    source: ev.kind,
+    event_id: ev.eventId,
+    sequence: ev.sequence,
+    occurred_at: ev.occurredAt,
+    status: ev.status ?? "unknown",
+    action: ev.action ?? ""
+  };
+  if (ev.toolName) rec.tool_name = ev.toolName;
+  if (ev.toolCallId) rec.tool_call_id = ev.toolCallId;
+  if (ev.runId) rec.run_id = ev.runId;
+  if (ev.sessionKey) rec.session_key = ev.sessionKey;
+  if (ev.agentId) rec.agent_id = ev.agentId;
+  return rec;
+}
+var AuditShipper = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.batchSize = opts.batchSize ?? PAGE_LIMIT;
+    this.cursor = this.loadCursor() ?? { sequence: 0, occurredAt: this.now() };
+  }
+  cursor;
+  inFlight = false;
+  nextAttemptAt = 0;
+  backoff = MIN_BACKOFF_MS;
+  fetchImpl;
+  batchSize;
+  get position() {
+    return { ...this.cursor };
+  }
+  now() {
+    return (this.opts.now ?? Date.now)();
+  }
+  log(msg) {
+    (this.opts.log ?? console.log)(`[audit] ${msg}`);
+  }
+  loadCursor() {
+    try {
+      if (!existsSync4(this.opts.cursorPath)) return null;
+      const c = JSON.parse(readFileSync8(this.opts.cursorPath, "utf-8"));
+      if (typeof c.sequence === "number" && typeof c.occurredAt === "number") return { sequence: c.sequence, occurredAt: c.occurredAt };
+    } catch {
+    }
+    return null;
+  }
+  saveCursor() {
+    const tmp = `${this.opts.cursorPath}.tmp`;
+    mkdirSync2(dirname(this.opts.cursorPath), { recursive: true });
+    writeFileSync4(tmp, JSON.stringify(this.cursor), { mode: 384 });
+    renameSync(tmp, this.opts.cursorPath);
+  }
+  async tick() {
+    const total = { read: 0, accepted: 0, duplicates: 0 };
+    if (this.inFlight || !this.opts.client.connected) return total;
+    if (this.now() < this.nextAttemptAt) return total;
+    this.inFlight = true;
+    try {
+      return await this.tickInner(total);
+    } finally {
+      this.inFlight = false;
+    }
+  }
+  async tickInner(total) {
+    const fresh = await this.fetchNew();
+    total.read = fresh.length;
+    if (fresh.length === 0) return total;
+    fresh.sort((a, b) => a.sequence - b.sequence);
+    for (let i = 0; i < fresh.length; i += this.batchSize) {
+      const batch = fresh.slice(i, i + this.batchSize);
+      const records = batch.map(mapAuditEvent).filter((r) => r !== null);
+      const last = batch[batch.length - 1];
+      if (records.length > 0) {
+        const res = await this.post(records);
+        if (!res) {
+          this.nextAttemptAt = this.now() + this.backoff;
+          this.backoff = Math.min(this.backoff * 2, MAX_BACKOFF_MS);
+          return total;
+        }
+        total.accepted += res.accepted;
+        total.duplicates += res.duplicates;
+      }
+      this.cursor = { sequence: last.sequence, occurredAt: Math.max(this.cursor.occurredAt, last.occurredAt) };
+      this.saveCursor();
+      this.backoff = MIN_BACKOFF_MS;
+      this.nextAttemptAt = 0;
+    }
+    return total;
+  }
+  /** Events with sequence above the cursor, unordered. */
+  async fetchNew() {
+    const out = [];
+    const after = Math.max(0, this.cursor.occurredAt - AFTER_SLACK_MS);
+    let cursor;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const res = await this.opts.client.call("audit.activity.list", {
+        after,
+        limit: PAGE_LIMIT,
+        ...cursor ? { cursor } : {}
+      });
+      const events = res.events ?? [];
+      let reachedOld = false;
+      for (const ev of events) {
+        if (typeof ev.sequence !== "number") continue;
+        if (ev.sequence <= this.cursor.sequence) {
+          reachedOld = true;
+          continue;
+        }
+        out.push(ev);
+      }
+      if (reachedOld || !res.nextCursor || events.length < PAGE_LIMIT) break;
+      cursor = res.nextCursor;
+    }
+    return out;
+  }
+  async post(records) {
+    try {
+      const token = await this.opts.getToken();
+      const res = await this.fetchImpl(this.opts.activityUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ records })
+      });
+      if (res.status === 400 || res.status === 413) {
+        this.log(`batch of ${records.length} rejected with HTTP ${res.status}; dropped`);
+        return { accepted: 0, duplicates: 0 };
+      }
+      if (!res.ok) {
+        this.log(`ship failed: HTTP ${res.status}`);
+        return null;
+      }
+      const body = await res.json().catch(() => ({}));
+      return { accepted: body.accepted ?? records.length, duplicates: body.duplicates ?? 0 };
+    } catch (err) {
+      this.log(`ship failed: ${err.message}`);
+      return null;
+    }
+  }
+};
+
+// src/approvals.ts
+var APPROVAL_FAMILIES = {
+  exec: "exec",
+  plugin: "plugin",
+  openclaw: "system"
+};
+var TITLE_MAX = 200;
+var OWN_RESOLVER = "gateway-client";
+var LIST_METHODS = [
+  ["exec", "exec.approval.list"],
+  ["plugin", "plugin.approval.list"],
+  ["openclaw", "openclaw.approval.list"]
+];
+var CONTROL_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f]/g;
+function sanitizeTitle(text) {
+  const flat = redact(text).replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
+  return flat.length > TITLE_MAX ? `${flat.slice(0, TITLE_MAX - 1)}\u2026` : flat;
+}
+function str(v) {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+function summaryOf(kind, p) {
+  const r = p.request ?? {};
+  const pres = p.presentation ?? {};
+  const candidate = str(r.command) ?? str(pres.commandText) ?? str(r.rawCommand) ?? str(r.summary) ?? str(pres.summary) ?? str(r.title) ?? str(pres.title) ?? str(r.toolName) ?? str(r.pluginId) ?? str(r.action);
+  return sanitizeTitle(candidate ?? `${kind} approval`);
+}
+function detailOf(p) {
+  const r = p.request ?? {};
+  const rows = [];
+  const add = (k, v) => {
+    const s = str(v);
+    if (s) rows.push([k, sanitizeTitle(s)]);
+  };
+  add("agent", r.agentId);
+  add("session", r.sessionKey);
+  add("cwd", r.cwd);
+  add("host", r.host);
+  add("plugin", r.pluginId ?? r.plugin);
+  add("tool", r.toolName);
+  const analysis = r.commandAnalysis;
+  if (Array.isArray(analysis?.riskKinds) && analysis.riskKinds.length > 0) {
+    rows.push(["risk", sanitizeTitle(analysis.riskKinds.map(String).join(", "))]);
+  }
+  add("warning", r.warningText);
+  return rows;
+}
+function resolutionOf(p) {
+  const d = (p.decision ?? p.status ?? "").toLowerCase();
+  if (d.startsWith("allow")) return "approved";
+  if (d === "deny" || d === "denied") return p.resolvedBy ? "denied" : "expired";
+  return "expired";
+}
+var ApprovalsBridge = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+  tracked = /* @__PURE__ */ new Map();
+  inFlight = false;
+  fetchImpl;
+  unsubscribe = [];
+  now() {
+    return (this.opts.now ?? Date.now)();
+  }
+  log(msg) {
+    (this.opts.log ?? console.log)(`[approvals] ${msg}`);
+  }
+  get pendingCount() {
+    let n = 0;
+    for (const t of this.tracked.values()) if (!t.done) n++;
+    return n;
+  }
+  start() {
+    for (const [family, kind] of Object.entries(APPROVAL_FAMILIES)) {
+      this.unsubscribe.push(
+        this.opts.client.on(`${family}.approval.requested`, (payload) => {
+          void this.onRequested(kind, payload).catch(
+            (err) => this.log(`request handling failed: ${err.message}`)
+          );
+        }),
+        this.opts.client.on(`${family}.approval.resolved`, (payload) => {
+          void this.onResolved(payload).catch(
+            (err) => this.log(`resolution handling failed: ${err.message}`)
+          );
+        })
+      );
+    }
+    this.unsubscribe.push(
+      this.opts.client.onConnected(() => {
+        void this.reconcile().catch((err) => this.log(`reconcile failed: ${err.message}`));
+      })
+    );
+    if (this.opts.client.connected) void this.reconcile().catch(() => void 0);
+  }
+  stop() {
+    for (const u of this.unsubscribe) u();
+    this.unsubscribe = [];
+  }
+  /** After (re)connect: raise what is pending on the gateway, settle what vanished meanwhile. */
+  async reconcile() {
+    const known = [...this.tracked.keys()];
+    const seen = /* @__PURE__ */ new Set();
+    for (const [family, method] of LIST_METHODS) {
+      let list = [];
+      try {
+        list = await this.opts.client.call(method, {}) ?? [];
+      } catch (err) {
+        this.log(`${method} failed: ${err.message}`);
+        continue;
+      }
+      for (const p of list) {
+        if (!p.id) continue;
+        seen.add(p.id);
+        if (!this.tracked.has(p.id)) await this.onRequested(APPROVAL_FAMILIES[family], p);
+      }
+    }
+    for (const id of known) {
+      const t = this.tracked.get(id);
+      if (!t || t.done || seen.has(id)) continue;
+      let resolution = "expired";
+      try {
+        const got = await this.opts.client.call("approval.get", {
+          id,
+          kind: t.approvalKind
+        });
+        const p = got.approval ?? got;
+        if (p?.decision || p?.status) resolution = resolutionOf(p);
+      } catch {
+      }
+      t.done = true;
+      await this.postResolution(id, resolution);
+    }
+  }
+  async onRequested(kind, p) {
+    const id = p.id;
+    if (!id || this.tracked.has(id)) return;
+    const tracked = {
+      kind,
+      approvalKind: p.approvalKind ?? (kind === "system" ? "openclaw" : kind),
+      expiresAt: typeof p.expiresAtMs === "number" ? p.expiresAtMs : null,
+      done: false
+    };
+    this.tracked.set(id, tracked);
+    const body = {
+      permission_id: `oc:${id}`,
+      kind,
+      title: summaryOf(kind, p),
+      detail: detailOf(p),
+      expires_at: tracked.expiresAt ? new Date(tracked.expiresAt).toISOString() : null
+    };
+    const res = await this.post(body);
+    if (!res) {
+      this.tracked.delete(id);
+      return;
+    }
+    this.log(`raised ${kind} approval ${id} \u2192 ${res.status}`);
+    await this.applyStatus(id, res.status);
+  }
+  async onResolved(p) {
+    const id = p.id;
+    if (!id) return;
+    const t = this.tracked.get(id);
+    if (!t || t.done) return;
+    t.done = true;
+    if (p.resolvedBy === OWN_RESOLVER) return;
+    const resolution = resolutionOf(p);
+    this.log(`${id} settled on the gateway: ${resolution}`);
+    await this.postResolution(id, resolution);
+  }
+  /** Poll the console for decisions on pending approvals. Called on an interval. */
+  async tick() {
+    if (this.inFlight) return;
+    this.inFlight = true;
+    try {
+      for (const [id, t] of this.tracked) {
+        if (t.done) {
+          if (!t.expiresAt || this.now() > t.expiresAt + 36e5) this.tracked.delete(id);
+          continue;
+        }
+        if (t.expiresAt && this.now() > t.expiresAt + 6e4) {
+          t.done = true;
+          await this.postResolution(id, "expired");
+          continue;
+        }
+        const status = await this.getStatus(id);
+        if (status) await this.applyStatus(id, status);
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+  async applyStatus(id, status) {
+    const t = this.tracked.get(id);
+    if (!t || t.done) return;
+    let decision;
+    if (status === "approved") decision = "allow-once";
+    else if (status === "denied") decision = "deny";
+    else if (status === "expired") {
+      t.done = true;
+      return;
+    } else return;
+    t.done = true;
+    try {
+      await this.opts.client.call("approval.resolve", { id, kind: t.approvalKind, decision });
+      this.log(`${id}: ${decision}`);
+    } catch (err) {
+      this.log(`approval.resolve ${id} failed: ${err.message}`);
+    }
+  }
+  async getStatus(id) {
+    try {
+      const token = await this.opts.getToken();
+      const url = `${this.opts.permissionUrl}?permission_id=${encodeURIComponent(`oc:${id}`)}`;
+      const res = await this.fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) return null;
+      const body = await res.json();
+      return body.status ?? null;
+    } catch {
+      return null;
+    }
+  }
+  async post(body) {
+    try {
+      const token = await this.opts.getToken();
+      const res = await this.fetchImpl(this.opts.permissionUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        this.log(`POST failed: HTTP ${res.status}`);
+        return null;
+      }
+      const out = await res.json();
+      return { status: out.status ?? "pending" };
+    } catch (err) {
+      this.log(`POST failed: ${err.message}`);
+      return null;
+    }
+  }
+  async postResolution(id, resolution) {
+    await this.post({ permission_id: `oc:${id}`, resolution, resolved_by: "openclaw" });
+  }
+};
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
 var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
+var STATE_DIR = process.env.STATE_DIR ?? "/opt/controlclaw/state";
+var GATEWAY_PORT = parseInt(process.env.OPENCLAW_GATEWAY_PORT ?? "18789", 10);
+var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
+var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 try {
-  const saasPublicKey2 = readFileSync8(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync9(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -1052,7 +1643,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync8(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync9(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -1077,6 +1668,27 @@ async function bootstrap() {
     return;
   }
   await reportReady();
+}
+function startGatewayBridge() {
+  const token = readKeyFile(KEYS_DIR2, "openclaw_gateway_token");
+  const base = saasBaseUrl(KEYS_DIR2);
+  if (!token || !base) {
+    console.log("[gateway] no openclaw_gateway_token / config_api_url in KEYS_DIR: audit + approvals bridge off");
+    return;
+  }
+  const client = new GatewayClient({ url: `ws://127.0.0.1:${GATEWAY_PORT}`, token });
+  const getToken = makeBoxTokenSigner(KEYS_DIR2);
+  const audit = new AuditShipper({
+    client,
+    cursorPath: `${STATE_DIR}/audit.cursor`,
+    activityUrl: `${base}/api/vm-agent/activity`,
+    getToken
+  });
+  const approvals = new ApprovalsBridge({ client, permissionUrl: `${base}/api/vm-agent/permission`, getToken });
+  approvals.start();
+  client.start();
+  setInterval(() => void audit.tick().catch((err) => console.error("[audit] tick failed:", err)), AUDIT_POLL_MS);
+  setInterval(() => void approvals.tick().catch((err) => console.error("[approvals] tick failed:", err)), APPROVAL_POLL_MS);
 }
 var server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
@@ -1119,4 +1731,5 @@ var server = createServer(async (req, res) => {
 server.listen(PORT, BIND, () => {
   console.log(`ControlClaw agent listening on ${BIND}:${PORT}`);
   void bootstrap().catch((err) => console.error("[bootstrap] failed:", err));
+  startGatewayBridge();
 });

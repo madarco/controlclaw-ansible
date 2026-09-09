@@ -11,6 +11,8 @@
   loop:
     - /opt/controlclaw/agent
     - /opt/controlclaw/keys
+    # Cursors and other small persistent state of the agent (audit ledger position).
+    - /opt/controlclaw/state
 
 - name: Write VM private key
   ansible.builtin.copy:
@@ -129,6 +131,10 @@
       Environment=KEYS_DIR=/opt/controlclaw/keys
       Environment=AGENT_PORT=3100
       Environment=AGENT_BIND=127.0.0.1
+      Environment=STATE_DIR=/opt/controlclaw/state
+      # The agent keeps one socket to the local OpenClaw gateway: audit ledger shipping and the
+      # approvals bridge (exec / plugin / system-agent approvals <-> the ControlClaw queue).
+      Environment=OPENCLAW_GATEWAY_PORT={{ openclaw_gateway_port }}
 
       [Install]
       WantedBy=multi-user.target
