@@ -91,16 +91,22 @@
     create_home: false
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
 
+# Lives under /etc, not /opt/controlclaw: redsocks runs as its own unprivileged user and
+# /opt/controlclaw is 0750 controlclaw:controlclaw, so it could not even traverse to the file
+# ("Unable to open config file: Permission denied", found on a real box 2026-09-09). Nothing in
+# here is secret (the mitm box's private IP and port).
 - name: Create the egress config dir
   ansible.builtin.file:
-    path: /opt/controlclaw/egress
+    path: /etc/controlclaw/egress
     state: directory
+    owner: root
+    group: root
     mode: '0755'
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
 
 - name: Write redsocks config (transparent → explicit CONNECT to the mitm proxy)
   ansible.builtin.copy:
-    dest: /opt/controlclaw/egress/redsocks.conf
+    dest: /etc/controlclaw/egress/redsocks.conf
     mode: '0644'
     content: |
       base {
@@ -131,7 +137,7 @@
       [Service]
       Type=simple
       User=redsocks
-      ExecStart=/usr/sbin/redsocks -c /opt/controlclaw/egress/redsocks.conf
+      ExecStart=/usr/sbin/redsocks -c /etc/controlclaw/egress/redsocks.conf
       Restart=always
       RestartSec=5
 
@@ -150,7 +156,7 @@
 # to the mitm IP) remains the enforcement backstop; redsocks only ever connects to the mitm IP.
 - name: Stage the transparent-redirect nftables ruleset
   ansible.builtin.copy:
-    dest: /opt/controlclaw/egress/redirect.nft
+    dest: /etc/controlclaw/egress/redirect.nft
     mode: '0644'
     content: |
       #!/usr/sbin/nft -f
@@ -200,7 +206,7 @@
       #!/bin/sh
       set -e
       systemctl enable --now controlclaw-redsocks
-      nft -f /opt/controlclaw/egress/redirect.nft
+      nft -f /etc/controlclaw/egress/redirect.nft
       systemctl restart systemd-resolved
 
 - name: Deploy cc-perm CLI (self-contained bundle)
