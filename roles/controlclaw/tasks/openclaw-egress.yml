@@ -13,6 +13,16 @@
 # provisioning for the 2nd+ box; empty for the org's first box (the agent TOFU-pins on first
 # sight). Marker file `mitm_box_private_ip` also tells the agent it's behind a proxy (→ require
 # a trusted CA before ready).
+# This file runs before vm-agent.yml (which also creates the keys dir), so the marker files
+# below always have a home and the agent finds them on its very first start.
+- name: Ensure the keys dir exists (egress runs before the vm-agent tasks)
+  ansible.builtin.file:
+    path: /opt/controlclaw/keys
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '0750'
+
 - name: Pin the mitm box public key (for CA-signature verification)
   ansible.builtin.copy:
     dest: /opt/controlclaw/keys/mitm_pinned_pubkey.pem
