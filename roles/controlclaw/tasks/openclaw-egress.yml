@@ -83,6 +83,17 @@
     update_cache: true
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
 
+# The package ships an ENABLED redsocks.service with a stock /etc/redsocks.conf that also binds
+# 127.0.0.1:12345 (pointing at a SOCKS server that does not exist). Left alone it wins the port
+# and our unit crash-loops with "bind: Address already in use" (real box, 2026-09-09). Mask it.
+- name: Mask the distro redsocks service (ours owns port 12345)
+  ansible.builtin.systemd:
+    name: redsocks
+    enabled: false
+    state: stopped
+    masked: true
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
 - name: Create a dedicated redsocks user (least privilege)
   ansible.builtin.user:
     name: redsocks
