@@ -31,6 +31,16 @@
   ansible.builtin.include_tasks: browser-stream.yml
   when: browser_stream_enabled | bool and box_role == 'openclaw'
 
+# Egress wiring runs BEFORE the vm-agent starts: the agent's bootstrap reads the
+# `keys/mitm_box_private_ip` marker written here to decide whether to wait for the mitm box, install
+# its CA and enable the redirect before reporting ready. Starting the agent first let it report
+# ready on an unconfined box, after which the control plane locked it down with no proxy path.
+- name: Include OpenClaw egress wiring (route through the org mitm box)
+  ansible.builtin.include_tasks: openclaw-egress.yml
+  when:
+    - box_role == 'openclaw'
+    - mitm_box_private_ip | default('') | length > 0
+
 - name: Include VM agent tasks (OpenClaw box)
   ansible.builtin.include_tasks: vm-agent.yml
   when: vm_id is defined and box_role == 'openclaw'
@@ -42,12 +52,6 @@
 - name: Include Caddy (TLS termination + auth shim in front of OpenClaw)
   ansible.builtin.include_tasks: caddy.yml
   when: box_role == 'openclaw'
-
-- name: Include OpenClaw egress wiring (route through the org mitm box)
-  ansible.builtin.include_tasks: openclaw-egress.yml
-  when:
-    - box_role == 'openclaw'
-    - mitm_box_private_ip | default('') | length > 0
 
 - name: Include proxy box tasks (blind L4 proxy)
   ansible.builtin.include_tasks: proxy.yml

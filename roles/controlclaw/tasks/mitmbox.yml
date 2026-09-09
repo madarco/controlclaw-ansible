@@ -44,6 +44,9 @@
     - /opt/controlclaw/mitm/agent
     - /opt/controlclaw/mitm/proxy
     - /opt/controlclaw/mitm/ca
+    # Traffic log + shipper cursor. The parent /opt/controlclaw/mitm is root-owned, so without
+    # this directory the proxy (running as controlclaw) could never create its log file.
+    - /opt/controlclaw/mitm/logs
 
 # Secrets the proxy reads are RAM-only: mount the proxy config dir as tmpfs so decrypted
 # credentials never touch the disk.
@@ -212,8 +215,21 @@
       Environment=MITM_CREDENTIALS_PATH=/run/mitm/config/credentials.json
       Environment=MITM_GRANTS_PATH=/run/mitm/config/grants.json
       Environment=MITM_PENDING_PATH=/run/mitm/config/pending.jsonl
-      Environment=MITM_LOG_FILE=/opt/controlclaw/mitm/traffic.jsonl
+      # Per-VM identity map written by the mitm-agent (P8.1); without it every log line and every
+      # vm-scoped rule sees vm_id=null.
+      Environment=MITM_IDENTITIES_PATH=/run/mitm/config/identities.json
+      # Metadata-only traffic log, rotated by the proxy past 8 MB and shipped to ControlClaw by
+      # the mitm-agent (Activity page, Network view).
+      Environment=MITM_LOG_FILE=/opt/controlclaw/mitm/logs/traffic.jsonl
+      Environment=MITM_LOG_MAX_BYTES=8388608
       Environment=MITM_TENANT={{ org_id | default('unknown') }}
+      # Dev escape hatches, pinned off. The addon refuses to start with any of them set unless
+      # MITM_ALLOW_DEV_FLAGS=1, which only the smoke-test compose files carry. This unit is the
+      # enforcement point for "no dev flags on a secured box".
+      Environment=MITM_DEV_LOG_SECRETS=0
+      Environment=MITM_DEV_ALLOW_PLAINTEXT_STORE=0
+      Environment=MITM_DEV_INSECURE_UPSTREAM=0
+      Environment=MITM_DEV_ALLOW_DIRECT_EGRESS=0
       # SNI-based passthrough for the control plane (works for transparent redsocks CONNECT-to-IP,
       # where --ignore-hosts can't match a hostname). The addon tls_clienthello hook reads this.
       Environment=MITM_CONTROL_PLANE_HOST={{ controlclaw_url | urlsplit('hostname') }}
@@ -259,6 +275,10 @@
       Environment=GRANTS_PATH=/run/mitm/config/grants.json
       Environment=CA_CERT_PATH=/opt/controlclaw/mitm/ca/ca-cert.pem
       Environment=CA_URL={{ controlclaw_url }}/api/vm-agent/ca
+      # Traffic-log shipper: proxy JSONL -> ControlClaw Activity page.
+      Environment=ACTIVITY_URL={{ controlclaw_url }}/api/vm-agent/activity
+      Environment=TRAFFIC_LOG_PATH=/opt/controlclaw/mitm/logs/traffic.jsonl
+      Environment=ACTIVITY_CURSOR_PATH=/opt/controlclaw/mitm/logs/activity.cursor
       ExecStart=/usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
       Restart=always
       RestartSec=10

@@ -1,6 +1,6 @@
 // src/index.ts
 import { createServer } from "http";
-import { readFileSync as readFileSync7, writeFileSync as writeFileSync6 } from "fs";
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "fs";
 
 // ../secret-store/dist/index.js
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
@@ -2486,6 +2486,141 @@ var PermissionBridge = class {
   }
 };
 
+// src/activity.ts
+import { closeSync, existsSync as existsSync5, fstatSync, mkdirSync as mkdirSync4, openSync, readSync, readFileSync as readFileSync6, renameSync as renameSync2, statSync, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname2, join as join2 } from "path";
+var MAX_CHUNK = 4 * 1024 * 1024;
+var ActivityShipper = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.batchSize = opts.batchSize ?? 200;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.cursor = this.loadCursor();
+  }
+  cursor = { inode: 0, offset: 0 };
+  backoffMs = 0;
+  nextAttemptAt = 0;
+  batchSize;
+  fetchImpl;
+  loadCursor() {
+    try {
+      const c = JSON.parse(readFileSync6(this.opts.cursorPath, "utf8"));
+      if (typeof c.inode === "number" && typeof c.offset === "number") return c;
+    } catch {
+    }
+    return { inode: 0, offset: 0 };
+  }
+  saveCursor() {
+    mkdirSync4(dirname2(this.opts.cursorPath), { recursive: true });
+    const tmp = join2(dirname2(this.opts.cursorPath), ".activity.cursor.tmp");
+    writeFileSync6(tmp, JSON.stringify(this.cursor), { mode: 384 });
+    renameSync2(tmp, this.opts.cursorPath);
+  }
+  /** One pass: ship everything unshipped, one batch at a time, until caught up or an error. */
+  async tick() {
+    const total = { read: 0, accepted: 0, duplicates: 0, skipped: 0 };
+    if (Date.now() < this.nextAttemptAt) return total;
+    if (!existsSync5(this.opts.logPath)) return total;
+    const live = statSync(this.opts.logPath);
+    const liveInode = Number(live.ino);
+    if (this.cursor.inode && this.cursor.inode !== liveInode) {
+      const rotated = this.opts.logPath + ".1";
+      if (existsSync5(rotated) && Number(statSync(rotated).ino) === this.cursor.inode) {
+        const done = await this.shipFrom(rotated, total);
+        if (!done) return total;
+      }
+      this.cursor = { inode: liveInode, offset: 0 };
+      this.saveCursor();
+    } else if (!this.cursor.inode) {
+      this.cursor = { inode: liveInode, offset: 0 };
+    } else if (live.size < this.cursor.offset) {
+      this.cursor.offset = 0;
+    }
+    await this.shipFrom(this.opts.logPath, total);
+    return total;
+  }
+  /**
+   * Ship complete lines from `this.cursor.offset` in `path` in batches. Returns true when the
+   * file is fully shipped, false when a batch was refused (cursor left on the unshipped part).
+   */
+  async shipFrom(path, total) {
+    for (; ; ) {
+      const { records, consumed, skipped } = this.readBatch(path);
+      total.skipped += skipped;
+      if (records.length === 0) {
+        if (consumed > 0) {
+          this.cursor.offset += consumed;
+          this.saveCursor();
+          continue;
+        }
+        return true;
+      }
+      const ok = await this.post(records);
+      if (!ok) return false;
+      total.read += records.length;
+      total.accepted += ok.accepted;
+      total.duplicates += ok.duplicates;
+      this.cursor.offset += consumed;
+      this.saveCursor();
+      if (records.length < this.batchSize) return true;
+    }
+  }
+  readBatch(path) {
+    const fd = openSync(path, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const want = Math.min(MAX_CHUNK, Math.max(0, size - this.cursor.offset));
+      if (want === 0) return { records: [], consumed: 0, skipped: 0 };
+      const buf = Buffer.alloc(want);
+      const n = readSync(fd, buf, 0, want, this.cursor.offset);
+      const text = buf.subarray(0, n).toString("utf8");
+      const records = [];
+      let consumed = 0;
+      let skipped = 0;
+      let from = 0;
+      while (records.length < this.batchSize) {
+        const nl = text.indexOf("\n", from);
+        if (nl === -1) break;
+        const line = text.slice(from, nl);
+        from = nl + 1;
+        consumed = Buffer.byteLength(text.slice(0, from), "utf8");
+        if (!line.trim()) continue;
+        try {
+          records.push(JSON.parse(line));
+        } catch {
+          skipped += 1;
+        }
+      }
+      return { records, consumed, skipped };
+    } finally {
+      closeSync(fd);
+    }
+  }
+  async post(records) {
+    try {
+      const res = await this.fetchImpl(this.opts.activityUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
+        body: JSON.stringify({ records })
+      });
+      if (res.status === 400 || res.status === 413) {
+        console.error(`[activity] batch rejected (HTTP ${res.status}); dropping ${records.length} records`);
+        this.backoffMs = 0;
+        return { accepted: 0, duplicates: 0 };
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      this.backoffMs = 0;
+      return { accepted: body.accepted ?? 0, duplicates: body.duplicates ?? 0 };
+    } catch (err) {
+      this.backoffMs = Math.min(this.backoffMs ? this.backoffMs * 2 : 5e3, 6e4);
+      this.nextAttemptAt = Date.now() + this.backoffMs;
+      console.error(`[activity] ship failed (${err.message}); retry in ${this.backoffMs / 1e3}s`);
+      return null;
+    }
+  }
+};
+
 // src/auth.ts
 var saasPublicKey = null;
 function setSaasPublicKey(key) {
@@ -2515,11 +2650,11 @@ async function requireAuth(req, res) {
 }
 
 // src/ready.ts
-import { readFileSync as readFileSync6 } from "fs";
+import { readFileSync as readFileSync7 } from "fs";
 var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 function readKeyFile(name) {
   try {
-    return readFileSync6(`${KEYS_DIR}/${name}`, "utf-8").trim();
+    return readFileSync7(`${KEYS_DIR}/${name}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -2570,6 +2705,11 @@ var PENDING_PATH = process.env.PENDING_PATH ?? "";
 var GRANTS_PATH = process.env.GRANTS_PATH ?? `${PROXY_CONFIG_DIR}/grants.json`;
 var PERMISSION_POLL_MS = parseInt(process.env.PERMISSION_POLL_MS ?? "3000", 10);
 var PERMISSION_TTL = parseInt(process.env.PERMISSION_TTL ?? "300", 10);
+var ACTIVITY_URL = process.env.ACTIVITY_URL ?? "";
+var TRAFFIC_LOG_PATH = process.env.TRAFFIC_LOG_PATH ?? "";
+var ACTIVITY_CURSOR_PATH = process.env.ACTIVITY_CURSOR_PATH ?? `${TRAFFIC_LOG_PATH}.cursor`;
+var ACTIVITY_POLL_MS = parseInt(process.env.ACTIVITY_POLL_MS ?? "5000", 10);
+var SHIP_ONCE = process.env.SHIP_ONCE === "1";
 var ORG_ID = process.env.ORG_ID ?? "";
 var BOX_ID = process.env.BOX_ID ?? "";
 var SYNC_ONCE = process.env.SYNC_ONCE === "1";
@@ -2582,7 +2722,7 @@ function die(msg) {
   console.error(`[mitm-agent] ${msg}`);
   process.exit(1);
 }
-var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http");
+var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http");
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 async function runSync(boxKey) {
   const store = makeStoreClient(STORE_URL, getToken);
@@ -2610,13 +2750,29 @@ async function maybeMigrate() {
     sourceIds: { orgId: ORG_ID, boxId: MIGRATE_SOURCE_BOX_ID },
     newBoxId: BOX_ID
   });
-  writeFileSync6(BOX_KEY_PATH, boxKey, { mode: 384 });
+  writeFileSync7(BOX_KEY_PATH, boxKey, { mode: 384 });
   await makeStoreClient(STORE_URL).putRecord(record);
   console.log(`[mitm-agent] migrated to v${record.version} under a fresh box key`);
   return boxKey;
 }
+function makeShipper() {
+  if (!ACTIVITY_URL || !TRAFFIC_LOG_PATH || !getToken) return null;
+  return new ActivityShipper({
+    logPath: TRAFFIC_LOG_PATH,
+    cursorPath: ACTIVITY_CURSOR_PATH,
+    activityUrl: ACTIVITY_URL,
+    getToken
+  });
+}
 async function main() {
   if (!ORG_ID || !BOX_ID) die("ORG_ID and BOX_ID are required");
+  if (SHIP_ONCE) {
+    const shipper = makeShipper();
+    if (!shipper) die("SHIP_ONCE needs ACTIVITY_URL and TRAFFIC_LOG_PATH");
+    const r = await shipper.tick();
+    console.log(`[activity] shipped read=${r.read} accepted=${r.accepted} duplicates=${r.duplicates} skipped=${r.skipped}`);
+    process.exit(0);
+  }
   if (!STORE_URL) die("STORE_URL is required");
   ensureVmKeypair(KEYS_DIR2);
   await registerPublicKey(KEYS_DIR2);
@@ -2637,7 +2793,7 @@ async function main() {
     process.exit(0);
   }
   try {
-    setSaasPublicKey(readFileSync7(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+    setSaasPublicKey(readFileSync8(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
   } catch (err) {
     die(`failed to load SaaS public key: ${err.message}`);
   }
@@ -2669,7 +2825,7 @@ async function main() {
     if (CA_CERT_PATH && CA_URL && getToken) {
       void (async () => {
         try {
-          const caCert = readFileSync7(CA_CERT_PATH, "utf8");
+          const caCert = readFileSync8(CA_CERT_PATH, "utf8");
           const caSig = signDetached(KEYS_DIR2, caCert);
           const res = await fetch(CA_URL, {
             method: "POST",
@@ -2692,6 +2848,11 @@ async function main() {
       });
       console.log("[mitm-agent] permission bridge enabled");
       setInterval(() => void bridge.tick().catch((e) => console.error("[perm] tick:", e.message)), PERMISSION_POLL_MS);
+    }
+    const shipper = makeShipper();
+    if (shipper) {
+      console.log("[mitm-agent] activity shipper enabled");
+      setInterval(() => void shipper.tick().catch((e) => console.error("[activity] tick:", e.message)), ACTIVITY_POLL_MS);
     }
     void reportReady();
   });

@@ -165,13 +165,9 @@
   notify: restart openclaw
 
 # Node does not read the OS trust store, so on a secured box every outbound TLS call from
-# OpenClaw would fail against the mitm proxy without this. Conditional because node refuses to
-# start when NODE_EXTRA_CA_CERTS points at a file that does not exist.
-- name: Check for the mitm CA certificate
-  ansible.builtin.stat:
-    path: /usr/local/share/ca-certificates/controlclaw-mitm.crt
-  register: openclaw_mitm_ca
-
+# OpenClaw would fail against the mitm proxy. NODE_EXTRA_CA_CERTS is not set here: the CA only
+# exists after the vm-agent verifies and installs it at runtime, and `cc-install-ca`
+# (openclaw-egress.yml) then writes a systemd drop-in with the variable and restarts OpenClaw.
 # PrivateTmp is left off deliberately: OpenClaw writes its logs to /tmp/openclaw/, and a
 # private namespace would hide them from an operator on the box (and from `openclaw
 # diagnostics`). Revisit if the log path becomes configurable.
@@ -193,9 +189,6 @@
       Group={{ controlclaw_user }}
       WorkingDirectory={{ controlclaw_home }}
       Environment=HOME={{ controlclaw_home }}
-      {% if openclaw_mitm_ca.stat.exists %}
-      Environment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/controlclaw-mitm.crt
-      {% endif %}
       ExecStart=/usr/bin/openclaw gateway run
       Restart=always
       RestartSec=10

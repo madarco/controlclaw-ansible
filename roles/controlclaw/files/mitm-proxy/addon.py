@@ -2,23 +2,25 @@
 ControlClaw egress proxy — mitmproxy addon.
 
 Implements the security-critical core of the two-box architecture
-(docs/plans/mitm-box-security-rollout.md):
+(docs/mitm/plans/mitm-box-security-rollout.md):
 
   1. Per-tenant egress *rules* (allow / block / require_permission), priority-ordered.
   2. Domain-scoped *credential swap*: the agent box only ever holds `__PLACEHOLDER`s;
      this proxy injects the real secret, and ONLY on requests whose post-TLS host
      matches the credential's match_domain (so a leaked placeholder can't exfiltrate
      a secret off-domain).
-  3. Redacted traffic logging: the swapped secret is scrubbed back to its placeholder
-     before anything is logged.
+  3. Metadata-only traffic logging: one JSONL record per request (host, method,
+     query-stripped path, effect, rule, status, timing, placeholder names). No header
+     values, bodies or query strings are ever logged. The mitm-agent ships the file to
+     ControlClaw (`POST /api/vm-agent/activity`); see MITM_LOG_FILE / MITM_LOG_MAX_BYTES.
 
 v1 loads rules/credentials from JSON files (hot-reloaded on mtime change). On real
 boxes these come from the box-key-decrypted store (later parts). Tenant identity is
 resolved by source for now; mTLS client-cert identity is a later part.
 
-Dev-only escape hatches (must be OFF in production — enforced server-side at provisioning):
-  MITM_DEV_LOG_SECRETS=1        -> do NOT redact secrets from logs (debug swaps).
-  MITM_DEV_ALLOW_PLAINTEXT_STORE=1 -> read plaintext secrets from credentials.json.
+Dev-only escape hatches: any MITM_DEV_* flag makes the addon refuse to start unless
+MITM_ALLOW_DEV_FLAGS=1 (set only by the smoke-test compose files). The production systemd
+unit pins every MITM_DEV_* flag to 0.
 """
 
 from __future__ import annotations
@@ -53,6 +55,10 @@ GRANTS_PATH = os.environ.get("MITM_GRANTS_PATH", "/config/grants.json")
 PENDING_PATH = os.environ.get("MITM_PENDING_PATH", "/config/pending.jsonl")
 PERMISSION_TTL = int(os.environ.get("MITM_PERMISSION_TTL", "300"))
 LOG_PATH = os.environ.get("MITM_LOG_FILE", "")  # append JSONL here if set
+# Rotate the traffic log once it passes this size: the live file is renamed to `<path>.1` (the
+# previous `.1` is dropped). The proxy is the single writer, so disk stays bounded even when the
+# mitm-agent shipper is down; the shipper follows the rename by inode.
+LOG_MAX_BYTES = int(os.environ.get("MITM_LOG_MAX_BYTES", str(8 * 1024 * 1024)))
 TENANT = os.environ.get("MITM_TENANT", "unknown")
 # The ControlClaw control-plane host (e.g. controlclaw.com). Traffic to it is PASSED THROUGH
 # without interception (real public TLS), so the JWT control channel never depends on this proxy's
@@ -61,7 +67,14 @@ TENANT = os.environ.get("MITM_TENANT", "unknown")
 # authority is an IP, not the hostname. See docs/security-design.md.
 CONTROL_PLANE_HOST = os.environ.get("MITM_CONTROL_PLANE_HOST", "").strip().lower()
 
-DEV_LOG_SECRETS = os.environ.get("MITM_DEV_LOG_SECRETS") == "1"
+# Dev escape hatches. Every MITM_DEV_* flag is refused unless MITM_ALLOW_DEV_FLAGS=1, which only
+# the smoke-test compose files set; the production systemd unit pins them all to 0. This makes
+# "dev flags are off on secured boxes" a property of the proxy binary, not of a checklist.
+_DEV_FLAGS = ("MITM_DEV_LOG_SECRETS", "MITM_DEV_ALLOW_PLAINTEXT_STORE",
+              "MITM_DEV_INSECURE_UPSTREAM", "MITM_DEV_ALLOW_DIRECT_EGRESS")
+_dev_set = [k for k in _DEV_FLAGS if os.environ.get(k, "") not in ("", "0")]
+if _dev_set and os.environ.get("MITM_ALLOW_DEV_FLAGS") != "1":
+    raise RuntimeError(f"refusing to start with dev flags set outside a smoke test: {_dev_set}")
 
 DEFAULT_LOCATIONS = ["header:authorization", "header:x-api-key", "header:private-token"]
 BLOCK_STATUS = 403
@@ -336,24 +349,48 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
     return applied
 
 
-def redact(text: str, applied: list[tuple[str, str]]) -> str:
-    if DEV_LOG_SECRETS:
-        return text
-    for secret, placeholder in applied:
-        if secret:
-            text = text.replace(secret, placeholder)
-    return text
-
-
 def _log(record: dict[str, Any]) -> None:
+    """Append one traffic record (JSONL). Rotates the file by size first, see LOG_MAX_BYTES."""
     line = json.dumps(record, ensure_ascii=False)
     log.info(f"[mitm] {line}")
     if LOG_PATH:
         try:
+            try:
+                if os.path.getsize(LOG_PATH) >= LOG_MAX_BYTES:
+                    os.replace(LOG_PATH, LOG_PATH + ".1")
+            except FileNotFoundError:
+                pass
             with open(LOG_PATH, "a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
         except OSError as exc:
             log.warning(f"[mitm] log write failed: {exc}")
+
+
+def _base_record(flow, vm_id: str | None) -> dict[str, Any]:
+    """Fields every traffic record carries. `flow_id` is mitmproxy's per-flow uuid: the shipper's
+    dedupe key, so an at-least-once upload never double-counts a request."""
+    return {"flow_id": flow.id, "ts": time.time(), "tenant": TENANT, "vm_id": vm_id}
+
+
+def _http_record(flow: http.HTTPFlow, effect: str) -> dict[str, Any]:
+    """One record per HTTP request. `path` is query-stripped so a credential swapped into a query
+    string can never end up in a log line."""
+    rec = _base_record(flow, flow.metadata.get("cc_vm_id"))
+    rec.update({
+        "host": flow.request.pretty_host, "method": flow.request.method,
+        "path": flow.request.path.split("?", 1)[0], "effect": effect,
+        "rule": flow.metadata.get("cc_rule"),
+    })
+    return rec
+
+
+def _log_once(flow: http.HTTPFlow, rec: dict[str, Any]) -> None:
+    """mitmproxy can fire both `response` and `error` for one flow (e.g. the client goes away
+    while the response is being written). Log each HTTP flow exactly once."""
+    if flow.metadata.get("cc_logged"):
+        return
+    flow.metadata["cc_logged"] = True
+    _log(rec)
 
 
 # ----- hooks ----------------------------------------------------------------
@@ -415,8 +452,9 @@ def tcp_start(flow) -> None:
         addr = getattr(getattr(flow, "server_conn", None), "address", None)
         if addr:
             host, port = addr[0] or "", addr[1]
-        _log({"ts": time.time(), "tenant": TENANT, "vm_id": flow_vm_id(flow), "host": host,
-              "port": port, "effect": "drop"})
+        rec = _base_record(flow, flow_vm_id(flow))
+        rec.update({"host": host, "port": port, "effect": "drop"})
+        _log(rec)
         flow.kill()
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[mitm] tcp_start drop failed: {exc}")
@@ -438,8 +476,7 @@ def request(flow: http.HTTPFlow) -> None:
         # A tunnel destination should have been passed through *before* the HTTP layer
         # (tls_clienthello / next_layer). If we somehow reach here, let it through but NEVER swap
         # credentials into an uninspected-intent flow.
-        _log({"ts": time.time(), "tenant": TENANT, "vm_id": vm_id, "host": host, "method": method,
-              "path": path, "effect": "tunnel"})
+        _log_once(flow, _http_record(flow, "tunnel"))
         return
 
     if effect == "block":
@@ -448,8 +485,9 @@ def request(flow: http.HTTPFlow) -> None:
             json.dumps({"error": "blocked_by_policy", "host": host, "tenant": TENANT}),
             {"Content-Type": "application/json"},
         )
-        _log({"ts": time.time(), "tenant": TENANT, "vm_id": vm_id, "host": host, "method": method,
-              "path": path, "effect": "block", "status": BLOCK_STATUS})
+        rec = _http_record(flow, "block")
+        rec["status"] = BLOCK_STATUS
+        _log_once(flow, rec)
         return
 
     if effect == "require_permission":
@@ -473,26 +511,52 @@ def request(flow: http.HTTPFlow) -> None:
                 }),
                 {"Content-Type": "application/json"},
             )
-            _log({"ts": time.time(), "tenant": TENANT, "vm_id": vm_id, "host": host, "method": method,
-                  "path": path, "effect": "require_permission", "permission_id": pid,
-                  "status": PERMISSION_STATUS})
+            rec = _http_record(flow, "require_permission")
+            rec.update({"permission_id": pid, "status": PERMISSION_STATUS})
+            _log_once(flow, rec)
             return
 
-    # allow -> swap credentials in (vm-scoped with org fallback)
+    # allow -> swap credentials in (vm-scoped with org fallback). Logged once the upstream
+    # answers (response) or fails (error), so the record carries the real status and timing.
     applied = apply_swaps(flow, vm_id)
     flow.metadata["cc_applied"] = applied
-    redacted_auth = redact(flow.request.headers.get("authorization", ""), applied)
-    _log({"ts": time.time(), "tenant": TENANT, "vm_id": vm_id, "host": host, "method": method,
-          "path": path, "effect": "allow", "swapped": [p for _, p in applied],
-          "authorization": redacted_auth})
+    if flow.metadata.get("cc_granted"):
+        flow.metadata["cc_rule"] = flow.metadata.get("cc_rule") or "grant"
+
+
+def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
+    rec = _http_record(flow, "allow")
+    rec["swapped"] = [p for _, p in flow.metadata.get("cc_applied", [])]
+    if flow.metadata.get("cc_granted"):
+        rec["permission_id"] = flow.metadata["cc_granted"]
+    req_raw = flow.request.raw_content
+    rec["bytes_out"] = len(req_raw) if req_raw else 0
+    return rec
 
 
 def response(flow: http.HTTPFlow) -> None:
     if flow.metadata.get("cc_effect") not in (None, "allow"):
         return
-    applied = flow.metadata.get("cc_applied", [])
-    _log({"ts": time.time(), "tenant": TENANT, "vm_id": flow.metadata.get("cc_vm_id"),
-          "host": flow.request.pretty_host,
-          "method": flow.request.method, "path": flow.request.path,
-          "effect": "allow", "status": flow.response.status_code,
-          "swapped": [p for _, p in applied]})
+    rec = _allow_record(flow)
+    rec["status"] = flow.response.status_code
+    res_raw = flow.response.raw_content
+    rec["bytes_in"] = len(res_raw) if res_raw else 0
+    start, end = flow.request.timestamp_start, flow.response.timestamp_end
+    if start and end:
+        rec["duration_ms"] = int((end - start) * 1000)
+    _log_once(flow, rec)
+
+
+def error(flow: http.HTTPFlow) -> None:
+    """Allowed request that never got a response (upstream refused, TLS failed, client went away)."""
+    if flow.metadata.get("cc_effect") not in (None, "allow"):
+        return
+    if not getattr(flow, "request", None):
+        return
+    rec = _allow_record(flow)
+    rec["error"] = str(getattr(flow.error, "msg", "") or "upstream error")[:200]
+    start = flow.request.timestamp_start
+    end = getattr(flow.error, "timestamp", None)
+    if start and end:
+        rec["duration_ms"] = int((end - start) * 1000)
+    _log_once(flow, rec)

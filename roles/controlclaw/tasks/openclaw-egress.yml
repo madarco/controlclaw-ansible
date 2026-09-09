@@ -34,6 +34,11 @@
 # Narrowly-scoped privileged CA installer: copies a FIXED box-owned path into the trust store and
 # runs update-ca-certificates. The vm-agent writes the verified cert to that fixed path, then runs
 # `sudo /usr/local/bin/cc-install-ca`. Bounds the mechanism; the trust check is the signature/pin.
+#
+# Two processes do not read the system store: OpenClaw (Node needs NODE_EXTRA_CA_CERTS) and Caddy
+# (Go loads the root pool once per process). The installer therefore also drops a systemd
+# override for OpenClaw and restarts both if they are running, so every process on the box trusts
+# the proxy from the first boot on, not from the second ansible run.
 - name: Deploy cc-install-ca (root-owned, fixed source/dest)
   ansible.builtin.copy:
     dest: /usr/local/bin/cc-install-ca
@@ -46,6 +51,11 @@
       install -m 0644 /opt/controlclaw/keys/mitm-ca.crt \
         /usr/local/share/ca-certificates/controlclaw-mitm.crt
       update-ca-certificates
+      mkdir -p /etc/systemd/system/openclaw.service.d
+      printf '[Service]\nEnvironment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/controlclaw-mitm.crt\n' \
+        > /etc/systemd/system/openclaw.service.d/mitm-ca.conf
+      systemctl daemon-reload
+      systemctl try-restart openclaw.service caddy.service || true
 
 # --- Transparent egress via redsocks (app-agnostic; replaces HTTP_PROXY env) ---
 # All HTTP(S) is captured at the kernel level by an nftables REDIRECT → local redsocks, which opens
