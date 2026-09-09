@@ -35,11 +35,35 @@
     - { path: "{{ controlclaw_home }}/.openclaw", mode: '0755' }
     - { path: "{{ controlclaw_home }}/.openclaw/credentials", mode: '0700' }
 
+# `npm install -g openclaw@latest` costs ~48s even when the package is already current, because it
+# re-resolves and re-verifies 300+ packages. That made it the most expensive task on a box booted
+# from the base image, which is precisely the one thing the image was supposed to make free.
+# Compare versions first: one registry query (~1s) against the installed binary.
+- name: Check the installed OpenClaw version
+  ansible.builtin.command:
+    cmd: openclaw --version
+  register: openclaw_installed_version
+  changed_when: false
+  failed_when: false
+
+- name: Check the latest published OpenClaw version
+  ansible.builtin.command:
+    cmd: npm view openclaw version
+  register: openclaw_latest_version
+  changed_when: false
+  failed_when: false
+
+# Install when the versions differ, when either lookup failed (no binary yet, or the registry is
+# unreachable and we would rather try than silently skip), or when the box has no openclaw at all.
 - name: Install OpenClaw globally from npm
   ansible.builtin.command:
     cmd: npm install -g openclaw@latest
   register: openclaw_npm_install
-  changed_when: "'up to date' not in openclaw_npm_install.stdout"
+  when: >-
+    openclaw_installed_version.rc != 0 or
+    openclaw_latest_version.rc != 0 or
+    openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default(''))
+  changed_when: openclaw_npm_install.changed
 
 # The plan and the agent-https doc both assume /usr/bin/openclaw. NodeSource sets npm's prefix
 # to /usr so that holds, but assert it rather than baking an unverified path into ExecStart.
