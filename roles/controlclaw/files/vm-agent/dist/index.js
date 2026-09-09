@@ -1231,7 +1231,7 @@ var GatewayClient = class {
 import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync8, renameSync, writeFileSync as writeFileSync4 } from "fs";
 import { dirname } from "path";
 var PAGE_LIMIT = 500;
-var MAX_PAGES = 10;
+var MAX_PAGES = 40;
 var AFTER_SLACK_MS = 6e4;
 var MIN_BACKOFF_MS = 5e3;
 var MAX_BACKOFF_MS = 6e4;
@@ -1240,19 +1240,25 @@ function mapAuditEvent(ev) {
   if (typeof ev.sequence !== "number" || typeof ev.eventId !== "string" || typeof ev.occurredAt !== "number") return null;
   if (ev.kind === "tool_action" && !ev.toolCallId) return null;
   if (ev.kind === "agent_run" && !ev.runId) return null;
+  const cut = (v, max) => v ? v.slice(0, max) : void 0;
   const rec = {
     source: ev.kind,
-    event_id: ev.eventId,
+    event_id: ev.eventId.slice(0, 64),
     sequence: ev.sequence,
     occurred_at: ev.occurredAt,
     status: ev.status ?? "unknown",
-    action: ev.action ?? ""
+    action: (ev.action ?? "").slice(0, 64)
   };
-  if (ev.toolName) rec.tool_name = ev.toolName;
-  if (ev.toolCallId) rec.tool_call_id = ev.toolCallId;
-  if (ev.runId) rec.run_id = ev.runId;
-  if (ev.sessionKey) rec.session_key = ev.sessionKey;
-  if (ev.agentId) rec.agent_id = ev.agentId;
+  const toolName = cut(ev.toolName, 120);
+  const toolCallId = cut(ev.toolCallId, 200);
+  const runId = cut(ev.runId, 128);
+  const sessionKey = cut(ev.sessionKey, 200);
+  const agentId = cut(ev.agentId, 64);
+  if (toolName) rec.tool_name = toolName;
+  if (toolCallId) rec.tool_call_id = toolCallId;
+  if (runId) rec.run_id = runId;
+  if (sessionKey) rec.session_key = sessionKey;
+  if (agentId) rec.agent_id = agentId;
   return rec;
 }
 var AuditShipper = class {
@@ -1341,6 +1347,7 @@ var AuditShipper = class {
     const out = [];
     const after = Math.max(0, this.cursor.occurredAt - AFTER_SLACK_MS);
     let cursor;
+    let reachedOld = false;
     for (let page = 0; page < MAX_PAGES; page++) {
       const res = await this.opts.client.call("audit.activity.list", {
         after,
@@ -1348,7 +1355,6 @@ var AuditShipper = class {
         ...cursor ? { cursor } : {}
       });
       const events = res.events ?? [];
-      let reachedOld = false;
       for (const ev of events) {
         if (typeof ev.sequence !== "number") continue;
         if (ev.sequence <= this.cursor.sequence) {
@@ -1359,6 +1365,10 @@ var AuditShipper = class {
       }
       if (reachedOld || !res.nextCursor || events.length < PAGE_LIMIT) break;
       cursor = res.nextCursor;
+    }
+    if (!reachedOld && out.length >= MAX_PAGES * PAGE_LIMIT) {
+      const oldest = Math.min(...out.map((e) => e.sequence));
+      this.log(`backlog larger than ${out.length} events; ledger entries below sequence ${oldest} are not shipped`);
     }
     return out;
   }
@@ -1394,11 +1404,10 @@ var APPROVAL_FAMILIES = {
   openclaw: "system"
 };
 var TITLE_MAX = 200;
-var LIST_METHODS = [
-  ["exec", "exec.approval.list"],
-  ["plugin", "plugin.approval.list"],
-  ["openclaw", "openclaw.approval.list"]
-];
+var LIST_METHODS = Object.keys(APPROVAL_FAMILIES).map((family) => [
+  family,
+  `${family}.approval.list`
+]);
 var CONTROL_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f]/g;
 function sanitizeTitle(text) {
   const flat = redact(text).replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
@@ -1524,27 +1533,32 @@ var ApprovalsBridge = class {
   async onRequested(kind, p) {
     const id = p.id;
     if (!id || this.tracked.has(id)) return;
-    const tracked = {
+    this.tracked.set(id, {
       kind,
       approvalKind: p.approvalKind ?? (kind === "system" ? "openclaw" : kind),
+      payload: p,
       expiresAt: typeof p.expiresAtMs === "number" ? p.expiresAtMs : null,
+      raised: false,
       done: false,
       resolvedByUs: false
-    };
-    this.tracked.set(id, tracked);
+    });
+    await this.raise(id);
+  }
+  /** POST the approval to the control plane; on failure tick() tries again. */
+  async raise(id) {
+    const t = this.tracked.get(id);
+    if (!t || t.raised || t.done) return;
     const body = {
       permission_id: `oc:${id}`,
-      kind,
-      title: summaryOf(kind, p),
-      detail: detailOf(p),
-      expires_at: tracked.expiresAt ? new Date(tracked.expiresAt).toISOString() : null
+      kind: t.kind,
+      title: summaryOf(t.kind, t.payload),
+      detail: detailOf(t.payload),
+      expires_at: t.expiresAt ? new Date(t.expiresAt).toISOString() : null
     };
     const res = await this.post(body);
-    if (!res) {
-      this.tracked.delete(id);
-      return;
-    }
-    this.log(`raised ${kind} approval ${id} \u2192 ${res.status}`);
+    if (!res) return;
+    t.raised = true;
+    this.log(`raised ${t.kind} approval ${id} \u2192 ${res.status}`);
     await this.applyStatus(id, res.status);
   }
   async onResolved(p) {
@@ -1571,7 +1585,11 @@ var ApprovalsBridge = class {
         }
         if (t.expiresAt && this.now() > t.expiresAt + 6e4) {
           t.done = true;
-          await this.postResolution(id, "expired");
+          if (t.raised) await this.postResolution(id, "expired");
+          continue;
+        }
+        if (!t.raised) {
+          await this.raise(id);
           continue;
         }
         const status = await this.getStatus(id);
@@ -1591,10 +1609,10 @@ var ApprovalsBridge = class {
       t.done = true;
       return;
     } else return;
-    t.done = true;
-    t.resolvedByUs = true;
     try {
       await this.opts.client.call("approval.resolve", { id, kind: t.approvalKind, decision });
+      t.done = true;
+      t.resolvedByUs = true;
       this.log(`${id}: ${decision}`);
     } catch (err) {
       this.log(`approval.resolve ${id} failed: ${err.message}`);
@@ -1632,6 +1650,7 @@ var ApprovalsBridge = class {
     }
   }
   async postResolution(id, resolution) {
+    if (!this.tracked.get(id)?.raised) return;
     await this.post({ permission_id: `oc:${id}`, resolution, resolved_by: "openclaw" });
   }
 };
