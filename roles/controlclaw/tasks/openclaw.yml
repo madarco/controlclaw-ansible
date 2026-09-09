@@ -132,7 +132,7 @@
          (vm_hostname is not defined or (
            openclaw_gateway_current.publicOrigin | default('') == 'https://' ~ vm_hostname and
            openclaw_gateway_current.trustedProxies | default([]) == ['127.0.0.1'] and
-           openclaw_gateway_current.controlUi.allowedOrigins | default([]) == ['https://' ~ vm_hostname)) }}
+           openclaw_gateway_current.controlUi.allowedOrigins | default([]) == ['https://' ~ vm_hostname])) }}
   vars:
     openclaw_gateway_current: >-
       {{ (openclaw_config_raw.content | default('') | b64decode | from_json).gateway
