@@ -868,7 +868,7 @@ async function readCliSnapshot(lines) {
     const mapped = mapCliRecord(line);
     if (mapped) out.push(mapped);
   }
-  return { lines: out, warning: error && out.length === 0 ? `openclaw logs: ${error}` : null };
+  return { lines: out, warning: error && out.length === 0 ? redact(`openclaw logs: ${error}`) : null };
 }
 function mapJournalRecord(raw) {
   let rec;
