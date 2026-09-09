@@ -7,15 +7,22 @@
 # The install half runs always (so the base image carries the package); the config half needs
 # vm_hostname, which the control plane passes per box.
 
-- name: Install Caddy apt repository key
+- name: Download the Caddy apt repository key
   ansible.builtin.get_url:
     url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
     dest: /usr/share/keyrings/caddy-stable-archive-keyring.asc
     mode: '0644'
 
+# Same keyring path and list name as the official install instructions, so a box that was
+# set up by hand converges instead of conflicting on Signed-By.
+- name: Dearmor the Caddy apt repository key
+  ansible.builtin.command:
+    cmd: gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /usr/share/keyrings/caddy-stable-archive-keyring.asc
+    creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
 - name: Add Caddy apt repository
   ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.asc] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
+    repo: "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
     filename: caddy-stable
     state: present
 
