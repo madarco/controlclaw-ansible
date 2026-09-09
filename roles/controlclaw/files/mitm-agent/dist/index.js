@@ -2373,6 +2373,119 @@ function makeBoxTokenSigner(keysDir) {
   };
 }
 
+// src/firewall-control.ts
+import { execSync } from "child_process";
+var ACTIONS = /* @__PURE__ */ new Set(["start", "stop", "restart"]);
+var IS_ACTIVE_TIMEOUT_MS = 5e3;
+function defaultExec(cmd, timeoutMs) {
+  return execSync(cmd, { encoding: "utf-8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] });
+}
+var FirewallControl = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.service = opts.service ?? "controlclaw-mitmproxy";
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.exec = opts.execImpl ?? defaultExec;
+    this.actionTimeoutMs = opts.actionTimeoutMs ?? 3e4;
+    this.log = opts.log ?? ((line) => console.log(line));
+  }
+  inFlight = false;
+  pendingResult;
+  backoffMs = 0;
+  nextAttemptAt = 0;
+  down = false;
+  startedAt = Date.now();
+  service;
+  fetchImpl;
+  exec;
+  actionTimeoutMs;
+  log;
+  /** `systemctl is-active` exits non-zero when the unit is not active; the state is still on stdout. */
+  proxyStatus() {
+    let out;
+    try {
+      out = this.exec(`systemctl is-active ${this.service}`, IS_ACTIVE_TIMEOUT_MS);
+    } catch (err) {
+      const e = err;
+      out = e.stdout ? String(e.stdout) : "";
+    }
+    const s = out.trim();
+    if (s === "active" || s === "activating" || s === "reloading") return "active";
+    if (s === "failed") return "failed";
+    return "inactive";
+  }
+  /** One heartbeat; runs a returned command and beats again at once to report it. */
+  async tick() {
+    if (this.inFlight) return;
+    if (Date.now() < this.nextAttemptAt) return;
+    this.inFlight = true;
+    try {
+      const command = await this.beat();
+      if (command) {
+        this.pendingResult = this.run(command.id, command.action);
+        await this.beat();
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+  async beat() {
+    const body = {
+      proxy: this.proxyStatus(),
+      agent_version: this.opts.agentVersion,
+      uptime_s: Math.round((Date.now() - this.startedAt) / 1e3),
+      ...this.pendingResult ? { result: this.pendingResult } : {}
+    };
+    let res;
+    try {
+      res = await this.fetchImpl(this.opts.firewallUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      this.fail(`unreachable (${err.message})`);
+      return null;
+    }
+    if (!res.ok) {
+      this.fail(`HTTP ${res.status}`);
+      return null;
+    }
+    this.pendingResult = void 0;
+    if (this.down) {
+      this.log("[firewall] control channel back");
+      this.down = false;
+    }
+    this.backoffMs = 0;
+    const data = await res.json().catch(() => ({}));
+    const c = data.command;
+    if (!c || typeof c.id !== "string" || typeof c.action !== "string" || !ACTIONS.has(c.action)) return null;
+    return { id: c.id, action: c.action };
+  }
+  run(id, action) {
+    this.log(`[firewall] ${action} ${this.service} (command ${id})`);
+    try {
+      this.exec(`sudo systemctl ${action} ${this.service}`, this.actionTimeoutMs);
+      const status = this.proxyStatus();
+      const ok = action === "stop" ? status !== "active" : status === "active";
+      return { command_id: id, ok, status, message: ok ? "" : `service is ${status} after ${action}` };
+    } catch (err) {
+      const e = err;
+      const message2 = (e.stderr ? String(e.stderr) : e.message ?? "exec failed").trim().slice(0, 500);
+      this.log(`[firewall] ${action} failed: ${message2}`);
+      return { command_id: id, ok: false, status: this.proxyStatus(), message: message2 };
+    }
+  }
+  fail(reason) {
+    this.backoffMs = Math.min(this.backoffMs ? this.backoffMs * 2 : 5e3, 6e4);
+    this.nextAttemptAt = Date.now() + this.backoffMs;
+    if (!this.down) {
+      this.log(`[firewall] control channel down: ${reason}; retrying`);
+      this.down = true;
+    }
+  }
+};
+
 // src/sync.ts
 import { writeFileSync as writeFileSync4, mkdirSync as mkdirSync3, renameSync } from "fs";
 import { join } from "path";
@@ -2517,10 +2630,20 @@ var ActivityShipper = class {
     renameSync2(tmp, this.opts.cursorPath);
   }
   /** One pass: ship everything unshipped, one batch at a time, until caught up or an error. */
+  inFlight = false;
   async tick() {
     const total = { read: 0, accepted: 0, duplicates: 0, skipped: 0 };
+    if (this.inFlight) return total;
     if (Date.now() < this.nextAttemptAt) return total;
     if (!existsSync5(this.opts.logPath)) return total;
+    this.inFlight = true;
+    try {
+      return await this.tickInner(total);
+    } finally {
+      this.inFlight = false;
+    }
+  }
+  async tickInner(total) {
     const live = statSync(this.opts.logPath);
     const liveInode = Number(live.ino);
     if (this.cursor.inode && this.cursor.inode !== liveInode) {
@@ -2709,6 +2832,9 @@ var ACTIVITY_URL = process.env.ACTIVITY_URL ?? "";
 var TRAFFIC_LOG_PATH = process.env.TRAFFIC_LOG_PATH ?? "";
 var ACTIVITY_CURSOR_PATH = process.env.ACTIVITY_CURSOR_PATH ?? `${TRAFFIC_LOG_PATH}.cursor`;
 var ACTIVITY_POLL_MS = parseInt(process.env.ACTIVITY_POLL_MS ?? "5000", 10);
+var FIREWALL_URL = process.env.FIREWALL_URL ?? "";
+var FIREWALL_POLL_MS = parseInt(process.env.FIREWALL_POLL_MS ?? "5000", 10);
+var AGENT_VERSION = process.env.MITM_AGENT_VERSION ?? "0.1.0";
 var SHIP_ONCE = process.env.SHIP_ONCE === "1";
 var ORG_ID = process.env.ORG_ID ?? "";
 var BOX_ID = process.env.BOX_ID ?? "";
@@ -2722,7 +2848,7 @@ function die(msg) {
   console.error(`[mitm-agent] ${msg}`);
   process.exit(1);
 }
-var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http");
+var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http") || FIREWALL_URL.startsWith("http");
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 async function runSync(boxKey) {
   const store = makeStoreClient(STORE_URL, getToken);
@@ -2853,6 +2979,12 @@ async function main() {
     if (shipper) {
       console.log("[mitm-agent] activity shipper enabled");
       setInterval(() => void shipper.tick().catch((e) => console.error("[activity] tick:", e.message)), ACTIVITY_POLL_MS);
+    }
+    if (FIREWALL_URL && getToken) {
+      const control = new FirewallControl({ firewallUrl: FIREWALL_URL, getToken, agentVersion: AGENT_VERSION });
+      console.log("[mitm-agent] firewall control enabled");
+      setInterval(() => void control.tick().catch((e) => console.error("[firewall] tick:", e.message)), FIREWALL_POLL_MS);
+      void control.tick().catch((e) => console.error("[firewall] tick:", e.message));
     }
     void reportReady();
   });

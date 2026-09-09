@@ -198,6 +198,24 @@
     enabled: true
   when: not ci_test
 
+# --- sudoers: the console's Firewall page start/stop/restart ---
+# The mitm-agent runs as the controlclaw user and shells out to `sudo systemctl <action>
+# controlclaw-mitmproxy` for the one command the control plane queues for it
+# (packages/mitm-agent/src/firewall-control.ts). The unit name is the contract between
+# these three lines and that module's SERVICE default. `is-active` needs no sudo.
+- name: Allow the mitm-agent to control the proxy service
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-mitm
+    mode: '0440'
+    owner: root
+    group: root
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      # ControlClaw mitm box: proxy service control for the Firewall page, nothing else.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start controlclaw-mitmproxy
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop controlclaw-mitmproxy
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart controlclaw-mitmproxy
+
 # --- systemd services ---
 - name: Create controlclaw-mitmproxy service
   ansible.builtin.copy:
@@ -279,6 +297,8 @@
       Environment=ACTIVITY_URL={{ controlclaw_url }}/api/vm-agent/activity
       Environment=TRAFFIC_LOG_PATH=/opt/controlclaw/mitm/logs/traffic.jsonl
       Environment=ACTIVITY_CURSOR_PATH=/opt/controlclaw/mitm/logs/activity.cursor
+      # Firewall control channel: heartbeat + the console's start/stop/restart of the proxy.
+      Environment=FIREWALL_URL={{ controlclaw_url }}/api/vm-agent/firewall
       ExecStart=/usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
       Restart=always
       RestartSec=10
