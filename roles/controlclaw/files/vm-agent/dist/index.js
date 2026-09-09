@@ -128,27 +128,79 @@ function json(res, status, body, extraHeaders = {}) {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders });
   res.end(JSON.stringify(body));
 }
-var PAGE_STYLE = "font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#1f2937";
-var LOGIN_PAGE = `<!doctype html><meta charset="utf-8"><title>Opening your agent\u2026</title>
-<body style="${PAGE_STYLE}"><p id="m">Signing you in\u2026</p>
-<script>
+var PAGE_CSS = `
+:root{--bg:#f7f6fb;--card:#fff;--ink:#17162b;--ink2:#6b6a80;--line:#e6e4f0;--brand:#6d4aff;--brand-soft:#efeaff;--ok:#1a9c5b;--bad:#d64545}
+@media(prefers-color-scheme:dark){:root{--bg:#0f0e17;--card:#17162b;--ink:#f3f2fa;--ink2:#a09fb5;--line:#2a2940;--brand:#9b82ff;--brand-soft:#2a2350;--ok:#3ccf82;--bad:#ff7070}}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:grid;place-items:center;padding:1.5rem}
+.card{width:100%;max-width:26rem;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:2rem;box-shadow:0 20px 50px -30px rgba(23,22,43,.35)}
+.mark{width:44px;height:44px;border-radius:12px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;margin-bottom:1.25rem}
+h1{font-size:1.2rem;margin:0 0 .25rem;letter-spacing:-.01em}
+.host{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink2);margin:0 0 1.5rem;word-break:break-all}
+.steps{list-style:none;margin:0;padding:0;display:grid;gap:.6rem}
+.steps li{display:flex;align-items:center;gap:.7rem;color:var(--ink2);transition:color .2s}
+.steps li.active{color:var(--ink)}.steps li.done{color:var(--ink)}
+.dot{width:20px;height:20px;border-radius:50%;border:2px solid var(--line);display:grid;place-items:center;flex:none;transition:all .2s}
+.active .dot{border-color:var(--brand);border-top-color:transparent;animation:spin .8s linear infinite}
+.done .dot{border-color:var(--ok);background:var(--ok)}
+.done .dot::after{content:"";width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.err{display:none;margin-top:1.25rem;padding:.9rem 1rem;border-radius:12px;background:color-mix(in srgb,var(--bad) 10%,transparent);color:var(--bad);font-size:14px}
+.err.show{display:block}
+a.btn{display:inline-block;margin-top:1.25rem;padding:.55rem .9rem;border-radius:10px;background:var(--brand);color:#fff;text-decoration:none;font-weight:600;font-size:14px}
+p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink2)}
+.foot{margin-top:1.5rem;font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:.4rem}
+`;
+var MARK_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`;
+var CONSOLE_URL = "https://controlclaw.com/dashboard/agents";
+function shell(title, body, script = "") {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title><style>${PAGE_CSS}</style></head><body><main class="card"><div class="mark">${MARK_SVG}</div>${body}<div class="foot"><span style="width:6px;height:6px;border-radius:50%;background:var(--brand)"></span>Secured by ControlClaw</div></main>${script ? `<script>${script}</script>` : ""}</body></html>`;
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function loginPage(hostname) {
+  const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
+  const host = hostname ? escapeHtml(hostname) : "";
+  return shell(
+    `Opening ${agent}\u2026`,
+    `<h1 id="h">Opening ${agent}</h1><p class="host">${host}</p>
+<ol class="steps">
+  <li id="s1" class="active"><span class="dot"></span>Checking your ControlClaw pass</li>
+  <li id="s2"><span class="dot"></span>Pairing this browser with the agent</li>
+  <li id="s3"><span class="dot"></span>Loading OpenClaw</li>
+</ol>
+<div class="err" id="err"></div>
+<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>`,
+    `
 (async () => {
-  const m = document.getElementById('m');
+  const $ = (id) => document.getElementById(id);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const step = (n) => { for (let i = 1; i <= 3; i++) { const el = $('s' + i); el.className = i < n ? 'done' : i === n ? 'active' : ''; } };
+  const fail = (msg) => { $('h').textContent = 'Could not open the agent'; for (let i = 1; i <= 3; i++) $('s' + i).className = ''; $('err').textContent = msg; $('err').className = 'err show'; $('back').style.display = 'inline-block'; };
   const t = new URLSearchParams(location.hash.slice(1)).get('t');
   history.replaceState(null, '', location.pathname);
-  if (!t) { m.textContent = 'Open this agent from your ControlClaw console.'; return; }
+  if (!t) { fail('This page only works from the Open button in your ControlClaw console.'); return; }
+  const started = Date.now();
+  let d, ok;
   try {
-    const r = await fetch('/__cc/session', { method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) { m.textContent = d.error || 'This link has expired. Open the agent from your ControlClaw console again.'; return; }
-    location.replace(d.next || '/');
-  } catch (e) { m.textContent = 'Could not reach the agent. Try again from your ControlClaw console.'; }
-})();
-</script>`;
-var DENIED_PAGE = `<!doctype html><meta charset="utf-8"><title>ControlClaw</title>
-<body style="${PAGE_STYLE}"><h1 style="font-size:1.25rem">This agent is private</h1>
-<p>Open it from your ControlClaw console. Your session may have expired.</p>`;
+    const r = await fetch('/__cc/session', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
+    d = await r.json().catch(() => ({})); ok = r.ok;
+  } catch (e) { fail('Could not reach the agent. Try again from your ControlClaw console.'); return; }
+  if (!ok) { fail(d.error || 'This link has expired. Open the agent from your ControlClaw console again.'); return; }
+  await wait(Math.max(0, 500 - (Date.now() - started)));
+  step(2); await wait(450);
+  step(3); await wait(350);
+  location.replace(d.next || '/');
+})();`
+  );
+}
+var DENIED_PAGE = shell(
+  "This agent is private",
+  `<h1>This agent is private</h1>
+<p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Open again.</p>
+<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+);
 async function readJsonBody(req, limit = 8192) {
   return new Promise((resolve) => {
     let data = "";
@@ -203,7 +255,7 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/login" && req.method === "GET") {
-    html(res, 200, LOGIN_PAGE);
+    html(res, 200, loginPage(readKey("vm_hostname")));
     return;
   }
   if (pathname === "/__cc/verify" && req.method === "GET") {
