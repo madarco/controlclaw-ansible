@@ -1,6 +1,6 @@
 // src/index.ts
 import { createServer } from "http";
-import { readFileSync as readFileSync7 } from "fs";
+import { readFileSync as readFileSync8 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -657,12 +657,394 @@ function handleStatus(res) {
   });
 }
 
+// src/routes/logs.ts
+import { execFile as execFile2, spawn } from "child_process";
+import { closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "fs";
+import { join as join4 } from "path";
+
+// src/redact.ts
+import { readFileSync as readFileSync7 } from "fs";
+import { join as join3 } from "path";
+var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
+var MIN_SECRET_LENGTH = 8;
+var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
+var BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
+var secrets = [];
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+var secretRe = null;
+function loadRedactionSecrets(keysDir2) {
+  const found = [];
+  for (const name of SECRET_FILES) {
+    try {
+      const value = readFileSync7(join3(keysDir2, name), "utf-8").trim();
+      if (value.length >= MIN_SECRET_LENGTH) found.push(value);
+    } catch {
+    }
+  }
+  setRedactionSecrets(found);
+  return found.length;
+}
+function setRedactionSecrets(values) {
+  secrets = values.filter((v) => v.length >= MIN_SECRET_LENGTH);
+  secretRe = secrets.length ? new RegExp(secrets.map(escapeRegExp).join("|"), "g") : null;
+}
+function redact(text) {
+  let out = text;
+  if (secretRe) out = out.replace(secretRe, "[redacted]");
+  out = out.replace(PARAM_RE, (_m, k) => `${k}=[redacted]`);
+  out = out.replace(BEARER_RE, "Bearer [redacted]");
+  return out;
+}
+
+// src/routes/logs.ts
+var OPENCLAW_BIN = "/usr/bin/openclaw";
+var SERVICE2 = "openclaw";
+var SNAPSHOT_TIMEOUT_MS = 15e3;
+var CLI_TIMEOUT_MS = 1e4;
+var MAX_BYTES = "250000";
+var DEFAULT_LINES = 200;
+var MAX_LINES = 1e3;
+var PING_MS = 2e4;
+var SERVICE_POLL_MS = 5e3;
+var LOGS_STREAM_MAX_MS = 28e4;
+var JOURNAL_LINES = 200;
+var LOG_DIR = process.env.OPENCLAW_LOG_DIR ?? "/tmp/openclaw";
+var TAIL_BYTES = 512 * 1024;
+var FOLLOW_POLL_MS = 700;
+var FOLLOW_BACKLOG_LINES = 50;
+var CRASH_RE = /^(\s+at |\w*Error\b|node:|FATAL|Unhandled|ELIFECYCLE|Segmentation fault)/;
+function env() {
+  return { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" };
+}
+function run(cmd, args, timeout, maxBuffer = 4 * 1024 * 1024) {
+  return new Promise((resolve) => {
+    execFile2(cmd, args, { timeout, maxBuffer, env: env(), encoding: "utf-8" }, (err, stdout, stderr) => {
+      resolve({
+        stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
+        error: err ? String(stderr ?? "").trim().split("\n")[0] || err.message : null
+      });
+    });
+  });
+}
+function mapCliRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (rec.type === "log") {
+    return {
+      time: String(rec.time ?? ""),
+      level: String(rec.level ?? "info").toLowerCase(),
+      subsystem: String(rec.subsystem ?? "openclaw"),
+      message: redact(String(rec.message ?? ""))
+    };
+  }
+  if (rec.type === "notice") {
+    return { time: (/* @__PURE__ */ new Date()).toISOString(), level: "notice", subsystem: "openclaw", message: redact(String(rec.message ?? "")) };
+  }
+  return null;
+}
+function mapFileRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const meta = rec._meta ?? {};
+  if (typeof rec.message !== "string" || typeof rec.time !== "string") return null;
+  let subsystem = "openclaw";
+  const name = typeof meta.name === "string" ? meta.name : "";
+  if (name.startsWith("{")) {
+    try {
+      const ctx = JSON.parse(name);
+      const s = ctx.subsystem ?? ctx.module;
+      if (typeof s === "string" && s) subsystem = s;
+    } catch {
+    }
+  } else if (name) {
+    subsystem = name;
+  }
+  return {
+    time: rec.time,
+    level: String(meta.logLevelName ?? "info").toLowerCase(),
+    subsystem,
+    message: redact(rec.message)
+  };
+}
+function newestLogFile() {
+  try {
+    const candidates = readdirSync(LOG_DIR).filter((f) => f.startsWith("openclaw") && f.endsWith(".log"));
+    let best = null;
+    for (const f of candidates) {
+      const path = join4(LOG_DIR, f);
+      const mtime = statSync(path).mtimeMs;
+      if (!best || mtime > best.mtime) best = { path, mtime };
+    }
+    return best?.path ?? null;
+  } catch {
+    return null;
+  }
+}
+function readFileTail(lines) {
+  const path = newestLogFile();
+  if (!path) return null;
+  let fd = null;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString("utf-8");
+    if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+    const out = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      const mapped = mapFileRecord(line);
+      if (mapped) out.push(mapped);
+    }
+    return { path, size, lines: out.slice(-lines) };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+function followFile(start, onLine) {
+  let path = start.path;
+  let offset = start.size;
+  let partial = "";
+  const tick = () => {
+    try {
+      const newest = newestLogFile();
+      if (newest && newest !== path) {
+        path = newest;
+        offset = 0;
+        partial = "";
+      }
+      const size = statSync(path).size;
+      if (size < offset) {
+        offset = 0;
+        partial = "";
+      }
+      if (size === offset) return;
+      const fd = openSync(path, "r");
+      try {
+        const buf = Buffer.alloc(Math.min(size - offset, TAIL_BYTES));
+        const n = readSync(fd, buf, 0, buf.length, offset);
+        offset += n;
+        partial += buf.toString("utf-8", 0, n);
+      } finally {
+        closeSync(fd);
+      }
+      let idx;
+      while ((idx = partial.indexOf("\n")) >= 0) {
+        const line = partial.slice(0, idx);
+        partial = partial.slice(idx + 1);
+        if (!line.trim()) continue;
+        const mapped = mapFileRecord(line);
+        if (mapped) onLine(mapped);
+      }
+    } catch {
+    }
+  };
+  const timer = setInterval(tick, FOLLOW_POLL_MS);
+  return () => clearInterval(timer);
+}
+async function readCliSnapshot(lines) {
+  const { stdout, error } = await run(
+    OPENCLAW_BIN,
+    ["logs", "--json", "--limit", String(lines), "--max-bytes", MAX_BYTES, "--timeout", String(CLI_TIMEOUT_MS)],
+    SNAPSHOT_TIMEOUT_MS
+  );
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const mapped = mapCliRecord(line);
+    if (mapped) out.push(mapped);
+  }
+  return { lines: out, warning: error && out.length === 0 ? `openclaw logs: ${error}` : null };
+}
+function mapJournalRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const message = typeof rec.MESSAGE === "string" ? rec.MESSAGE : null;
+  if (!message) return null;
+  const ts = Number(rec.__REALTIME_TIMESTAMP);
+  const time = Number.isFinite(ts) ? new Date(ts / 1e3).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
+  if (rec.SYSLOG_IDENTIFIER === "systemd") {
+    return { time, level: "unit", subsystem: "systemd", message: redact(message) };
+  }
+  if (CRASH_RE.test(message)) {
+    return { time, level: "error", subsystem: "stderr", message: redact(message) };
+  }
+  return null;
+}
+async function readJournal() {
+  const { stdout } = await run(
+    "sudo",
+    ["journalctl", "-u", SERVICE2, "-n", String(JOURNAL_LINES), "-o", "json", "--no-pager"],
+    SNAPSHOT_TIMEOUT_MS
+  );
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const mapped = mapJournalRecord(line);
+    if (mapped) out.push(mapped);
+  }
+  return out;
+}
+function parseServiceShow(stdout) {
+  const kv = {};
+  for (const line of stdout.split("\n")) {
+    const i = line.indexOf("=");
+    if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1).trim();
+  }
+  const sinceRaw = kv.ExecMainStartTimestamp;
+  const since = sinceRaw && !Number.isNaN(Date.parse(sinceRaw)) ? new Date(sinceRaw).toISOString() : null;
+  const exit = Number(kv.ExecMainStatus);
+  return {
+    active: kv.ActiveState ?? "unknown",
+    subState: kv.SubState ?? "unknown",
+    result: kv.Result ?? "unknown",
+    exitStatus: Number.isFinite(exit) ? exit : null,
+    since,
+    restarts: Number(kv.NRestarts) || 0
+  };
+}
+async function readServiceState() {
+  const { stdout } = await run(
+    "systemctl",
+    ["show", SERVICE2, "-p", "ActiveState,SubState,Result,ExecMainStatus,ExecMainStartTimestamp,NRestarts"],
+    5e3
+  );
+  return parseServiceShow(stdout);
+}
+function parseLines(url) {
+  const n = parseInt(url.searchParams.get("lines") ?? "", 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_LINES;
+  return Math.min(n, MAX_LINES);
+}
+async function handleLogs(url, res) {
+  const lines = parseLines(url);
+  const fromFile = readFileTail(lines);
+  const [gateway, journal, service] = await Promise.all([
+    fromFile ? Promise.resolve({ lines: fromFile.lines, warning: null }) : readCliSnapshot(lines),
+    readJournal(),
+    readServiceState()
+  ]);
+  const ts = (l) => Date.parse(l.time) || 0;
+  const merged = [...gateway.lines, ...journal].sort((a, b) => ts(a) - ts(b)).slice(-lines);
+  res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify({ service, lines: merged, ...gateway.warning ? { warning: gateway.warning } : {} }));
+}
+async function handleLogStream(req, res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.flushHeaders?.();
+  let closed = false;
+  const write = (chunk) => {
+    if (closed) return;
+    try {
+      res.write(chunk);
+    } catch {
+      cleanup();
+    }
+  };
+  const event = (name, data) => write(`${name ? `event: ${name}
+` : ""}data: ${JSON.stringify(data)}
+
+`);
+  const ping = setInterval(() => write(": ping\n\n"), PING_MS);
+  const stop = setTimeout(() => {
+    event("end", { reason: "max-duration" });
+    cleanup();
+  }, LOGS_STREAM_MAX_MS);
+  let stopFollow = null;
+  function cleanup() {
+    if (closed) return;
+    closed = true;
+    clearInterval(ping);
+    clearInterval(servicePoll);
+    clearTimeout(stop);
+    stopFollow?.();
+    try {
+      res.end();
+    } catch {
+    }
+  }
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  let lastService = "";
+  const pushService = async () => {
+    const service = await readServiceState();
+    const key = JSON.stringify(service);
+    if (key !== lastService) {
+      lastService = key;
+      event("service", service);
+    }
+  };
+  void pushService();
+  const servicePoll = setInterval(() => void pushService(), SERVICE_POLL_MS);
+  const tail = readFileTail(FOLLOW_BACKLOG_LINES);
+  if (tail) {
+    for (const line of tail.lines) event(null, line);
+    stopFollow = followFile(tail, (line) => event(null, line));
+  } else {
+    stopFollow = followCli((line) => event(null, line), () => {
+      event("end", { reason: "cli-exit" });
+      cleanup();
+    });
+  }
+}
+function followCli(onLine, onExit) {
+  const child = spawn(OPENCLAW_BIN, ["logs", "--json", "--follow", "--limit", String(FOLLOW_BACKLOG_LINES), "--max-bytes", MAX_BYTES], {
+    env: env(),
+    stdio: ["ignore", "pipe", "ignore"],
+    detached: true
+  });
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk.toString("utf-8");
+    let idx;
+    while ((idx = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (!line.trim()) continue;
+      const mapped = mapCliRecord(line);
+      if (mapped) onLine(mapped);
+    }
+  });
+  child.on("exit", onExit);
+  return () => {
+    if (child.exitCode !== null || child.pid === void 0) return;
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      child.kill("SIGTERM");
+    }
+  };
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
 var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 try {
-  const saasPublicKey2 = readFileSync7(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync8(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -670,7 +1052,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync7(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync8(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -680,6 +1062,7 @@ try {
   console.error("Failed to prepare the session secret:", err);
   process.exit(1);
 }
+console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redaction`);
 async function bootstrap() {
   ensureVmKeypair(KEYS_DIR2);
   await registerPublicKey(KEYS_DIR2);
@@ -720,6 +1103,14 @@ var server = createServer(async (req, res) => {
   }
   if (url.pathname === "/status" && req.method === "GET") {
     handleStatus(res);
+    return;
+  }
+  if (url.pathname === "/logs" && req.method === "GET") {
+    await handleLogs(url, res);
+    return;
+  }
+  if (url.pathname === "/logs/stream" && req.method === "GET") {
+    await handleLogStream(req, res);
     return;
   }
   res.writeHead(404, { "Content-Type": "application/json" });

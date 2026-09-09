@@ -9,7 +9,10 @@
     # Control plane -> vm-agent (bearer JWT checked by the vm-agent itself)
     handle /__cc/agent/* {
         uri strip_prefix /__cc/agent
-        reverse_proxy 127.0.0.1:3100
+        reverse_proxy 127.0.0.1:3100 {
+            # /logs/stream is SSE: forward every write as it happens.
+            flush_interval -1
+        }
     }
 
     # ControlClaw login shim (login page, session exchange, logout)
