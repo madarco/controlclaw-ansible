@@ -1387,7 +1387,6 @@ var APPROVAL_FAMILIES = {
   openclaw: "system"
 };
 var TITLE_MAX = 200;
-var OWN_RESOLVER = "gateway-client";
 var LIST_METHODS = [
   ["exec", "exec.approval.list"],
   ["plugin", "plugin.approval.list"],
@@ -1521,7 +1520,8 @@ var ApprovalsBridge = class {
       kind,
       approvalKind: p.approvalKind ?? (kind === "system" ? "openclaw" : kind),
       expiresAt: typeof p.expiresAtMs === "number" ? p.expiresAtMs : null,
-      done: false
+      done: false,
+      resolvedByUs: false
     };
     this.tracked.set(id, tracked);
     const body = {
@@ -1543,9 +1543,10 @@ var ApprovalsBridge = class {
     const id = p.id;
     if (!id) return;
     const t = this.tracked.get(id);
-    if (!t || t.done) return;
+    if (!t) return;
+    if (t.done && t.resolvedByUs) return;
+    if (t.done) return;
     t.done = true;
-    if (p.resolvedBy === OWN_RESOLVER) return;
     const resolution = resolutionOf(p);
     this.log(`${id} settled on the gateway: ${resolution}`);
     await this.postResolution(id, resolution);
@@ -1583,6 +1584,7 @@ var ApprovalsBridge = class {
       return;
     } else return;
     t.done = true;
+    t.resolvedByUs = true;
     try {
       await this.opts.client.call("approval.resolve", { id, kind: t.approvalKind, decision });
       this.log(`${id}: ${decision}`);
