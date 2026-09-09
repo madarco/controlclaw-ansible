@@ -1304,7 +1304,14 @@ var AuditShipper = class {
     }
   }
   async tickInner(total) {
-    const fresh = await this.fetchNew();
+    let fresh;
+    try {
+      fresh = await this.fetchNew();
+    } catch (err) {
+      this.log(`ledger read failed: ${err.message}`);
+      this.nextAttemptAt = this.now() + MIN_BACKOFF_MS;
+      return total;
+    }
     total.read = fresh.length;
     if (fresh.length === 0) return total;
     fresh.sort((a, b) => a.sequence - b.sequence);
@@ -1510,6 +1517,7 @@ var ApprovalsBridge = class {
       } catch {
       }
       t.done = true;
+      this.log(`${id} gone from the gateway: ${resolution}`);
       await this.postResolution(id, resolution);
     }
   }
@@ -1689,8 +1697,9 @@ function startGatewayBridge() {
   const approvals = new ApprovalsBridge({ client, permissionUrl: `${base}/api/vm-agent/permission`, getToken });
   approvals.start();
   client.start();
-  setInterval(() => void audit.tick().catch((err) => console.error("[audit] tick failed:", err)), AUDIT_POLL_MS);
-  setInterval(() => void approvals.tick().catch((err) => console.error("[approvals] tick failed:", err)), APPROVAL_POLL_MS);
+  const oneLine = (tag) => (err) => console.error(`${tag} tick failed: ${err.message}`);
+  setInterval(() => void audit.tick().catch(oneLine("[audit]")), AUDIT_POLL_MS);
+  setInterval(() => void approvals.tick().catch(oneLine("[approvals]")), APPROVAL_POLL_MS);
 }
 var server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
