@@ -38,12 +38,12 @@ frontend https_in
     tcp-request content reject unless { var(txn.box) -m found }
     tcp-request content set-dst var(txn.box)
     tcp-request content accept
+    timeout client-fin 30s
     default_backend boxes
 
 backend boxes
     mode tcp
     timeout tunnel 1h
-    timeout client-fin 30s
     # 0.0.0.0 = use the destination set by set-dst; the port stays 443.
     server box 0.0.0.0:443
 
