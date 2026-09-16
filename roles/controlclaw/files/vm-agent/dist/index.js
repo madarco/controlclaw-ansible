@@ -43,7 +43,7 @@ async function verifyLoginToken(token, vmId) {
   if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
   return payload;
 }
-async function verifyMitmRequest(req) {
+async function verifyMitmRequest(req, purpose = "channels") {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
   if (!mitmPinnedKey && mitmPinnedKeyLoader) mitmPinnedKey = mitmPinnedKeyLoader();
@@ -52,7 +52,7 @@ async function verifyMitmRequest(req) {
     const key = await importSPKI(mitmPinnedKey, "EdDSA");
     const { payload } = await jwtVerify(authHeader.slice(7), key, { algorithms: ["EdDSA"] });
     const p = payload;
-    if (p.purpose !== "channels" || typeof p.vmId !== "string") return null;
+    if (p.purpose !== purpose || typeof p.vmId !== "string") return null;
     if (ownVmId && p.vmId !== ownVmId) return null;
     return { vmId: p.vmId, iss: typeof p.iss === "string" ? p.iss : "" };
   } catch {
@@ -1693,9 +1693,32 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { execFile as execFile3 } from "child_process";
 import { readFileSync as readFileSync9 } from "fs";
 import { randomUUID } from "crypto";
+
+// src/exec.ts
+import { execFile as execFile3 } from "child_process";
+var defaultExec = (file, args, timeoutMs, stdin) => new Promise((resolve, reject) => {
+  const child = execFile3(file, args, { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } }, (err, stdout, stderr) => {
+    if (err) {
+      const e = err;
+      e.stdout = String(stdout ?? "");
+      e.stderr = String(stderr ?? "");
+      reject(e);
+    } else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+  });
+  if (child.stdin) {
+    if (stdin !== void 0) child.stdin.end(stdin);
+    else child.stdin.end();
+  }
+});
+function execFailureLine(err) {
+  const e = err;
+  const text = (e.stderr || e.stdout || e.message || "").replace(/\x1b\[[0-9;]*m/g, "").trim();
+  return text.split("\n").filter((l) => l.trim()).pop() ?? "command failed";
+}
+
+// src/channels.ts
 var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
 var APPROVE_TIMEOUT_MS = 3e4;
 var LIST_TIMEOUT_MS = 2e4;
@@ -1703,18 +1726,6 @@ var PAIRINGS_CACHE_MS = 4e3;
 var WA_QR_TIMEOUT_MS = 12e4;
 var WA_QR_STALE_MS = 15e4;
 var WA_RESULT_TTL_MS = 10 * 6e4;
-function defaultExec(file, args, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    execFile3(file, args, { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } }, (err, stdout, stderr) => {
-      if (err) {
-        const e = err;
-        e.stdout = String(stdout ?? "");
-        e.stderr = String(stderr ?? "");
-        reject(e);
-      } else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
-    });
-  });
-}
 function bool(v) {
   return v === true;
 }
@@ -2016,6 +2027,250 @@ async function handleChannels(req, res, pathname, service) {
   }
 }
 
+// src/llm.ts
+var CLI_TIMEOUT_MS2 = 45e3;
+var MODELS_CACHE_MS = 3e4;
+function codexProviderBlock(value, modelIds) {
+  const ids = modelIds.length ? modelIds : ["gpt-5.6-sol"];
+  return {
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    api: "openai-chatgpt-responses",
+    auth: "token",
+    apiKey: value,
+    models: ids.map((id) => ({
+      id,
+      name: id,
+      reasoning: true,
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 4e5,
+      maxTokens: 128e3
+    }))
+  };
+}
+function str3(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function modelId(ref) {
+  return ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
+}
+var LlmService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.exec = opts.execImpl ?? defaultExec;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  exec;
+  log;
+  now;
+  modelsCache = /* @__PURE__ */ new Map();
+  gateway() {
+    const c = this.opts.client;
+    if (!c || !c.connected) throw new Error("OpenClaw is not running on this box");
+    return c;
+  }
+  bin() {
+    return this.opts.openclawBin ?? "/usr/bin/openclaw";
+  }
+  async config() {
+    const snapshot = await this.gateway().call("config.get", {}, 1e4);
+    const hash = str3(snapshot.hash);
+    if (!hash) throw new Error("OpenClaw returned no config hash");
+    const config = snapshot.parsed ?? snapshot.config ?? {};
+    return { hash, config: config && typeof config === "object" ? config : {} };
+  }
+  async patchConfig(patch) {
+    const { hash } = await this.config();
+    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash: hash }, 2e4);
+  }
+  /** Make OpenClaw match the desired state. Applies what it can and reports each failure by name. */
+  async apply(input) {
+    this.gateway();
+    const applied = [];
+    const failed = [];
+    const providerPatch = {};
+    for (const r of input.remove) {
+      try {
+        if (r.kind === "oauth" || !r.kind && !r.profileId.includes(":")) providerPatch[r.provider] = null;
+        else await this.exec(this.bin(), ["models", "auth", "logout", r.profileId, "--yes"], CLI_TIMEOUT_MS2);
+        applied.push(`remove:${r.provider}`);
+      } catch (err) {
+        const line = execFailureLine(err);
+        if (/not found|no such|unknown profile/i.test(line)) applied.push(`remove:${r.provider}`);
+        else failed.push({ what: `remove ${r.provider}`, error: line });
+      }
+    }
+    for (const c of input.credentials) {
+      try {
+        if (c.kind === "oauth") {
+          const ids = input.credentials.filter((x) => x.provider === c.provider).map((x) => modelId(x.model));
+          providerPatch[c.provider] = codexProviderBlock(c.value, [...new Set(ids)]);
+        } else {
+          const sub = c.kind === "api_key" ? "paste-api-key" : "paste-token";
+          const args = ["models", "auth", sub, "--provider", c.provider, "--profile-id", c.profileId, ...c.kind === "token" ? ["--expires-in", "365d"] : []];
+          await this.exec(this.bin(), args, CLI_TIMEOUT_MS2, `${c.value}
+`);
+        }
+        applied.push(c.provider);
+      } catch (err) {
+        failed.push({ what: c.provider, error: execFailureLine(err) });
+      }
+    }
+    const patch = {};
+    if (Object.keys(providerPatch).length) patch.models = { providers: providerPatch };
+    patch.agents = { defaults: { model: input.model.primary ? { primary: input.model.primary, fallbacks: input.model.fallbacks } : null } };
+    try {
+      await this.patchConfig(patch);
+      applied.push("model");
+    } catch (err) {
+      failed.push({ what: "model", error: err.message });
+    }
+    this.modelsCache.clear();
+    this.log(`[llm] applied ${applied.join(", ") || "nothing"}${failed.length ? `; failed ${failed.map((f) => f.what).join(", ")}` : ""}`);
+    if (failed.length) {
+      const err = new Error(failed.map((f) => `${f.what}: ${f.error}`).join("; "));
+      err.applied = applied;
+      throw err;
+    }
+    return { ok: true, applied, failed };
+  }
+  /** What the box has right now, from the config and `models.authStatus`. No secrets. */
+  async status() {
+    const { config } = await this.config();
+    const agents = config.agents;
+    const model = agents?.defaults?.model;
+    const providers = /* @__PURE__ */ new Set();
+    const profiles = [];
+    const auth = config.auth;
+    for (const [profileId, p] of Object.entries(auth?.profiles ?? {})) {
+      const provider = str3(p?.provider) ?? profileId.split(":")[0];
+      providers.add(provider);
+      profiles.push({ profileId, provider, mode: str3(p?.mode) });
+    }
+    const models = config.models;
+    for (const id of Object.keys(models?.providers ?? {})) providers.add(id);
+    let authStatus = [];
+    try {
+      const r = await this.gateway().call("models.authStatus", {}, 1e4);
+      authStatus = (r.providers ?? []).map((p) => ({
+        provider: str3(p.provider) ?? str3(p.id) ?? "?",
+        status: str3(p.status) ?? str3(p.state) ?? null,
+        profiles: Array.isArray(p.profiles) ? p.profiles.length : 0
+      }));
+    } catch (err) {
+      this.log(`[llm] models.authStatus failed: ${err.message}`);
+    }
+    return {
+      model: {
+        primary: str3(model?.primary),
+        fallbacks: Array.isArray(model?.fallbacks) ? model.fallbacks.filter((f) => typeof f === "string") : []
+      },
+      providers: [...providers].sort(),
+      profiles,
+      auth: authStatus
+    };
+  }
+  /** The models OpenClaw knows for a provider (`models.list`, full catalog), as `provider/model` refs. */
+  async models(provider) {
+    const cached = this.modelsCache.get(provider);
+    if (cached && this.now() - cached.at < MODELS_CACHE_MS) return cached.value;
+    const r = await this.gateway().call("models.list", { view: "all", provider }, 2e4);
+    const out = [];
+    for (const m of r.models ?? []) {
+      const rawId = str3(m.id) ?? str3(m.model);
+      if (!rawId) continue;
+      const p = str3(m.provider);
+      const id = rawId.includes("/") ? rawId : p ? `${p}/${rawId}` : `${provider}/${rawId}`;
+      if (!id.startsWith(`${provider}/`)) continue;
+      out.push({ id, name: str3(m.name) ?? modelId(id) });
+    }
+    this.modelsCache.set(provider, { at: this.now(), value: out });
+    return out;
+  }
+};
+
+// src/routes/llm.ts
+function fail2(res, err) {
+  const message = err instanceof Error ? err.message : String(err);
+  const status = /not running|not connected/i.test(message) ? 503 : 500;
+  const applied = err.applied;
+  sendJson(res, status, { ok: false, error: message, ...applied ? { applied } : {} });
+}
+var KINDS = /* @__PURE__ */ new Set(["api_key", "token", "oauth"]);
+var PROVIDER_RE = /^[a-z0-9][a-z0-9_-]{0,40}$/i;
+function parseApply(body) {
+  const model = body.model ?? {};
+  const primary = typeof model.primary === "string" && model.primary ? model.primary : null;
+  const fallbacks = Array.isArray(model.fallbacks) ? model.fallbacks.filter((f) => typeof f === "string") : [];
+  const credentials = [];
+  for (const raw of Array.isArray(body.credentials) ? body.credentials : []) {
+    if (typeof raw.provider !== "string" || !PROVIDER_RE.test(raw.provider)) return "credentials[].provider is invalid";
+    if (typeof raw.kind !== "string" || !KINDS.has(raw.kind)) return "credentials[].kind must be api_key, token or oauth";
+    if (typeof raw.profileId !== "string" || !raw.profileId) return "credentials[].profileId required";
+    if (typeof raw.value !== "string" || !raw.value) return "credentials[].value required";
+    if (typeof raw.model !== "string" || !raw.model) return "credentials[].model required";
+    const codex = raw.codex;
+    credentials.push({
+      provider: raw.provider,
+      kind: raw.kind,
+      profileId: raw.profileId,
+      value: raw.value,
+      model: raw.model,
+      ...codex && typeof codex.accountId === "string" ? { codex: { accountId: codex.accountId } } : {}
+    });
+  }
+  const remove = [];
+  for (const raw of Array.isArray(body.remove) ? body.remove : []) {
+    if (typeof raw.provider !== "string" || !PROVIDER_RE.test(raw.provider)) return "remove[].provider is invalid";
+    if (typeof raw.profileId !== "string" || !raw.profileId) return "remove[].profileId required";
+    remove.push({ provider: raw.provider, profileId: raw.profileId, ...typeof raw.kind === "string" && KINDS.has(raw.kind) ? { kind: raw.kind } : {} });
+  }
+  return { model: { primary, fallbacks }, credentials, remove };
+}
+async function handleLlm(req, res, url, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "llm") : await verifyMitmRequest(req, "llm") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "model changes must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  if (!service) {
+    sendJson(res, 503, { ok: false, error: "OpenClaw is not running on this box" });
+    return;
+  }
+  try {
+    if (url.pathname === "/llm/status" && req.method === "GET") {
+      sendJson(res, 200, await service.status());
+      return;
+    }
+    if (url.pathname === "/llm/models" && req.method === "GET") {
+      const provider = url.searchParams.get("provider") ?? "";
+      if (!PROVIDER_RE.test(provider)) return sendJson(res, 400, { ok: false, error: "provider required" });
+      sendJson(res, 200, { models: await service.models(provider) });
+      return;
+    }
+    if (!write) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+    const body = await readJsonBody(req);
+    if (!body) {
+      sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
+      return;
+    }
+    if (url.pathname === "/llm/apply") {
+      const input = parseApply(body);
+      if (typeof input === "string") return sendJson(res, 400, { ok: false, error: input });
+      sendJson(res, 200, await service.apply(input));
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    fail2(res, err);
+  }
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -2084,6 +2339,7 @@ function startGatewayBridge() {
   return client;
 }
 var channels = null;
+var llm = null;
 var server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url.pathname.startsWith("/__cc/")) {
@@ -2092,6 +2348,10 @@ var server = createServer(async (req, res) => {
   }
   if (url.pathname.startsWith("/channels/")) {
     await handleChannels(req, res, url.pathname, channels);
+    return;
+  }
+  if (url.pathname.startsWith("/llm/")) {
+    await handleLlm(req, res, url, llm);
     return;
   }
   if (!await requireAuth(req, res)) return;
@@ -2134,4 +2394,5 @@ server.listen(PORT, BIND, () => {
     client,
     credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`
   });
+  llm = new LlmService({ client });
 });

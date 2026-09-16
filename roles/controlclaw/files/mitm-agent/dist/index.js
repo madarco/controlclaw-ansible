@@ -72,20 +72,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a, b) {
   return (a & 15) + (a >> 6 | a >> 3 & 8) << 4 | (b & 15) + (b >> 6 | b >> 3 & 8);
 }
-function writeHexToUInt8(buf, str2) {
-  const size = str2.length >> 1;
+function writeHexToUInt8(buf, str3) {
+  const size = str3.length >> 1;
   for (let i = 0; i < size; i++) {
     const index = i << 1;
-    buf[i] = hexCharCodesToInt(str2.charCodeAt(index), str2.charCodeAt(index + 1));
+    buf[i] = hexCharCodesToInt(str3.charCodeAt(index), str3.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str2, buf) {
-  if (str2.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str3, buf) {
+  if (str3.length !== buf.length * 2) {
     return false;
   }
   for (let i = 0; i < buf.length; i++) {
     const strIndex = i << 1;
-    if (buf[i] !== hexCharCodesToInt(str2.charCodeAt(strIndex), str2.charCodeAt(strIndex + 1))) {
+    if (buf[i] !== hexCharCodesToInt(str3.charCodeAt(strIndex), str3.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -1984,8 +1984,8 @@ var day = hour * 24;
 var week = day * 7;
 var year = day * 365.25;
 var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
-function secs(str2) {
-  const matched = REGEX.exec(str2);
+function secs(str3) {
+  const matched = REGEX.exec(str3);
   if (!matched || matched[4] && matched[1]) {
     throw new TypeError("Invalid time period format");
   }
@@ -2458,6 +2458,7 @@ var FirewallControl = class {
     }
   }
   async beat() {
+    for (const r of this.opts.extraResults?.() ?? []) this.pendingResults.push(r);
     const results = this.pendingResults;
     const body = {
       proxy: this.proxyStatus(),
@@ -2516,52 +2517,143 @@ var FirewallControl = class {
   }
 };
 
-// src/channels.ts
+// src/consent-codes.ts
 import { createHash, randomInt, timingSafeEqual } from "crypto";
+var CODE_TTL_MS = 10 * 6e4;
+var CODE_ATTEMPTS = 5;
+function codeMessage(agentName, summary, code) {
+  const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
+  return `ControlClaw: confirm this change to ${agentName}?
+${summary}
+Code: ${pretty}
+Expires in 10 minutes. If you did not ask for this, ignore it and check your ControlClaw console.`;
+}
+function sha256(s) {
+  return createHash("sha256").update(s).digest("hex");
+}
+var ConsentCodes = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
+    this.makeCode = opts.makeCode ?? (() => String(randomInt(0, 1e6)).padStart(6, "0"));
+  }
+  pending = /* @__PURE__ */ new Map();
+  log;
+  now;
+  makeCode;
+  /**
+   * Mint a code and have an agent deliver it to the first sender that can be reached, trying the
+   * routes in order. `agentName` is what the message names as the thing being changed.
+   */
+  async send(scope, proposal, agentName, summary, routes) {
+    const code = this.makeCode();
+    const text = codeMessage(agentName, summary, code);
+    let sentVia = null;
+    let lastError = "";
+    for (const route of routes) {
+      for (const sender of route.senders) {
+        try {
+          await this.opts.agent.post(route.target, "/channels/send", { type: sender.type, to: sender.id, text });
+          sentVia = `${sender.type}:${sender.label ?? sender.id}`;
+          break;
+        } catch (err) {
+          lastError = err.message;
+          this.log(`[codes] could not send the code via ${sender.type} on ${route.target.hostname}: ${lastError}`);
+        }
+      }
+      if (sentVia) break;
+    }
+    if (!sentVia) {
+      return {
+        ok: false,
+        message: `Could not reach you on any connected channel (${lastError || "no sender answered"}). Make sure the agent is running, then try again.`
+      };
+    }
+    const expiresAt = this.now() + CODE_TTL_MS;
+    this.pending.set(scope, { proposal, codeHash: sha256(code), attemptsLeft: CODE_ATTEMPTS, expiresAt, sentVia });
+    return { ok: true, sentVia, expiresAt: new Date(expiresAt).toISOString(), attemptsLeft: CODE_ATTEMPTS };
+  }
+  /** Constant-time check; a wrong code counts down, the last wrong one drops the proposal. */
+  verify(scope, changeId, code) {
+    const pending = this.pending.get(scope);
+    if (!pending || pending.proposal.changeId !== changeId) return { kind: "expired" };
+    if (this.now() > pending.expiresAt) {
+      this.pending.delete(scope);
+      return { kind: "expired" };
+    }
+    const given = Buffer.from(sha256(code.replace(/\s+/g, "")));
+    const want = Buffer.from(pending.codeHash);
+    if (given.length !== want.length || !timingSafeEqual(given, want)) {
+      pending.attemptsLeft -= 1;
+      if (pending.attemptsLeft <= 0) this.pending.delete(scope);
+      return { kind: "invalid", attemptsLeft: pending.attemptsLeft };
+    }
+    this.pending.delete(scope);
+    return { kind: "ok", proposal: pending.proposal, sentVia: pending.sentVia };
+  }
+  /** True when that change was the pending one (and is now dropped). */
+  cancel(scope, changeId) {
+    const pending = this.pending.get(scope);
+    if (!pending || pending.proposal.changeId !== changeId) return false;
+    this.pending.delete(scope);
+    return true;
+  }
+  drop(scope) {
+    this.pending.delete(scope);
+  }
+};
 
-// src/channel-store.ts
+// src/enc-file.ts
 import { createCipheriv as createCipheriv2, createDecipheriv as createDecipheriv2, randomBytes as randomBytes2 } from "crypto";
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync5, renameSync, writeFileSync as writeFileSync4 } from "fs";
 import { dirname as dirname2 } from "path";
-var EMPTY_STORE = { version: 1, agents: {} };
 var NONCE_BYTES2 = 12;
 var TAG_BYTES2 = 16;
-function aad2(ids2) {
-  return Buffer.from(`${ids2.orgId}:${ids2.boxId}:channels`, "utf8");
-}
-function encryptStore(store, boxKeyB64, ids2) {
+function encryptJson(value, boxKeyB64, aad4) {
   const key = Buffer.from(boxKeyB64, "base64");
   const nonce = randomBytes2(NONCE_BYTES2);
   const cipher = createCipheriv2("aes-256-gcm", key, nonce);
-  cipher.setAAD(aad2(ids2));
-  const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(store), "utf8")), cipher.final(), cipher.getAuthTag()]);
+  cipher.setAAD(Buffer.from(aad4, "utf8"));
+  const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(value), "utf8")), cipher.final(), cipher.getAuthTag()]);
   return JSON.stringify({ alg: "AES-256-GCM", nonce: nonce.toString("base64"), ct: ct.toString("base64") });
 }
-function decryptStore(raw, boxKeyB64, ids2) {
+function decryptJson(raw, boxKeyB64, aad4) {
   const { nonce, ct } = JSON.parse(raw);
   const key = Buffer.from(boxKeyB64, "base64");
   const buf = Buffer.from(ct, "base64");
   const decipher = createDecipheriv2("aes-256-gcm", key, Buffer.from(nonce, "base64"));
-  decipher.setAAD(aad2(ids2));
+  decipher.setAAD(Buffer.from(aad4, "utf8"));
   decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES2));
   const pt = Buffer.concat([decipher.update(buf.subarray(0, buf.length - TAG_BYTES2)), decipher.final()]);
-  const parsed = JSON.parse(pt.toString("utf8"));
-  return parsed.version === 1 && parsed.agents ? parsed : { ...EMPTY_STORE };
+  return JSON.parse(pt.toString("utf8"));
 }
-function loadChannelStore(path, boxKeyB64, ids2) {
-  if (!existsSync4(path)) return { version: 1, agents: {} };
-  return decryptStore(readFileSync5(path, "utf8"), boxKeyB64, ids2);
+function loadEncryptedJson(path, boxKeyB64, aad4) {
+  if (!existsSync4(path)) return null;
+  return decryptJson(readFileSync5(path, "utf8"), boxKeyB64, aad4);
 }
-function saveChannelStore(path, store, boxKeyB64, ids2) {
+function saveEncryptedJson(path, value, boxKeyB64, aad4) {
   mkdirSync3(dirname2(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync4(tmp, encryptStore(store, boxKeyB64, ids2), { mode: 384 });
+  writeFileSync4(tmp, encryptJson(value, boxKeyB64, aad4), { mode: 384 });
   renameSync(tmp, path);
 }
 
+// src/channel-store.ts
+function aad2(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:channels`;
+}
+function coerce(parsed) {
+  return parsed && parsed.version === 1 && parsed.agents ? parsed : { version: 1, agents: {} };
+}
+function loadChannelStore(path, boxKeyB64, ids2) {
+  return coerce(loadEncryptedJson(path, boxKeyB64, aad2(ids2)));
+}
+function saveChannelStore(path, store, boxKeyB64, ids2) {
+  saveEncryptedJson(path, store, boxKeyB64, aad2(ids2));
+}
+
 // src/channels.ts
-var CODE_TTL_MS = 10 * 6e4;
-var CODE_ATTEMPTS = 5;
 var NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
 function summarize(p) {
   const name = NAMES[p.type];
@@ -2578,18 +2670,8 @@ function summarize(p) {
       return p.settings?.personal ? "Connect WhatsApp by QR (personal number)" : "Connect WhatsApp by QR";
   }
 }
-function codeMessage(agentName, summary, code) {
-  const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
-  return `ControlClaw: confirm this change to ${agentName}?
-${summary}
-Code: ${pretty}
-Expires in 10 minutes. If you did not ask for this, ignore it and check your ControlClaw console.`;
-}
 function placeholderFor(type, vmId, which = "bot") {
   return `__cc_${type}_${which}_${vmId}`;
-}
-function sha256(s) {
-  return createHash("sha256").update(s).digest("hex");
 }
 function isKind(v) {
   return v === "add" || v === "replace" || v === "remove" || v === "approve_pairing" || v === "whatsapp_login";
@@ -2629,15 +2711,32 @@ var ChannelsFirewall = class {
     this.opts = opts;
     this.log = opts.log ?? ((l) => console.log(l));
     this.now = opts.now ?? Date.now;
-    this.makeCode = opts.makeCode ?? (() => String(randomInt(0, 1e6)).padStart(6, "0"));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
     this.store = loadChannelStore(opts.storePath, opts.boxKey, opts.ids);
   }
   store;
-  pending = /* @__PURE__ */ new Map();
-  // by agent vmId
+  // One pending code per agent (scope = vmId).
+  codes;
   log;
   now;
-  makeCode;
+  /**
+   * Every agent someone is approved to talk to, as code routes: the LLM firewall sends its
+   * codes through the same people, since an org-level change has no single agent of its own.
+   */
+  codeRoutes() {
+    const out = [];
+    for (const [vmId, agent] of Object.entries(this.store.agents)) {
+      if (agent.approvedSenders.length === 0) continue;
+      let target;
+      try {
+        target = this.target(vmId, agent.hostname);
+      } catch {
+        continue;
+      }
+      out.push({ target, senders: agent.approvedSenders, agentName: agent.name });
+    }
+    return out;
+  }
   handlers() {
     return {
       "channels.propose": (p) => this.propose(p),
@@ -2701,40 +2800,18 @@ var ChannelsFirewall = class {
     const summary = summarize(p);
     const data = { changeId: p.changeId, summary };
     if (agent.approvedSenders.length === 0) {
-      this.pending.delete(p.vmId);
+      this.codes.drop(p.vmId);
       const applied = await this.apply(p);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
-    const code = this.makeCode();
-    const text = codeMessage(p.agentName, summary, code);
     const target = this.target(p.vmId, p.hostname);
-    let sentVia = null;
-    let lastError = "";
-    for (const sender of agent.approvedSenders) {
-      try {
-        await this.opts.agent.post(target, "/channels/send", { type: sender.type, to: sender.id, text });
-        sentVia = `${sender.type}:${sender.label ?? sender.id}`;
-        break;
-      } catch (err) {
-        lastError = err.message;
-        this.log(`[channels] could not send the code via ${sender.type}: ${lastError}`);
-      }
-    }
-    if (!sentVia) {
-      return {
-        ok: false,
-        status: "failed",
-        message: `Could not reach you on any connected channel (${lastError || "no sender answered"}). Make sure the agent is running, then try again.`,
-        data
-      };
-    }
-    const expiresAt = this.now() + CODE_TTL_MS;
-    this.pending.set(p.vmId, { proposal: p, codeHash: sha256(code), attemptsLeft: CODE_ATTEMPTS, expiresAt, sentVia });
-    this.log(`[channels] code sent for ${p.kind} ${p.type} on ${p.agentName} via ${sentVia}`);
+    const sent = await this.codes.send(p.vmId, p, p.agentName, summary, [{ target, senders: agent.approvedSenders }]);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[channels] code sent for ${p.kind} ${p.type} on ${p.agentName} via ${sent.sentVia}`);
     return {
       ok: true,
       status: "awaiting_code",
-      data: { ...data, sentVia, expiresAt: new Date(expiresAt).toISOString(), attemptsLeft: CODE_ATTEMPTS }
+      data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft }
     };
   }
   async confirm(payload) {
@@ -2742,30 +2819,17 @@ var ChannelsFirewall = class {
     const vmId = str(payload.vmId);
     const code = str(payload.code)?.replace(/\s+/g, "") ?? "";
     if (!changeId || !vmId) throw new Error("malformed channels.confirm payload");
-    const pending = this.pending.get(vmId);
     const data = { changeId };
-    if (!pending || pending.proposal.changeId !== changeId) {
-      return { ok: false, status: "expired", message: "No change is waiting for a code.", data };
-    }
-    if (this.now() > pending.expiresAt) {
-      this.pending.delete(vmId);
-      return { ok: false, status: "expired", message: "The code expired.", data };
-    }
-    const given = Buffer.from(sha256(code));
-    const want = Buffer.from(pending.codeHash);
-    if (given.length !== want.length || !timingSafeEqual(given, want)) {
-      pending.attemptsLeft -= 1;
-      if (pending.attemptsLeft <= 0) this.pending.delete(vmId);
-      return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: pending.attemptsLeft } };
-    }
-    this.pending.delete(vmId);
-    const applied = await this.apply(pending.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize(pending.proposal), sentVia: pending.sentVia, tofu: false } };
+    const v = this.codes.verify(vmId, changeId, code);
+    if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
+    const applied = await this.apply(v.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str(payload.changeId);
     const vmId = str(payload.vmId);
-    if (vmId && this.pending.get(vmId)?.proposal.changeId === changeId) this.pending.delete(vmId);
+    if (vmId) this.codes.cancel(vmId, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   async push(payload) {
@@ -2842,15 +2906,396 @@ var ChannelsFirewall = class {
   }
 };
 
+// src/llm-store.ts
+function aad3(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:llm`;
+}
+function emptyLlmStore() {
+  return { version: 1, credentials: {}, agents: {} };
+}
+function loadLlmStore(path, boxKeyB64, ids2) {
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad3(ids2));
+  return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? parsed : emptyLlmStore();
+}
+function saveLlmStore(path, store, boxKeyB64, ids2) {
+  saveEncryptedJson(path, store, boxKeyB64, aad3(ids2));
+}
+
+// src/llm.ts
+var REFRESH_AHEAD_MS = 15 * 6e4;
+var REFRESH_TIMEOUT_MS = 3e4;
+var SCOPE = "org";
+function str2(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function isKind2(v) {
+  return v === "add" || v === "replace" || v === "remove" || v === "bind" || v === "unbind" || v === "set_model";
+}
+function modelShort(model) {
+  return model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+}
+function summarize2(p) {
+  const a = p.agents[0];
+  switch (p.kind) {
+    case "add":
+      return p.credKind === "oauth" ? `Connect ${p.providerName} (${p.label ?? p.hint ?? "account"})` : `Add ${p.providerName} key (${p.hint ?? "key"})`;
+    case "replace":
+      return p.credKind === "oauth" ? `Reconnect ${p.providerName} (${p.label ?? p.hint ?? "account"})` : `Replace the ${p.providerName} key (${p.hint ?? "new key"})`;
+    case "remove":
+      return `Remove ${p.providerName} from the organization`;
+    case "bind":
+      return `Use ${p.providerName} ${a ? modelShort(a.model) : ""} on ${a?.name ?? "the agent"}${a?.isPrimary ? " as the main model" : ""}`.replace(/\s+/g, " ");
+    case "set_model":
+      return `Switch ${a?.name ?? "the agent"} to ${p.providerName} ${a ? modelShort(a.model) : ""}`.trim();
+    case "unbind":
+      return `Stop using ${p.providerName} on ${a?.name ?? "the agent"}`;
+  }
+}
+function parseSecret(secret) {
+  if (!secret) return void 0;
+  if (str2(secret.apiKey)) return { apiKey: String(secret.apiKey) };
+  if (str2(secret.token)) return { token: String(secret.token) };
+  const o = secret.oauth;
+  if (o && str2(o.access) && str2(o.refresh)) {
+    return {
+      access: String(o.access),
+      refresh: String(o.refresh),
+      expires: typeof o.expires === "number" ? o.expires : 0,
+      accountId: str2(o.accountId),
+      email: str2(o.email)
+    };
+  }
+  return void 0;
+}
+function parseProposal2(payload) {
+  const changeId = str2(payload.changeId);
+  const credentialId = str2(payload.credentialId);
+  const provider = str2(payload.provider);
+  if (!changeId || !credentialId || !provider || !isKind2(payload.kind)) throw new Error("malformed llm.propose payload");
+  const swap = payload.swap;
+  const oauth = payload.oauth;
+  const agents = Array.isArray(payload.agents) ? payload.agents : [];
+  const credKind = payload.credKind;
+  return {
+    changeId,
+    kind: payload.kind,
+    credentialId,
+    provider,
+    providerName: str2(payload.providerName) ?? provider,
+    credKind: credKind === "api_key" || credKind === "token" || credKind === "oauth" ? credKind : null,
+    placeholder: str2(payload.placeholder),
+    hint: str2(payload.hint),
+    label: str2(payload.label),
+    profileId: str2(payload.profileId),
+    swap: swap && str2(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
+    oauth: oauth && str2(oauth.tokenEndpoint) && str2(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId) } : null,
+    agents: agents.filter((a) => str2(a.vmId) && str2(a.model)).map((a) => ({ vmId: String(a.vmId), name: str2(a.name) ?? String(a.vmId), hostname: str2(a.hostname), model: String(a.model), isPrimary: a.isPrimary === true })),
+    secret: parseSecret(payload.secret)
+  };
+}
+function secretValue(s) {
+  if ("apiKey" in s) return s.apiKey;
+  if ("token" in s) return s.token;
+  return s.access;
+}
+var LlmFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadLlmStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  fetchImpl;
+  reports = [];
+  refreshing = false;
+  handlers() {
+    return {
+      "llm.propose": (p) => this.propose(p),
+      "llm.confirm": (p) => this.confirm(p),
+      "llm.cancel": (p) => this.cancel(p),
+      "llm.push": (p) => this.push(p)
+    };
+  }
+  /** Proxy credential entries: one per agent binding, swapped only on that agent's traffic. */
+  credentials() {
+    const out = [];
+    for (const [vmId, agent] of Object.entries(this.store.agents)) {
+      for (const b of agent.bindings) {
+        const c = this.store.credentials[b.credentialId];
+        if (!c) continue;
+        if (this.opts.plainKeys && c.kind !== "oauth") continue;
+        out.push({ placeholder: c.placeholder, match_domain: c.swap.matchDomain, secret: secretValue(c.secret), locations: c.swap.locations, vm_id: vmId });
+      }
+    }
+    return out;
+  }
+  /** What the console may see: no secrets. */
+  summary() {
+    return {
+      credentials: Object.entries(this.store.credentials).map(([id, c]) => ({ id, provider: c.provider, kind: c.kind, hint: c.hint, failed: c.failed })),
+      agents: Object.keys(this.store.agents).length
+    };
+  }
+  /** Reports made outside a command (refresh failures), drained by the heartbeat. */
+  drainReports() {
+    const r = this.reports;
+    this.reports = [];
+    return r;
+  }
+  save() {
+    saveLlmStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  agentOf(ref) {
+    let a = this.store.agents[ref.vmId];
+    if (!a) {
+      a = { name: ref.name, hostname: ref.hostname, bindings: [] };
+      this.store.agents[ref.vmId] = a;
+    }
+    if (ref.name) a.name = ref.name;
+    if (ref.hostname) a.hostname = ref.hostname;
+    return a;
+  }
+  target(vmId) {
+    const host = this.store.agents[vmId]?.hostname ?? null;
+    if (!host) throw new Error("This agent has no hostname yet.");
+    return { vmId, hostname: host };
+  }
+  // ---- commands ----
+  async propose(payload) {
+    const p = parseProposal2(payload);
+    const summary = summarize2(p);
+    const data = { changeId: p.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE);
+      const applied = await this.apply(p);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE, p, "your organization's model providers", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[llm] code sent for ${p.kind} ${p.provider} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str2(payload.changeId);
+    const code = str2(payload.code) ?? "";
+    if (!changeId) throw new Error("malformed llm.confirm payload");
+    const data = { changeId };
+    const v = this.codes.verify(SCOPE, changeId, code);
+    if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
+    const applied = await this.apply(v.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize2(v.proposal), sentVia: v.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str2(payload.changeId);
+    this.codes.cancel(SCOPE, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  async push(payload) {
+    const vmId = str2(payload.vmId);
+    if (!vmId) throw new Error("malformed llm.push payload");
+    const agent = this.store.agents[vmId];
+    if (!agent || agent.bindings.length === 0) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    if (str2(payload.hostname)) agent.hostname = String(payload.hostname);
+    if (str2(payload.name)) agent.name = String(payload.name);
+    this.save();
+    const failed = await this.pushAgents([vmId], []);
+    this.log(`[llm] re-applied ${agent.bindings.length} provider(s) on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
+    return {
+      ok: failed.length === 0,
+      status: failed.length ? "failed" : "applied",
+      message: failed.map((f) => f.error).join("; "),
+      data: { vmId, applied: failed.length ? [] : agent.bindings.map((b) => b.credentialId), failed }
+    };
+  }
+  // ---- applying ----
+  /** The whole desired state of one agent box. */
+  applyBody(vmId, remove) {
+    const agent = this.store.agents[vmId];
+    const bindings = agent?.bindings ?? [];
+    const credentials = bindings.map((b) => ({ b, c: this.store.credentials[b.credentialId] })).filter((x) => !!x.c).map(({ b, c }) => ({
+      provider: c.provider,
+      kind: c.kind,
+      profileId: c.profileId,
+      value: this.opts.plainKeys && c.kind !== "oauth" ? secretValue(c.secret) : c.placeholder,
+      model: b.model,
+      ..."accountId" in c.secret && c.secret.accountId ? { codex: { accountId: c.secret.accountId } } : {}
+    }));
+    const primary = bindings.find((b) => b.isPrimary)?.model ?? bindings[0]?.model ?? null;
+    const fallbacks = bindings.map((b) => b.model).filter((m) => m !== primary);
+    return { model: { primary, fallbacks }, credentials, remove };
+  }
+  async pushAgents(vmIds, remove) {
+    const failed = [];
+    for (const vmId of vmIds) {
+      try {
+        await this.opts.agent.post(this.target(vmId), "/llm/apply", this.applyBody(vmId, remove));
+      } catch (err) {
+        failed.push({ vmId, error: err.message });
+      }
+    }
+    return failed;
+  }
+  setBinding(ref, credentialId) {
+    const agent = this.agentOf(ref);
+    const others = agent.bindings.filter((b) => b.credentialId !== credentialId);
+    if (ref.isPrimary) for (const o of others) o.isPrimary = false;
+    const isPrimary = ref.isPrimary || others.every((o) => !o.isPrimary);
+    agent.bindings = [...others, { credentialId, model: ref.model, isPrimary }];
+  }
+  dropBinding(vmId, credentialId) {
+    const agent = this.store.agents[vmId];
+    if (!agent) return;
+    agent.bindings = agent.bindings.filter((b) => b.credentialId !== credentialId);
+    if (agent.bindings.length && !agent.bindings.some((b) => b.isPrimary)) agent.bindings[0].isPrimary = true;
+  }
+  boundAgents(credentialId) {
+    return Object.entries(this.store.agents).filter(([, a]) => a.bindings.some((b) => b.credentialId === credentialId)).map(([vmId]) => vmId);
+  }
+  async apply(p) {
+    const mode = this.opts.plainKeys && p.credKind !== "oauth" ? "plain" : "placeholder";
+    const existing = this.store.credentials[p.credentialId];
+    switch (p.kind) {
+      case "add":
+      case "replace": {
+        if (!p.secret) throw new Error("no secret in the proposal");
+        if (!p.placeholder || !p.profileId || !p.swap || !p.credKind) throw new Error("the proposal is missing the placeholder, profile id or swap location");
+        if (p.credKind === "oauth" && !p.oauth) throw new Error("an OAuth credential needs its token endpoint");
+        this.store.credentials[p.credentialId] = {
+          provider: p.provider,
+          kind: p.credKind,
+          placeholder: p.placeholder,
+          hint: p.hint,
+          label: p.label,
+          profileId: p.profileId,
+          swap: p.swap,
+          ...p.oauth ? { oauth: p.oauth } : {},
+          secret: p.secret,
+          failed: null,
+          updatedAt: new Date(this.now()).toISOString()
+        };
+        for (const a of p.agents) this.setBinding(a, p.credentialId);
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const targets = /* @__PURE__ */ new Set([...this.boundAgents(p.credentialId), ...p.agents.map((a) => a.vmId)]);
+        const failed = await this.pushAgents([...targets], []);
+        return { mode, applied: [...targets].filter((v) => !failed.some((f) => f.vmId === v)), failed };
+      }
+      case "remove": {
+        const bound = this.boundAgents(p.credentialId);
+        const remove = existing ? [{ provider: existing.provider, profileId: existing.profileId, kind: existing.kind }] : [];
+        for (const vmId of bound) this.dropBinding(vmId, p.credentialId);
+        delete this.store.credentials[p.credentialId];
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const failed = await this.pushAgents(bound, remove);
+        return { applied: bound.filter((v) => !failed.some((f) => f.vmId === v)), failed };
+      }
+      case "bind":
+      case "set_model": {
+        if (!existing) throw new Error("This provider is not set up on the firewall. Add it again.");
+        const a = p.agents[0];
+        if (!a) throw new Error("no agent in the proposal");
+        this.setBinding(a, p.credentialId);
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const failed = await this.pushAgents([a.vmId], []);
+        return { mode, applied: failed.length ? [] : [a.vmId], failed };
+      }
+      case "unbind": {
+        const a = p.agents[0];
+        if (!a) throw new Error("no agent in the proposal");
+        this.dropBinding(a.vmId, p.credentialId);
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const remove = existing ? [{ provider: existing.provider, profileId: existing.profileId, kind: existing.kind }] : [];
+        const failed = await this.pushAgents([a.vmId], remove);
+        return { applied: failed.length ? [] : [a.vmId], failed };
+      }
+    }
+  }
+  // ---- OAuth refresh ----
+  /** Refresh every OAuth credential that expires within REFRESH_AHEAD_MS. Called on a timer. */
+  async refreshDue() {
+    if (this.refreshing) return;
+    this.refreshing = true;
+    try {
+      let changed = false;
+      for (const [id, c] of Object.entries(this.store.credentials)) {
+        if (c.kind !== "oauth" || !c.oauth || !("refresh" in c.secret) || c.failed) continue;
+        if (c.secret.expires - this.now() > REFRESH_AHEAD_MS) continue;
+        const r = await this.refreshOne(id, c);
+        if (r) changed = true;
+      }
+      if (changed) {
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+      }
+    } finally {
+      this.refreshing = false;
+    }
+  }
+  async refreshOne(id, c) {
+    if (!c.oauth || !("refresh" in c.secret)) return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
+    try {
+      const res = await this.fetchImpl(c.oauth.tokenEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.secret.refresh, client_id: c.oauth.clientId }).toString(),
+        signal: controller.signal
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || typeof body.access_token !== "string") {
+        const reason = str2(body.error_description) ?? str2(body.error) ?? `HTTP ${res.status}`;
+        if (res.status >= 400 && res.status < 500) {
+          c.failed = `Token refresh refused: ${reason}. Connect the account again.`;
+          this.reports.push({ command_id: `llm.refresh:${id}`, ok: false, status: "failed", message: c.failed, data: { credentialId: id } });
+          this.log(`[llm] refresh of ${c.provider} refused: ${reason}`);
+          return true;
+        }
+        this.log(`[llm] refresh of ${c.provider} failed (${reason}); will retry`);
+        return false;
+      }
+      const expiresIn = typeof body.expires_in === "number" ? body.expires_in : 3600;
+      c.secret = {
+        ...c.secret,
+        access: body.access_token,
+        refresh: typeof body.refresh_token === "string" && body.refresh_token ? body.refresh_token : c.secret.refresh,
+        expires: this.now() + expiresIn * 1e3
+      };
+      c.updatedAt = new Date(this.now()).toISOString();
+      this.log(`[llm] refreshed ${c.provider} token (expires in ${Math.round(expiresIn / 60)} min)`);
+      return true;
+    } catch (err) {
+      this.log(`[llm] refresh of ${c.provider} errored (${err.message}); will retry`);
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+};
+
 // src/agent-client.ts
 import { readFileSync as readFileSync6 } from "fs";
 var AGENT_PATH_PREFIX = "/__cc/agent";
 var TIMEOUT_MS = 25e3;
+function purposeForPath(path) {
+  return path.startsWith("/llm/") ? "llm" : "channels";
+}
 function makeAgentTokenSigner(keysDir, boxId) {
   const read = (name) => readFileSync6(`${keysDir}/${name}`, "utf-8").trim();
-  return async (agentVmId) => {
+  return async (agentVmId, purpose = "channels") => {
     const key = await importPKCS8(read("vm_private_key.pem"), "EdDSA");
-    return new SignJWT({ vmId: agentVmId, purpose: "channels", iss: boxId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
+    return new SignJWT({ vmId: agentVmId, purpose, iss: boxId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
   };
 }
 function makeAgentClient(opts) {
@@ -2863,7 +3308,7 @@ function makeAgentClient(opts) {
       const res = await fetchImpl(`https://${agent.hostname}${AGENT_PATH_PREFIX}${path}`, {
         method,
         headers: {
-          Authorization: `Bearer ${await opts.sign(agent.vmId)}`,
+          Authorization: `Bearer ${await opts.sign(agent.vmId, purposeForPath(path))}`,
           ...body ? { "content-type": "application/json" } : {}
         },
         body: body ? JSON.stringify(body) : void 0,
@@ -3244,6 +3689,9 @@ var FIREWALL_URL = process.env.FIREWALL_URL ?? "";
 var FIREWALL_POLL_MS = parseInt(process.env.FIREWALL_POLL_MS ?? "5000", 10);
 var CHANNEL_STORE_PATH = process.env.CHANNEL_STORE_PATH ?? "/opt/controlclaw/state/channels.enc";
 var CHANNELS_PLACEHOLDER_SWAP = process.env.CHANNELS_PLACEHOLDER_SWAP === "1";
+var LLM_STORE_PATH = process.env.LLM_STORE_PATH ?? "/opt/controlclaw/state/llm.enc";
+var LLM_PLAIN_KEYS = process.env.LLM_PLAIN_KEYS === "1";
+var LLM_REFRESH_POLL_MS = parseInt(process.env.LLM_REFRESH_POLL_MS ?? "60000", 10);
 var AGENT_VERSION = process.env.MITM_AGENT_VERSION ?? "0.1.0";
 var SHIP_ONCE = process.env.SHIP_ONCE === "1";
 var ORG_ID = process.env.ORG_ID ?? "";
@@ -3262,6 +3710,7 @@ var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || A
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 var identities = [];
 var channels = null;
+var llm = null;
 async function runSync(boxKey) {
   const store = makeStoreClient(STORE_URL, getToken);
   const record = await store.fetchRecord();
@@ -3275,6 +3724,9 @@ async function runSync(boxKey) {
   }
   if (channels) {
     cfg.credentials = [...cfg.credentials ?? [], ...channels.credentials()];
+  }
+  if (llm) {
+    cfg.credentials = [...cfg.credentials ?? [], ...llm.credentials()];
   }
   writeProxyConfig(PROXY_CONFIG_DIR, cfg);
   console.log(
@@ -3338,6 +3790,21 @@ async function main() {
       console.log(`[mitm-agent] channel store loaded (${channels.summary().length} channel(s), placeholder swap ${CHANNELS_PLACEHOLDER_SWAP ? "on" : "off"})`);
     } catch (err) {
       console.error(`[mitm-agent] channel store unreadable, channel commands disabled: ${err.message}`);
+    }
+    try {
+      llm = new LlmFirewall({
+        storePath: LLM_STORE_PATH,
+        boxKey,
+        ids,
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+        codeRoutes: () => channels?.codeRoutes() ?? [],
+        plainKeys: LLM_PLAIN_KEYS,
+        onCredentialsChanged: () => runSync(boxKey)
+      });
+      const s = llm.summary();
+      console.log(`[mitm-agent] llm store loaded (${s.credentials.length} credential(s), ${s.agents} agent(s), keys ${LLM_PLAIN_KEYS ? "plain" : "at the proxy"})`);
+    } catch (err) {
+      console.error(`[mitm-agent] llm store unreadable, llm commands disabled: ${err.message}`);
     }
   }
   try {
@@ -3417,11 +3884,17 @@ async function main() {
         firewallUrl: FIREWALL_URL,
         getToken,
         agentVersion: AGENT_VERSION,
-        handlers: channels?.handlers() ?? {}
+        handlers: { ...channels?.handlers() ?? {}, ...llm?.handlers() ?? {} },
+        extraResults: () => llm?.drainReports() ?? []
       });
       console.log("[mitm-agent] firewall control enabled");
       setInterval(() => void control.tick().catch((e) => console.error("[firewall] tick:", e.message)), FIREWALL_POLL_MS);
       void control.tick().catch((e) => console.error("[firewall] tick:", e.message));
+    }
+    if (llm) {
+      const l = llm;
+      setInterval(() => void l.refreshDue().catch((e) => console.error("[llm] refresh:", e.message)), LLM_REFRESH_POLL_MS);
+      void l.refreshDue().catch((e) => console.error("[llm] refresh:", e.message));
     }
     void reportReady();
   });
