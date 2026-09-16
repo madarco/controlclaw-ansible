@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from typing import Any
 
@@ -371,6 +372,16 @@ def _log(record: dict[str, Any]) -> None:
             log.warning(f"[mitm] log write failed: {exc}")
 
 
+# Telegram's Bot API carries the bot token in the URL path (`/bot<id>:<token>/method`). A traffic
+# record must never store it: the console shows these paths and the control plane keeps them.
+_TELEGRAM_TOKEN_RE = re.compile(r"/bot\d+:[A-Za-z0-9_-]{20,}(?=/|$)")
+
+
+def redact_path(path: str) -> str:
+    """The query-stripped path with any embedded credential replaced by a marker."""
+    return _TELEGRAM_TOKEN_RE.sub("/bot<redacted>", path.split("?", 1)[0])
+
+
 def _base_record(flow, vm_id: str | None) -> dict[str, Any]:
     """Fields every traffic record carries. `flow_id` is mitmproxy's per-flow uuid: the shipper's
     dedupe key, so an at-least-once upload never double-counts a request."""
@@ -383,7 +394,7 @@ def _http_record(flow: http.HTTPFlow, effect: str) -> dict[str, Any]:
     rec = _base_record(flow, flow.metadata.get("cc_vm_id"))
     rec.update({
         "host": flow.request.pretty_host, "method": flow.request.method,
-        "path": flow.request.path.split("?", 1)[0], "effect": effect,
+        "path": redact_path(flow.request.path), "effect": effect,
         "rule": flow.metadata.get("cc_rule"),
     })
     return rec
@@ -496,7 +507,7 @@ def request(flow: http.HTTPFlow) -> None:
         return
 
     if effect == "require_permission":
-        scope = permission_scope(method, host, path)
+        scope = permission_scope(method, host, redact_path(path))
         pid = permission_id_for(scope)
         if grant_active(pid):
             # Human approved this exact scope and it hasn't expired — let it through (and swap).
@@ -506,7 +517,7 @@ def request(flow: http.HTTPFlow) -> None:
         else:
             record_pending(pid, {
                 "ts": time.time(), "tenant": TENANT, "vm_id": vm_id, "permission_id": pid,
-                "scope": scope, "host": host, "method": method, "path": path.split("?", 1)[0],
+                "scope": scope, "host": host, "method": method, "path": redact_path(path),
             })
             flow.response = http.Response.make(
                 PERMISSION_STATUS,
