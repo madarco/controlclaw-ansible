@@ -1698,6 +1698,8 @@ import { readFileSync as readFileSync9 } from "fs";
 import { randomUUID } from "crypto";
 var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
 var APPROVE_TIMEOUT_MS = 3e4;
+var LIST_TIMEOUT_MS = 2e4;
+var PAIRINGS_CACHE_MS = 4e3;
 var WA_QR_TIMEOUT_MS = 12e4;
 var WA_QR_STALE_MS = 15e4;
 var WA_RESULT_TTL_MS = 10 * 6e4;
@@ -1718,6 +1720,14 @@ function bool(v) {
 }
 function str2(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+function toPairing(type, r) {
+  const senderId = str2(r.id) ?? str2(r.senderId);
+  const code = str2(r.code);
+  if (!senderId || !code) return null;
+  const meta = r.meta ?? {};
+  const label = str2(meta.name) ?? str2(meta.displayName) ?? str2(meta.username) ?? str2(meta.title) ?? str2(r.label) ?? null;
+  return { type, code, senderId, label, createdAt: str2(r.createdAt) };
 }
 function channelBlock(input) {
   if ("remove" in input) return null;
@@ -1745,6 +1755,7 @@ var ChannelsService = class {
   exec;
   log;
   now;
+  pairingsCache = null;
   waLogin = {
     state: "idle",
     qrDataUrl: null,
@@ -1757,8 +1768,38 @@ var ChannelsService = class {
     if (!c || !c.connected) throw new Error("OpenClaw is not running on this box");
     return c;
   }
-  /** Pending DM pairing requests, read from OpenClaw's pairing store files. */
-  pairings() {
+  /**
+   * Pending DM pairing requests of the configured channels: `openclaw pairing list <channel> --json`
+   * (the SQLite store), plus whatever an older gateway left in the pairing files.
+   */
+  async pairings(types) {
+    const key = [...types].sort().join(",");
+    const cached = this.pairingsCache;
+    if (cached && cached.key === key && this.now() - cached.at < PAIRINGS_CACHE_MS) return cached.value;
+    const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
+    const fromCli = await Promise.all(
+      types.map(async (type) => {
+        try {
+          const { stdout } = await this.exec(bin, ["pairing", "list", type, "--json"], LIST_TIMEOUT_MS);
+          const start = stdout.indexOf("{");
+          const parsed = JSON.parse(stdout.slice(start));
+          const requests = Array.isArray(parsed) ? parsed : parsed.requests ?? [];
+          return requests.map((r) => toPairing(type, r)).filter((p) => p !== null);
+        } catch (err) {
+          this.log(`[channels] pairing list ${type} failed: ${(err.message ?? "").split("\n")[0]}`);
+          return [];
+        }
+      })
+    );
+    const out = fromCli.flat();
+    for (const legacy of this.pairingsFromFiles()) {
+      if (!out.some((p) => p.type === legacy.type && p.senderId === legacy.senderId)) out.push(legacy);
+    }
+    this.pairingsCache = { at: this.now(), key, value: out };
+    return out;
+  }
+  /** Older gateways (before 2026.9) kept pending requests in `<channel>-pairing.json`. */
+  pairingsFromFiles() {
     const out = [];
     for (const type of CHANNEL_TYPES) {
       let raw;
@@ -1770,12 +1811,8 @@ var ChannelsService = class {
       try {
         const parsed = JSON.parse(raw);
         for (const r of parsed.requests ?? []) {
-          const senderId = str2(r.id);
-          const code = str2(r.code);
-          if (!senderId || !code) continue;
-          const meta = r.meta ?? {};
-          const label = str2(meta.name) ?? str2(meta.displayName) ?? str2(meta.username) ?? str2(meta.title) ?? null;
-          out.push({ type, code, senderId, label, createdAt: str2(r.createdAt) });
+          const p = toPairing(type, r);
+          if (p) out.push(p);
         }
       } catch (err) {
         this.log(`[channels] unreadable ${type}-pairing.json: ${err.message}`);
@@ -1805,7 +1842,8 @@ var ChannelsService = class {
       }
     }
     const wa = this.whatsappLogin();
-    return { channels: channels2, pairings: this.pairings(), whatsappLogin: wa.state === "idle" ? null : { state: wa.state } };
+    const configured = Object.keys(channels2).filter((t) => channels2[t]?.configured);
+    return { channels: channels2, pairings: await this.pairings(configured), whatsappLogin: wa.state === "idle" ? null : { state: wa.state } };
   }
   /** `config.get` for the hash, then `config.patch` with one channel block (or its removal). */
   async apply(input) {
@@ -1835,17 +1873,21 @@ var ChannelsService = class {
   }
   /** `openclaw pairing approve <channel> <code>`; OpenClaw has no RPC for this. */
   async approvePairing(input) {
-    const before = this.pairings().find((p) => p.type === input.type && p.code === input.code);
+    const before = (await this.pairings([input.type])).find((p) => p.type === input.type && p.code === input.code);
     const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
+    let approvedId = null;
     try {
-      await this.exec(bin, ["pairing", "approve", input.type, input.code], APPROVE_TIMEOUT_MS);
+      const { stdout } = await this.exec(bin, ["pairing", "approve", input.type, input.code], APPROVE_TIMEOUT_MS);
+      approvedId = /sender\s+(\S+?)\.?\s*$/m.exec(stdout.replace(/\x1b\[[0-9;]*m/g, ""))?.[1] ?? null;
     } catch (err) {
       const e = err;
       const detail = (e.stderr || e.stdout || e.message || "").trim().split("\n").pop() ?? "";
       throw new Error(detail.includes("No pending pairing") ? "That pairing request is gone. Ask the person to message the bot again." : `pairing approve failed: ${detail}`);
     }
-    this.log(`[channels] approved ${input.type} sender ${before?.senderId ?? "?"}`);
-    return { ok: true, senderId: before?.senderId ?? null };
+    this.pairingsCache = null;
+    const senderId = before?.senderId ?? approvedId;
+    this.log(`[channels] approved ${input.type} sender ${senderId ?? "?"}`);
+    return { ok: true, senderId };
   }
   whatsappLogin() {
     const l = this.waLogin;
