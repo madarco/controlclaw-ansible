@@ -2127,6 +2127,11 @@ var LlmService = class {
       failed.push({ what: "model", error: err.message });
     }
     this.modelsCache.clear();
+    const credentialsChanged = input.credentials.some((c) => applied.includes(c.provider)) || input.remove.some((r) => applied.includes(`remove:${r.provider}`));
+    if (credentialsChanged) {
+      const restarted = await this.restartIfAuthStale(input.credentials.map((c) => c.provider));
+      if (restarted) applied.push("restart");
+    }
     this.log(`[llm] applied ${applied.join(", ") || "nothing"}${failed.length ? `; failed ${failed.map((f) => f.what).join(", ")}` : ""}`);
     if (failed.length) {
       const err = new Error(failed.map((f) => `${f.what}: ${f.error}`).join("; "));
@@ -2134,6 +2139,28 @@ var LlmService = class {
       throw err;
     }
     return { ok: true, applied, failed };
+  }
+  /**
+   * True when the gateway already reports auth for every provider we just applied. Otherwise
+   * restart it so it loads the new credential store. Returns whether a restart was run.
+   */
+  async restartIfAuthStale(providers) {
+    let ready = false;
+    try {
+      const r2 = await this.gateway().call("models.authStatus", { refresh: true }, 15e3);
+      const seen = new Set((r2.providers ?? []).map((p) => (str3(p.provider) ?? str3(p.id) ?? "").toLowerCase()));
+      ready = !r2.unavailable && providers.every((p) => seen.has(p.toLowerCase()));
+    } catch (err) {
+      this.log(`[llm] models.authStatus failed after apply: ${err.message}`);
+    }
+    if (ready) return false;
+    if (!this.opts.restartService) {
+      this.log("[llm] gateway does not report the new credential and no restart hook is set");
+      return false;
+    }
+    const r = this.opts.restartService();
+    this.log(r.ok ? "[llm] restarted OpenClaw so it loads the new credential" : `[llm] restart failed: ${r.error ?? "unknown"}`);
+    return r.ok;
   }
   /** What the box has right now, from the config and `models.authStatus`. No secrets. */
   async status() {
@@ -2394,5 +2421,5 @@ server.listen(PORT, BIND, () => {
     client,
     credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`
   });
-  llm = new LlmService({ client });
+  llm = new LlmService({ client, restartService: () => runAction("restart") });
 });
