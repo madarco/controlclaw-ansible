@@ -1700,6 +1700,7 @@ var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
 var APPROVE_TIMEOUT_MS = 3e4;
 var WA_QR_TIMEOUT_MS = 12e4;
 var WA_QR_STALE_MS = 15e4;
+var WA_RESULT_TTL_MS = 10 * 6e4;
 function defaultExec(file, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     execFile3(file, args, { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } }, (err, stdout, stderr) => {
@@ -1851,6 +1852,9 @@ var ChannelsService = class {
     if (l.state === "qr" && this.now() - l.at > WA_QR_STALE_MS) {
       return { state: "expired", qrDataUrl: null, message: "The QR code expired. Start again." };
     }
+    if (l.state !== "idle" && l.state !== "qr" && this.now() - l.at > WA_RESULT_TTL_MS) {
+      return { state: "idle", qrDataUrl: null, message: null };
+    }
     return { state: l.state, qrDataUrl: l.qrDataUrl, message: l.message };
   }
   /**
@@ -1872,7 +1876,7 @@ var ChannelsService = class {
     try {
       const r = await gw.call("web.login.wait", { timeoutMs: WA_QR_TIMEOUT_MS }, WA_QR_TIMEOUT_MS + 1e4);
       if (!r.connected) {
-        this.waLogin = { ...this.waLogin, state: "expired", qrDataUrl: null, message: r.message ?? "Not scanned in time" };
+        this.waLogin = { ...this.waLogin, state: "expired", qrDataUrl: null, message: r.message ?? "Not scanned in time", at: this.now() };
         return;
       }
       let self = null;
@@ -1881,9 +1885,9 @@ var ChannelsService = class {
       } catch {
       }
       await this.apply({ type: "whatsapp", settings: { personal: this.waLogin.personal, self } });
-      this.waLogin = { ...this.waLogin, state: "connected", qrDataUrl: null, message: self ? `Linked ${self}` : "Linked" };
+      this.waLogin = { ...this.waLogin, state: "connected", qrDataUrl: null, message: self ? `Linked ${self}` : "Linked", at: this.now() };
     } catch (err) {
-      this.waLogin = { ...this.waLogin, state: "failed", qrDataUrl: null, message: err.message };
+      this.waLogin = { ...this.waLogin, state: "failed", qrDataUrl: null, message: err.message, at: this.now() };
       this.log(`[channels] whatsapp login failed: ${err.message}`);
     }
   }
