@@ -333,6 +333,11 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
                     if placeholder in flow.request.query[k]:
                         flow.request.query[k] = flow.request.query[k].replace(placeholder, secret)
                         hit = True
+            elif loc == "path":
+                # Some APIs carry the token in the URL itself (Telegram: /bot<token>/method).
+                if placeholder in flow.request.path:
+                    flow.request.path = flow.request.path.replace(placeholder, secret)
+                    hit = True
             elif loc == "body":
                 try:
                     text = flow.request.get_text(strict=False) or ""

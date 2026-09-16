@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --target node22 --clean",
     "dev": "tsx src/index.ts",
-    "test": "tsx --test src/*.test.ts src/routes/*.test.ts"
+    "test": "tsx --test src/*.test.ts src/routes/*.test.ts && tsx src/channels.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

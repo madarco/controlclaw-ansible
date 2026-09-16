@@ -1,6 +1,6 @@
 // src/index.ts
 import { createServer } from "http";
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "fs";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync8 } from "fs";
 
 // ../secret-store/dist/index.js
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
@@ -72,20 +72,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a, b) {
   return (a & 15) + (a >> 6 | a >> 3 & 8) << 4 | (b & 15) + (b >> 6 | b >> 3 & 8);
 }
-function writeHexToUInt8(buf, str) {
-  const size = str.length >> 1;
+function writeHexToUInt8(buf, str2) {
+  const size = str2.length >> 1;
   for (let i = 0; i < size; i++) {
     const index = i << 1;
-    buf[i] = hexCharCodesToInt(str.charCodeAt(index), str.charCodeAt(index + 1));
+    buf[i] = hexCharCodesToInt(str2.charCodeAt(index), str2.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str, buf) {
-  if (str.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str2, buf) {
+  if (str2.length !== buf.length * 2) {
     return false;
   }
   for (let i = 0; i < buf.length; i++) {
     const strIndex = i << 1;
-    if (buf[i] !== hexCharCodesToInt(str.charCodeAt(strIndex), str.charCodeAt(strIndex + 1))) {
+    if (buf[i] !== hexCharCodesToInt(str2.charCodeAt(strIndex), str2.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -1984,8 +1984,8 @@ var day = hour * 24;
 var week = day * 7;
 var year = day * 365.25;
 var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
-function secs(str) {
-  const matched = REGEX.exec(str);
+function secs(str2) {
+  const matched = REGEX.exec(str2);
   if (!matched || matched[4] && matched[1]) {
     throw new TypeError("Invalid time period format");
   }
@@ -2388,9 +2388,11 @@ var FirewallControl = class {
     this.exec = opts.execImpl ?? defaultExec;
     this.actionTimeoutMs = opts.actionTimeoutMs ?? 3e4;
     this.log = opts.log ?? ((line) => console.log(line));
+    this.handlers = opts.handlers ?? {};
   }
   inFlight = false;
-  pendingResult;
+  pendingResults = [];
+  runs = /* @__PURE__ */ new Set();
   backoffMs = 0;
   nextAttemptAt = 0;
   down = false;
@@ -2400,6 +2402,7 @@ var FirewallControl = class {
   exec;
   actionTimeoutMs;
   log;
+  handlers;
   /** `systemctl is-active` exits non-zero when the unit is not active; the state is still on stdout. */
   proxyStatus() {
     let out;
@@ -2414,27 +2417,53 @@ var FirewallControl = class {
     if (s === "failed") return "failed";
     return "inactive";
   }
-  /** One heartbeat; runs a returned command and beats again at once to report it. */
+  /** One heartbeat; a returned command runs in the background and reports on a beat of its own. */
   async tick() {
     if (this.inFlight) return;
     if (Date.now() < this.nextAttemptAt) return;
     this.inFlight = true;
     try {
       const command = await this.beat();
-      if (command) {
-        this.pendingResult = this.run(command.id, command.action);
-        await this.beat();
-      }
+      if (command) this.launch(command);
     } finally {
       this.inFlight = false;
     }
   }
+  /** Test hook: wait for background commands and their reporting beats. */
+  async drain() {
+    while (this.runs.size > 0) await Promise.all([...this.runs]);
+  }
+  launch(command) {
+    const run = this.execute(command).then(async (result) => {
+      this.pendingResults.push(result);
+      await this.tick();
+    }).finally(() => this.runs.delete(run));
+    this.runs.add(run);
+  }
+  async execute(command) {
+    if (ACTIONS.has(command.action)) return this.runService(command.id, command.action);
+    const handler = this.handlers[command.action];
+    if (!handler) {
+      this.log(`[firewall] unknown command ${command.action} (${command.id})`);
+      return { command_id: command.id, ok: false, status: "failed", message: `unknown command ${command.action}` };
+    }
+    this.log(`[firewall] ${command.action} (command ${command.id})`);
+    try {
+      const outcome = await handler(command.payload);
+      return { command_id: command.id, ...outcome, message: outcome.message ?? "" };
+    } catch (err) {
+      const message2 = (err.message ?? "command failed").slice(0, 500);
+      this.log(`[firewall] ${command.action} failed: ${message2}`);
+      return { command_id: command.id, ok: false, status: "failed", message: message2 };
+    }
+  }
   async beat() {
+    const results = this.pendingResults;
     const body = {
       proxy: this.proxyStatus(),
       agent_version: this.opts.agentVersion,
       uptime_s: Math.round((Date.now() - this.startedAt) / 1e3),
-      ...this.pendingResult ? { result: this.pendingResult } : {}
+      ...results.length ? { results } : {}
     };
     let res;
     try {
@@ -2451,7 +2480,7 @@ var FirewallControl = class {
       this.fail(`HTTP ${res.status}`);
       return null;
     }
-    this.pendingResult = void 0;
+    this.pendingResults = this.pendingResults.filter((r) => !results.includes(r));
     if (this.down) {
       this.log("[firewall] control channel back");
       this.down = false;
@@ -2459,10 +2488,11 @@ var FirewallControl = class {
     this.backoffMs = 0;
     const data = await res.json().catch(() => ({}));
     const c = data.command;
-    if (!c || typeof c.id !== "string" || typeof c.action !== "string" || !ACTIONS.has(c.action)) return null;
-    return { id: c.id, action: c.action };
+    if (!c || typeof c.id !== "string" || typeof c.action !== "string") return null;
+    const payload = c.payload && typeof c.payload === "object" ? c.payload : {};
+    return { id: c.id, action: c.action, payload };
   }
-  run(id, action) {
+  async runService(id, action) {
     this.log(`[firewall] ${action} ${this.service} (command ${id})`);
     try {
       this.exec(`sudo systemctl ${action} ${this.service}`, this.actionTimeoutMs);
@@ -2486,8 +2516,386 @@ var FirewallControl = class {
   }
 };
 
+// src/channels.ts
+import { createHash, randomInt, timingSafeEqual } from "crypto";
+
+// src/channel-store.ts
+import { createCipheriv as createCipheriv2, createDecipheriv as createDecipheriv2, randomBytes as randomBytes2 } from "crypto";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync5, renameSync, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname2 } from "path";
+var EMPTY_STORE = { version: 1, agents: {} };
+var NONCE_BYTES2 = 12;
+var TAG_BYTES2 = 16;
+function aad2(ids2) {
+  return Buffer.from(`${ids2.orgId}:${ids2.boxId}:channels`, "utf8");
+}
+function encryptStore(store, boxKeyB64, ids2) {
+  const key = Buffer.from(boxKeyB64, "base64");
+  const nonce = randomBytes2(NONCE_BYTES2);
+  const cipher = createCipheriv2("aes-256-gcm", key, nonce);
+  cipher.setAAD(aad2(ids2));
+  const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(store), "utf8")), cipher.final(), cipher.getAuthTag()]);
+  return JSON.stringify({ alg: "AES-256-GCM", nonce: nonce.toString("base64"), ct: ct.toString("base64") });
+}
+function decryptStore(raw, boxKeyB64, ids2) {
+  const { nonce, ct } = JSON.parse(raw);
+  const key = Buffer.from(boxKeyB64, "base64");
+  const buf = Buffer.from(ct, "base64");
+  const decipher = createDecipheriv2("aes-256-gcm", key, Buffer.from(nonce, "base64"));
+  decipher.setAAD(aad2(ids2));
+  decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES2));
+  const pt = Buffer.concat([decipher.update(buf.subarray(0, buf.length - TAG_BYTES2)), decipher.final()]);
+  const parsed = JSON.parse(pt.toString("utf8"));
+  return parsed.version === 1 && parsed.agents ? parsed : { ...EMPTY_STORE };
+}
+function loadChannelStore(path, boxKeyB64, ids2) {
+  if (!existsSync4(path)) return { version: 1, agents: {} };
+  return decryptStore(readFileSync5(path, "utf8"), boxKeyB64, ids2);
+}
+function saveChannelStore(path, store, boxKeyB64, ids2) {
+  mkdirSync3(dirname2(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync4(tmp, encryptStore(store, boxKeyB64, ids2), { mode: 384 });
+  renameSync(tmp, path);
+}
+
+// src/channels.ts
+var CODE_TTL_MS = 10 * 6e4;
+var CODE_ATTEMPTS = 5;
+var NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
+function summarize(p) {
+  const name = NAMES[p.type];
+  switch (p.kind) {
+    case "add":
+      return `Add a ${name} bot (${p.hint ?? "token"})`;
+    case "replace":
+      return `Replace the ${name} token (${p.hint ?? "new token"})`;
+    case "remove":
+      return `Remove ${name}`;
+    case "approve_pairing":
+      return `Approve ${name} sender ${p.pairing?.label ? `${p.pairing.label} (${p.pairing.senderId})` : p.pairing?.senderId ?? "?"}`;
+    case "whatsapp_login":
+      return p.settings?.personal ? "Connect WhatsApp by QR (personal number)" : "Connect WhatsApp by QR";
+  }
+}
+function codeMessage(agentName, summary, code) {
+  const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
+  return `ControlClaw: confirm this change to ${agentName}?
+${summary}
+Code: ${pretty}
+Expires in 10 minutes. If you did not ask for this, ignore it and check your ControlClaw console.`;
+}
+function placeholderFor(type, vmId, which = "bot") {
+  return `__cc_${type}_${which}_${vmId}`;
+}
+function sha256(s) {
+  return createHash("sha256").update(s).digest("hex");
+}
+function isKind(v) {
+  return v === "add" || v === "replace" || v === "remove" || v === "approve_pairing" || v === "whatsapp_login";
+}
+function isType(v) {
+  return v === "telegram" || v === "slack" || v === "whatsapp";
+}
+function str(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function parseProposal(payload) {
+  const changeId = str(payload.changeId);
+  const vmId = str(payload.vmId);
+  const hostname = str(payload.hostname);
+  if (!changeId || !vmId || !hostname || !isKind(payload.kind) || !isType(payload.type)) {
+    throw new Error("malformed channels.propose payload");
+  }
+  const pairing = payload.pairing;
+  const settings = payload.settings;
+  const secret = payload.secret;
+  return {
+    changeId,
+    vmId,
+    agentName: str(payload.agentName) ?? vmId,
+    hostname,
+    kind: payload.kind,
+    type: payload.type,
+    hint: str(payload.hint),
+    label: str(payload.label),
+    ...pairing && str(pairing.code) && str(pairing.senderId) ? { pairing: { code: String(pairing.code), senderId: String(pairing.senderId), label: str(pairing.label) } } : {},
+    ...settings ? { settings: { personal: settings.personal === true } } : {},
+    ...secret ? { secret: { botToken: str(secret.botToken) ?? void 0, appToken: str(secret.appToken) ?? void 0 } } : {}
+  };
+}
+var ChannelsFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
+    this.makeCode = opts.makeCode ?? (() => String(randomInt(0, 1e6)).padStart(6, "0"));
+    this.store = loadChannelStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  pending = /* @__PURE__ */ new Map();
+  // by agent vmId
+  log;
+  now;
+  makeCode;
+  handlers() {
+    return {
+      "channels.propose": (p) => this.propose(p),
+      "channels.confirm": (p) => this.confirm(p),
+      "channels.cancel": (p) => this.cancel(p),
+      "channels.push": (p) => this.push(p)
+    };
+  }
+  /** Proxy credential entries for placeholder-mode channels (merged into credentials.json). */
+  credentials() {
+    if (!this.opts.placeholderSwap) return [];
+    const out = [];
+    for (const [vmId, agent] of Object.entries(this.store.agents)) {
+      const tg = agent.channels.telegram;
+      if (tg?.secrets.botToken) {
+        out.push({ placeholder: placeholderFor("telegram", vmId), match_domain: "api.telegram.org", secret: tg.secrets.botToken, locations: ["path"], vm_id: vmId });
+      }
+      const sl = agent.channels.slack;
+      if (sl?.secrets.botToken) {
+        out.push({ placeholder: placeholderFor("slack", vmId, "bot"), match_domain: "slack.com", secret: sl.secrets.botToken, locations: ["header:authorization"], vm_id: vmId });
+      }
+      if (sl?.secrets.appToken) {
+        out.push({ placeholder: placeholderFor("slack", vmId, "app"), match_domain: "slack.com", secret: sl.secrets.appToken, locations: ["header:authorization"], vm_id: vmId });
+      }
+    }
+    return out;
+  }
+  /** What the console may see: no secrets. */
+  summary() {
+    const out = [];
+    for (const [vmId, agent] of Object.entries(this.store.agents)) {
+      for (const [type, ch] of Object.entries(agent.channels)) {
+        if (ch) out.push({ vmId, type, hint: ch.hint, approvedSenders: agent.approvedSenders.length });
+      }
+    }
+    return out;
+  }
+  save() {
+    saveChannelStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  agentOf(vmId, name, hostname) {
+    let a = this.store.agents[vmId];
+    if (!a) {
+      a = { name: name ?? vmId, hostname: hostname ?? null, channels: {}, approvedSenders: [] };
+      this.store.agents[vmId] = a;
+    }
+    if (name) a.name = name;
+    if (hostname) a.hostname = hostname;
+    return a;
+  }
+  target(vmId, hostname) {
+    const known = this.opts.identities().find((i) => i.vm_id === vmId);
+    const host = hostname ?? known?.hostname ?? this.store.agents[vmId]?.hostname ?? null;
+    if (!host) throw new Error("This agent has no hostname yet.");
+    return { vmId, hostname: host };
+  }
+  // ---- commands ----
+  async propose(payload) {
+    const p = parseProposal(payload);
+    const agent = this.agentOf(p.vmId, p.agentName, p.hostname);
+    const summary = summarize(p);
+    const data = { changeId: p.changeId, summary };
+    if (agent.approvedSenders.length === 0) {
+      this.pending.delete(p.vmId);
+      const applied = await this.apply(p);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const code = this.makeCode();
+    const text = codeMessage(p.agentName, summary, code);
+    const target = this.target(p.vmId, p.hostname);
+    let sentVia = null;
+    let lastError = "";
+    for (const sender of agent.approvedSenders) {
+      try {
+        await this.opts.agent.post(target, "/channels/send", { type: sender.type, to: sender.id, text });
+        sentVia = `${sender.type}:${sender.label ?? sender.id}`;
+        break;
+      } catch (err) {
+        lastError = err.message;
+        this.log(`[channels] could not send the code via ${sender.type}: ${lastError}`);
+      }
+    }
+    if (!sentVia) {
+      return {
+        ok: false,
+        status: "failed",
+        message: `Could not reach you on any connected channel (${lastError || "no sender answered"}). Make sure the agent is running, then try again.`,
+        data
+      };
+    }
+    const expiresAt = this.now() + CODE_TTL_MS;
+    this.pending.set(p.vmId, { proposal: p, codeHash: sha256(code), attemptsLeft: CODE_ATTEMPTS, expiresAt, sentVia });
+    this.log(`[channels] code sent for ${p.kind} ${p.type} on ${p.agentName} via ${sentVia}`);
+    return {
+      ok: true,
+      status: "awaiting_code",
+      data: { ...data, sentVia, expiresAt: new Date(expiresAt).toISOString(), attemptsLeft: CODE_ATTEMPTS }
+    };
+  }
+  async confirm(payload) {
+    const changeId = str(payload.changeId);
+    const vmId = str(payload.vmId);
+    const code = str(payload.code)?.replace(/\s+/g, "") ?? "";
+    if (!changeId || !vmId) throw new Error("malformed channels.confirm payload");
+    const pending = this.pending.get(vmId);
+    const data = { changeId };
+    if (!pending || pending.proposal.changeId !== changeId) {
+      return { ok: false, status: "expired", message: "No change is waiting for a code.", data };
+    }
+    if (this.now() > pending.expiresAt) {
+      this.pending.delete(vmId);
+      return { ok: false, status: "expired", message: "The code expired.", data };
+    }
+    const given = Buffer.from(sha256(code));
+    const want = Buffer.from(pending.codeHash);
+    if (given.length !== want.length || !timingSafeEqual(given, want)) {
+      pending.attemptsLeft -= 1;
+      if (pending.attemptsLeft <= 0) this.pending.delete(vmId);
+      return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: pending.attemptsLeft } };
+    }
+    this.pending.delete(vmId);
+    const applied = await this.apply(pending.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize(pending.proposal), sentVia: pending.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str(payload.changeId);
+    const vmId = str(payload.vmId);
+    if (vmId && this.pending.get(vmId)?.proposal.changeId === changeId) this.pending.delete(vmId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  async push(payload) {
+    const vmId = str(payload.vmId);
+    if (!vmId) throw new Error("malformed channels.push payload");
+    const agent = this.store.agents[vmId];
+    if (!agent) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    if (str(payload.hostname)) agent.hostname = String(payload.hostname);
+    const target = this.target(vmId, agent.hostname);
+    const applied = [];
+    const failed = [];
+    for (const [type, ch] of Object.entries(agent.channels)) {
+      if (!ch) continue;
+      try {
+        await this.opts.agent.post(target, "/channels/apply", this.applyBody(vmId, type, ch.secrets, ch.settings));
+        applied.push(type);
+      } catch (err) {
+        failed.push({ type, error: err.message });
+      }
+    }
+    this.log(`[channels] re-applied ${applied.length} channel(s) on ${agent.name}${failed.length ? `, ${failed.length} failed` : ""}`);
+    return { ok: failed.length === 0, status: failed.length ? "failed" : "applied", message: failed.map((f) => `${f.type}: ${f.error}`).join("; "), data: { vmId, applied, failed } };
+  }
+  // ---- applying ----
+  applyBody(vmId, type, secrets, settings) {
+    if (type === "whatsapp") return { type, settings };
+    if (!this.opts.placeholderSwap) return { type, secrets };
+    const swapped = {};
+    if (secrets.botToken) swapped.botToken = placeholderFor(type, vmId, "bot");
+    if (secrets.appToken) swapped.appToken = placeholderFor(type, vmId, "app");
+    return { type, secrets: swapped };
+  }
+  async apply(p) {
+    const agent = this.agentOf(p.vmId, p.agentName, p.hostname);
+    const target = this.target(p.vmId, p.hostname);
+    const mode = this.opts.placeholderSwap && p.type !== "whatsapp" ? "placeholder" : "plain";
+    switch (p.kind) {
+      case "add":
+      case "replace": {
+        if (!p.secret?.botToken) throw new Error("no token in the proposal");
+        if (p.type === "slack" && !p.secret.appToken) throw new Error("Slack needs both a bot token and an app token");
+        const secrets = { botToken: p.secret.botToken, ...p.secret.appToken ? { appToken: p.secret.appToken } : {} };
+        agent.channels[p.type] = { secrets, settings: {}, hint: p.hint, label: p.label, updatedAt: new Date(this.now()).toISOString() };
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        await this.opts.agent.post(target, "/channels/apply", this.applyBody(p.vmId, p.type, secrets, {}));
+        return { mode };
+      }
+      case "remove": {
+        await this.opts.agent.post(target, "/channels/apply", { type: p.type, remove: true });
+        delete agent.channels[p.type];
+        agent.approvedSenders = agent.approvedSenders.filter((s) => s.type !== p.type);
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        return {};
+      }
+      case "approve_pairing": {
+        if (!p.pairing) throw new Error("no pairing in the proposal");
+        const r = await this.opts.agent.post(target, "/channels/pairings/approve", { type: p.type, code: p.pairing.code });
+        const id = str(r.senderId) ?? p.pairing.senderId;
+        const sender = { type: p.type, id, label: p.pairing.label, at: new Date(this.now()).toISOString() };
+        if (!agent.approvedSenders.some((s) => s.type === sender.type && s.id === sender.id)) agent.approvedSenders.push(sender);
+        this.save();
+        return { approvedSender: `${sender.type}:${sender.label ?? sender.id}` };
+      }
+      case "whatsapp_login": {
+        const settings = { personal: p.settings?.personal === true };
+        const r = await this.opts.agent.post(target, "/channels/whatsapp/login", settings);
+        agent.channels.whatsapp = { secrets: {}, settings, hint: null, label: p.label, updatedAt: new Date(this.now()).toISOString() };
+        this.save();
+        return { mode: "plain", whatsapp: { state: r.state ?? "qr" } };
+      }
+    }
+  }
+};
+
+// src/agent-client.ts
+import { readFileSync as readFileSync6 } from "fs";
+var AGENT_PATH_PREFIX = "/__cc/agent";
+var TIMEOUT_MS = 25e3;
+function makeAgentTokenSigner(keysDir, boxId) {
+  const read = (name) => readFileSync6(`${keysDir}/${name}`, "utf-8").trim();
+  return async (agentVmId) => {
+    const key = await importPKCS8(read("vm_private_key.pem"), "EdDSA");
+    return new SignJWT({ vmId: agentVmId, purpose: "channels", iss: boxId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
+  };
+}
+function makeAgentClient(opts) {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
+  async function request(agent, method, path, body) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(`https://${agent.hostname}${AGENT_PATH_PREFIX}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${await opts.sign(agent.vmId)}`,
+          ...body ? { "content-type": "application/json" } : {}
+        },
+        body: body ? JSON.stringify(body) : void 0,
+        signal: controller.signal
+      });
+      const text = await res.text();
+      let parsed = {};
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = {};
+      }
+      if (!res.ok) {
+        const detail = typeof parsed.error === "string" ? parsed.error : text.slice(0, 200);
+        throw new Error(res.status === 503 ? "The agent is not running. Start it and try again." : `agent ${res.status}: ${detail}`);
+      }
+      return parsed;
+    } catch (err) {
+      if (err.name === "AbortError") throw new Error("The agent did not answer in time.");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return {
+    post: (agent, path, body) => request(agent, "POST", path, body),
+    get: (agent, path) => request(agent, "GET", path)
+  };
+}
+
 // src/sync.ts
-import { writeFileSync as writeFileSync4, mkdirSync as mkdirSync3, renameSync } from "fs";
+import { writeFileSync as writeFileSync5, mkdirSync as mkdirSync4, renameSync as renameSync2 } from "fs";
 import { join } from "path";
 function decryptToConfig(record, boxKey, ids2) {
   const plaintext = openWithBoxKey(record, boxKey, ids2);
@@ -2495,12 +2903,12 @@ function decryptToConfig(record, boxKey, ids2) {
   return cfg;
 }
 function writeProxyConfig(dir, cfg) {
-  mkdirSync3(dir, { recursive: true });
+  mkdirSync4(dir, { recursive: true });
   const writeAtomic = (name, data) => {
     const tmp = join(dir, `.${name}.tmp`);
     const dst = join(dir, name);
-    writeFileSync4(tmp, JSON.stringify(data, null, 2), { mode: 384 });
-    renameSync(tmp, dst);
+    writeFileSync5(tmp, JSON.stringify(data, null, 2), { mode: 384 });
+    renameSync2(tmp, dst);
   };
   writeAtomic("credentials.json", cfg.credentials ?? []);
   writeAtomic("rules.json", cfg.rules ?? []);
@@ -2508,13 +2916,13 @@ function writeProxyConfig(dir, cfg) {
 }
 
 // src/permissions.ts
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync5, existsSync as existsSync4 } from "fs";
+import { readFileSync as readFileSync7, writeFileSync as writeFileSync6, existsSync as existsSync5 } from "fs";
 var PermissionBridge = class {
   constructor(opts) {
     this.opts = opts;
-    if (existsSync4(opts.grantsPath)) {
+    if (existsSync5(opts.grantsPath)) {
       try {
-        this.grants = JSON.parse(readFileSync5(opts.grantsPath, "utf8"));
+        this.grants = JSON.parse(readFileSync7(opts.grantsPath, "utf8"));
       } catch {
         this.grants = {};
       }
@@ -2532,8 +2940,8 @@ var PermissionBridge = class {
   }
   /** Submit any new pending permission requests to ControlClaw (idempotent). */
   async drainPending() {
-    if (!existsSync4(this.opts.pendingPath)) return;
-    const lines = readFileSync5(this.opts.pendingPath, "utf8").split("\n").filter(Boolean);
+    if (!existsSync5(this.opts.pendingPath)) return;
+    const lines = readFileSync7(this.opts.pendingPath, "utf8").split("\n").filter(Boolean);
     for (const line of lines) {
       let rec;
       try {
@@ -2593,15 +3001,15 @@ var PermissionBridge = class {
       }
     }
     if (changed) {
-      writeFileSync5(this.opts.grantsPath, JSON.stringify(this.grants, null, 2), { mode: 384 });
+      writeFileSync6(this.opts.grantsPath, JSON.stringify(this.grants, null, 2), { mode: 384 });
       console.log(`[perm] wrote ${Object.keys(this.grants).length} grant(s)`);
     }
   }
 };
 
 // src/activity.ts
-import { closeSync, existsSync as existsSync5, fstatSync, mkdirSync as mkdirSync4, openSync, readSync, readFileSync as readFileSync6, renameSync as renameSync2, statSync, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname2, join as join2 } from "path";
+import { closeSync, existsSync as existsSync6, fstatSync, mkdirSync as mkdirSync5, openSync, readSync, readFileSync as readFileSync8, renameSync as renameSync3, statSync, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname3, join as join2 } from "path";
 var MAX_CHUNK = 4 * 1024 * 1024;
 var ActivityShipper = class {
   constructor(opts) {
@@ -2617,17 +3025,17 @@ var ActivityShipper = class {
   fetchImpl;
   loadCursor() {
     try {
-      const c = JSON.parse(readFileSync6(this.opts.cursorPath, "utf8"));
+      const c = JSON.parse(readFileSync8(this.opts.cursorPath, "utf8"));
       if (typeof c.inode === "number" && typeof c.offset === "number") return c;
     } catch {
     }
     return { inode: 0, offset: 0 };
   }
   saveCursor() {
-    mkdirSync4(dirname2(this.opts.cursorPath), { recursive: true });
-    const tmp = join2(dirname2(this.opts.cursorPath), ".activity.cursor.tmp");
-    writeFileSync6(tmp, JSON.stringify(this.cursor), { mode: 384 });
-    renameSync2(tmp, this.opts.cursorPath);
+    mkdirSync5(dirname3(this.opts.cursorPath), { recursive: true });
+    const tmp = join2(dirname3(this.opts.cursorPath), ".activity.cursor.tmp");
+    writeFileSync7(tmp, JSON.stringify(this.cursor), { mode: 384 });
+    renameSync3(tmp, this.opts.cursorPath);
   }
   /** One pass: ship everything unshipped, one batch at a time, until caught up or an error. */
   inFlight = false;
@@ -2635,7 +3043,7 @@ var ActivityShipper = class {
     const total = { read: 0, accepted: 0, duplicates: 0, skipped: 0 };
     if (this.inFlight) return total;
     if (Date.now() < this.nextAttemptAt) return total;
-    if (!existsSync5(this.opts.logPath)) return total;
+    if (!existsSync6(this.opts.logPath)) return total;
     this.inFlight = true;
     try {
       return await this.tickInner(total);
@@ -2648,7 +3056,7 @@ var ActivityShipper = class {
     const liveInode = Number(live.ino);
     if (this.cursor.inode && this.cursor.inode !== liveInode) {
       const rotated = this.opts.logPath + ".1";
-      if (existsSync5(rotated) && Number(statSync(rotated).ino) === this.cursor.inode) {
+      if (existsSync6(rotated) && Number(statSync(rotated).ino) === this.cursor.inode) {
         const done = await this.shipFrom(rotated, total);
         if (!done) return total;
       }
@@ -2773,11 +3181,11 @@ async function requireAuth(req, res) {
 }
 
 // src/ready.ts
-import { readFileSync as readFileSync7 } from "fs";
+import { readFileSync as readFileSync9 } from "fs";
 var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 function readKeyFile(name) {
   try {
-    return readFileSync7(`${KEYS_DIR}/${name}`, "utf-8").trim();
+    return readFileSync9(`${KEYS_DIR}/${name}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -2834,6 +3242,8 @@ var ACTIVITY_CURSOR_PATH = process.env.ACTIVITY_CURSOR_PATH ?? `${TRAFFIC_LOG_PA
 var ACTIVITY_POLL_MS = parseInt(process.env.ACTIVITY_POLL_MS ?? "5000", 10);
 var FIREWALL_URL = process.env.FIREWALL_URL ?? "";
 var FIREWALL_POLL_MS = parseInt(process.env.FIREWALL_POLL_MS ?? "5000", 10);
+var CHANNEL_STORE_PATH = process.env.CHANNEL_STORE_PATH ?? "/opt/controlclaw/state/channels.enc";
+var CHANNELS_PLACEHOLDER_SWAP = process.env.CHANNELS_PLACEHOLDER_SWAP === "1";
 var AGENT_VERSION = process.env.MITM_AGENT_VERSION ?? "0.1.0";
 var SHIP_ONCE = process.env.SHIP_ONCE === "1";
 var ORG_ID = process.env.ORG_ID ?? "";
@@ -2850,6 +3260,8 @@ function die(msg) {
 }
 var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http") || FIREWALL_URL.startsWith("http");
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
+var identities = [];
+var channels = null;
 async function runSync(boxKey) {
   const store = makeStoreClient(STORE_URL, getToken);
   const record = await store.fetchRecord();
@@ -2859,6 +3271,10 @@ async function runSync(boxKey) {
   }
   if (IDENTITIES_URL) {
     cfg.identities = await fetchIdentities(IDENTITIES_URL, getToken);
+    identities = cfg.identities;
+  }
+  if (channels) {
+    cfg.credentials = [...cfg.credentials ?? [], ...channels.credentials()];
   }
   writeProxyConfig(PROXY_CONFIG_DIR, cfg);
   console.log(
@@ -2876,7 +3292,7 @@ async function maybeMigrate() {
     sourceIds: { orgId: ORG_ID, boxId: MIGRATE_SOURCE_BOX_ID },
     newBoxId: BOX_ID
   });
-  writeFileSync7(BOX_KEY_PATH, boxKey, { mode: 384 });
+  writeFileSync8(BOX_KEY_PATH, boxKey, { mode: 384 });
   await makeStoreClient(STORE_URL).putRecord(record);
   console.log(`[mitm-agent] migrated to v${record.version} under a fresh box key`);
   return boxKey;
@@ -2908,6 +3324,22 @@ async function main() {
   } catch (err) {
     die(`migration failed: ${err.message}`);
   }
+  if (FIREWALL_URL && getToken) {
+    try {
+      channels = new ChannelsFirewall({
+        storePath: CHANNEL_STORE_PATH,
+        boxKey,
+        ids,
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+        identities: () => identities,
+        placeholderSwap: CHANNELS_PLACEHOLDER_SWAP,
+        onCredentialsChanged: () => runSync(boxKey)
+      });
+      console.log(`[mitm-agent] channel store loaded (${channels.summary().length} channel(s), placeholder swap ${CHANNELS_PLACEHOLDER_SWAP ? "on" : "off"})`);
+    } catch (err) {
+      console.error(`[mitm-agent] channel store unreadable, channel commands disabled: ${err.message}`);
+    }
+  }
   try {
     await runSync(boxKey);
   } catch (err) {
@@ -2919,7 +3351,7 @@ async function main() {
     process.exit(0);
   }
   try {
-    setSaasPublicKey(readFileSync8(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+    setSaasPublicKey(readFileSync10(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
   } catch (err) {
     die(`failed to load SaaS public key: ${err.message}`);
   }
@@ -2951,7 +3383,7 @@ async function main() {
     if (CA_CERT_PATH && CA_URL && getToken) {
       void (async () => {
         try {
-          const caCert = readFileSync8(CA_CERT_PATH, "utf8");
+          const caCert = readFileSync10(CA_CERT_PATH, "utf8");
           const caSig = signDetached(KEYS_DIR2, caCert);
           const res = await fetch(CA_URL, {
             method: "POST",
@@ -2981,7 +3413,12 @@ async function main() {
       setInterval(() => void shipper.tick().catch((e) => console.error("[activity] tick:", e.message)), ACTIVITY_POLL_MS);
     }
     if (FIREWALL_URL && getToken) {
-      const control = new FirewallControl({ firewallUrl: FIREWALL_URL, getToken, agentVersion: AGENT_VERSION });
+      const control = new FirewallControl({
+        firewallUrl: FIREWALL_URL,
+        getToken,
+        agentVersion: AGENT_VERSION,
+        handlers: channels?.handlers() ?? {}
+      });
       console.log("[mitm-agent] firewall control enabled");
       setInterval(() => void control.tick().catch((e) => console.error("[firewall] tick:", e.message)), FIREWALL_POLL_MS);
       void control.tick().catch((e) => console.error("[firewall] tick:", e.message));

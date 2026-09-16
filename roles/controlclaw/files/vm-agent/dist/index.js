@@ -1,13 +1,19 @@
 // src/index.ts
 import { createServer } from "http";
-import { readFileSync as readFileSync9 } from "fs";
+import { readFileSync as readFileSync10 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
 var saasPublicKey = null;
 var ownVmId = null;
+var mitmPinnedKey = null;
+var mitmPinnedKeyLoader = null;
 function setSaasPublicKey(key) {
   saasPublicKey = key;
+}
+function setMitmPinnedKeyLoader(loader) {
+  mitmPinnedKeyLoader = loader;
+  mitmPinnedKey = null;
 }
 function setOwnVmId(id) {
   ownVmId = id;
@@ -36,6 +42,22 @@ async function verifyLoginToken(token, vmId) {
   if (!payload || payload.purpose !== "browser-login" || payload.vmId !== vmId) return null;
   if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
   return payload;
+}
+async function verifyMitmRequest(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  if (!mitmPinnedKey && mitmPinnedKeyLoader) mitmPinnedKey = mitmPinnedKeyLoader();
+  if (!mitmPinnedKey) return null;
+  try {
+    const key = await importSPKI(mitmPinnedKey, "EdDSA");
+    const { payload } = await jwtVerify(authHeader.slice(7), key, { algorithms: ["EdDSA"] });
+    const p = payload;
+    if (p.purpose !== "channels" || typeof p.vmId !== "string") return null;
+    if (ownVmId && p.vmId !== ownVmId) return null;
+    return { vmId: p.vmId, iss: typeof p.iss === "string" ? p.iss : "" };
+  } catch {
+    return null;
+  }
 }
 async function requireAuth(req, res) {
   const payload = await verifyRequest(req);
@@ -104,6 +126,41 @@ function consumeJti(jti, expSeconds) {
 import { execFile } from "child_process";
 import { readFileSync as readFileSync2 } from "fs";
 import { join as join2 } from "path";
+
+// src/http.ts
+async function readJsonBody(req, limit = 16384) {
+  return new Promise((resolve) => {
+    let data = "";
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      resolve(v);
+    };
+    req.on("data", (chunk) => {
+      data += chunk.toString("utf8");
+      if (data.length > limit) {
+        finish(null);
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        const parsed = JSON.parse(data);
+        finish(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null);
+      } catch {
+        finish(null);
+      }
+    });
+    req.on("error", () => finish(null));
+  });
+}
+function sendJson(res, status, body, extraHeaders = {}) {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders });
+  res.end(JSON.stringify(body));
+}
+
+// src/routes/access.ts
 var DASHBOARD_TIMEOUT_MS = 2e4;
 function keysDir() {
   return process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
@@ -201,26 +258,6 @@ var DENIED_PAGE = shell(
 <p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Open again.</p>
 <a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
 );
-async function readJsonBody(req, limit = 8192) {
-  return new Promise((resolve) => {
-    let data = "";
-    req.on("data", (chunk) => {
-      data += chunk.toString("utf8");
-      if (data.length > limit) {
-        resolve(null);
-        req.destroy();
-      }
-    });
-    req.on("end", () => {
-      try {
-        resolve(JSON.parse(data));
-      } catch {
-        resolve(null);
-      }
-    });
-    req.on("error", () => resolve(null));
-  });
-}
 function dashboardBootstrapUrl(hostname) {
   return new Promise((resolve) => {
     execFile(
@@ -268,7 +305,7 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/session" && req.method === "POST") {
-    const body = await readJsonBody(req);
+    const body = await readJsonBody(req, 8192);
     const token = typeof body?.token === "string" ? body.token : "";
     const payload = token ? await verifyLoginToken(token, vmId) : null;
     if (!payload) {
@@ -1655,6 +1692,284 @@ var ApprovalsBridge = class {
   }
 };
 
+// src/channels.ts
+import { execFile as execFile3 } from "child_process";
+import { readFileSync as readFileSync9 } from "fs";
+import { randomUUID } from "crypto";
+var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
+var APPROVE_TIMEOUT_MS = 3e4;
+var WA_QR_TIMEOUT_MS = 12e4;
+var WA_QR_STALE_MS = 15e4;
+function defaultExec(file, args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    execFile3(file, args, { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } }, (err, stdout, stderr) => {
+      if (err) {
+        const e = err;
+        e.stdout = String(stdout ?? "");
+        e.stderr = String(stderr ?? "");
+        reject(e);
+      } else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    });
+  });
+}
+function bool(v) {
+  return v === true;
+}
+function str2(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function channelBlock(input) {
+  if ("remove" in input) return null;
+  switch (input.type) {
+    case "telegram":
+      return { enabled: true, botToken: input.secrets.botToken, dmPolicy: "pairing" };
+    case "slack":
+      return { enabled: true, mode: "socket", botToken: input.secrets.botToken, appToken: input.secrets.appToken, dmPolicy: "pairing" };
+    case "whatsapp": {
+      const self = input.settings?.self ?? null;
+      if (input.settings?.personal && self) {
+        return { enabled: true, dmPolicy: "allowlist", allowFrom: [self], selfChatMode: true };
+      }
+      return { enabled: true, dmPolicy: "pairing" };
+    }
+  }
+}
+var ChannelsService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.exec = opts.execImpl ?? defaultExec;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  exec;
+  log;
+  now;
+  waLogin = {
+    state: "idle",
+    qrDataUrl: null,
+    message: null,
+    at: 0,
+    personal: false
+  };
+  gateway() {
+    const c = this.opts.client;
+    if (!c || !c.connected) throw new Error("OpenClaw is not running on this box");
+    return c;
+  }
+  /** Pending DM pairing requests, read from OpenClaw's pairing store files. */
+  pairings() {
+    const out = [];
+    for (const type of CHANNEL_TYPES) {
+      let raw;
+      try {
+        raw = readFileSync9(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
+      } catch {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        for (const r of parsed.requests ?? []) {
+          const senderId = str2(r.id);
+          const code = str2(r.code);
+          if (!senderId || !code) continue;
+          const meta = r.meta ?? {};
+          const label = str2(meta.name) ?? str2(meta.displayName) ?? str2(meta.username) ?? str2(meta.title) ?? null;
+          out.push({ type, code, senderId, label, createdAt: str2(r.createdAt) });
+        }
+      } catch (err) {
+        this.log(`[channels] unreadable ${type}-pairing.json: ${err.message}`);
+      }
+    }
+    return out;
+  }
+  /** Per-channel state from `channels.status`, reduced to what the console needs. */
+  async status() {
+    const channels2 = {};
+    if (this.opts.client?.connected) {
+      const payload = await this.gateway().call("channels.status", { probe: false }, 15e3);
+      for (const type of CHANNEL_TYPES) {
+        const s = payload.channels?.[type];
+        if (!s) continue;
+        const entry = {
+          configured: bool(s.configured),
+          running: bool(s.running),
+          connected: bool(s.connected),
+          lastError: str2(s.lastError)
+        };
+        if (type === "whatsapp") {
+          const self = s.self;
+          entry.self = self?.e164 ?? self?.jid ?? null;
+        }
+        channels2[type] = entry;
+      }
+    }
+    const wa = this.whatsappLogin();
+    return { channels: channels2, pairings: this.pairings(), whatsappLogin: wa.state === "idle" ? null : { state: wa.state } };
+  }
+  /** `config.get` for the hash, then `config.patch` with one channel block (or its removal). */
+  async apply(input) {
+    const block = channelBlock(input);
+    const patch = { channels: { [input.type]: block } };
+    await this.patchConfig(patch);
+    const what = block ? `applied ${input.type}` : `removed ${input.type}`;
+    this.log(`[channels] ${what}`);
+    return { ok: true, message: what };
+  }
+  async patchConfig(patch) {
+    const gw = this.gateway();
+    const snapshot = await gw.call("config.get", {}, 1e4);
+    const baseHash = snapshot.hash;
+    if (!baseHash) throw new Error("OpenClaw returned no config hash");
+    await gw.call("config.patch", { raw: JSON.stringify(patch), baseHash }, 2e4);
+  }
+  /** Deliver a text to a sender over one of the agent's channels. The text is not ours to change. */
+  async send(input) {
+    await this.gateway().call(
+      "send",
+      { channel: input.type, to: input.to, message: input.text, idempotencyKey: randomUUID() },
+      3e4
+    );
+    this.log(`[channels] sent a message on ${input.type}`);
+    return { ok: true };
+  }
+  /** `openclaw pairing approve <channel> <code>`; OpenClaw has no RPC for this. */
+  async approvePairing(input) {
+    const before = this.pairings().find((p) => p.type === input.type && p.code === input.code);
+    const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
+    try {
+      await this.exec(bin, ["pairing", "approve", input.type, input.code], APPROVE_TIMEOUT_MS);
+    } catch (err) {
+      const e = err;
+      const detail = (e.stderr || e.stdout || e.message || "").trim().split("\n").pop() ?? "";
+      throw new Error(detail.includes("No pending pairing") ? "That pairing request is gone. Ask the person to message the bot again." : `pairing approve failed: ${detail}`);
+    }
+    this.log(`[channels] approved ${input.type} sender ${before?.senderId ?? "?"}`);
+    return { ok: true, senderId: before?.senderId ?? null };
+  }
+  whatsappLogin() {
+    const l = this.waLogin;
+    if (l.state === "qr" && this.now() - l.at > WA_QR_STALE_MS) {
+      return { state: "expired", qrDataUrl: null, message: "The QR code expired. Start again." };
+    }
+    return { state: l.state, qrDataUrl: l.qrDataUrl, message: l.message };
+  }
+  /**
+   * Start the QR login and wait for the scan in the background. On connect, the channel block is
+   * written (personal mode allowlists the linked number and turns on self-chat mode).
+   */
+  async whatsappLoginStart(personal) {
+    const gw = this.gateway();
+    const started = await gw.call(
+      "web.login.start",
+      { force: true, timeoutMs: WA_QR_TIMEOUT_MS },
+      3e4
+    );
+    this.waLogin = { state: "qr", qrDataUrl: started.qrDataUrl ?? null, message: started.message ?? null, at: this.now(), personal };
+    void this.waitForWhatsapp(gw);
+    return { ok: true, state: "qr", qrDataUrl: this.waLogin.qrDataUrl };
+  }
+  async waitForWhatsapp(gw) {
+    try {
+      const r = await gw.call("web.login.wait", { timeoutMs: WA_QR_TIMEOUT_MS }, WA_QR_TIMEOUT_MS + 1e4);
+      if (!r.connected) {
+        this.waLogin = { ...this.waLogin, state: "expired", qrDataUrl: null, message: r.message ?? "Not scanned in time" };
+        return;
+      }
+      let self = null;
+      try {
+        self = (await this.status()).channels.whatsapp?.self ?? null;
+      } catch {
+      }
+      await this.apply({ type: "whatsapp", settings: { personal: this.waLogin.personal, self } });
+      this.waLogin = { ...this.waLogin, state: "connected", qrDataUrl: null, message: self ? `Linked ${self}` : "Linked" };
+    } catch (err) {
+      this.waLogin = { ...this.waLogin, state: "failed", qrDataUrl: null, message: err.message };
+      this.log(`[channels] whatsapp login failed: ${err.message}`);
+    }
+  }
+};
+
+// src/routes/channels.ts
+function isType(v) {
+  return typeof v === "string" && CHANNEL_TYPES.includes(v);
+}
+function fail(res, err) {
+  const message = err instanceof Error ? err.message : String(err);
+  const status = /not running|not connected/i.test(message) ? 503 : 500;
+  sendJson(res, status, { ok: false, error: message });
+}
+async function handleChannels(req, res, pathname, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req) : await verifyMitmRequest(req) ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "channel changes must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  if (!service) {
+    sendJson(res, 503, { ok: false, error: "OpenClaw is not running on this box" });
+    return;
+  }
+  try {
+    if (pathname === "/channels/status" && req.method === "GET") {
+      sendJson(res, 200, await service.status());
+      return;
+    }
+    if (pathname === "/channels/whatsapp/login" && req.method === "GET") {
+      sendJson(res, 200, service.whatsappLogin());
+      return;
+    }
+    if (!write) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+    const body = await readJsonBody(req);
+    if (!body) {
+      sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
+      return;
+    }
+    if (pathname === "/channels/apply") {
+      if (!isType(body.type)) return sendJson(res, 400, { ok: false, error: "type must be telegram, slack or whatsapp" });
+      const secrets2 = body.secrets ?? {};
+      let input;
+      if (body.remove === true) input = { type: body.type, remove: true };
+      else if (body.type === "telegram") {
+        if (typeof secrets2.botToken !== "string") return sendJson(res, 400, { ok: false, error: "botToken required" });
+        input = { type: "telegram", secrets: { botToken: secrets2.botToken } };
+      } else if (body.type === "slack") {
+        if (typeof secrets2.botToken !== "string" || typeof secrets2.appToken !== "string")
+          return sendJson(res, 400, { ok: false, error: "botToken and appToken required" });
+        input = { type: "slack", secrets: { botToken: secrets2.botToken, appToken: secrets2.appToken } };
+      } else {
+        const settings = body.settings ?? {};
+        input = { type: "whatsapp", settings: { personal: settings.personal === true, self: typeof settings.self === "string" ? settings.self : null } };
+      }
+      sendJson(res, 200, await service.apply(input));
+      return;
+    }
+    if (pathname === "/channels/send") {
+      if (!isType(body.type) || typeof body.to !== "string" || typeof body.text !== "string" || !body.to || !body.text) {
+        return sendJson(res, 400, { ok: false, error: "type, to and text required" });
+      }
+      sendJson(res, 200, await service.send({ type: body.type, to: body.to, text: body.text.slice(0, 1e3) }));
+      return;
+    }
+    if (pathname === "/channels/pairings/approve") {
+      if (!isType(body.type) || typeof body.code !== "string" || !/^[A-Z0-9-]{4,16}$/i.test(body.code)) {
+        return sendJson(res, 400, { ok: false, error: "type and code required" });
+      }
+      sendJson(res, 200, await service.approvePairing({ type: body.type, code: body.code.toUpperCase() }));
+      return;
+    }
+    if (pathname === "/channels/whatsapp/login") {
+      sendJson(res, 200, await service.whatsappLoginStart(body.personal === true));
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    fail(res, err);
+  }
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -1664,7 +1979,7 @@ var GATEWAY_PORT = parseInt(process.env.OPENCLAW_GATEWAY_PORT ?? "18789", 10);
 var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 try {
-  const saasPublicKey2 = readFileSync9(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync10(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -1672,10 +1987,11 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync9(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync10(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
+setMitmPinnedKeyLoader(() => readKeyFile(KEYS_DIR2, "mitm_pinned_pubkey.pem"));
 try {
   ensureSessionSecret(KEYS_DIR2);
 } catch (err) {
@@ -1703,7 +2019,7 @@ function startGatewayBridge() {
   const base = saasBaseUrl(KEYS_DIR2);
   if (!token || !base) {
     console.log("[gateway] no openclaw_gateway_token / config_api_url in KEYS_DIR: audit + approvals bridge off");
-    return;
+    return null;
   }
   const client = new GatewayClient({ url: `ws://127.0.0.1:${GATEWAY_PORT}`, token });
   const getToken = makeBoxTokenSigner(KEYS_DIR2);
@@ -1719,11 +2035,17 @@ function startGatewayBridge() {
   const oneLine = (tag) => (err) => console.error(`${tag} tick failed: ${err.message}`);
   setInterval(() => void audit.tick().catch(oneLine("[audit]")), AUDIT_POLL_MS);
   setInterval(() => void approvals.tick().catch(oneLine("[approvals]")), APPROVAL_POLL_MS);
+  return client;
 }
+var channels = null;
 var server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url.pathname.startsWith("/__cc/")) {
     await handleAccess(req, res, url.pathname);
+    return;
+  }
+  if (url.pathname.startsWith("/channels/")) {
+    await handleChannels(req, res, url.pathname, channels);
     return;
   }
   if (!await requireAuth(req, res)) return;
@@ -1761,5 +2083,9 @@ var server = createServer(async (req, res) => {
 server.listen(PORT, BIND, () => {
   console.log(`ControlClaw agent listening on ${BIND}:${PORT}`);
   void bootstrap().catch((err) => console.error("[bootstrap] failed:", err));
-  startGatewayBridge();
+  const client = startGatewayBridge();
+  channels = new ChannelsService({
+    client,
+    credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`
+  });
 });
