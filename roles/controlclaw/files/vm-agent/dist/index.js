@@ -2030,29 +2030,9 @@ async function handleChannels(req, res, pathname, service) {
 // src/llm.ts
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
-function codexProviderBlock(value, modelIds) {
-  const ids = modelIds.length ? modelIds : ["gpt-5.6-sol"];
-  return {
-    baseUrl: "https://chatgpt.com/backend-api/codex",
-    api: "openai-chatgpt-responses",
-    auth: "token",
-    apiKey: value,
-    models: ids.map((id) => ({
-      id,
-      name: id,
-      reasoning: true,
-      input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 4e5,
-      maxTokens: 128e3
-    }))
-  };
-}
+var RETIRED_CODEX_PROVIDER_ID = "openai-codex";
 function str3(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
-}
-function modelId(ref) {
-  return ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
 }
 var LlmService = class {
   constructor(opts) {
@@ -2080,8 +2060,8 @@ var LlmService = class {
     const config = snapshot.parsed ?? snapshot.config ?? {};
     return { hash, config: config && typeof config === "object" ? config : {} };
   }
-  async patchConfig(patch) {
-    const { hash } = await this.config();
+  async patchConfig(patch, baseHash) {
+    const hash = baseHash ?? (await this.config()).hash;
     await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash: hash }, 2e4);
   }
   /** Make OpenClaw match the desired state. Applies what it can and reports each failure by name. */
@@ -2092,7 +2072,7 @@ var LlmService = class {
     const providerPatch = {};
     for (const r of input.remove) {
       try {
-        if (r.kind === "oauth" || !r.kind && !r.profileId.includes(":")) providerPatch[r.provider] = null;
+        if (!r.profileId.includes(":")) providerPatch[r.provider] = null;
         else await this.exec(this.bin(), ["models", "auth", "logout", r.profileId, "--yes"], CLI_TIMEOUT_MS2);
         applied.push(`remove:${r.provider}`);
       } catch (err) {
@@ -2103,25 +2083,23 @@ var LlmService = class {
     }
     for (const c of input.credentials) {
       try {
-        if (c.kind === "oauth") {
-          const ids = input.credentials.filter((x) => x.provider === c.provider).map((x) => modelId(x.model));
-          providerPatch[c.provider] = codexProviderBlock(c.value, [...new Set(ids)]);
-        } else {
-          const sub = c.kind === "api_key" ? "paste-api-key" : "paste-token";
-          const args = ["models", "auth", sub, "--provider", c.provider, "--profile-id", c.profileId, ...c.kind === "token" ? ["--expires-in", "365d"] : []];
-          await this.exec(this.bin(), args, CLI_TIMEOUT_MS2, `${c.value}
+        const sub = c.kind === "api_key" ? "paste-api-key" : "paste-token";
+        const args = ["models", "auth", sub, "--provider", c.provider, "--profile-id", c.profileId, ...c.kind !== "api_key" ? ["--expires-in", "365d"] : []];
+        await this.exec(this.bin(), args, CLI_TIMEOUT_MS2, `${c.value}
 `);
-        }
         applied.push(c.provider);
       } catch (err) {
         failed.push({ what: c.provider, error: execFailureLine(err) });
       }
     }
+    const { hash, config } = await this.config();
+    const providers = config.models?.providers;
+    if (providers && RETIRED_CODEX_PROVIDER_ID in providers) providerPatch[RETIRED_CODEX_PROVIDER_ID] = null;
     const patch = {};
     if (Object.keys(providerPatch).length) patch.models = { providers: providerPatch };
     patch.agents = { defaults: { model: input.model.primary ? { primary: input.model.primary, fallbacks: input.model.fallbacks } : null } };
     try {
-      await this.patchConfig(patch);
+      await this.patchConfig(patch, hash);
       applied.push("model");
     } catch (err) {
       failed.push({ what: "model", error: err.message });

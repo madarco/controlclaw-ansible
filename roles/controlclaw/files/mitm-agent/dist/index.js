@@ -2932,7 +2932,9 @@ function isKind2(v) {
   return v === "add" || v === "replace" || v === "remove" || v === "bind" || v === "unbind" || v === "set_model";
 }
 function modelShort(model) {
-  return model.includes("/") ? model.slice(model.indexOf("/") + 1) : model;
+  const at = model.lastIndexOf("@");
+  const bare = at > 0 && model.slice(at + 1).includes(":") ? model.slice(0, at) : model;
+  return bare.includes("/") ? bare.slice(bare.indexOf("/") + 1) : bare;
 }
 function summarize2(p) {
   const a = p.agents[0];
