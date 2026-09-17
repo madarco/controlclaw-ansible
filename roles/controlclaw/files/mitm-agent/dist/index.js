@@ -2913,9 +2913,18 @@ function aad3(ids2) {
 function emptyLlmStore() {
   return { version: 1, credentials: {}, agents: {} };
 }
+function withRoles(store) {
+  for (const agent of Object.values(store.agents)) {
+    const legacy = agent.bindings;
+    if (legacy.every((b) => b.role === "primary" || b.role === "secondary")) continue;
+    const ordered = [...legacy].sort((a, b) => Number(b.isPrimary ?? false) - Number(a.isPrimary ?? false));
+    agent.bindings = ordered.slice(0, 2).map(({ credentialId, model }, i) => ({ credentialId, model, role: i === 0 ? "primary" : "secondary" }));
+  }
+  return store;
+}
 function loadLlmStore(path, boxKeyB64, ids2) {
   const parsed = loadEncryptedJson(path, boxKeyB64, aad3(ids2));
-  return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? parsed : emptyLlmStore();
+  return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? withRoles(parsed) : emptyLlmStore();
 }
 function saveLlmStore(path, store, boxKeyB64, ids2) {
   saveEncryptedJson(path, store, boxKeyB64, aad3(ids2));
@@ -2931,6 +2940,9 @@ function str2(v) {
 function isKind2(v) {
   return v === "add" || v === "replace" || v === "remove" || v === "bind" || v === "unbind" || v === "set_model";
 }
+function roleLabel(role) {
+  return role === "primary" ? "main model" : "fallback";
+}
 function modelShort(model) {
   const at = model.lastIndexOf("@");
   const bare = at > 0 && model.slice(at + 1).includes(":") ? model.slice(0, at) : model;
@@ -2938,6 +2950,7 @@ function modelShort(model) {
 }
 function summarize2(p) {
   const a = p.agents[0];
+  const replaced = p.replaces ? `, replacing ${p.replaces}` : "";
   switch (p.kind) {
     case "add":
       return p.credKind === "oauth" ? `Connect ${p.providerName} (${p.label ?? p.hint ?? "account"})` : `Add ${p.providerName} key (${p.hint ?? "key"})`;
@@ -2946,9 +2959,9 @@ function summarize2(p) {
     case "remove":
       return `Remove ${p.providerName} from the organization`;
     case "bind":
-      return `Use ${p.providerName} ${a ? modelShort(a.model) : ""} on ${a?.name ?? "the agent"}${a?.isPrimary ? " as the main model" : ""}`.replace(/\s+/g, " ");
+      return `Use ${p.providerName} ${a ? modelShort(a.model) : ""} on ${a?.name ?? "the agent"} as the ${roleLabel(a?.role ?? "primary")}${replaced}`.replace(/\s+/g, " ");
     case "set_model":
-      return `Switch ${a?.name ?? "the agent"} to ${p.providerName} ${a ? modelShort(a.model) : ""}`.trim();
+      return `Switch ${a?.name ?? "the agent"}'s ${roleLabel(a?.role ?? "primary")} to ${p.providerName} ${a ? modelShort(a.model) : ""}${replaced}`.replace(/\s+([,.])/g, "$1").trim();
     case "unbind":
       return `Stop using ${p.providerName} on ${a?.name ?? "the agent"}`;
   }
@@ -2991,7 +3004,8 @@ function parseProposal2(payload) {
     profileId: str2(payload.profileId),
     swap: swap && str2(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
     oauth: oauth && str2(oauth.tokenEndpoint) && str2(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId) } : null,
-    agents: agents.filter((a) => str2(a.vmId) && str2(a.model)).map((a) => ({ vmId: String(a.vmId), name: str2(a.name) ?? String(a.vmId), hostname: str2(a.hostname), model: String(a.model), isPrimary: a.isPrimary === true })),
+    replaces: str2(payload.replaces),
+    agents: agents.filter((a) => str2(a.vmId) && str2(a.model)).map((a) => ({ vmId: String(a.vmId), name: str2(a.name) ?? String(a.vmId), hostname: str2(a.hostname), model: String(a.model), role: a.role === "secondary" ? "secondary" : "primary" })),
     secret: parseSecret(payload.secret)
   };
 }
@@ -3130,9 +3144,9 @@ var LlmFirewall = class {
       model: b.model,
       ..."accountId" in c.secret && c.secret.accountId ? { codex: { accountId: c.secret.accountId } } : {}
     }));
-    const primary = bindings.find((b) => b.isPrimary)?.model ?? bindings[0]?.model ?? null;
-    const fallbacks = bindings.map((b) => b.model).filter((m) => m !== primary);
-    return { model: { primary, fallbacks }, credentials, remove };
+    const primary = bindings.find((b) => b.role === "primary") ?? bindings[0];
+    const fallback = bindings.find((b) => b !== primary && b.role === "secondary");
+    return { model: { primary: primary?.model ?? null, fallbacks: fallback ? [fallback.model] : [] }, credentials, remove };
   }
   async pushAgents(vmIds, remove) {
     const failed = [];
@@ -3145,18 +3159,26 @@ var LlmFirewall = class {
     }
     return failed;
   }
+  /**
+   * Put a credential in a slot, moving whoever held it: to the slot this credential vacates (a
+   * swap) or to the free one, and dropping it when there is none — the control plane refuses the
+   * case where the main model has nowhere to go, so only a replaced fallback ever falls out.
+   */
   setBinding(ref, credentialId) {
     const agent = this.agentOf(ref);
-    const others = agent.bindings.filter((b) => b.credentialId !== credentialId);
-    if (ref.isPrimary) for (const o of others) o.isPrimary = false;
-    const isPrimary = ref.isPrimary || others.every((o) => !o.isPrimary);
-    agent.bindings = [...others, { credentialId, model: ref.model, isPrimary }];
+    const other = ref.role === "primary" ? "secondary" : "primary";
+    const rest = agent.bindings.filter((b) => b.credentialId !== credentialId);
+    const holder = rest.find((b) => b.role === ref.role);
+    const kept = rest.filter((b) => b !== holder && b.role === other);
+    const moved = holder && kept.length === 0 ? [{ ...holder, role: other }] : [];
+    agent.bindings = [{ credentialId, model: ref.model, role: ref.role }, ...kept, ...moved];
   }
+  /** Take a credential off an agent. A fallback left alone moves up: it is what the agent answers with. */
   dropBinding(vmId, credentialId) {
     const agent = this.store.agents[vmId];
     if (!agent) return;
     agent.bindings = agent.bindings.filter((b) => b.credentialId !== credentialId);
-    if (agent.bindings.length && !agent.bindings.some((b) => b.isPrimary)) agent.bindings[0].isPrimary = true;
+    if (agent.bindings.length && !agent.bindings.some((b) => b.role === "primary")) agent.bindings[0].role = "primary";
   }
   boundAgents(credentialId) {
     return Object.entries(this.store.agents).filter(([, a]) => a.bindings.some((b) => b.credentialId === credentialId)).map(([vmId]) => vmId);
