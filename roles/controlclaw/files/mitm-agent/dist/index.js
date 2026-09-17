@@ -2640,11 +2640,40 @@ function saveEncryptedJson(path, value, boxKeyB64, aad4) {
 }
 
 // src/channel-store.ts
+function emptyChannelStore() {
+  return { version: 2, connections: {}, agents: {} };
+}
+function legacyConnectionId(vmId, type) {
+  return `legacy:${vmId}:${type}`;
+}
+function fromV1(v1) {
+  const store = emptyChannelStore();
+  for (const [vmId, agent] of Object.entries(v1.agents ?? {})) {
+    store.agents[vmId] = { name: agent.name, hostname: agent.hostname ?? null };
+    for (const [type, ch] of Object.entries(agent.channels ?? {})) {
+      if (!ch) continue;
+      store.connections[legacyConnectionId(vmId, type)] = {
+        type,
+        secrets: ch.secrets ?? {},
+        settings: ch.settings ?? {},
+        hint: ch.hint ?? null,
+        label: ch.label ?? null,
+        approvedSenders: (agent.approvedSenders ?? []).filter((s) => s.type === type),
+        assignedVmId: vmId,
+        updatedAt: ch.updatedAt ?? (/* @__PURE__ */ new Date(0)).toISOString()
+      };
+    }
+  }
+  return store;
+}
 function aad2(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:channels`;
 }
 function coerce(parsed) {
-  return parsed && parsed.version === 1 && parsed.agents ? parsed : { version: 1, agents: {} };
+  if (!parsed) return emptyChannelStore();
+  if (parsed.version === 1) return fromV1(parsed);
+  if (parsed.version === 2 && parsed.connections && parsed.agents) return parsed;
+  return emptyChannelStore();
 }
 function loadChannelStore(path, boxKeyB64, ids2) {
   return coerce(loadEncryptedJson(path, boxKeyB64, aad2(ids2)));
@@ -2654,27 +2683,38 @@ function saveChannelStore(path, store, boxKeyB64, ids2) {
 }
 
 // src/channels.ts
+var SCOPE = "org";
 var NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
+function named(type, label) {
+  return label ? `${NAMES[type]} ${label}` : NAMES[type];
+}
 function summarize(p) {
   const name = NAMES[p.type];
+  const what = named(p.type, p.label);
+  const on = p.agent ? ` on ${p.agent.name}` : "";
   switch (p.kind) {
     case "add":
-      return `Add a ${name} bot (${p.hint ?? "token"})`;
+      return `Add a ${name} connection (${p.hint ?? "token"})${on}`;
     case "replace":
       return `Replace the ${name} token (${p.hint ?? "new token"})`;
     case "remove":
-      return `Remove ${name}`;
+      return `Remove ${what} from the organization`;
+    case "assign":
+      return p.from ? `Move ${what} to ${p.agent?.name ?? "another agent"}` : `Enable ${what}${on}`;
+    case "unassign":
+      return `Disable ${what}${on}`;
     case "approve_pairing":
       return `Approve ${name} sender ${p.pairing?.label ? `${p.pairing.label} (${p.pairing.senderId})` : p.pairing?.senderId ?? "?"}`;
     case "whatsapp_login":
-      return p.settings?.personal ? "Connect WhatsApp by QR (personal number)" : "Connect WhatsApp by QR";
+      if (p.from) return `Move WhatsApp to ${p.agent?.name ?? "another agent"} (needs a new QR scan)`;
+      return `${p.settings?.personal ? "Connect WhatsApp by QR (personal number)" : "Connect WhatsApp by QR"}${on}`;
   }
 }
-function placeholderFor(type, vmId, which = "bot") {
-  return `__cc_${type}_${which}_${vmId}`;
+function placeholderFor(type, connectionId, which = "bot") {
+  return `__cc_${type}_${which}_${connectionId.replace(/[^A-Za-z0-9_]/g, "_")}`;
 }
 function isKind(v) {
-  return v === "add" || v === "replace" || v === "remove" || v === "approve_pairing" || v === "whatsapp_login";
+  return v === "add" || v === "replace" || v === "remove" || v === "assign" || v === "unassign" || v === "approve_pairing" || v === "whatsapp_login";
 }
 function isType(v) {
   return v === "telegram" || v === "slack" || v === "whatsapp";
@@ -2682,27 +2722,33 @@ function isType(v) {
 function str(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
+function parseAgent(v) {
+  const a = v;
+  const vmId = a ? str(a.vmId) : null;
+  if (!vmId) return null;
+  return { vmId, name: str(a.name) ?? vmId, hostname: str(a.hostname) };
+}
 function parseProposal(payload) {
   const changeId = str(payload.changeId);
-  const vmId = str(payload.vmId);
-  const hostname = str(payload.hostname);
-  if (!changeId || !vmId || !hostname || !isKind(payload.kind) || !isType(payload.type)) {
+  const connectionId = str(payload.connectionId);
+  if (!changeId || !connectionId || !isKind(payload.kind) || !isType(payload.type)) {
     throw new Error("malformed channels.propose payload");
   }
   const pairing = payload.pairing;
   const settings = payload.settings;
   const secret = payload.secret;
+  const from = payload.from;
   return {
     changeId,
-    vmId,
-    agentName: str(payload.agentName) ?? vmId,
-    hostname,
     kind: payload.kind,
+    connectionId,
     type: payload.type,
     hint: str(payload.hint),
     label: str(payload.label),
+    agent: parseAgent(payload.agent),
+    ...from && str(from.vmId) ? { from: { vmId: String(from.vmId), hostname: str(from.hostname) } } : {},
     ...pairing && str(pairing.code) && str(pairing.senderId) ? { pairing: { code: String(pairing.code), senderId: String(pairing.senderId), label: str(pairing.label) } } : {},
-    ...settings ? { settings: { personal: settings.personal === true } } : {},
+    ...settings ? { settings: { personal: typeof settings.personal === "boolean" ? settings.personal : void 0 } } : {},
     ...secret ? { secret: { botToken: str(secret.botToken) ?? void 0, appToken: str(secret.appToken) ?? void 0 } } : {}
   };
 }
@@ -2715,25 +2761,25 @@ var ChannelsFirewall = class {
     this.store = loadChannelStore(opts.storePath, opts.boxKey, opts.ids);
   }
   store;
-  // One pending code per agent (scope = vmId).
+  // One pending code for the whole organization: connections are org-level.
   codes;
   log;
   now;
   /**
-   * Every agent someone is approved to talk to, as code routes: the LLM firewall sends its
+   * Every assigned connection someone is approved on, as code routes: the LLM firewall sends its
    * codes through the same people, since an org-level change has no single agent of its own.
    */
   codeRoutes() {
     const out = [];
-    for (const [vmId, agent] of Object.entries(this.store.agents)) {
-      if (agent.approvedSenders.length === 0) continue;
+    for (const c of Object.values(this.store.connections)) {
+      if (!c.assignedVmId || c.approvedSenders.length === 0) continue;
       let target;
       try {
-        target = this.target(vmId, agent.hostname);
+        target = this.target(c.assignedVmId);
       } catch {
         continue;
       }
-      out.push({ target, senders: agent.approvedSenders, agentName: agent.name });
+      out.push({ target, senders: c.approvedSenders, agentName: this.store.agents[c.assignedVmId]?.name ?? c.assignedVmId });
     }
     return out;
   }
@@ -2749,43 +2795,41 @@ var ChannelsFirewall = class {
   credentials() {
     if (!this.opts.placeholderSwap) return [];
     const out = [];
-    for (const [vmId, agent] of Object.entries(this.store.agents)) {
-      const tg = agent.channels.telegram;
-      if (tg?.secrets.botToken) {
-        out.push({ placeholder: placeholderFor("telegram", vmId), match_domain: "api.telegram.org", secret: tg.secrets.botToken, locations: ["path"], vm_id: vmId });
+    for (const [id, c] of Object.entries(this.store.connections)) {
+      if (!c.assignedVmId) continue;
+      if (c.type === "telegram" && c.secrets.botToken) {
+        out.push({ placeholder: placeholderFor("telegram", id), match_domain: "api.telegram.org", secret: c.secrets.botToken, locations: ["path"], vm_id: c.assignedVmId });
       }
-      const sl = agent.channels.slack;
-      if (sl?.secrets.botToken) {
-        out.push({ placeholder: placeholderFor("slack", vmId, "bot"), match_domain: "slack.com", secret: sl.secrets.botToken, locations: ["header:authorization"], vm_id: vmId });
-      }
-      if (sl?.secrets.appToken) {
-        out.push({ placeholder: placeholderFor("slack", vmId, "app"), match_domain: "slack.com", secret: sl.secrets.appToken, locations: ["header:authorization"], vm_id: vmId });
+      if (c.type === "slack") {
+        if (c.secrets.botToken) {
+          out.push({ placeholder: placeholderFor("slack", id, "bot"), match_domain: "slack.com", secret: c.secrets.botToken, locations: ["header:authorization"], vm_id: c.assignedVmId });
+        }
+        if (c.secrets.appToken) {
+          out.push({ placeholder: placeholderFor("slack", id, "app"), match_domain: "slack.com", secret: c.secrets.appToken, locations: ["header:authorization"], vm_id: c.assignedVmId });
+        }
       }
     }
     return out;
   }
   /** What the console may see: no secrets. */
   summary() {
-    const out = [];
-    for (const [vmId, agent] of Object.entries(this.store.agents)) {
-      for (const [type, ch] of Object.entries(agent.channels)) {
-        if (ch) out.push({ vmId, type, hint: ch.hint, approvedSenders: agent.approvedSenders.length });
-      }
-    }
-    return out;
+    return Object.entries(this.store.connections).map(([id, c]) => ({
+      id,
+      type: c.type,
+      hint: c.hint,
+      assignedVmId: c.assignedVmId,
+      approvedSenders: c.approvedSenders.length
+    }));
   }
   save() {
     saveChannelStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
   }
-  agentOf(vmId, name, hostname) {
-    let a = this.store.agents[vmId];
-    if (!a) {
-      a = { name: name ?? vmId, hostname: hostname ?? null, channels: {}, approvedSenders: [] };
-      this.store.agents[vmId] = a;
-    }
-    if (name) a.name = name;
-    if (hostname) a.hostname = hostname;
-    return a;
+  noteAgent(ref) {
+    if (!ref) return;
+    const a = this.store.agents[ref.vmId] ?? { name: ref.name, hostname: null };
+    if (ref.name) a.name = ref.name;
+    if (ref.hostname) a.hostname = ref.hostname;
+    this.store.agents[ref.vmId] = a;
   }
   target(vmId, hostname) {
     const known = this.opts.identities().find((i) => i.vm_id === vmId);
@@ -2793,21 +2837,26 @@ var ChannelsFirewall = class {
     if (!host) throw new Error("This agent has no hostname yet.");
     return { vmId, hostname: host };
   }
+  connection(id) {
+    const c = this.store.connections[id];
+    if (!c) throw new Error("This connection is not on the firewall. Set it up again.");
+    return c;
+  }
   // ---- commands ----
   async propose(payload) {
     const p = parseProposal(payload);
-    const agent = this.agentOf(p.vmId, p.agentName, p.hostname);
+    this.noteAgent(p.agent);
     const summary = summarize(p);
     const data = { changeId: p.changeId, summary };
-    if (agent.approvedSenders.length === 0) {
-      this.codes.drop(p.vmId);
+    const routes = this.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE);
       const applied = await this.apply(p);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
-    const target = this.target(p.vmId, p.hostname);
-    const sent = await this.codes.send(p.vmId, p, p.agentName, summary, [{ target, senders: agent.approvedSenders }]);
+    const sent = await this.codes.send(SCOPE, p, "your organization's channels", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[channels] code sent for ${p.kind} ${p.type} on ${p.agentName} via ${sent.sentVia}`);
+    this.log(`[channels] code sent for ${p.kind} ${p.type} via ${sent.sentVia}`);
     return {
       ok: true,
       status: "awaiting_code",
@@ -2816,11 +2865,10 @@ var ChannelsFirewall = class {
   }
   async confirm(payload) {
     const changeId = str(payload.changeId);
-    const vmId = str(payload.vmId);
     const code = str(payload.code)?.replace(/\s+/g, "") ?? "";
-    if (!changeId || !vmId) throw new Error("malformed channels.confirm payload");
+    if (!changeId) throw new Error("malformed channels.confirm payload");
     const data = { changeId };
-    const v = this.codes.verify(vmId, changeId, code);
+    const v = this.codes.verify(SCOPE, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
@@ -2828,79 +2876,166 @@ var ChannelsFirewall = class {
   }
   async cancel(payload) {
     const changeId = str(payload.changeId);
-    const vmId = str(payload.vmId);
-    if (vmId) this.codes.cancel(vmId, changeId);
+    this.codes.cancel(SCOPE, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   async push(payload) {
     const vmId = str(payload.vmId);
     if (!vmId) throw new Error("malformed channels.push payload");
-    const agent = this.store.agents[vmId];
-    if (!agent) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
-    if (str(payload.hostname)) agent.hostname = String(payload.hostname);
-    const target = this.target(vmId, agent.hostname);
+    this.noteAgent({ vmId, name: str(payload.agentName) ?? vmId, hostname: str(payload.hostname) });
+    const mine = Object.entries(this.store.connections).filter(([, c]) => c.assignedVmId === vmId);
+    if (mine.length === 0) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    this.save();
+    const target = this.target(vmId);
     const applied = [];
     const failed = [];
-    for (const [type, ch] of Object.entries(agent.channels)) {
-      if (!ch) continue;
+    for (const [id, c] of mine) {
       try {
-        await this.opts.agent.post(target, "/channels/apply", this.applyBody(vmId, type, ch.secrets, ch.settings));
-        applied.push(type);
+        await this.opts.agent.post(target, "/channels/apply", this.applyBody(id, c));
+        applied.push(id);
       } catch (err) {
-        failed.push({ type, error: err.message });
+        failed.push({ connectionId: id, type: c.type, error: err.message });
       }
     }
-    this.log(`[channels] re-applied ${applied.length} channel(s) on ${agent.name}${failed.length ? `, ${failed.length} failed` : ""}`);
-    return { ok: failed.length === 0, status: failed.length ? "failed" : "applied", message: failed.map((f) => `${f.type}: ${f.error}`).join("; "), data: { vmId, applied, failed } };
+    const name = this.store.agents[vmId]?.name ?? vmId;
+    this.log(`[channels] re-applied ${applied.length} connection(s) on ${name}${failed.length ? `, ${failed.length} failed` : ""}`);
+    return {
+      ok: failed.length === 0,
+      status: failed.length ? "failed" : "applied",
+      message: failed.map((f) => `${f.type}: ${f.error}`).join("; "),
+      data: { vmId, applied, failed }
+    };
   }
   // ---- applying ----
-  applyBody(vmId, type, secrets, settings) {
-    if (type === "whatsapp") return { type, settings };
-    if (!this.opts.placeholderSwap) return { type, secrets };
+  /** One connection as the agent box takes it (`POST /channels/apply`, one type per call). */
+  applyBody(connectionId, c) {
+    if (c.type === "whatsapp") return { type: c.type, settings: c.settings };
+    if (!this.opts.placeholderSwap) return { type: c.type, secrets: c.secrets };
     const swapped = {};
-    if (secrets.botToken) swapped.botToken = placeholderFor(type, vmId, "bot");
-    if (secrets.appToken) swapped.appToken = placeholderFor(type, vmId, "app");
-    return { type, secrets: swapped };
+    if (c.secrets.botToken) swapped.botToken = placeholderFor(c.type, connectionId, "bot");
+    if (c.secrets.appToken) swapped.appToken = placeholderFor(c.type, connectionId, "app");
+    return { type: c.type, secrets: swapped };
+  }
+  async applyOn(vmId, connectionId, c, hostname) {
+    await this.opts.agent.post(this.target(vmId, hostname), "/channels/apply", this.applyBody(connectionId, c));
+  }
+  async removeOn(vmId, type, hostname) {
+    await this.opts.agent.post(this.target(vmId, hostname), "/channels/apply", { type, remove: true });
+  }
+  /**
+   * Take a connection off the agent it is on. One consumer per token, so this runs before the
+   * connection joins another box and a failure has to fail the whole change — unless the box is
+   * gone: an agent the control plane no longer lists cannot be talked to, and refusing would
+   * strand the connection on a machine that does not exist.
+   */
+  async leave(vmId, type, hostname) {
+    try {
+      await this.removeOn(vmId, type, hostname);
+    } catch (err) {
+      const known = this.opts.identities().some((i) => i.vm_id === vmId);
+      if (known) throw err;
+      this.log(`[channels] ${vmId} is gone; leaving ${type} behind: ${err.message}`);
+      delete this.store.agents[vmId];
+    }
   }
   async apply(p) {
-    const agent = this.agentOf(p.vmId, p.agentName, p.hostname);
-    const target = this.target(p.vmId, p.hostname);
     const mode = this.opts.placeholderSwap && p.type !== "whatsapp" ? "placeholder" : "plain";
+    const stamp = new Date(this.now()).toISOString();
     switch (p.kind) {
-      case "add":
-      case "replace": {
+      case "add": {
         if (!p.secret?.botToken) throw new Error("no token in the proposal");
         if (p.type === "slack" && !p.secret.appToken) throw new Error("Slack needs both a bot token and an app token");
         const secrets = { botToken: p.secret.botToken, ...p.secret.appToken ? { appToken: p.secret.appToken } : {} };
-        agent.channels[p.type] = { secrets, settings: {}, hint: p.hint, label: p.label, updatedAt: new Date(this.now()).toISOString() };
+        const existing = this.store.connections[p.connectionId];
+        const c = {
+          type: p.type,
+          secrets,
+          settings: existing?.settings ?? {},
+          hint: p.hint,
+          label: p.label,
+          approvedSenders: existing?.approvedSenders ?? [],
+          assignedVmId: p.agent?.vmId ?? null,
+          updatedAt: stamp
+        };
+        this.store.connections[p.connectionId] = c;
         this.save();
         await this.opts.onCredentialsChanged?.();
-        await this.opts.agent.post(target, "/channels/apply", this.applyBody(p.vmId, p.type, secrets, {}));
-        return { mode };
+        if (p.agent) await this.applyOn(p.agent.vmId, p.connectionId, c, p.agent.hostname);
+        return { mode, vmId: p.agent?.vmId ?? null };
+      }
+      case "replace": {
+        if (!p.secret?.botToken) throw new Error("no token in the proposal");
+        const c = this.connection(p.connectionId);
+        if (p.type === "slack" && !p.secret.appToken) throw new Error("Slack needs both a bot token and an app token");
+        c.secrets = { botToken: p.secret.botToken, ...p.secret.appToken ? { appToken: p.secret.appToken } : {} };
+        c.hint = p.hint;
+        if (p.label) c.label = p.label;
+        c.updatedAt = stamp;
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        if (c.assignedVmId) await this.applyOn(c.assignedVmId, p.connectionId, c);
+        return { mode, vmId: c.assignedVmId };
       }
       case "remove": {
-        await this.opts.agent.post(target, "/channels/apply", { type: p.type, remove: true });
-        delete agent.channels[p.type];
-        agent.approvedSenders = agent.approvedSenders.filter((s) => s.type !== p.type);
+        const c = this.connection(p.connectionId);
+        if (c.assignedVmId) await this.leave(c.assignedVmId, c.type);
+        delete this.store.connections[p.connectionId];
         this.save();
         await this.opts.onCredentialsChanged?.();
-        return {};
+        return { vmId: null };
+      }
+      case "assign": {
+        const c = this.connection(p.connectionId);
+        if (!p.agent) throw new Error("no agent in the proposal");
+        const leaving = p.from?.vmId ?? c.assignedVmId;
+        if (leaving && leaving !== p.agent.vmId) await this.leave(leaving, c.type, p.from?.hostname);
+        c.assignedVmId = p.agent.vmId;
+        c.updatedAt = stamp;
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        await this.applyOn(p.agent.vmId, p.connectionId, c, p.agent.hostname);
+        return { mode, vmId: p.agent.vmId };
+      }
+      case "unassign": {
+        const c = this.connection(p.connectionId);
+        const leaving = c.assignedVmId;
+        if (leaving) await this.leave(leaving, c.type);
+        c.assignedVmId = null;
+        c.updatedAt = stamp;
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        return { vmId: null };
       }
       case "approve_pairing": {
         if (!p.pairing) throw new Error("no pairing in the proposal");
-        const r = await this.opts.agent.post(target, "/channels/pairings/approve", { type: p.type, code: p.pairing.code });
+        const c = this.connection(p.connectionId);
+        if (!c.assignedVmId) throw new Error("This connection is not on an agent, so nobody can be approved on it.");
+        const r = await this.opts.agent.post(this.target(c.assignedVmId), "/channels/pairings/approve", { type: c.type, code: p.pairing.code });
         const id = str(r.senderId) ?? p.pairing.senderId;
-        const sender = { type: p.type, id, label: p.pairing.label, at: new Date(this.now()).toISOString() };
-        if (!agent.approvedSenders.some((s) => s.type === sender.type && s.id === sender.id)) agent.approvedSenders.push(sender);
+        const sender = { type: c.type, id, label: p.pairing.label, at: stamp };
+        if (!c.approvedSenders.some((s) => s.id === sender.id)) c.approvedSenders.push(sender);
         this.save();
-        return { approvedSender: `${sender.type}:${sender.label ?? sender.id}` };
+        return { approvedSender: `${sender.type}:${sender.label ?? sender.id}`, vmId: c.assignedVmId };
       }
       case "whatsapp_login": {
-        const settings = { personal: p.settings?.personal === true };
-        const r = await this.opts.agent.post(target, "/channels/whatsapp/login", settings);
-        agent.channels.whatsapp = { secrets: {}, settings, hint: null, label: p.label, updatedAt: new Date(this.now()).toISOString() };
+        if (!p.agent) throw new Error("no agent in the proposal");
+        const existing = this.store.connections[p.connectionId];
+        const settings = { personal: p.settings?.personal ?? existing?.settings.personal === true };
+        const leaving = p.from?.vmId ?? existing?.assignedVmId;
+        if (leaving && leaving !== p.agent.vmId) await this.leave(leaving, "whatsapp", p.from?.hostname);
+        const r = await this.opts.agent.post(this.target(p.agent.vmId, p.agent.hostname), "/channels/whatsapp/login", settings);
+        this.store.connections[p.connectionId] = {
+          type: "whatsapp",
+          secrets: {},
+          settings,
+          hint: null,
+          label: p.label ?? existing?.label ?? null,
+          approvedSenders: existing?.approvedSenders ?? [],
+          assignedVmId: p.agent.vmId,
+          updatedAt: stamp
+        };
         this.save();
-        return { mode: "plain", whatsapp: { state: r.state ?? "qr" } };
+        return { mode: "plain", vmId: p.agent.vmId, whatsapp: { state: r.state ?? "qr" } };
       }
     }
   }
@@ -2933,7 +3068,7 @@ function saveLlmStore(path, store, boxKeyB64, ids2) {
 // src/llm.ts
 var REFRESH_AHEAD_MS = 15 * 6e4;
 var REFRESH_TIMEOUT_MS = 3e4;
-var SCOPE = "org";
+var SCOPE2 = "org";
 function str2(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
@@ -3089,11 +3224,11 @@ var LlmFirewall = class {
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE);
+      this.codes.drop(SCOPE2);
       const applied = await this.apply(p);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
-    const sent = await this.codes.send(SCOPE, p, "your organization's model providers", summary, routes);
+    const sent = await this.codes.send(SCOPE2, p, "your organization's model providers", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[llm] code sent for ${p.kind} ${p.provider} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
@@ -3103,7 +3238,7 @@ var LlmFirewall = class {
     const code = str2(payload.code) ?? "";
     if (!changeId) throw new Error("malformed llm.confirm payload");
     const data = { changeId };
-    const v = this.codes.verify(SCOPE, changeId, code);
+    const v = this.codes.verify(SCOPE2, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
@@ -3111,7 +3246,7 @@ var LlmFirewall = class {
   }
   async cancel(payload) {
     const changeId = str2(payload.changeId);
-    this.codes.cancel(SCOPE, changeId);
+    this.codes.cancel(SCOPE2, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   async push(payload) {
@@ -3811,7 +3946,8 @@ async function main() {
         placeholderSwap: CHANNELS_PLACEHOLDER_SWAP,
         onCredentialsChanged: () => runSync(boxKey)
       });
-      console.log(`[mitm-agent] channel store loaded (${channels.summary().length} channel(s), placeholder swap ${CHANNELS_PLACEHOLDER_SWAP ? "on" : "off"})`);
+      const cs = channels.summary();
+      console.log(`[mitm-agent] channel store loaded (${cs.length} connection(s), ${cs.filter((c) => c.assignedVmId).length} assigned, placeholder swap ${CHANNELS_PLACEHOLDER_SWAP ? "on" : "off"})`);
     } catch (err) {
       console.error(`[mitm-agent] channel store unreadable, channel commands disabled: ${err.message}`);
     }
