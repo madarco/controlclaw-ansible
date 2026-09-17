@@ -2107,7 +2107,7 @@ var LlmService = class {
     this.modelsCache.clear();
     const credentialsChanged = input.credentials.some((c) => applied.includes(c.provider)) || input.remove.some((r) => applied.includes(`remove:${r.provider}`));
     if (credentialsChanged) {
-      const restarted = await this.restartIfAuthStale(input.credentials.map((c) => c.provider));
+      const restarted = await this.restartIfAuthStale(input.credentials.map((c) => c.profileId));
       if (restarted) applied.push("restart");
     }
     this.log(`[llm] applied ${applied.join(", ") || "nothing"}${failed.length ? `; failed ${failed.map((f) => f.what).join(", ")}` : ""}`);
@@ -2119,15 +2119,20 @@ var LlmService = class {
     return { ok: true, applied, failed };
   }
   /**
-   * True when the gateway already reports auth for every provider we just applied. Otherwise
-   * restart it so it loads the new credential store. Returns whether a restart was run.
+   * True when the gateway already reports every auth profile we just wrote. Otherwise restart it
+   * so it loads the new credential store. Returns whether a restart was run.
+   *
+   * Profiles, not providers: an OpenAI key and a ChatGPT login are two profiles of `openai`, so
+   * the gateway reporting `openai` says nothing about whether it has picked up the other one.
    */
-  async restartIfAuthStale(providers) {
+  async restartIfAuthStale(profileIds) {
     let ready = false;
     try {
       const r2 = await this.gateway().call("models.authStatus", { refresh: true }, 15e3);
-      const seen = new Set((r2.providers ?? []).map((p) => (str3(p.provider) ?? str3(p.id) ?? "").toLowerCase()));
-      ready = !r2.unavailable && providers.every((p) => seen.has(p.toLowerCase()));
+      const seen = new Set(
+        (r2.providers ?? []).flatMap((p) => Array.isArray(p.profiles) ? p.profiles : []).map((prof) => (str3(prof?.profileId) ?? str3(prof?.id) ?? "").toLowerCase())
+      );
+      ready = !r2.unavailable && profileIds.every((id) => seen.has(id.toLowerCase()));
     } catch (err) {
       this.log(`[llm] models.authStatus failed after apply: ${err.message}`);
     }
