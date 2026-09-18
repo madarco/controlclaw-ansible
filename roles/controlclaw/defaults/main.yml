@@ -60,3 +60,7 @@ org_id: ""                           # org this box serves
 # OpenClaw box egress wiring (set when the org has a mitm box)
 mitm_box_private_ip: ""              # private IP of the org mitm box
 mitm_ca_cert: ""                     # public CA cert (PEM) to install in the trust store
+
+# Where cc-install-ca puts the org mitm CA. Node ignores the OS trust store, so every task that
+# shells out to npm/pnpm points NODE_EXTRA_CA_CERTS at this file when it exists (see main.yml).
+mitm_ca_path: /usr/local/share/ca-certificates/controlclaw-mitm.crt

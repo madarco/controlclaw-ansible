@@ -5,6 +5,20 @@
 #   mitm               - per-org egress proxy / secret zone
 # system tools, the service user and the firewall apply to every role.
 
+# Node does not read the OS trust store. Once the box is confined to the org mitm proxy, every
+# npm/pnpm call fails the TLS handshake and then HANGS with no error (25 minutes on one task, real
+# box 2026-09-18) unless NODE_EXTRA_CA_CERTS points at the proxy CA. The CA is installed at runtime
+# by the vm-agent, so it is absent on the first provision (egress is still direct then) and present
+# on every re-run. Look for it once here and hand the variable to the npm/pnpm tasks below.
+- name: Look for the org mitm CA in the trust store
+  ansible.builtin.stat:
+    path: "{{ mitm_ca_path }}"
+  register: mitm_ca_installed
+
+- name: Build the node TLS environment for npm/pnpm tasks
+  ansible.builtin.set_fact:
+    controlclaw_node_env: "{{ {'NODE_EXTRA_CA_CERTS': mitm_ca_path} if mitm_ca_installed.stat.exists else {} }}"
+
 - name: Include system tools installation tasks
   ansible.builtin.include_tasks: system-tools.yml
 

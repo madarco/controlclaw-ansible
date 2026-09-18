@@ -107,6 +107,7 @@
     chdir: /opt/controlclaw/agent
   become: true
   become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env }}"
   register: pnpm_install
   changed_when: "'Already up to date' not in pnpm_install.stdout"
 

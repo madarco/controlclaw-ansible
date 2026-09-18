@@ -51,6 +51,7 @@
 - name: Install pnpm globally
   ansible.builtin.command: npm install -g pnpm
   when: pnpm_check.rc != 0
+  environment: "{{ controlclaw_node_env }}"
 
 - name: Verify Node.js installation
   ansible.builtin.command: node --version

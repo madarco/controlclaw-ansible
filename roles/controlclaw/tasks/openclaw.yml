@@ -47,10 +47,13 @@
   changed_when: false
   failed_when: false
 
+# --fetch-timeout/--fetch-retries keep this from stalling the whole play when the registry is
+# unreachable: npm's defaults are 5 minutes and 2 retries, and the task already tolerates failure.
 - name: Check the latest published OpenClaw version
   ansible.builtin.command:
-    cmd: npm view openclaw version
+    cmd: npm view openclaw version --fetch-timeout=30000 --fetch-retries=1
   register: openclaw_latest_version
+  environment: "{{ controlclaw_node_env }}"
   changed_when: false
   failed_when: false
 
@@ -60,6 +63,7 @@
   ansible.builtin.command:
     cmd: npm install -g openclaw@latest
   register: openclaw_npm_install
+  environment: "{{ controlclaw_node_env }}"
   when: >-
     openclaw_installed_version.rc != 0 or
     openclaw_latest_version.rc != 0 or

@@ -49,6 +49,10 @@
 # (Go loads the root pool once per process). The installer therefore also drops a systemd
 # override for OpenClaw and restarts both if they are running, so every process on the box trusts
 # the proxy from the first boot on, not from the second ansible run.
+#
+# The profile.d export covers every other node process on the box: npm from an SSH session, the
+# cc-perm CLI, and anything the agent itself shells out to. Without it npm does not fail, it hangs
+# on the TLS handshake (real box, 2026-09-18), which is far harder to diagnose.
 - name: Deploy cc-install-ca (root-owned, fixed source/dest)
   ansible.builtin.copy:
     dest: /usr/local/bin/cc-install-ca
@@ -59,11 +63,14 @@
       #!/bin/sh
       set -e
       install -m 0644 /opt/controlclaw/keys/mitm-ca.crt \
-        /usr/local/share/ca-certificates/controlclaw-mitm.crt
+        {{ mitm_ca_path }}
       update-ca-certificates
       mkdir -p /etc/systemd/system/openclaw.service.d
-      printf '[Service]\nEnvironment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/controlclaw-mitm.crt\n' \
+      printf '[Service]\nEnvironment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}\n' \
         > /etc/systemd/system/openclaw.service.d/mitm-ca.conf
+      printf 'export NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}\n' \
+        > /etc/profile.d/controlclaw-node-ca.sh
+      chmod 0644 /etc/profile.d/controlclaw-node-ca.sh
       systemctl daemon-reload
       systemctl try-restart openclaw.service caddy.service || true
 
