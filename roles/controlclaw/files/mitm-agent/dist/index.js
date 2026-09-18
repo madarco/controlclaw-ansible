@@ -3255,6 +3255,7 @@ var FirewallControl = class {
       proxy: this.proxyStatus(),
       agent_version: this.opts.agentVersion,
       uptime_s: Math.round((Date.now() - this.startedAt) / 1e3),
+      ...this.opts.status?.() ?? {},
       ...results.length ? { results } : {}
     };
     let res;
@@ -3908,6 +3909,17 @@ function parseSecret(secret) {
   }
   return void 0;
 }
+function parseProviderBlock(raw) {
+  const b = raw;
+  if (!b || !str2(b.baseUrl) || !str2(b.api) || !Array.isArray(b.models)) return null;
+  const models = b.models.filter((m) => str2(m?.id)).map((m) => ({ id: String(m.id), name: str2(m.name) ?? String(m.id) }));
+  return models.length ? { baseUrl: String(b.baseUrl), api: String(b.api), models } : null;
+}
+function parseModelList(raw) {
+  if (!Array.isArray(raw)) return null;
+  const list = raw.filter((m) => typeof m === "string" && m.length > 0);
+  return list.length ? list : null;
+}
 function parseProposal2(payload) {
   const changeId = str2(payload.changeId);
   const credentialId = str2(payload.credentialId);
@@ -3930,10 +3942,15 @@ function parseProposal2(payload) {
     profileId: str2(payload.profileId),
     swap: swap && str2(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
     oauth: oauth && str2(oauth.tokenEndpoint) && str2(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId) } : null,
+    providerBlock: parseProviderBlock(payload.providerBlock),
+    allowedModels: parseModelList(payload.allowedModels),
     replaces: str2(payload.replaces),
     agents: agents.filter((a) => str2(a.vmId) && str2(a.model)).map((a) => ({ vmId: String(a.vmId), name: str2(a.name) ?? String(a.vmId), hostname: str2(a.hostname), model: String(a.model), role: a.role === "secondary" ? "secondary" : "primary" })),
     secret: parseSecret(payload.secret)
   };
+}
+function removeEntry(c) {
+  return { provider: c.provider, profileId: c.profileId, kind: c.kind, ...c.providerBlock ? { providerBlock: true } : {} };
 }
 function secretValue(s) {
   if ("apiKey" in s) return s.apiKey;
@@ -3971,8 +3988,15 @@ var LlmFirewall = class {
       for (const b of agent.bindings) {
         const c = this.store.credentials[b.credentialId];
         if (!c) continue;
-        if (this.opts.plainKeys && c.kind !== "oauth") continue;
-        out.push({ placeholder: c.placeholder, match_domain: c.swap.matchDomain, secret: secretValue(c.secret), locations: c.swap.locations, vm_id: vmId });
+        if (this.plainOnBox(c)) continue;
+        out.push({
+          placeholder: c.placeholder,
+          match_domain: c.swap.matchDomain,
+          secret: secretValue(c.secret),
+          locations: c.swap.locations,
+          vm_id: vmId,
+          ...c.allowedModels ? { allowed_models: c.allowedModels, included: true } : {}
+        });
       }
     }
     return out;
@@ -3985,6 +4009,17 @@ var LlmFirewall = class {
     const c = this.store.credentials[credentialId];
     if (!c || c.failed) return null;
     return secretValue(c.secret);
+  }
+  /**
+   * Plain mode puts real API keys on the boxes. Never an OAuth token (the firewall refreshes it)
+   * and never the included AI key: it is ours, and its model allow-list is enforced at the proxy.
+   */
+  plainOnBox(c) {
+    return !!this.opts.plainKeys && c.kind !== "oauth" && !c.allowedModels;
+  }
+  /** The included-AI credential this firewall holds, if any (reported on the heartbeat). */
+  includedCredentialId() {
+    return Object.entries(this.store.credentials).find(([, c]) => c.allowedModels)?.[0] ?? null;
   }
   /** What the console may see: no secrets. */
   summary() {
@@ -4075,9 +4110,10 @@ var LlmFirewall = class {
       provider: c.provider,
       kind: c.kind,
       profileId: c.profileId,
-      value: this.opts.plainKeys && c.kind !== "oauth" ? secretValue(c.secret) : c.placeholder,
+      value: this.plainOnBox(c) ? secretValue(c.secret) : c.placeholder,
       model: b.model,
-      ..."accountId" in c.secret && c.secret.accountId ? { codex: { accountId: c.secret.accountId } } : {}
+      ..."accountId" in c.secret && c.secret.accountId ? { codex: { accountId: c.secret.accountId } } : {},
+      ...c.providerBlock ? { providerBlock: c.providerBlock } : {}
     }));
     const primary = bindings.find((b) => b.role === "primary") ?? bindings[0];
     const fallback = bindings.find((b) => b !== primary && b.role === "secondary");
@@ -4119,7 +4155,7 @@ var LlmFirewall = class {
     return Object.entries(this.store.agents).filter(([, a]) => a.bindings.some((b) => b.credentialId === credentialId)).map(([vmId]) => vmId);
   }
   async apply(p) {
-    const mode = this.opts.plainKeys && p.credKind !== "oauth" ? "plain" : "placeholder";
+    const mode = this.opts.plainKeys && p.credKind !== "oauth" && !p.allowedModels ? "plain" : "placeholder";
     const existing = this.store.credentials[p.credentialId];
     switch (p.kind) {
       case "add":
@@ -4136,6 +4172,8 @@ var LlmFirewall = class {
           profileId: p.profileId,
           swap: p.swap,
           ...p.oauth ? { oauth: p.oauth } : {},
+          ...p.providerBlock ? { providerBlock: p.providerBlock } : {},
+          ...p.allowedModels ? { allowedModels: p.allowedModels } : {},
           secret: p.secret,
           failed: null,
           updatedAt: new Date(this.now()).toISOString()
@@ -4149,7 +4187,7 @@ var LlmFirewall = class {
       }
       case "remove": {
         const bound = this.boundAgents(p.credentialId);
-        const remove = existing ? [{ provider: existing.provider, profileId: existing.profileId, kind: existing.kind }] : [];
+        const remove = existing ? [removeEntry(existing)] : [];
         for (const vmId of bound) this.dropBinding(vmId, p.credentialId);
         delete this.store.credentials[p.credentialId];
         this.save();
@@ -4174,7 +4212,7 @@ var LlmFirewall = class {
         this.dropBinding(a.vmId, p.credentialId);
         this.save();
         await this.opts.onCredentialsChanged?.();
-        const remove = existing ? [{ provider: existing.provider, profileId: existing.profileId, kind: existing.kind }] : [];
+        const remove = existing ? [removeEntry(existing)] : [];
         const failed = await this.pushAgents([a.vmId], remove);
         return { applied: failed.length ? [] : [a.vmId], failed };
       }
@@ -63564,6 +63602,7 @@ function evaluationModelFor(provider, apiKey, model) {
     case "google":
       return createGoogle({ apiKey }).evaluationModel(model);
     case "vercel_gateway":
+    case "controlclaw_included":
       return createGateway({ apiKey }).evaluationModel(model);
   }
 }
@@ -63577,6 +63616,7 @@ function languageModelFor(provider, apiKey, model) {
     case "google":
       return createGoogle({ apiKey })(model);
     case "vercel_gateway":
+    case "controlclaw_included":
       return createGateway({ apiKey })(model);
   }
 }
@@ -64164,7 +64204,7 @@ function startJudgeServer(judge2, port, host = "127.0.0.1") {
 }
 
 // src/ai/settings.ts
-var AI_PROVIDERS = ["openai", "anthropic", "google", "vercel_gateway"];
+var AI_PROVIDERS = ["openai", "anthropic", "google", "vercel_gateway", "controlclaw_included"];
 function isProvider(v) {
   return typeof v === "string" && AI_PROVIDERS.includes(v);
 }
@@ -64515,7 +64555,10 @@ async function main() {
             return { ok: true, status: "done", message: `Scanned ${r.agents} agent(s), ${r.findings} finding(s).`, data: r };
           }
         },
-        extraResults: () => llm?.drainReports() ?? []
+        extraResults: () => llm?.drainReports() ?? [],
+        // `included_ai` tells the control plane this firewall can hold the plan's included AI
+        // tokens, and which credential it holds (null after a rebuild, so a new key is sent).
+        status: () => llm ? { features: ["included_ai"], included_ai: llm.includedCredentialId() } : {}
       });
       console.log("[mitm-agent] firewall control enabled");
       setInterval(() => void control.tick().catch((e) => console.error("[firewall] tick:", e.message)), FIREWALL_POLL_MS);

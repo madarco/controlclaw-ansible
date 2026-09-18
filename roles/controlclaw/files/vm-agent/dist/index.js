@@ -2072,8 +2072,8 @@ var LlmService = class {
     const providerPatch = {};
     for (const r of input.remove) {
       try {
-        if (!r.profileId.includes(":")) providerPatch[r.provider] = null;
-        else await this.exec(this.bin(), ["models", "auth", "logout", r.profileId, "--yes"], CLI_TIMEOUT_MS2);
+        if (r.providerBlock || !r.profileId.includes(":")) providerPatch[r.provider] = null;
+        if (r.profileId.includes(":")) await this.exec(this.bin(), ["models", "auth", "logout", r.profileId, "--yes"], CLI_TIMEOUT_MS2);
         applied.push(`remove:${r.provider}`);
       } catch (err) {
         const line = execFailureLine(err);
@@ -2082,6 +2082,14 @@ var LlmService = class {
       }
     }
     for (const c of input.credentials) {
+      if (c.providerBlock) {
+        try {
+          await this.patchConfig({ models: { providers: { [c.provider]: { baseUrl: c.providerBlock.baseUrl, api: c.providerBlock.api, models: c.providerBlock.models } } } });
+        } catch (err) {
+          failed.push({ what: c.provider, error: err.message });
+          continue;
+        }
+      }
       try {
         const sub = c.kind === "api_key" ? "paste-api-key" : "paste-token";
         const args = ["models", "auth", sub, "--provider", c.provider, "--profile-id", c.profileId, ...c.kind !== "api_key" ? ["--expires-in", "365d"] : []];
@@ -2193,7 +2201,7 @@ var LlmService = class {
       const p = str3(m.provider);
       const id = rawId.includes("/") ? rawId : p ? `${p}/${rawId}` : `${provider}/${rawId}`;
       if (!id.startsWith(`${provider}/`)) continue;
-      out.push({ id, name: str3(m.name) ?? modelId(id) });
+      out.push({ id, name: str3(m.name) ?? id.slice(provider.length + 1) });
     }
     this.modelsCache.set(provider, { at: this.now(), value: out });
     return out;
@@ -2209,6 +2217,20 @@ function fail2(res, err) {
 }
 var KINDS = /* @__PURE__ */ new Set(["api_key", "token", "oauth"]);
 var PROVIDER_RE = /^[a-z0-9][a-z0-9_-]{0,40}$/i;
+var BLOCK_APIS = /* @__PURE__ */ new Set(["openai-completions", "anthropic-messages", "openai-responses"]);
+function parseProviderBlock(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  const b = raw;
+  if (typeof b.baseUrl !== "string" || !/^https:\/\/[a-z0-9.-]+(\/[\w./-]*)?$/i.test(b.baseUrl)) return "credentials[].providerBlock.baseUrl must be an https URL";
+  if (typeof b.api !== "string" || !BLOCK_APIS.has(b.api)) return "credentials[].providerBlock.api is not supported";
+  if (!Array.isArray(b.models) || b.models.length === 0 || b.models.length > 50) return "credentials[].providerBlock.models must list 1-50 models";
+  const models = [];
+  for (const m of b.models) {
+    if (typeof m?.id !== "string" || !/^[A-Za-z0-9._:/-]{1,120}$/.test(m.id)) return "credentials[].providerBlock.models[].id is invalid";
+    models.push({ id: m.id, name: typeof m.name === "string" && m.name ? m.name.slice(0, 120) : m.id });
+  }
+  return { baseUrl: b.baseUrl, api: b.api, models };
+}
 function parseApply(body) {
   const model = body.model ?? {};
   const primary = typeof model.primary === "string" && model.primary ? model.primary : null;
@@ -2221,20 +2243,28 @@ function parseApply(body) {
     if (typeof raw.value !== "string" || !raw.value) return "credentials[].value required";
     if (typeof raw.model !== "string" || !raw.model) return "credentials[].model required";
     const codex = raw.codex;
+    const providerBlock = parseProviderBlock(raw.providerBlock);
+    if (typeof providerBlock === "string") return providerBlock;
     credentials.push({
       provider: raw.provider,
       kind: raw.kind,
       profileId: raw.profileId,
       value: raw.value,
       model: raw.model,
-      ...codex && typeof codex.accountId === "string" ? { codex: { accountId: codex.accountId } } : {}
+      ...codex && typeof codex.accountId === "string" ? { codex: { accountId: codex.accountId } } : {},
+      ...providerBlock ? { providerBlock } : {}
     });
   }
   const remove = [];
   for (const raw of Array.isArray(body.remove) ? body.remove : []) {
     if (typeof raw.provider !== "string" || !PROVIDER_RE.test(raw.provider)) return "remove[].provider is invalid";
     if (typeof raw.profileId !== "string" || !raw.profileId) return "remove[].profileId required";
-    remove.push({ provider: raw.provider, profileId: raw.profileId, ...typeof raw.kind === "string" && KINDS.has(raw.kind) ? { kind: raw.kind } : {} });
+    remove.push({
+      provider: raw.provider,
+      profileId: raw.profileId,
+      ...typeof raw.kind === "string" && KINDS.has(raw.kind) ? { kind: raw.kind } : {},
+      ...raw.providerBlock === true ? { providerBlock: true } : {}
+    });
   }
   return { model: { primary, fallbacks }, credentials, remove };
 }

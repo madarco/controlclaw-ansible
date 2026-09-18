@@ -19,6 +19,10 @@ Implements the security-critical core of the two-box architecture
      `require_permission` rule with `ai_review` and an `ai_policy` asks it to approve on a
      person's behalf; an approval writes a normal grant (`by: "ai"`). A judge that is off, slow
      or failing never changes the rule's decision.
+  5. Included AI tokens (apps/saas/docs/features/included-ai-tokens.md): a credential with
+     `allowed_models` is the plan's AI Gateway key. It is only swapped into requests for one of
+     those models (plus the model list); anything else is answered here and never reaches the
+     gateway. A "budget used up" answer from the gateway is rewritten into plain words.
 
 v1 loads rules/credentials from JSON files (hot-reloaded on mtime change). On real
 boxes these come from the box-key-decrypted store (later parts). Tenant identity is
@@ -319,6 +323,83 @@ def _secret_value(cred: dict[str, Any]) -> str | None:
     provisioning, not in proxy code.
     """
     return cred.get("secret")
+
+
+# ----- included AI tokens -----------------------------------------------------
+
+INCLUDED_BLOCK_STATUS = 400
+INCLUDED_HINT = "Pick one of your plan's models, or add your own provider key in ControlClaw under Model providers."
+INCLUDED_EXHAUSTED = ("Your plan's included AI tokens are used up for this month. They reset on the 1st; "
+                      "until then, add your own provider key in ControlClaw under Model providers.")
+
+
+def _placeholder_in_request(flow: http.HTTPFlow, cred: dict[str, Any]) -> bool:
+    placeholder = cred.get("placeholder") or ""
+    if not placeholder:
+        return False
+    for loc in cred.get("locations") or DEFAULT_LOCATIONS:
+        if loc.startswith("header:"):
+            name = loc.split(":", 1)[1].lower()
+            if any(k.lower() == name and placeholder in v for k, v in flow.request.headers.items()):
+                return True
+    return False
+
+
+def included_model_check(method: str, path: str, body: bytes | None, allowed: list[str]) -> str | None:
+    """Why a request on the included key is refused, or None to let it through.
+
+    Only generation calls for an allowed model, and reading the model list. Everything else the
+    gateway offers (credit balance, generation lookups, other models) stays out of reach: the key
+    is ControlClaw's, shared by nobody but still billed to us."""
+    bare = path.split("?", 1)[0]
+    if method.upper() == "GET":
+        return None if bare.rstrip("/").endswith("/models") or "/models/" in bare else "only generation requests are included"
+    if method.upper() != "POST":
+        return "only generation requests are included"
+    try:
+        model = json.loads(body or b"{}").get("model")
+    except (ValueError, AttributeError):
+        model = None
+    if not isinstance(model, str) or not model:
+        return "the request names no model"
+    if model not in allowed:
+        return f"{model} is not included in your plan"
+    return None
+
+
+def included_refusal(flow: http.HTTPFlow, vm_id: str | None) -> str | None:
+    """The refusal reason when this request uses an included key the wrong way, else None.
+    Marks the flow so a "budget exceeded" answer can be reworded (see `response`)."""
+    for cred in credentials_for(flow.request.pretty_host, vm_id):
+        allowed = cred.get("allowed_models")
+        if not allowed or not _placeholder_in_request(flow, cred):
+            continue
+        flow.metadata["cc_included"] = True
+        reason = included_model_check(flow.request.method, flow.request.path, flow.request.raw_content, list(allowed))
+        if reason:
+            return f"{reason}. Included models: {', '.join(allowed)}. {INCLUDED_HINT}"
+    return None
+
+
+def _error_body(message: str, code: str) -> str:
+    """OpenAI-shaped, which is what OpenClaw's openai-completions transport reads."""
+    return json.dumps({"error": {"message": message, "type": "invalid_request_error", "code": code}})
+
+
+def reword_exhausted(flow: http.HTTPFlow) -> bool:
+    """The gateway's 402 for an exhausted key budget names our key id and a dollar amount; the
+    agent passes the message on to a person, so say what happened and what to do instead."""
+    if not flow.metadata.get("cc_included") or not flow.response or flow.response.status_code != 402:
+        return False
+    try:
+        kind = (json.loads(flow.response.get_text(strict=False) or "{}").get("error") or {}).get("type")
+    except (ValueError, AttributeError):
+        kind = None
+    if kind not in ("quota_for_entity_exceeded", "insufficient_funds"):
+        return False
+    flow.response.set_text(_error_body(INCLUDED_EXHAUSTED, "included_tokens_used_up"))
+    flow.response.headers["content-type"] = "application/json"
+    return True
 
 
 # ----- swap -----------------------------------------------------------------
@@ -658,6 +739,16 @@ async def request(flow: http.HTTPFlow) -> None:
             _log_once(flow, rec)
             return
 
+    refusal = included_refusal(flow, vm_id)
+    if refusal:
+        flow.response = http.Response.make(INCLUDED_BLOCK_STATUS, _error_body(refusal, "model_not_included"), {"Content-Type": "application/json"})
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = "included_ai"
+        rec = _http_record(flow, "block")
+        rec["status"] = INCLUDED_BLOCK_STATUS
+        _log_once(flow, rec)
+        return
+
     # allow -> swap credentials in (vm-scoped with org fallback). Logged once the upstream
     # answers (response) or fails (error), so the record carries the real status and timing.
     applied = apply_swaps(flow, vm_id)
@@ -679,7 +770,12 @@ def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
 def response(flow: http.HTTPFlow) -> None:
     if flow.metadata.get("cc_effect") not in (None, "allow"):
         return
+    if reword_exhausted(flow):
+        rec_extra = {"included": "used_up"}
+    else:
+        rec_extra = {}
     rec = _allow_record(flow)
+    rec.update(rec_extra)
     rec["status"] = flow.response.status_code
     res_raw = flow.response.raw_content
     rec["bytes_in"] = len(res_raw) if res_raw else 0
