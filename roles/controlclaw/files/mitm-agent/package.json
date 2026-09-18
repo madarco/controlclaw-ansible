@@ -8,7 +8,7 @@
     "build": "tsup src/index.ts --format esm --target node22 --clean",
     "dev": "tsx src/index.ts",
     "sync-once": "tsx src/index.ts",
-    "test": "tsx src/activity.test.ts && tsx src/firewall-control.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts"
+    "test": "tsx src/activity.test.ts && tsx src/firewall-control.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts && tsx src/ai/review.test.ts && tsx src/ai/judge.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -17,7 +17,13 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.57",
+    "@ai-sdk/gateway": "^4",
+    "@ai-sdk/google": "^4.0.75",
+    "@ai-sdk/openai": "^4.0.70",
     "@controlclaw/secret-store": "workspace:*",
-    "jose": "^6.2.2"
+    "ai": "^7.0.106",
+    "jose": "^6.2.2",
+    "zod": "^4.3.6"
   }
 }

@@ -13,6 +13,12 @@ Implements the security-critical core of the two-box architecture
      query-stripped path, effect, rule, status, timing, placeholder names). No header
      values, bodies or query strings are ever logged. The mitm-agent ships the file to
      ControlClaw (`POST /api/vm-agent/activity`); see MITM_LOG_FILE / MITM_LOG_MAX_BYTES.
+  4. Inline AI review (docs: apps/saas/docs/features/ai-firewall-review.md): an `allow` rule
+     with `ai_review` asks the mitm-agent's local judge (MITM_AI_JUDGE_URL) before the request
+     leaves. The judge can let it through, block it, or turn it into a permission request. A
+     `require_permission` rule with `ai_review` and an `ai_policy` asks it to approve on a
+     person's behalf; an approval writes a normal grant (`by: "ai"`). A judge that is off, slow
+     or failing never changes the rule's decision.
 
 v1 loads rules/credentials from JSON files (hot-reloaded on mtime change). On real
 boxes these come from the box-key-decrypted store (later parts). Tenant identity is
@@ -25,11 +31,14 @@ unit pins every MITM_DEV_* flag to 0.
 
 from __future__ import annotations
 
+import asyncio
+import collections
 import hashlib
 import json
 import os
 import re
 import time
+import urllib.request
 from typing import Any
 
 import logging
@@ -76,6 +85,14 @@ _DEV_FLAGS = ("MITM_DEV_LOG_SECRETS", "MITM_DEV_ALLOW_PLAINTEXT_STORE",
 _dev_set = [k for k in _DEV_FLAGS if os.environ.get(k, "") not in ("", "0")]
 if _dev_set and os.environ.get("MITM_ALLOW_DEV_FLAGS") != "1":
     raise RuntimeError(f"refusing to start with dev flags set outside a smoke test: {_dev_set}")
+
+# Inline AI review: the mitm-agent's loopback judge. Empty disables the call entirely. The timeout
+# bounds the latency a reviewed request can gain; past it the rule's own decision stands.
+AI_JUDGE_URL = os.environ.get("MITM_AI_JUDGE_URL", "http://127.0.0.1:3101/judge").strip()
+AI_JUDGE_TIMEOUT = float(os.environ.get("MITM_AI_JUDGE_TIMEOUT", "3"))
+# What the judge sees of a request body: the start of a text body only, never binary.
+AI_BODY_CHARS = 300
+AI_RECENT = 20
 
 DEFAULT_LOCATIONS = ["header:authorization", "header:x-api-key", "header:private-token"]
 BLOCK_STATUS = 403
@@ -355,8 +372,21 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
     return applied
 
 
+# The last few requests of each VM, for the inline judge: what the agent was doing just before.
+_recent: dict[str | None, collections.deque] = collections.defaultdict(lambda: collections.deque(maxlen=AI_RECENT))
+
+
+def _remember(record: dict[str, Any]) -> None:
+    if not record.get("host"):
+        return
+    keep = {k: record[k] for k in ("ts", "method", "host", "path", "effect", "status", "bytes_out") if record.get(k) is not None}
+    keep["ts"] = int(keep.get("ts", 0))
+    _recent[record.get("vm_id")].append(keep)
+
+
 def _log(record: dict[str, Any]) -> None:
     """Append one traffic record (JSONL). Rotates the file by size first, see LOG_MAX_BYTES."""
+    _remember(record)
     line = json.dumps(record, ensure_ascii=False)
     log.info(f"[mitm] {line}")
     if LOG_PATH:
@@ -397,6 +427,8 @@ def _http_record(flow: http.HTTPFlow, effect: str) -> dict[str, Any]:
         "path": redact_path(flow.request.path), "effect": effect,
         "rule": flow.metadata.get("cc_rule"),
     })
+    if flow.metadata.get("cc_ai"):
+        rec["ai"] = flow.metadata["cc_ai"]
     return rec
 
 
@@ -407,6 +439,65 @@ def _log_once(flow: http.HTTPFlow, rec: dict[str, Any]) -> None:
         return
     flow.metadata["cc_logged"] = True
     _log(rec)
+
+
+# ----- inline AI review -------------------------------------------------------
+
+_TEXT_TYPES = ("text/", "application/json", "application/x-www-form-urlencoded", "application/xml", "application/graphql")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _body_start(flow: http.HTTPFlow) -> str | None:
+    """The first AI_BODY_CHARS characters of a text body, control characters stripped."""
+    ctype = (flow.request.headers.get("content-type") or "").lower()
+    if not flow.request.raw_content or not ctype.startswith(_TEXT_TYPES):
+        return None
+    try:
+        text = flow.request.raw_content[: AI_BODY_CHARS * 4].decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    return _CONTROL_CHARS.sub(" ", text)[:AI_BODY_CHARS]
+
+
+def _judge_sync(payload: dict[str, Any]) -> dict[str, Any]:
+    # A proxy-less opener: the judge is on loopback and must never be sent through a proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(
+        AI_JUDGE_URL, data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"}, method="POST",
+    )
+    with opener.open(req, timeout=AI_JUDGE_TIMEOUT) as res:
+        return json.loads(res.read(64 * 1024))
+
+
+async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
+                   approve: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Ask the local judge about one request. None means "no opinion": the rule's effect stands.
+    Runs in a thread so a slow judge never stalls other flows."""
+    if not AI_JUDGE_URL:
+        return None
+    raw_path = flow.request.path
+    query = raw_path.split("?", 1)[1] if "?" in raw_path else ""
+    payload = {
+        "rule": rule.get("name") or rule.get("match_domain") or "",
+        "vm_id": vm_id,
+        "method": flow.request.method,
+        "host": flow.request.pretty_host,
+        "path": redact_path(raw_path)[:200],
+        "query_keys": sorted({kv.split("=", 1)[0] for kv in query.split("&") if kv})[:20],
+        "content_type": (flow.request.headers.get("content-type") or "")[:100] or None,
+        "body_start": _body_start(flow),
+        "recent": list(_recent[vm_id]),
+        **({"mode": "approve", "policy": rule.get("ai_policy"), **approve} if approve else {"mode": "review"}),
+    }
+    try:
+        out = await asyncio.to_thread(_judge_sync, payload)
+    except Exception as exc:
+        log.warning(f"[mitm] ai judge unavailable: {exc}")
+        return None
+    if not isinstance(out, dict) or out.get("decision") not in ("allow", "ask", "block"):
+        return None
+    return out
 
 
 # ----- hooks ----------------------------------------------------------------
@@ -476,7 +567,7 @@ def tcp_start(flow) -> None:
         log.warning(f"[mitm] tcp_start drop failed: {exc}")
 
 
-def request(flow: http.HTTPFlow) -> None:
+async def request(flow: http.HTTPFlow) -> None:
     host = flow.request.pretty_host
     method = flow.request.method
     path = flow.request.path
@@ -488,6 +579,23 @@ def request(flow: http.HTTPFlow) -> None:
     flow.metadata["cc_effect"] = effect
     flow.metadata["cc_rule"] = (rule or {}).get("name") or (rule or {}).get("match_domain")
 
+    if effect == "allow" and rule and rule.get("ai_review"):
+        # A human grant for this exact request (after an earlier AI "ask") wins over asking again.
+        pid = permission_id_for(permission_scope(method, host, redact_path(path)))
+        if not grant_active(pid):
+            verdict = await ai_judge(flow, rule, vm_id)
+            if verdict:
+                flow.metadata["cc_ai"] = {
+                    "verdict": verdict["decision"],
+                    "category": verdict.get("category"),
+                    "cached": bool(verdict.get("cached")),
+                }
+                if verdict["decision"] == "block":
+                    effect = "block"
+                elif verdict["decision"] == "ask":
+                    effect = "require_permission"
+                flow.metadata["cc_effect"] = effect
+
     if effect == "tunnel":
         # A tunnel destination should have been passed through *before* the HTTP layer
         # (tls_clienthello / next_layer). If we somehow reach here, let it through but NEVER swap
@@ -498,7 +606,9 @@ def request(flow: http.HTTPFlow) -> None:
     if effect == "block":
         flow.response = http.Response.make(
             BLOCK_STATUS,
-            json.dumps({"error": "blocked_by_policy", "host": host, "tenant": TENANT}),
+            json.dumps({"error": "blocked_by_ai_review" if flow.metadata.get("cc_ai") else "blocked_by_policy",
+                        "host": host, "tenant": TENANT,
+                        **({"category": flow.metadata["cc_ai"].get("category")} if flow.metadata.get("cc_ai") else {})}),
             {"Content-Type": "application/json"},
         )
         rec = _http_record(flow, "block")
@@ -509,8 +619,22 @@ def request(flow: http.HTTPFlow) -> None:
     if effect == "require_permission":
         scope = permission_scope(method, host, redact_path(path))
         pid = permission_id_for(scope)
-        if grant_active(pid):
-            # Human approved this exact scope and it hasn't expired — let it through (and swap).
+        approved = None
+        if (not grant_active(pid) and not flow.metadata.get("cc_ai") and rule
+                and rule.get("ai_review") and rule.get("ai_policy")):
+            # Ask rule with a policy: the AI may approve on the person's behalf. It never blocks;
+            # "no" or no answer is the usual 451.
+            approved = await ai_judge(flow, rule, vm_id, {"permission_id": pid, "scope": scope})
+            if approved:
+                flow.metadata["cc_ai"] = {
+                    "verdict": "allow" if approved["decision"] == "allow" else "ask",
+                    "category": approved.get("category"),
+                    "cached": bool(approved.get("cached")),
+                    **({"by": "ai"} if approved["decision"] == "allow" else {}),
+                }
+        if grant_active(pid) or (approved and approved["decision"] == "allow"):
+            # Approved for this exact scope (by a person, or just now by the AI under the rule's
+            # policy) and not expired: let it through (and swap).
             effect = "allow"
             flow.metadata["cc_effect"] = "allow"
             flow.metadata["cc_granted"] = pid
@@ -518,11 +642,13 @@ def request(flow: http.HTTPFlow) -> None:
             record_pending(pid, {
                 "ts": time.time(), "tenant": TENANT, "vm_id": vm_id, "permission_id": pid,
                 "scope": scope, "host": host, "method": method, "path": redact_path(path),
+                **({"ai_category": flow.metadata["cc_ai"].get("category")} if flow.metadata.get("cc_ai") else {}),
             })
             flow.response = http.Response.make(
                 PERMISSION_STATUS,
                 json.dumps({
-                    "permission_id": pid, "reason": "require_permission",
+                    "permission_id": pid,
+                    "reason": "ai_review" if flow.metadata.get("cc_ai") else "require_permission",
                     "summary": scope, "expires_at": int(time.time()) + PERMISSION_TTL,
                 }),
                 {"Content-Type": "application/json"},
