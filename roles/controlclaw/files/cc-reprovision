@@ -49,8 +49,11 @@ say resolving
 #
 # curl rather than node: once this box is confined to the org proxy, everything but the control
 # plane is TLS-intercepted, and node ignores the OS trust store (curl and git do not).
+# An empty branch means cloud-init passed no -C and cloned the repo's default. Keep it empty
+# rather than guessing "main": GitHub's commits API uses the repo's default when `sha` is omitted,
+# so the box resolves commits on the branch it actually booted from.
 if [ "${ALLOW_UNVERIFIED:-false}" = "true" ]; then
-  REF="${ANSIBLE_BRANCH:-main}"
+  REF="${ANSIBLE_BRANCH:-HEAD}"
   say resolving "unverified mode: tracking $REF"
 else
   slug=$(printf '%s' "$ANSIBLE_REPO" | sed -E 's#^https://github\.com/##; s#\.git$##')
@@ -59,12 +62,12 @@ else
     *) die "cannot read an owner/repo out of $ANSIBLE_REPO" ;;
   esac
   until=$(date -u -d "-${MIN_AGE_HOURS} hours" +%FT%TZ 2>/dev/null) || die "cannot compute the cutoff"
-  api="https://api.github.com/repos/${slug}/commits?sha=${ANSIBLE_BRANCH:-main}&until=${until}&per_page=1"
+  api="https://api.github.com/repos/${slug}/commits?until=${until}&per_page=1${ANSIBLE_BRANCH:+&sha=$ANSIBLE_BRANCH}"
   REF=$(curl -fsSL --max-time 30 -H 'Accept: application/vnd.github+json' "$api" \
         | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c[0]["sha"] if c else "")') \
     || die "could not reach GitHub to find a commit at least ${MIN_AGE_HOURS}h old"
   # Fail closed. No commit old enough, or no answer, means no update — never fall back to HEAD.
-  [ -n "$REF" ] || die "no commit on ${ANSIBLE_BRANCH:-main} is at least ${MIN_AGE_HOURS}h old yet"
+  [ -n "$REF" ] || die "no commit on ${ANSIBLE_BRANCH:-the default branch} is at least ${MIN_AGE_HOURS}h old yet"
   say resolving "pinned to ${REF:0:12}"
 fi
 
@@ -83,6 +86,7 @@ VM_HOSTNAME=$(read_key vm_hostname)
 # the control plane does not have it; passing one would overwrite the box's identity and every
 # signed call would start failing. The bootstrap token is likewise single-use and already spent.
 vars=$(VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PROXY_IP:-}" \
+  ANSIBLE_REPO="$ANSIBLE_REPO" ANSIBLE_BRANCH="${ANSIBLE_BRANCH:-main}" ALLOW_UNVERIFIED="${ALLOW_UNVERIFIED:-false}" \
   SAAS_PUB="$(read_key saas_public_key.pem)" \
   CONFIG_URL="$(read_key config_api_url)" READY_URL="$(read_key ready_api_url)" \
   REGISTER_URL="$(read_key register_api_url)" \
@@ -90,6 +94,15 @@ vars=$(VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PROXY_IP:-}" \
   python3 -c '
 import json, os
 v = {"vm_id": os.environ["VM_ID"], "vm_hostname": os.environ["VM_HOSTNAME"], "box_role": "openclaw"}
+# Hand the pin straight back, so self-update.yml runs on a re-run and rewrites update.conf and
+# cc-reprovision itself. Without this a box keeps whatever updater it was created with, and a fix
+# to the updater would need a rebuild -- exactly the problem this whole thing exists to solve.
+# These come from the root-owned conf we just read, never from the caller, so nothing new is
+# trusted here.
+for key, env in (("ansible_repo_url", "ANSIBLE_REPO"), ("ansible_branch", "ANSIBLE_BRANCH"),
+                 ("update_allow_unverified", "ALLOW_UNVERIFIED")):
+    if os.environ.get(env):
+        v[key] = os.environ[env]
 for key, env in (("proxy_ip", "PROXY_IP"), ("saas_public_key", "SAAS_PUB"),
                  ("config_api_url", "CONFIG_URL"), ("ready_api_url", "READY_URL"),
                  ("register_api_url", "REGISTER_URL"), ("mitm_box_private_ip", "MITM_IP"),
