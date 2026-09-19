@@ -1,0 +1,59 @@
+---
+# On-demand re-provisioning: what lets a fix reach a box that already exists.
+#
+# cloud-init's `runcmd` is once-per-instance, so `ansible-pull` never runs again after the first
+# boot. Without this, a box-side change only reaches customers by rebuilding their box.
+#
+# The security shape matters more than the mechanism. An update makes this box fetch and run code
+# as root from a git repo, so the rule is that **the control plane never gets to say which code**:
+#
+#   - the repo and branch are written here, at provisioning, and read from disk at update time;
+#   - cc-reprovision takes NO arguments, so the vm-agent (or anything that has taken the vm-agent)
+#     can only trigger *the* update, never choose one;
+#   - unless update_allow_unverified is set, the box pulls the newest commit that is at least 24h
+#     old rather than whatever the branch points at now. That window is the incident-response
+#     budget described in the SaaS repo's docs/security-design.md: time to spot a bad commit and
+#     freeze the repo before it reaches production boxes.
+#
+# The human gate lives elsewhere: the org firewall sends a 6-digit code over the agent's own
+# messaging channel and only calls the vm-agent once the person has typed it back.
+
+- name: Create the update config dir
+  ansible.builtin.file:
+    path: /etc/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# Root-owned and world-readable but NOT writable by the controlclaw user: the agent has to be able
+# to report what it would pull, and must not be able to change it.
+#
+# proxy_ip is here for a blunter reason. It is not persisted anywhere else on the box, and
+# firewall-linux.yml re-opens 80/443 to the whole internet when it is absent — so a re-run that
+# could not recover it would silently undo the box's inbound firewall.
+- name: Write the update pin (repo, branch, proxy IP)
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/update.conf
+    owner: root
+    group: root
+    mode: '0444'
+    content: |
+      # Written by Ansible at provisioning. Read by cc-reprovision.
+      # Changing this file changes what this box will run as root. It is deliberately not
+      # writable by the controlclaw user, and never sent by the control plane at update time.
+      ANSIBLE_REPO={{ ansible_repo_url }}
+      ANSIBLE_BRANCH={{ ansible_branch | default('main') }}
+      ALLOW_UNVERIFIED={{ 'true' if update_allow_unverified | default(false) | bool else 'false' }}
+      PROXY_IP={{ proxy_ip | default('') }}
+      BOX_ROLE={{ box_role }}
+  when: ansible_repo_url is defined and ansible_repo_url | length > 0
+
+- name: Deploy cc-reprovision (root-owned, no arguments)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-reprovision
+    owner: root
+    group: root
+    mode: '0755'
+    src: cc-reprovision
+  when: ansible_repo_url is defined and ansible_repo_url | length > 0

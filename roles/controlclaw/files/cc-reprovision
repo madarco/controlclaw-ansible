@@ -1,0 +1,118 @@
+#!/bin/bash
+# Re-run ansible-pull on this box. Takes NO arguments, on purpose: the caller (the vm-agent, over
+# a firewall-signed request the person confirmed with a code) gets to say "update", never "update
+# from here". What gets pulled is decided by /etc/controlclaw/update.conf, which is root-owned and
+# was written at provisioning.
+#
+# Detached by design. The role restarts controlclaw-agent, so a run that was a child of the agent
+# would kill itself half way through. The agent calls this via `systemd-run --unit=cc-reprovision`;
+# progress goes to a state file so it survives that restart and the agent can report it afterwards.
+set -uo pipefail
+
+CONF=/etc/controlclaw/update.conf
+STATE=/opt/controlclaw/state/update.json
+LOG=/var/log/ansible-pull.log
+KEYS=/opt/controlclaw/keys
+# Not 0 or 1: a machine reading this wants "at least a day", and an exact 24h boundary would make
+# a commit flip from refused to accepted mid-run.
+MIN_AGE_HOURS=24
+
+# The state file is what the console shows. Written at every step, world-readable (it holds no
+# secret: a phase, an exit code and a task name).
+say() {
+  local phase="$1" detail="${2:-}"
+  printf '{"phase":%s,"detail":%s,"ref":%s,"at":%s}\n' \
+    "$(json "$phase")" "$(json "$detail")" "$(json "${REF:-}")" "$(json "$(date -u +%FT%TZ)")" \
+    > "$STATE".tmp && mv "$STATE".tmp "$STATE"
+  logger -t cc-reprovision "$phase${detail:+: $detail}"
+}
+
+# Minimal JSON string escaping — enough for the phases and error lines we emit.
+json() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
+
+die() { say failed "$1"; exit 1; }
+
+[ -r "$CONF" ] || { logger -t cc-reprovision "no $CONF; refusing"; exit 1; }
+# shellcheck disable=SC1090
+. "$CONF"
+
+[ -n "${ANSIBLE_REPO:-}" ] || die "no repo pinned on this box"
+[ "${BOX_ROLE:-openclaw}" = openclaw ] || die "only agent boxes update in place"
+
+mkdir -p "$(dirname "$STATE")"
+say resolving
+
+# --- which commit -----------------------------------------------------------------------------
+# Unless explicitly relaxed, take the newest commit on the pinned branch that is at least
+# MIN_AGE_HOURS old, rather than whatever the branch points at right now. A malicious commit then
+# has to survive a day of public review before any running box will execute it.
+#
+# curl rather than node: once this box is confined to the org proxy, everything but the control
+# plane is TLS-intercepted, and node ignores the OS trust store (curl and git do not).
+if [ "${ALLOW_UNVERIFIED:-false}" = "true" ]; then
+  REF="${ANSIBLE_BRANCH:-main}"
+  say resolving "unverified mode: tracking $REF"
+else
+  slug=$(printf '%s' "$ANSIBLE_REPO" | sed -E 's#^https://github\.com/##; s#\.git$##')
+  case "$slug" in
+    */*) ;;
+    *) die "cannot read an owner/repo out of $ANSIBLE_REPO" ;;
+  esac
+  until=$(date -u -d "-${MIN_AGE_HOURS} hours" +%FT%TZ 2>/dev/null) || die "cannot compute the cutoff"
+  api="https://api.github.com/repos/${slug}/commits?sha=${ANSIBLE_BRANCH:-main}&until=${until}&per_page=1"
+  REF=$(curl -fsSL --max-time 30 -H 'Accept: application/vnd.github+json' "$api" \
+        | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c[0]["sha"] if c else "")') \
+    || die "could not reach GitHub to find a commit at least ${MIN_AGE_HOURS}h old"
+  # Fail closed. No commit old enough, or no answer, means no update — never fall back to HEAD.
+  [ -n "$REF" ] || die "no commit on ${ANSIBLE_BRANCH:-main} is at least ${MIN_AGE_HOURS}h old yet"
+  say resolving "pinned to ${REF:0:12}"
+fi
+
+# --- what the box already knows about itself --------------------------------------------------
+# Rebuilt from disk, never accepted from the caller. Two of these are load-bearing: without
+# vm_hostname the role stops and disables Caddy (the box's only inbound path), and without
+# proxy_ip it re-opens 80/443 to the whole internet.
+read_key() { [ -r "$KEYS/$1" ] && tr -d '\n' < "$KEYS/$1"; }
+
+VM_ID=$(read_key vm_id)
+VM_HOSTNAME=$(read_key vm_hostname)
+[ -n "$VM_ID" ] || die "this box has no vm_id on disk"
+[ -n "$VM_HOSTNAME" ] || die "this box has no vm_hostname on disk; refusing (it would disable Caddy)"
+
+# NOTE: vm_private_key is deliberately never rebuilt. A secured box generated its own keypair and
+# the control plane does not have it; passing one would overwrite the box's identity and every
+# signed call would start failing. The bootstrap token is likewise single-use and already spent.
+vars=$(VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PROXY_IP:-}" \
+  SAAS_PUB="$(read_key saas_public_key.pem)" \
+  CONFIG_URL="$(read_key config_api_url)" READY_URL="$(read_key ready_api_url)" \
+  REGISTER_URL="$(read_key register_api_url)" \
+  MITM_IP="$(read_key mitm_box_private_ip)" MITM_PUB="$(read_key mitm_pinned_pubkey.pem)" \
+  python3 -c '
+import json, os
+v = {"vm_id": os.environ["VM_ID"], "vm_hostname": os.environ["VM_HOSTNAME"], "box_role": "openclaw"}
+for key, env in (("proxy_ip", "PROXY_IP"), ("saas_public_key", "SAAS_PUB"),
+                 ("config_api_url", "CONFIG_URL"), ("ready_api_url", "READY_URL"),
+                 ("register_api_url", "REGISTER_URL"), ("mitm_box_private_ip", "MITM_IP"),
+                 ("mitm_vm_public_key", "MITM_PUB")):
+    if os.environ.get(env):
+        v[key] = os.environ[env]
+print(json.dumps(v))')
+
+# --- run ---------------------------------------------------------------------------------------
+say installing "fetching collections"
+ansible-galaxy collection install community.docker community.general ansible.posix \
+  >> "$LOG" 2>&1 || say installing "collections already present"
+
+say running "ansible-pull ${REF:0:12}"
+ansible-pull -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
+rc=$?
+
+if [ "$rc" -eq 0 ]; then
+  say done "updated to ${REF:0:12}"
+else
+  # The last complete TASK line is the most useful thing to show someone. Secrets never reach the
+  # log: the extra-vars we pass hold no token, and ansible redacts no_log tasks itself.
+  task=$(grep -a '^TASK \[' "$LOG" | tail -1 | sed -E 's/^TASK \[(.*)\].*/\1/')
+  say failed "ansible-pull exited $rc${task:+ at: $task}"
+fi
+exit "$rc"

@@ -84,6 +84,13 @@
       # Transparent egress activator - fixed root script (applies the staged nftables redirect +
       # flips DNS to the mitm box). Coverage bound; the firewall is the enforcement boundary.
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-enable-egress
+
+      # Re-provisioning - fixed root script taking NO arguments. That is the whole security
+      # property: this grant lets the agent trigger *the* update (what to pull is pinned in
+      # /etc/controlclaw/update.conf, which the agent cannot write), never choose one. The run
+      # itself is detached with systemd-run, because the role restarts controlclaw-agent.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-reprovision
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemd-run --unit=cc-reprovision --collect /usr/local/bin/cc-reprovision
     validate: /usr/sbin/visudo -cf %s
 
 - name: Create .bash_profile to source .bashrc for login shells

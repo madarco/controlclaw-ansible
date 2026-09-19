@@ -67,6 +67,12 @@
   ansible.builtin.include_tasks: caddy.yml
   when: box_role == 'openclaw'
 
+# Lets a later fix reach this box without rebuilding it. Pins what a re-run is allowed to pull,
+# so the control plane can ask for an update but never choose the code.
+- name: Include on-demand re-provisioning (pin + cc-reprovision)
+  ansible.builtin.include_tasks: self-update.yml
+  when: box_role == 'openclaw'
+
 - name: Include proxy box tasks (blind L4 proxy)
   ansible.builtin.include_tasks: proxy.yml
   when: box_role == 'proxy'

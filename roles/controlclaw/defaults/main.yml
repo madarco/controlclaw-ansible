@@ -45,6 +45,16 @@ vm_domain_suffix: ".vm.controlclaw.com"
 proxy_ip: ""                          # public IP of the proxy box; UFW allows 80/443 from it only
 caddy_acme_email: "ops@controlclaw.com"
 
+# On-demand re-provisioning (self-update.yml). The control plane passes the repo and branch it
+# provisioned this box from; cc-reprovision then reads them off disk instead of being told at
+# update time, so a compromised control plane cannot redirect a running box at its own repo.
+# Empty repo = no pin written and the box simply has no update path.
+ansible_repo_url: ""
+ansible_branch: "main"
+# Pull branch HEAD instead of the newest commit at least 24h old. For testing an update before
+# the repo has branch protection and a review rule behind it; leave false in production.
+update_allow_unverified: false
+
 # Proxy box (box_role=proxy)
 hcloud_read_token: ""                 # READ-ONLY Hetzner token for route discovery
 proxy_routes_interval_sec: 20
