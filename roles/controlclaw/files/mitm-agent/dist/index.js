@@ -850,20 +850,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a, b) {
   return (a & 15) + (a >> 6 | a >> 3 & 8) << 4 | (b & 15) + (b >> 6 | b >> 3 & 8);
 }
-function writeHexToUInt8(buf, str3) {
-  const size = str3.length >> 1;
+function writeHexToUInt8(buf, str4) {
+  const size = str4.length >> 1;
   for (let i = 0; i < size; i++) {
     const index = i << 1;
-    buf[i] = hexCharCodesToInt(str3.charCodeAt(index), str3.charCodeAt(index + 1));
+    buf[i] = hexCharCodesToInt(str4.charCodeAt(index), str4.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str3, buf) {
-  if (str3.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str4, buf) {
+  if (str4.length !== buf.length * 2) {
     return false;
   }
   for (let i = 0; i < buf.length; i++) {
     const strIndex = i << 1;
-    if (buf[i] !== hexCharCodesToInt(str3.charCodeAt(strIndex), str3.charCodeAt(strIndex + 1))) {
+    if (buf[i] !== hexCharCodesToInt(str4.charCodeAt(strIndex), str4.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -2775,8 +2775,8 @@ var day = hour * 24;
 var week = day * 7;
 var year = day * 365.25;
 var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
-function secs(str3) {
-  const matched = REGEX.exec(str3);
+function secs(str4) {
+  const matched = REGEX.exec(str4);
   if (!matched || matched[4] && matched[1]) {
     throw new TypeError("Invalid time period format");
   }
@@ -4281,12 +4281,100 @@ var LlmFirewall = class {
   }
 };
 
+// src/update.ts
+var SCOPE_PREFIX = "update:";
+function str3(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function summarize3(p) {
+  return `Update the software on ${p.agent.name}`;
+}
+function parseProposal3(payload) {
+  const changeId = str3(payload.changeId);
+  const agent = payload.agent ?? {};
+  const vmId = str3(agent.vmId);
+  const hostname3 = str3(agent.hostname);
+  if (!changeId || !vmId || !hostname3) throw new Error("malformed update.propose payload");
+  return { changeId, agent: { vmId, name: str3(agent.name) ?? vmId, hostname: hostname3 } };
+}
+var UpdateFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode });
+  }
+  codes;
+  log;
+  handlers() {
+    return {
+      "update.propose": (p) => this.propose(p),
+      "update.confirm": (p) => this.confirm(p),
+      "update.cancel": (p) => this.cancel(p)
+    };
+  }
+  /** One pending update per box, not per org: updating two agents at once is legitimate. */
+  scope(vmId) {
+    return `${SCOPE_PREFIX}${vmId}`;
+  }
+  target(p) {
+    return { vmId: p.agent.vmId, hostname: p.agent.hostname };
+  }
+  async apply(p) {
+    const r = await this.opts.agent.post(this.target(p), "/update", {});
+    this.log(`[update] started on ${p.agent.name}`);
+    return { vmId: p.agent.vmId, phase: r?.status?.phase ?? "resolving" };
+  }
+  async propose(payload) {
+    const p = parseProposal3(payload);
+    const summary = summarize3(p);
+    const data = { changeId: p.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    if (routes.length === 0) {
+      this.codes.drop(this.scope(p.agent.vmId));
+      const applied = await this.apply(p);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(this.scope(p.agent.vmId), p, p.agent.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[update] code sent for ${p.agent.name} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str3(payload.changeId);
+    const vmId = str3(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed update.confirm payload");
+    const code = str3(payload.code) ?? "";
+    const data = { changeId };
+    const v = this.codes.verify(this.scope(vmId), changeId, code);
+    if (v.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
+    if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
+    const applied = await this.apply(v.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize3(v.proposal), sentVia: v.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str3(payload.changeId);
+    const vmId = str3(payload.vmId);
+    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
 // src/agent-client.ts
 import { readFileSync as readFileSync6 } from "fs";
 var AGENT_PATH_PREFIX = "/__cc/agent";
 var TIMEOUT_MS = 25e3;
 function purposeForPath(path) {
-  return path.startsWith("/llm/") ? "llm" : "channels";
+  if (path.startsWith("/llm/")) return "llm";
+  if (path === "/update" || path.startsWith("/update/")) return "update";
+  return "channels";
 }
 function makeAgentTokenSigner(keysDir, boxId) {
   const read = (name25) => readFileSync6(`${keysDir}/${name25}`, "utf-8").trim();
@@ -5866,14 +5954,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str3 = "";
+  let str4 = "";
   for (let i = 0; i < length; i++) {
-    str3 += chars[Math.floor(Math.random() * chars.length)];
+    str4 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str3;
+  return str4;
 }
-function esc(str3) {
-  return JSON.stringify(str3);
+function esc(str4) {
+  return JSON.stringify(str4);
 }
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -5973,8 +6061,8 @@ var getParsedType = (data) => {
 };
 var propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
 var primitiveTypes = /* @__PURE__ */ new Set(["string", "number", "bigint", "boolean", "symbol", "undefined"]);
-function escapeRegex(str3) {
-  return str3.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str4) {
+  return str4.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -31685,8 +31773,8 @@ async function hashCanonical(value) {
   return toBase64url(new Uint8Array(digest));
 }
 var encoder22 = new TextEncoder();
-function fromBase64url(str3) {
-  return convertBase64ToUint8Array(str3);
+function fromBase64url(str4) {
+  return convertBase64ToUint8Array(str4);
 }
 async function importKey(secret) {
   const keyData = typeof secret === "string" ? encoder22.encode(secret) : secret;
@@ -64349,6 +64437,7 @@ var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 var identities = [];
 var channels = null;
 var llm = null;
+var updates = null;
 var aiSettings = null;
 var ai = new AiClient({ settings: () => aiSettings, keyFor: (id) => llm?.tokenFor(id) ?? null });
 async function runSync(boxKey) {
@@ -64449,6 +64538,11 @@ async function main() {
     } catch (err) {
       console.error(`[mitm-agent] llm store unreadable, llm commands disabled: ${err.message}`);
     }
+    updates = new UpdateFirewall({
+      agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+      codeRoutes: () => channels?.codeRoutes() ?? [],
+      channelsReady: () => channels !== null
+    });
   }
   try {
     await runSync(boxKey);
@@ -64547,6 +64641,7 @@ async function main() {
         handlers: {
           ...channels?.handlers() ?? {},
           ...llm?.handlers() ?? {},
+          ...updates?.handlers() ?? {},
           "ai.scan": async () => {
             if (!scanner) return { ok: false, status: "unavailable", message: "The traffic log is not set up on this firewall." };
             if (!ai.enabled()) return { ok: false, status: "off", message: "AI review is off or its key is not on the firewall yet." };
