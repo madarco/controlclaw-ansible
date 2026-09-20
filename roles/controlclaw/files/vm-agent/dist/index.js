@@ -1979,11 +1979,12 @@ var ChannelsService = class {
       });
     } catch (err) {
       const detail = execFailureLine(err);
-      if (!/already exists/i.test(detail)) {
+      if (!await this.pluginPresent(type)) {
         this.setup.set(type, { state: "failed", message: detail });
         this.log(`[channels] installing ${pkg} failed: ${detail}`);
         return false;
       }
+      this.log(`[channels] ${pkg} was already on this box`);
     }
     if (!await this.trustPlugin(type, pkg)) return false;
     const restart = this.opts.restartService?.();
@@ -2001,6 +2002,22 @@ var ChannelsService = class {
     this.setup.delete(type);
     this.log(`[channels] installed ${pkg}`);
     return true;
+  }
+  /**
+   * Is the channel's plugin package on the box? `plugins list --json` is the only authority:
+   * an npm plugin lives under `~/.openclaw/npm` and leaves no trace in the config.
+   */
+  async pluginPresent(type) {
+    try {
+      const { stdout } = await this.exec(this.bin(), ["plugins", "list", "--json"], LIST_TIMEOUT_MS);
+      const start = stdout.indexOf("{");
+      if (start < 0) return false;
+      const parsed = JSON.parse(stdout.slice(start));
+      return (parsed.plugins ?? []).some((p) => p.id === type);
+    } catch (err) {
+      this.log(`[channels] could not list the plugins: ${(err.message ?? "").split("\n")[0]}`);
+      return false;
+    }
   }
   /**
    * Mark the freshly installed plugin as trusted. An external plugin is inert until the config
