@@ -1,6 +1,6 @@
 // src/index.ts
 import { createServer } from "http";
-import { readFileSync as readFileSync10 } from "fs";
+import { readFileSync as readFileSync11 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -1693,13 +1693,14 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { readFileSync as readFileSync9 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync9 } from "fs";
 import { randomUUID } from "crypto";
 
 // src/exec.ts
 import { execFile as execFile3 } from "child_process";
-var defaultExec = (file, args, timeoutMs, stdin) => new Promise((resolve, reject) => {
-  const child = execFile3(file, args, { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } }, (err, stdout, stderr) => {
+var defaultExec = (file, args, timeoutMs, stdin, opts) => new Promise((resolve, reject) => {
+  const env2 = { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw", ...opts?.env };
+  const child = execFile3(file, args, { timeout: timeoutMs, env: env2, maxBuffer: opts?.maxBuffer }, (err, stdout, stderr) => {
     if (err) {
       const e = err;
       e.stdout = String(stdout ?? "");
@@ -1720,11 +1721,20 @@ function execFailureLine(err) {
 
 // src/channels.ts
 var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
+var PLUGIN_BY_CHANNEL = {
+  slack: "@openclaw/slack",
+  whatsapp: "@openclaw/whatsapp"
+};
 var APPROVE_TIMEOUT_MS = 3e4;
 var LIST_TIMEOUT_MS = 2e4;
+var PLUGIN_INSTALL_TIMEOUT_MS = 10 * 6e4;
+var PLUGIN_INSTALL_MAX_BUFFER = 8 * 1024 * 1024;
+var GATEWAY_READY_TIMEOUT_MS = 9e4;
+var GATEWAY_POLL_MS = 500;
 var PAIRINGS_CACHE_MS = 4e3;
 var WA_QR_TIMEOUT_MS = 12e4;
 var WA_QR_STALE_MS = 15e4;
+var WA_INSTALL_STALE_MS = 15 * 6e4;
 var WA_RESULT_TTL_MS = 10 * 6e4;
 function bool(v) {
   return v === true;
@@ -1767,6 +1777,12 @@ var ChannelsService = class {
   log;
   now;
   pairingsCache = null;
+  /** Per-channel plugin-install progress, surfaced through `status()`. In memory only. */
+  setup = /* @__PURE__ */ new Map();
+  /** Single-flight per channel, so a repeated apply or a `channels.push` fan-out installs once. */
+  installing = /* @__PURE__ */ new Map();
+  /** Serialises our own config writes; the installer writes the same file from underneath us. */
+  patchChain = Promise.resolve();
   waLogin = {
     state: "idle",
     qrDataUrl: null,
@@ -1778,6 +1794,9 @@ var ChannelsService = class {
     const c = this.opts.client;
     if (!c || !c.connected) throw new Error("OpenClaw is not running on this box");
     return c;
+  }
+  bin() {
+    return this.opts.openclawBin ?? "/usr/bin/openclaw";
   }
   /**
    * Pending DM pairing requests of the configured channels: `openclaw pairing list <channel> --json`
@@ -1852,25 +1871,188 @@ var ChannelsService = class {
         channels2[type] = entry;
       }
     }
+    for (const [type, setup] of this.setup) {
+      channels2[type] = { configured: false, running: false, connected: false, lastError: null, ...channels2[type], setup };
+    }
     const wa = this.whatsappLogin();
     const configured = Object.keys(channels2).filter((t) => channels2[t]?.configured);
     return { channels: channels2, pairings: await this.pairings(configured), whatsappLogin: wa.state === "idle" ? null : { state: wa.state } };
   }
-  /** `config.get` for the hash, then `config.patch` with one channel block (or its removal). */
+  /**
+   * `config.get` for the hash, then `config.patch` with one channel block (or its removal).
+   *
+   * The patch goes first and the plugin install follows in the background: OpenClaw accepts a
+   * `channels.<type>` block whether or not the plugin is there, and the firewall gives us only 25 s
+   * for this whole call while an install runs for minutes. Writing first also means no channel
+   * secret has to be held in memory — once patched, "enabled but no plugin" is a complete
+   * description of the work left, which is what `reconcile()` reads after a restart.
+   */
   async apply(input) {
     const block = channelBlock(input);
     const patch = { channels: { [input.type]: block } };
     await this.patchConfig(patch);
     const what = block ? `applied ${input.type}` : `removed ${input.type}`;
     this.log(`[channels] ${what}`);
+    if (block) void this.ensurePlugin(input.type);
     return { ok: true, message: what };
   }
-  async patchConfig(patch) {
+  /**
+   * One config write at a time, with a single retry when OpenClaw says the file moved under us —
+   * `openclaw plugins install` edits the same file, and so does the WhatsApp login when it lands.
+   */
+  patchConfig(patch) {
+    const run2 = this.patchChain.then(
+      () => this.patchOnce(patch),
+      () => this.patchOnce(patch)
+    );
+    this.patchChain = run2.catch(() => void 0);
+    return run2;
+  }
+  async patchOnce(patch) {
+    try {
+      await this.writeConfig(patch);
+    } catch (err) {
+      if (!/config changed since last load/i.test(err.message ?? "")) throw err;
+      await this.writeConfig(patch);
+    }
+  }
+  async writeConfig(patch) {
     const gw = this.gateway();
     const snapshot = await gw.call("config.get", {}, 1e4);
     const baseHash = snapshot.hash;
     if (!baseHash) throw new Error("OpenClaw returned no config hash");
     await gw.call("config.patch", { raw: JSON.stringify(patch), baseHash }, 2e4);
+  }
+  /** The live config, for deciding whether a channel's plugin is already there. */
+  async config() {
+    const snapshot = await this.gateway().call("config.get", {}, 1e4);
+    const cfg = snapshot.parsed ?? snapshot.config;
+    return cfg ?? {};
+  }
+  /**
+   * Presence of the `plugins.entries.<type>` key, not `enabled === true`: someone who turned a
+   * plugin off meant it, and reinstalling would only put them back where they started.
+   *
+   * The key is ours: `openclaw plugins install` drops the package under `~/.openclaw/npm` and
+   * writes nothing to the config, so this is the record that the install finished AND was
+   * trusted — see `trustPlugin`.
+   */
+  pluginInstalled(config, type) {
+    if (!PLUGIN_BY_CHANNEL[type]) return true;
+    const entries = config.plugins?.entries;
+    return Boolean(entries && Object.hasOwn(entries, type));
+  }
+  /**
+   * Install the channel's OpenClaw plugin if it is missing, then restart so it loads. Resolves
+   * true once the channel can actually run. Safe to call repeatedly: single-flight per channel,
+   * and a no-op for Telegram and for anything already installed.
+   */
+  ensurePlugin(type) {
+    const pkg = PLUGIN_BY_CHANNEL[type];
+    if (!pkg) return Promise.resolve(true);
+    const inFlight = this.installing.get(type);
+    if (inFlight) return inFlight;
+    const run2 = this.installPlugin(type, pkg).catch((err) => {
+      const message = execFailureLine(err);
+      this.setup.set(type, { state: "failed", message });
+      this.log(`[channels] installing ${pkg} failed: ${message}`);
+      return false;
+    }).finally(() => this.installing.delete(type));
+    this.installing.set(type, run2);
+    return run2;
+  }
+  async installPlugin(type, pkg) {
+    try {
+      if (this.pluginInstalled(await this.config(), type)) return true;
+    } catch (err) {
+      this.log(`[channels] could not read the config to check the ${type} plugin: ${err.message}`);
+      return false;
+    }
+    this.setup.set(type, { state: "installing", message: `Setting up ${type} on this agent\u2026` });
+    this.log(`[channels] installing ${pkg}`);
+    try {
+      const ca = this.opts.mitmCaPath;
+      const env2 = ca && existsSync5(ca) ? { NODE_EXTRA_CA_CERTS: ca } : void 0;
+      await this.exec(this.bin(), ["plugins", "install", `npm:${pkg}`], PLUGIN_INSTALL_TIMEOUT_MS, void 0, {
+        maxBuffer: PLUGIN_INSTALL_MAX_BUFFER,
+        env: env2
+      });
+    } catch (err) {
+      const detail = execFailureLine(err);
+      if (!/already exists/i.test(detail)) {
+        this.setup.set(type, { state: "failed", message: detail });
+        this.log(`[channels] installing ${pkg} failed: ${detail}`);
+        return false;
+      }
+    }
+    if (!await this.trustPlugin(type, pkg)) return false;
+    const restart = this.opts.restartService?.();
+    if (restart && !restart.ok) {
+      const message = restart.error ?? "the agent could not be restarted";
+      this.setup.set(type, { state: "failed", message });
+      this.log(`[channels] restart after installing ${pkg} failed: ${message}`);
+      return false;
+    }
+    if (!await this.waitForGateway()) {
+      this.setup.set(type, { state: "failed", message: "the agent did not come back after the restart" });
+      this.log(`[channels] gateway did not return after installing ${pkg}`);
+      return false;
+    }
+    this.setup.delete(type);
+    this.log(`[channels] installed ${pkg}`);
+    return true;
+  }
+  /**
+   * Mark the freshly installed plugin as trusted. An external plugin is inert until the config
+   * says so: the gateway loads it, sees no `plugins.entries.<type>.enabled`, and refuses to start
+   * the channel with "external plugin is installed without explicit trust" — which looks exactly
+   * like the plugin never having been installed at all.
+   */
+  async trustPlugin(type, pkg) {
+    try {
+      await this.patchConfig({ plugins: { entries: { [type]: { enabled: true } } } });
+      return true;
+    } catch (err) {
+      const message = err.message;
+      this.setup.set(type, { state: "failed", message });
+      this.log(`[channels] trusting ${pkg} failed: ${message}`);
+      return false;
+    }
+  }
+  async waitForGateway() {
+    const deadline = this.now() + (this.opts.gatewayReadyTimeoutMs ?? GATEWAY_READY_TIMEOUT_MS);
+    const every = this.opts.pollIntervalMs ?? GATEWAY_POLL_MS;
+    while (this.now() < deadline) {
+      if (this.opts.client?.connected) return true;
+      await new Promise((r) => setTimeout(r, every));
+    }
+    return Boolean(this.opts.client?.connected);
+  }
+  /**
+   * Finish any install that a restart interrupted, and repair boxes configured before this agent
+   * knew to install plugins at all. The config is the whole state: a channel that is enabled with
+   * no plugin behind it has never been able to run.
+   *
+   * Runs on every gateway connect, not just the first. It costs one `config.get`, and the work it
+   * finds is single-flighted by `ensurePlugin`, so a flapping socket cannot pile up installs — and
+   * the connect that follows our own post-install restart doubles as the check that it worked.
+   */
+  async reconcile() {
+    let config;
+    try {
+      config = await this.config();
+    } catch (err) {
+      this.log(`[channels] could not read the config to reconcile plugins: ${err.message}`);
+      return;
+    }
+    const channels2 = config.channels ?? {};
+    for (const type of CHANNEL_TYPES) {
+      if (!PLUGIN_BY_CHANNEL[type]) continue;
+      if (!bool(channels2[type]?.enabled)) continue;
+      if (this.pluginInstalled(config, type)) continue;
+      this.log(`[channels] ${type} is configured but its plugin is missing; installing it`);
+      void this.ensurePlugin(type);
+    }
   }
   /** Deliver a text to a sender over one of the agent's channels. The text is not ours to change. */
   async send(input) {
@@ -1905,6 +2087,9 @@ var ChannelsService = class {
     if (l.state === "qr" && this.now() - l.at > WA_QR_STALE_MS) {
       return { state: "expired", qrDataUrl: null, message: "The QR code expired. Start again." };
     }
+    if (l.state === "installing" && this.now() - l.at > WA_INSTALL_STALE_MS) {
+      return { state: "failed", qrDataUrl: null, message: "Setting up WhatsApp took too long. Try again." };
+    }
     if (l.state !== "idle" && l.state !== "qr" && this.now() - l.at > WA_RESULT_TTL_MS) {
       return { state: "idle", qrDataUrl: null, message: null };
     }
@@ -1913,8 +2098,20 @@ var ChannelsService = class {
   /**
    * Start the QR login and wait for the scan in the background. On connect, the channel block is
    * written (personal mode allowlists the linked number and turns on self-chat mode).
+   *
+   * `web.login.start` *is* the WhatsApp plugin, so with the plugin missing there is no RPC to call
+   * and no config write to piggyback on — unlike the other channels, this path has to install
+   * first and only then ask for a QR code.
    */
   async whatsappLoginStart(personal) {
+    if (!this.pluginInstalled(await this.config(), "whatsapp")) {
+      this.waLogin = { state: "installing", qrDataUrl: null, message: "Setting up WhatsApp on this agent\u2026", at: this.now(), personal };
+      void this.installThenLogin(personal);
+      return { ok: true, state: "installing", qrDataUrl: null };
+    }
+    return this.startQr(personal);
+  }
+  async startQr(personal) {
     const gw = this.gateway();
     const started = await gw.call(
       "web.login.start",
@@ -1924,6 +2121,19 @@ var ChannelsService = class {
     this.waLogin = { state: "qr", qrDataUrl: started.qrDataUrl ?? null, message: started.message ?? null, at: this.now(), personal };
     void this.waitForWhatsapp(gw);
     return { ok: true, state: "qr", qrDataUrl: this.waLogin.qrDataUrl };
+  }
+  async installThenLogin(personal) {
+    try {
+      if (!await this.ensurePlugin("whatsapp")) {
+        const why = this.setup.get("whatsapp")?.message ?? "WhatsApp could not be set up on this agent";
+        this.waLogin = { ...this.waLogin, state: "failed", qrDataUrl: null, message: why, at: this.now() };
+        return;
+      }
+      await this.startQr(personal);
+    } catch (err) {
+      this.waLogin = { ...this.waLogin, state: "failed", qrDataUrl: null, message: err.message, at: this.now() };
+      this.log(`[channels] whatsapp setup failed: ${err.message}`);
+    }
   }
   async waitForWhatsapp(gw) {
     try {
@@ -2311,6 +2521,121 @@ async function handleLlm(req, res, url, service) {
   }
 }
 
+// src/update.ts
+import { readFileSync as readFileSync10 } from "fs";
+import { spawn as spawn2 } from "child_process";
+var IDLE = { phase: "idle", detail: null, ref: null, at: null };
+var STALE_MS = 45 * 6e4;
+function detach(file, args) {
+  try {
+    const child = spawn2(file, args, { detached: true, stdio: "ignore" });
+    child.on("error", (error) => console.error(`[update] could not start cc-reprovision: ${error.message}`));
+    child.unref();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+var UpdateService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.spawnImpl = opts.spawnImpl ?? detach;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  spawnImpl;
+  log;
+  now;
+  /** Whether this box was provisioned with an update pin at all. */
+  pinned() {
+    return this.conf() !== null;
+  }
+  conf() {
+    const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
+    let raw;
+    try {
+      raw = readFileSync10(path, "utf8");
+    } catch {
+      return null;
+    }
+    const out = {};
+    for (const line of raw.split("\n")) {
+      const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
+      if (m) out[m[1]] = m[2];
+    }
+    return out.ANSIBLE_REPO ? out : null;
+  }
+  status() {
+    let raw;
+    try {
+      raw = readFileSync10(this.opts.statePath, "utf8");
+    } catch {
+      return IDLE;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return IDLE;
+    }
+    const phase = typeof parsed.phase === "string" ? parsed.phase : "idle";
+    const at = typeof parsed.at === "string" ? parsed.at : null;
+    const status = {
+      phase,
+      detail: typeof parsed.detail === "string" && parsed.detail.length > 0 ? parsed.detail : null,
+      ref: typeof parsed.ref === "string" && parsed.ref.length > 0 ? parsed.ref : null,
+      at
+    };
+    const running = phase === "resolving" || phase === "installing" || phase === "running";
+    if (running && at && this.now() - Date.parse(at) > STALE_MS) {
+      return { ...status, phase: "failed", detail: "The update stopped reporting. Check the agent's logs." };
+    }
+    return status;
+  }
+  /**
+   * Start a run, unless one is already going. Returns as soon as it is launched — the run itself
+   * takes minutes and will restart this process before it finishes.
+   */
+  start() {
+    if (!this.pinned()) throw new Error("This agent was created before in-place updates; it has to be rebuilt instead.");
+    const current = this.status();
+    if (current.phase === "resolving" || current.phase === "installing" || current.phase === "running") {
+      return { ok: true, status: current };
+    }
+    const r = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", "/usr/local/bin/cc-reprovision"]);
+    if (!r.ok) throw new Error(`The update could not be started: ${r.error ?? "unknown error"}`);
+    this.log("[update] started cc-reprovision");
+    return { ok: true, status: { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(this.now()).toISOString() } };
+  }
+};
+
+// src/routes/update.ts
+async function handleUpdate(req, res, pathname, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "update") : await verifyMitmRequest(req, "update") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "an update must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  if (!service) {
+    sendJson(res, 503, { ok: false, error: "This agent cannot update itself" });
+    return;
+  }
+  try {
+    if (pathname === "/update" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, pinned: service.pinned(), ...service.status() });
+      return;
+    }
+    if (pathname === "/update" && req.method === "POST") {
+      sendJson(res, 200, service.start());
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -2320,7 +2645,7 @@ var GATEWAY_PORT = parseInt(process.env.OPENCLAW_GATEWAY_PORT ?? "18789", 10);
 var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 try {
-  const saasPublicKey2 = readFileSync10(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync11(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -2328,7 +2653,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync10(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync11(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -2380,6 +2705,7 @@ function startGatewayBridge() {
 }
 var channels = null;
 var llm = null;
+var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
 var server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url.pathname.startsWith("/__cc/")) {
@@ -2392,6 +2718,10 @@ var server = createServer(async (req, res) => {
   }
   if (url.pathname.startsWith("/llm/")) {
     await handleLlm(req, res, url, llm);
+    return;
+  }
+  if (url.pathname === "/update") {
+    await handleUpdate(req, res, url.pathname, update);
     return;
   }
   if (!await requireAuth(req, res)) return;
@@ -2432,7 +2762,10 @@ server.listen(PORT, BIND, () => {
   const client = startGatewayBridge();
   channels = new ChannelsService({
     client,
-    credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`
+    credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`,
+    restartService: () => runAction("restart"),
+    mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt`
   });
   llm = new LlmService({ client, restartService: () => runAction("restart") });
+  client?.onConnected(() => void channels?.reconcile());
 });
