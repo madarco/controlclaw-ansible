@@ -3769,7 +3769,11 @@ var ChannelsFirewall = class {
         return { mode, vmId: c.assignedVmId };
       }
       case "remove": {
-        const c = this.connection(p.connectionId);
+        const c = this.store.connections[p.connectionId];
+        if (!c) {
+          this.log(`[channels] ${p.type} ${p.connectionId} is not on the firewall; nothing to remove`);
+          return { vmId: null, missing: true };
+        }
         if (c.assignedVmId) await this.leave(c.assignedVmId, c.type);
         delete this.store.connections[p.connectionId];
         this.save();
