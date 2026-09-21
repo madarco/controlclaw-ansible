@@ -15,8 +15,18 @@
 # console showed Open on a box with nothing on 443, and the model provider pushed at ready failed
 # with "fetch failed". Started here, ready means the whole box is installed.
 #
+# Pending restarts run first. The control plane pushes the org's model provider the moment it
+# hears ready, and OpenClaw needs ~20 s to listen again after a restart. Real box, 2026-09-21: the
+# agent reported ready at 20:04:51, the `restart openclaw` handler fired at the end of the play at
+# 20:04:55, and the box came up with its model failed ("The agent is not running"). Flushed here,
+# with `restart controlclaw-agent` the last handler in the file, the agent starts once, after
+# everything else has settled. The agent also waits for the gateway itself before it reports
+# ready, because installing the firewall CA restarts OpenClaw once more.
+- name: Run pending restarts before the agent starts
+  ansible.builtin.meta: flush_handlers
+
 # On a re-run (cc-reprovision) the agent is already running and this is a no-op; a changed bundle
-# or unit restarts it through the `restart controlclaw-agent` handler at the end of the play.
+# or unit has restarted it through the handler flushed above.
 - name: Enable and start controlclaw-agent service
   ansible.builtin.systemd:
     name: controlclaw-agent

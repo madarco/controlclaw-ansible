@@ -1280,6 +1280,19 @@ var GatewayClient = class {
     this.connectHandlers.add(handler);
     return () => this.connectHandlers.delete(handler);
   }
+  /** Resolves true once the handshake is done (at once if it already is), false after `timeoutMs`. */
+  whenConnected(timeoutMs) {
+    if (this._connected) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const done = (ok) => {
+        clearTimeout(timer);
+        off();
+        resolve(ok);
+      };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      const off = this.onConnected(() => done(true));
+    });
+  }
   async call(method, params = {}, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
     const ws = this.ws;
     if (!ws || ws.readyState !== ws.OPEN) throw new Error("gateway not connected");
@@ -2804,6 +2817,7 @@ var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
 var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 var STATE_DIR = process.env.STATE_DIR ?? "/opt/controlclaw/state";
 var GATEWAY_PORT = parseInt(process.env.OPENCLAW_GATEWAY_PORT ?? "18789", 10);
+var GATEWAY_READY_TIMEOUT_MS2 = parseInt(process.env.GATEWAY_READY_TIMEOUT_MS ?? "120000", 10);
 var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 try {
@@ -2827,7 +2841,7 @@ try {
   process.exit(1);
 }
 console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redaction`);
-async function bootstrap() {
+async function bootstrap(client) {
   ensureVmKeypair(KEYS_DIR2);
   await registerPublicKey(KEYS_DIR2);
   const caReady = await ensureMitmCaInstalled(KEYS_DIR2);
@@ -2839,6 +2853,9 @@ async function bootstrap() {
   if (!egressReady) {
     console.error("[bootstrap] transparent egress not active \u2014 skipping ready report (box stays initializing)");
     return;
+  }
+  if (client && !await client.whenConnected(GATEWAY_READY_TIMEOUT_MS2)) {
+    console.warn("[bootstrap] OpenClaw's gateway is still down \u2014 reporting ready without it");
   }
   await reportReady();
 }
@@ -2920,8 +2937,8 @@ var server = createServer(async (req, res) => {
 });
 server.listen(PORT, BIND, () => {
   console.log(`ControlClaw agent listening on ${BIND}:${PORT}`);
-  void bootstrap().catch((err) => console.error("[bootstrap] failed:", err));
   const client = startGatewayBridge();
+  void bootstrap(client).catch((err) => console.error("[bootstrap] failed:", err));
   channels = new ChannelsService({
     client,
     credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`,

@@ -9,12 +9,6 @@
     name: fail2ban
     state: restarted
 
-- name: restart controlclaw-agent
-  ansible.builtin.systemd:
-    name: controlclaw-agent
-    state: restarted
-    daemon_reload: true
-
 - name: restart controlclaw-mitmproxy
   ansible.builtin.systemd:
     name: controlclaw-mitmproxy
@@ -56,3 +50,11 @@
   ansible.builtin.systemd:
     name: haproxy
     state: reloaded
+
+# Keep this one LAST. Handlers run in the order of this file, and the agent reports ready as soon
+# as it is up: OpenClaw and Caddy must have had their restarts by then (see vm-agent-start.yml).
+- name: restart controlclaw-agent
+  ansible.builtin.systemd:
+    name: controlclaw-agent
+    state: restarted
+    daemon_reload: true
