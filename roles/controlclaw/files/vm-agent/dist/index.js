@@ -147,6 +147,7 @@ function consumeJti(jti, expSeconds) {
 }
 
 // src/routes/access.ts
+import { createHash } from "crypto";
 import { execFile } from "child_process";
 import { readFileSync as readFileSync2 } from "fs";
 import { join as join2 } from "path";
@@ -190,6 +191,23 @@ var NOVNC_URL = "/__cc/novnc/vnc_lite.html?path=__cc/novnc/websockify&scale=1";
 function keysDir() {
   return process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 }
+function installId(gatewayToken, vmId) {
+  return createHash("sha256").update(gatewayToken ?? vmId).digest("hex").slice(0, 16);
+}
+var FORGET_PREVIOUS_GATEWAY_JS = `
+  try {
+    const KEY = 'controlclaw.install';
+    if (d.install && localStorage.getItem(KEY) !== d.install) {
+      localStorage.clear(); sessionStorage.clear();
+      if (indexedDB.databases) {
+        const dbs = await indexedDB.databases();
+        await Promise.all(dbs.filter((x) => x.name).map((x) => new Promise((done) => {
+          const req = indexedDB.deleteDatabase(x.name); req.onsuccess = req.onerror = req.onblocked = () => done();
+        })));
+      }
+      localStorage.setItem(KEY, d.install);
+    }
+  } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
     return readFileSync2(join2(keysDir(), name), "utf-8").trim() || null;
@@ -308,7 +326,9 @@ function loginPage(hostname) {
   } catch (e) { fail('Could not reach the agent. Try again from your ControlClaw console.'); return; }
   if (!ok) { fail(d.error || 'This link has expired. Open the agent from your ControlClaw console again.'); return; }
   await wait(Math.max(0, 500 - (Date.now() - started)));
-  step(2); await wait(450);
+  step(2);
+  ${FORGET_PREVIOUS_GATEWAY_JS}
+  await wait(450);
   step(3); await wait(350);
   location.replace(d.next || '/');
 })();`
@@ -420,7 +440,8 @@ async function handleAccess(req, res, pathname) {
       if (gatewayToken) next = `/#token=${encodeURIComponent(gatewayToken)}`;
     }
     const session = await issueSession(vmId);
-    json(res, 200, { next }, { "Set-Cookie": sessionCookie(session) });
+    const install = installId(readKey("openclaw_gateway_token"), vmId);
+    json(res, 200, { next, install }, { "Set-Cookie": sessionCookie(session) });
     return;
   }
   if (pathname === "/__cc/browser" && req.method === "GET") {
