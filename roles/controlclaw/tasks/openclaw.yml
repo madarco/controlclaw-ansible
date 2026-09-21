@@ -123,7 +123,8 @@
 # Compare only the fields we own, not the whole gateway block: OpenClaw writes to this file
 # itself (it added a top-level `plugins` key on its own), and the agent-https plan will add
 # `gateway.publicOrigin`. A strict equality check would then re-patch and restart the gateway on
-# every boot.
+# every boot. The browser block below is ours too, so it has to be checked here as well —
+# otherwise every run sees a "mismatch", re-patches, and restarts the gateway under the customer.
 - name: Decide whether the gateway config needs writing
   ansible.builtin.set_fact:
     openclaw_config_ok: >-
@@ -133,6 +134,11 @@
          openclaw_gateway_current.port | default(0) == openclaw_gateway_port | int and
          openclaw_gateway_current.auth.mode | default('') == 'token' and
          openclaw_gateway_current.auth.token | default('') == (openclaw_token_b64.content | b64decode | trim) and
+         openclaw_browser_current.enabled | default(false) | bool and
+         openclaw_browser_current.attachOnly | default(false) | bool and
+         openclaw_browser_current.defaultProfile | default('') == 'openclaw' and
+         openclaw_browser_profile.cdpUrl | default('') == openclaw_cdp_url and
+         openclaw_browser_profile.attachOnly | default(false) | bool and
          (vm_hostname is not defined or (
            openclaw_gateway_current.publicOrigin | default('') == 'https://' ~ vm_hostname and
            openclaw_gateway_current.trustedProxies | default([]) == ['127.0.0.1'] and
@@ -141,6 +147,15 @@
     openclaw_gateway_current: >-
       {{ (openclaw_config_raw.content | default('') | b64decode | from_json).gateway
          if openclaw_config_raw.content is defined else {} }}
+    openclaw_browser_current: >-
+      {{ (openclaw_config_raw.content | default('') | b64decode | from_json).browser | default({})
+         if openclaw_config_raw.content is defined else {} }}
+    # Resolved a level at a time. A config with `browser.enabled` and no `profiles` is a real
+    # shape (OpenClaw writes its own defaults), and whether a chained `.profiles.openclaw.x`
+    # yields undefined or raises depends on the Jinja undefined class the installed ansible-core
+    # happens to use. This does not.
+    openclaw_browser_profile: >-
+      {{ (openclaw_browser_current.profiles | default({})).openclaw | default({}) }}
   no_log: true
 
 # `config patch` is a single validated write against OpenClaw's own schema - better than
@@ -150,16 +165,38 @@
 # through `to_json` would emit "18789" as a string and fail schema validation.
 # With a hostname, OpenClaw also learns its public origin (Caddy in front on 443), trusts the
 # loopback proxy for forwarded headers, and allows the browser origin for its WebSocket.
-- name: Configure the gateway (loopback, token auth, public origin)
+#
+# The browser block attaches OpenClaw to the Chrome that browser-stream.service already runs, so
+# the window the customer is watching in the console is the one the agent drives. Notes, all
+# verified against OpenClaw 2026.9.5 rather than assumed:
+#   * cdpUrl is set on the PROFILE, not only at the top level. Top-level browser.cdpUrl reaches
+#     the default profile through a `||=` fallback that any persisted `profiles.openclaw` beats
+#     silently, and for http(s) URLs only the port is inherited.
+#   * attachOnly in both places. It is the only thing stopping OpenClaw from launching its own
+#     invisible Chrome the moment CDP is briefly unreachable — which looks like the agent
+#     ignoring the live browser.
+#   * no `color`: required in 2026.3.13, removed in 2026.9.5, and both objects are strictObject.
+#     The box installs @latest, so sending it would fail validation on new boxes.
+#   * no `headless` / `executablePath`: OpenClaw never launches anything here.
+#   * the profile name must match ^[a-z0-9-]+$.
+#
+# Both JSON fragments below start with a COMMA, and that is load-bearing. Ansible runs its own
+# literal_eval over a templated result, so a value that merely looks like a dict comes back as a
+# real dict and renders as Python — `{'enabled': True, …}` — which is not JSON and which
+# `config patch` rejects. A fragment starting with `,` can never be read that way. Found on a
+# real box (vnc-live-3, 2026-09-20), where the task failed under `no_log` and said nothing.
+- name: Configure the gateway (loopback, token auth, public origin) and the live browser
   ansible.builtin.shell:
     cmd: >-
       printf '%s'
-      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}{{ openclaw_origin_json }}}}'
+      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}{{ openclaw_origin_json }}}{{ openclaw_browser_json }}}'
       | /usr/bin/openclaw config patch --stdin
   vars:
     openclaw_origin_json: >-
       {{ ',"publicOrigin":"https://' ~ vm_hostname ~ '","trustedProxies":["127.0.0.1"],"controlUi":{"allowedOrigins":["https://' ~ vm_hostname ~ '"]}'
          if vm_hostname is defined else '' }}
+    openclaw_browser_json: >-
+      {{ ',"browser":{"enabled":true,"attachOnly":true,"defaultProfile":"openclaw","profiles":{"openclaw":{"cdpUrl":"' ~ openclaw_cdp_url ~ '","attachOnly":true}}}' }}
   become: true
   become_user: "{{ controlclaw_user }}"
   environment:
@@ -167,6 +204,35 @@
   when: not openclaw_config_ok | bool
   no_log: true
   notify: restart openclaw
+
+# The patch runs under no_log, so when it fails the play says only "censored" — which is how the
+# comma bug above survived a whole box build. Read the result back and fail with something an
+# operator can act on. The slurp is no_log (the file holds the gateway token); the assert prints
+# only its own expression text and fail_msg, never the content.
+- name: Re-read the OpenClaw config after patching
+  ansible.builtin.slurp:
+    src: "{{ controlclaw_home }}/.openclaw/openclaw.json"
+  register: openclaw_config_after
+  when: not openclaw_config_ok | bool
+  no_log: true
+
+- name: Fail clearly when the gateway or browser block did not land
+  ansible.builtin.assert:
+    that:
+      - (openclaw_config_written.gateway | default({})).port | default(0) == openclaw_gateway_port | int
+      - ((openclaw_config_written.browser | default({})).profiles | default({})).openclaw | default({})
+        is mapping
+      - (((openclaw_config_written.browser | default({})).profiles | default({})).openclaw | default({})).cdpUrl
+        | default('') == openclaw_cdp_url
+    fail_msg: >-
+      `openclaw config patch` ran but {{ controlclaw_home }}/.openclaw/openclaw.json does not hold
+      what we asked for. The patch task is no_log (its command carries the gateway token), so read
+      that file on the box rather than the play output.
+  vars:
+    openclaw_config_written: >-
+      {{ openclaw_config_after.content | default('') | b64decode | from_json
+         if openclaw_config_after.content is defined else {} }}
+  when: not openclaw_config_ok | bool
 
 # Node does not read the OS trust store, so on a secured box every outbound TLS call from
 # OpenClaw would fail against the mitm proxy. NODE_EXTRA_CA_CERTS is not set here: the CA only
@@ -184,8 +250,11 @@
     content: |
       [Unit]
       Description=OpenClaw AI Gateway
-      After=network-online.target docker.service
-      Wants=network-online.target
+      After=network-online.target docker.service browser-stream.service
+      Wants=network-online.target browser-stream.service
+
+      # DISPLAY is deliberately NOT set on this unit. Attaching over CDP never spawns a process,
+      # and an X display in the environment only risks re-enabling OpenClaw's local-open path.
 
       [Service]
       Type=simple

@@ -41,6 +41,12 @@
   ansible.builtin.include_tasks: nodejs.yml
   when: box_role != 'proxy'
 
+# Before the browser: the live browser is what makes a swapless 4 GB box a problem, and a box
+# that has already started Chrome is a bad moment to be allocating a swap file.
+- name: Include swap tasks
+  ansible.builtin.include_tasks: swap.yml
+  when: swap_size_mb | int > 0 and box_role == 'openclaw' and not ci_test
+
 - name: Include browser streaming tasks
   ansible.builtin.include_tasks: browser-stream.yml
   when: browser_stream_enabled | bool and box_role == 'openclaw'

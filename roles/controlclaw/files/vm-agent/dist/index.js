@@ -37,9 +37,9 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
-async function verifyLoginToken(token, vmId) {
+async function verifyLoginToken(token, vmId, purpose) {
   const payload = await verifySaasToken(token);
-  if (!payload || payload.purpose !== "browser-login" || payload.vmId !== vmId) return null;
+  if (!payload || payload.purpose !== purpose || payload.vmId !== vmId) return null;
   if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
   return payload;
 }
@@ -76,6 +76,9 @@ import { join } from "path";
 import { SignJWT, jwtVerify as jwtVerify2 } from "jose";
 var SESSION_COOKIE = "__Host-cc_session";
 var SESSION_TTL_SECONDS = 12 * 60 * 60;
+var VIEW_COOKIE = "__Secure-cc_view";
+var VIEW_COOKIE_PATH = "/__cc/novnc";
+var VIEW_AUDIENCE = "view";
 var secret = null;
 function ensureSessionSecret(keysDir2) {
   const path = join(keysDir2, "session_secret");
@@ -101,6 +104,27 @@ async function verifySession(cookieHeader, vmId) {
   if (!token) return false;
   try {
     const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"] });
+    return payload.sub === vmId && payload.aud === void 0;
+  } catch {
+    return false;
+  }
+}
+async function issueViewSession(vmId) {
+  if (!secret) throw new Error("session secret not initialised");
+  return new SignJWT({ sub: vmId }).setProtectedHeader({ alg: "HS256" }).setAudience(VIEW_AUDIENCE).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
+}
+function viewSessionCookie(token) {
+  return `${VIEW_COOKIE}=${token}; Path=${VIEW_COOKIE_PATH}; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=None`;
+}
+function clearViewSessionCookie() {
+  return `${VIEW_COOKIE}=; Path=${VIEW_COOKIE_PATH}; Max-Age=0; HttpOnly; Secure; SameSite=None`;
+}
+async function verifyViewSession(cookieHeader, vmId) {
+  if (!secret || !cookieHeader) return false;
+  const token = parseCookie(cookieHeader, VIEW_COOKIE);
+  if (!token) return false;
+  try {
+    const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"], audience: VIEW_AUDIENCE });
     return payload.sub === vmId;
   } catch {
     return false;
@@ -162,6 +186,7 @@ function sendJson(res, status, body, extraHeaders = {}) {
 
 // src/routes/access.ts
 var DASHBOARD_TIMEOUT_MS = 2e4;
+var NOVNC_URL = "/__cc/novnc/vnc_lite.html?path=__cc/novnc/websockify&scale=1";
 function keysDir() {
   return process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 }
@@ -178,6 +203,43 @@ function html(res, status, body, extraHeaders = {}) {
     "Cache-Control": "no-store",
     "X-Frame-Options": "DENY",
     ...extraHeaders
+  });
+  res.end(body);
+}
+function consoleOrigin() {
+  const configUrl = readKey("config_api_url");
+  if (!configUrl) return null;
+  try {
+    return new URL(configUrl).origin;
+  } catch {
+    return null;
+  }
+}
+function boxOrigin() {
+  const hostname = readKey("vm_hostname");
+  return hostname ? `https://${hostname}` : null;
+}
+var origins = null;
+function allowedOrigins() {
+  origins ??= { box: boxOrigin(), console: consoleOrigin() };
+  return origins;
+}
+function frameAncestors() {
+  const origin = allowedOrigins().console;
+  return origin ? `'self' ${origin}` : "'self'";
+}
+function originAllowed(req) {
+  if (req.headers["sec-fetch-site"] === "cross-site") return false;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  const { box, console: consoleOrig } = allowedOrigins();
+  return origin === box || origin === consoleOrig;
+}
+function framedHtml(res, status, body) {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": `frame-ancestors ${frameAncestors()}`
   });
   res.end(body);
 }
@@ -258,6 +320,40 @@ var DENIED_PAGE = shell(
 <p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Open again.</p>
 <a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
 );
+var DENIED_VIEW_PAGE = shell(
+  "This browser is private",
+  `<h1>This browser is private</h1>
+<p class="note">Open it from your ControlClaw console. If you were watching a moment ago, the view has expired: press Reconnect.</p>`
+);
+function browserPage(hostname) {
+  const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
+  const host = hostname ? escapeHtml(hostname) : "";
+  return shell(
+    `Connecting to ${agent}\u2026`,
+    `<h1 id="h">Opening the browser</h1><p class="host">${host}</p>
+<ol class="steps">
+  <li id="s1" class="active"><span class="dot"></span>Checking your ControlClaw pass</li>
+  <li id="s2"><span class="dot"></span>Connecting to the live view</li>
+</ol>
+<div class="err" id="err"></div>`,
+    `
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const fail = (msg) => { $('h').textContent = 'Could not open the browser'; for (let i = 1; i <= 2; i++) $('s' + i).className = ''; $('err').textContent = msg; $('err').className = 'err show'; };
+  const t = new URLSearchParams(location.hash.slice(1)).get('t');
+  history.replaceState(null, '', location.pathname);
+  if (!t) { fail('This page only works from the Browser button in your ControlClaw console.'); return; }
+  let d, ok;
+  try {
+    const r = await fetch('/__cc/view-session', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
+    d = await r.json().catch(() => ({})); ok = r.ok;
+  } catch (e) { fail('Could not reach the agent. Try Reconnect in your ControlClaw console.'); return; }
+  if (!ok) { fail(d.error || 'This view has expired. Press Reconnect in your ControlClaw console.'); return; }
+  $('s1').className = 'done'; $('s2').className = 'active';
+  location.replace(${JSON.stringify(NOVNC_URL)});
+})();`
+  );
+}
 function dashboardBootstrapUrl(hostname) {
   return new Promise((resolve) => {
     execFile(
@@ -307,7 +403,7 @@ async function handleAccess(req, res, pathname) {
   if (pathname === "/__cc/session" && req.method === "POST") {
     const body = await readJsonBody(req, 8192);
     const token = typeof body?.token === "string" ? body.token : "";
-    const payload = token ? await verifyLoginToken(token, vmId) : null;
+    const payload = token ? await verifyLoginToken(token, vmId, "browser-login") : null;
     if (!payload) {
       json(res, 401, { error: "This link is not valid for this agent. Open it from your ControlClaw console again." });
       return;
@@ -327,8 +423,36 @@ async function handleAccess(req, res, pathname) {
     json(res, 200, { next }, { "Set-Cookie": sessionCookie(session) });
     return;
   }
+  if (pathname === "/__cc/browser" && req.method === "GET") {
+    framedHtml(res, 200, browserPage(readKey("vm_hostname")));
+    return;
+  }
+  if (pathname === "/__cc/view-session" && req.method === "POST") {
+    const body = await readJsonBody(req, 8192);
+    const token = typeof body?.token === "string" ? body.token : "";
+    const payload = token ? await verifyLoginToken(token, vmId, "browser-view") : null;
+    if (!payload) {
+      json(res, 401, { error: "This link is not valid for this agent. Open the browser from your ControlClaw console again." });
+      return;
+    }
+    if (!consumeJti(payload.jti, payload.exp)) {
+      json(res, 401, { error: "This link was already used. Press Reconnect in your ControlClaw console." });
+      return;
+    }
+    json(res, 200, { ok: true }, { "Set-Cookie": viewSessionCookie(await issueViewSession(vmId)) });
+    return;
+  }
+  if (pathname === "/__cc/verify-view" && req.method === "GET") {
+    if (originAllowed(req) && (await verifyViewSession(req.headers.cookie, vmId) || await verifySession(req.headers.cookie, vmId))) {
+      res.writeHead(200, { "Cache-Control": "no-store" });
+      res.end();
+    } else {
+      framedHtml(res, 401, DENIED_VIEW_PAGE);
+    }
+    return;
+  }
   if (pathname === "/__cc/logout" && req.method === "POST") {
-    json(res, 200, { ok: true }, { "Set-Cookie": clearSessionCookie() });
+    json(res, 200, { ok: true }, { "Set-Cookie": [clearSessionCookie(), clearViewSessionCookie()] });
     return;
   }
   json(res, 404, { error: "Not found" });

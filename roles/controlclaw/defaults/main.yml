@@ -20,11 +20,41 @@ controlclaw_home: /home/controlclaw
 # SSH keys for controlclaw user
 controlclaw_ssh_keys: []
 
-# Browser streaming (Chromium + noVNC)
-browser_stream_enabled: false
+# The live browser: one headful Chrome on a virtual display, shown in the console over noVNC and
+# driven by OpenClaw over CDP. On for every agent box — a customer's saved logins live in that
+# Chrome profile and the agent reuses them, so there is nothing to opt into.
+#
+# It is a default rather than a per-box flag on purpose: cc-reprovision rebuilds its extra-vars
+# from what is on disk (files/cc-reprovision), so a flag the control plane passed at create time
+# would be lost on the first self-update. The variable stays so a box can still be built without
+# the browser (CI, the proxy/mitm roles do not include this file at all).
+#
+# All three ports are loopback-only; Caddy is the one way in (templates/Caddyfile.j2).
+browser_stream_enabled: true
 browser_cdp_port: 9222
 browser_vnc_port: 5900
 browser_novnc_port: 6080
+
+# The virtual screen. One value: the script sizes Xvfb and the Chrome window from it, so they
+# cannot drift apart and leave a border of dead space around the window.
+browser_screen_geometry: "1280x800"
+
+# What the browser cgroup is allowed. A browser's appetite is set by whatever page someone opens,
+# and it shares a 4 GB box with the agent, so it is capped rather than left to the OOM killer's
+# judgement — which in practice takes OpenClaw and leaves the browser looking fine. MemoryHigh
+# throttles it into swap first; MemoryMax is the wall. Covers Chrome, Xvfb, x11vnc, websockify
+# and openbox together (~220 MB of that is everything except Chrome).
+browser_memory_high: "1600M"
+browser_memory_max: "2G"
+
+# What OpenClaw is pointed at (tasks/openclaw.yml). Written into the config AND compared against
+# what is already there, so it is derived once here rather than spelled out twice.
+openclaw_cdp_url: "http://127.0.0.1:{{ browser_cdp_port }}"
+
+# Swap (tasks/swap.yml). The stock box has none, which leaves the kernel no move under memory
+# pressure except to kill something. 0 disables.
+swap_size_mb: 4096
+swap_file: /swapfile
 
 # Box role: "openclaw" (agent zone, default), "proxy" (blind L4 proxy in front of the agents)
 # or "mitm" (secret zone — egress proxy + secrets).

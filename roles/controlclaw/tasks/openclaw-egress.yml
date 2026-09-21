@@ -53,6 +53,11 @@
 # The profile.d export covers every other node process on the box: npm from an SSH session, the
 # cc-perm CLI, and anything the agent itself shells out to. Without it npm does not fail, it hangs
 # on the TLS handshake (real box, 2026-09-18), which is far harder to diagnose.
+#
+# Chrome is the third: it reads its own NSS database and ignores /etc/ssl/certs entirely, so on a
+# secured box every HTTPS page in the live browser would hit a certificate interstitial. The
+# import lives here rather than in browser-stream.yml because that file runs earlier in the play,
+# before the agent has fetched and verified the CA — there would be nothing to import yet.
 - name: Deploy cc-install-ca (root-owned, fixed source/dest)
   ansible.builtin.copy:
     dest: /usr/local/bin/cc-install-ca
@@ -71,8 +76,41 @@
       printf 'export NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}\n' \
         > /etc/profile.d/controlclaw-node-ca.sh
       chmod 0644 /etc/profile.d/controlclaw-node-ca.sh
+
+      # Chrome's trust store. BOTH paths, not one: Chrome M146+ defaults to
+      # ~/.local/share/pki/nssdb and older builds use ~/.pki/nssdb, and which one a given box
+      # ends up reading depends on whether Chrome ever ran before this script did — which it
+      # has, because browser-stream starts earlier in the play. Betting on the preference order
+      # would make a certificate interstitial depend on boot timing. Importing into both costs
+      # a few milliseconds and removes the question. Delete-then-add keeps a re-run idempotent
+      # and lets a rotated CA replace the old one under the same nickname.
+      # `install -d` only owns the component it is given, so name every parent: a root-owned
+      # ~/.local left behind here breaks the next thing that writes under it.
+      install -d -o {{ controlclaw_user }} -g {{ controlclaw_user }} -m 0755 \
+        {{ controlclaw_home }}/.pki \
+        {{ controlclaw_home }}/.local \
+        {{ controlclaw_home }}/.local/share \
+        {{ controlclaw_home }}/.local/share/pki
+      for NSSDB in {{ controlclaw_home }}/.pki/nssdb \
+                   {{ controlclaw_home }}/.local/share/pki/nssdb; do
+        install -d -o {{ controlclaw_user }} -g {{ controlclaw_user }} -m 0700 "$NSSDB"
+        [ -f "$NSSDB/cert9.db" ] || su -s /bin/sh {{ controlclaw_user }} -c \
+          "certutil -d sql:$NSSDB -N --empty-password"
+        su -s /bin/sh {{ controlclaw_user }} -c \
+          "certutil -d sql:$NSSDB -D -n 'ControlClaw mitm CA'" 2>/dev/null || true
+        su -s /bin/sh {{ controlclaw_user }} -c \
+          "certutil -d sql:$NSSDB -A -t 'C,,' -n 'ControlClaw mitm CA' -i {{ mitm_ca_path }}"
+        # Read it back. A silent failure here is an HTTPS interstitial in the customer's
+        # browser on every page, which is the kind of thing nobody reports as a CA problem.
+        su -s /bin/sh {{ controlclaw_user }} -c \
+          "certutil -d sql:$NSSDB -L -n 'ControlClaw mitm CA'" >/dev/null || {
+            echo "cc-install-ca: CA missing from $NSSDB after import" >&2; exit 1; }
+      done
+
       systemctl daemon-reload
       systemctl try-restart openclaw.service caddy.service || true
+      # NSS trust is read once at browser start, so the running Chrome still distrusts the CA.
+      systemctl try-restart browser-stream.service || true
 
 # --- Transparent egress via redsocks (app-agnostic; replaces HTTP_PROXY env) ---
 # All HTTP(S) is captured at the kernel level by an nftables REDIRECT → local redsocks, which opens

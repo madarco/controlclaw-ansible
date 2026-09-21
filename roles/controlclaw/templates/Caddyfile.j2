@@ -1,3 +1,9 @@
+{# The console's origin, so the live-browser page can be framed there and nowhere else. Derived
+   from the config API URL the control plane already gave this box (and that cc-reprovision
+   replays from disk), rather than a new provisioning variable that a self-update would lose.
+   Unset on a box provisioned without a callback URL: then 'self' alone, and the embed simply
+   does not frame. -#}
+{% set console_origin = ((config_api_url | urlsplit('scheme')) ~ '://' ~ (config_api_url | urlsplit('netloc'))) if (config_api_url is defined and config_api_url) else '' -%}
 # Managed by Ansible (roles/controlclaw/templates/Caddyfile.j2). Do not edit on the box.
 {
     email {{ caddy_acme_email }}
@@ -15,7 +21,40 @@
         }
     }
 
-    # ControlClaw login shim (login page, session exchange, logout)
+    # The live browser. noVNC and the VNC server behind it are loopback-only; this is the one way
+    # in, and it is gated on a ControlClaw view session.
+    #
+    # vnc_lite.html, not vnc.html: vnc.html persists every resolved setting into localStorage,
+    # which is partitioned or blocked inside a cross-site iframe, so one failed load leaves a
+    # sticky bad host/path behind. vnc_lite has no settings and always auto-connects.
+    #
+    # `path` has NO leading slash. noVNC 1.3.0 (Ubuntu 24.04) builds the WebSocket URL absolutely
+    # from the origin root, so a leading slash would point the socket at /__cc/novnc/websockify
+    # AFTER the prefix strip and miss. Assets load relatively and survive the strip; the socket
+    # does not. noVNC 1.6.0 changed this — revisit if the base image moves.
+    @novnc_bare path /__cc/novnc
+    redir @novnc_bare /__cc/novnc/vnc_lite.html?path=__cc/novnc/websockify&scale=1 302
+
+    handle /__cc/novnc/* {
+        header {
+            # Removed, not overridden: the vm-agent stamps X-Frame-Options: DENY on every HTML
+            # response, and a browser-level blocked frame beats any CSP we set here.
+            -X-Frame-Options
+            Content-Security-Policy "frame-ancestors 'self'{% if console_origin %} {{ console_origin }}{% endif %}"
+        }
+        uri strip_prefix /__cc/novnc
+        # Same reason as the catch-all below: the vm-agent registers no 'upgrade' listener, so a
+        # forwarded Connection/Upgrade makes Node destroy the socket and Caddy answer 502.
+        forward_auth 127.0.0.1:3100 {
+            uri /__cc/verify-view
+            header_up -Connection
+            header_up -Upgrade
+        }
+        reverse_proxy 127.0.0.1:{{ browser_novnc_port }}
+    }
+
+    # ControlClaw login shim (login page, session exchange, logout, the live-browser bootstrap).
+    # /__cc/novnc/* wins over this by matcher specificity, not by file order.
     handle /__cc/* {
         reverse_proxy 127.0.0.1:3100
     }

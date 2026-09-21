@@ -1,5 +1,6 @@
 ---
-# Optional: Chromium browser streaming with noVNC
+# The live browser: Chrome on an Xvfb display, shown over x11vnc + noVNC and driven by OpenClaw
+# over CDP. On by default (defaults/main.yml); the console reaches noVNC through Caddy only.
 
 - name: Install browser streaming dependencies
   ansible.builtin.apt:
@@ -10,35 +11,100 @@
       - websockify
       - fonts-liberation
       - fonts-noto-color-emoji
-      - socat
+      # No window manager meant Chrome's own dialogs, popups and <select> menus opened
+      # unmapped or unfocused. openbox is ~1MB and makes the session behave like a desktop.
+      - openbox
+      # certutil: Chrome reads its own NSS database, not /etc/ssl/certs, so cc-install-ca
+      # (openclaw-egress.yml) needs this to put the org mitm CA where Chrome will find it.
+      - libnss3-tools
+      # apparmor_parser, for the Chrome sandbox profile below. Present on a stock Ubuntu cloud
+      # image, named here because the sandbox depends on it and nothing else in the role does.
+      - apparmor
       - python3
     state: present
     update_cache: true
 
-- name: Download Google Chrome stable
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /tmp/google-chrome.deb
-    creates: /usr/bin/google-chrome-stable
-    executable: /bin/bash
+# Chrome comes from Google's apt repository, not a downloaded .deb. The .deb declares
+# `libasound2 (>= 1.0.17)`, and Ubuntu 24.04 renamed that package to `libasound2t64` for the
+# 64-bit time_t transition. The rename carries a versioned `Provides: libasound2 (= 1.2.11-…)`,
+# which apt resolves and plain dpkg does not — so `apt: deb:` failed on every real box with
+# "Dependency is not satisfiable: libasound2 (>= 1.0.17)" (box vnc-live-2, 2026-09-20) and the
+# browser stack never installed. Going through the repository also means Chrome gets security
+# updates from unattended-upgrades, and it matches how the role installs Caddy, Docker and Node.
+- name: Download the Google Chrome apt repository key
+  ansible.builtin.get_url:
+    url: https://dl.google.com/linux/linux_signing_key.pub
+    dest: /usr/share/keyrings/google-chrome.asc
+    mode: '0644'
+
+- name: Dearmor the Google Chrome apt repository key
+  ansible.builtin.command:
+    cmd: gpg --dearmor --yes -o /usr/share/keyrings/google-chrome.gpg /usr/share/keyrings/google-chrome.asc
+    creates: /usr/share/keyrings/google-chrome.gpg
+
+- name: Add the Google Chrome apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main"
+    filename: google-chrome
+    state: present
 
 - name: Install Google Chrome stable
   ansible.builtin.apt:
-    deb: /tmp/google-chrome.deb
-  when: not ansible_check_mode
-
-- name: Fix Chrome dependencies if needed
-  ansible.builtin.apt:
+    name: google-chrome-stable
     state: present
     update_cache: true
-  register: chrome_deps
-  failed_when: false
 
-- name: Clean up Chrome installer
-  ansible.builtin.file:
-    path: /tmp/google-chrome.deb
-    state: absent
+# The renderer is where LLM-chosen web content is parsed, in a browser that holds the customer's
+# saved logins and runs as the user that owns the gateway token and the cc-install-ca sudo rule.
+# It has to be sandboxed, and the sandbox has to be verified rather than assumed.
+#
+# Chrome's first sandbox layer needs an unprivileged user namespace. Ubuntu 24.04 refuses those
+# to any binary without an AppArmor profile granting `userns`
+# (kernel.apparmor_restrict_unprivileged_userns=1) — which is the reason people reach for
+# --no-sandbox and the reason it was in this script. The package ships exactly the right profile,
+# but parks it under /opt and only copies it out from its own postinst when the apparmor
+# userspace happens to already be installed. Do it here instead, so it does not depend on the
+# order two packages were installed in, or on a base image built before apparmor was.
+- name: Look for the AppArmor profile shipped with Chrome
+  ansible.builtin.stat:
+    path: /opt/google/chrome/apparmor.d/google-chrome-stable
+  register: chrome_apparmor_src
+
+- name: Install Chrome's AppArmor profile
+  ansible.builtin.copy:
+    src: /opt/google/chrome/apparmor.d/google-chrome-stable
+    dest: /etc/apparmor.d/google-chrome-stable
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0644'
+  when: chrome_apparmor_src.stat.exists
+  register: chrome_apparmor
+
+- name: Load Chrome's AppArmor profile
+  ansible.builtin.command:
+    cmd: apparmor_parser -r -T -W /etc/apparmor.d/google-chrome-stable
+  when: chrome_apparmor is changed and not ci_test
+  changed_when: true
+
+# The second layer is the setuid helper, which needs no namespaces at all and is the fallback
+# when the first is unavailable. It is only usable if the package's SUID bit survived; a box
+# where it has not is one where Chrome would silently drop to no sandbox at all.
+- name: Check the Chrome setuid sandbox helper
+  ansible.builtin.stat:
+    path: /opt/google/chrome/chrome-sandbox
+  register: chrome_setuid
+
+- name: Fail when neither Chrome sandbox layer is available
+  ansible.builtin.assert:
+    that:
+      - chrome_setuid.stat.exists
+      - chrome_setuid.stat.mode == '4755'
+      - chrome_setuid.stat.pw_name == 'root'
+    fail_msg: >-
+      /opt/google/chrome/chrome-sandbox is missing or not setuid root
+      (found {{ chrome_setuid.stat.mode | default('absent') }}). Chrome would run its renderers
+      unsandboxed, as the user that owns the gateway token and the saved-login profile.
 
 - name: Deploy browser-stream script
   ansible.builtin.copy:
@@ -58,6 +124,9 @@
       [Unit]
       Description=Browser Streaming (Chromium + noVNC)
       After=network.target
+      # OpenClaw attaches to this Chrome over CDP and never launches one of its own
+      # (browser.attachOnly), so Chrome has to be listening first.
+      Before=openclaw.service
 
       [Service]
       Type=simple
@@ -70,6 +139,18 @@
       Environment=CONTROLCLAW_BROWSER_CDP_PORT={{ browser_cdp_port }}
       Environment=CONTROLCLAW_BROWSER_VNC_PORT={{ browser_vnc_port }}
       Environment=CONTROLCLAW_BROWSER_NOVNC_PORT={{ browser_novnc_port }}
+      Environment=CONTROLCLAW_BROWSER_GEOMETRY={{ browser_screen_geometry }}
+
+      # A browser is the one process here whose appetite is set by whatever page someone opens,
+      # and it shares a 4 GB box with the agent. Left alone the kernel picks the victim on its
+      # own and usually takes OpenClaw, so the agent dies and the browser that caused it looks
+      # fine. Cap the whole browser cgroup instead: MemoryHigh throttles and pushes it to swap,
+      # MemoryMax is the wall, and Restart=always brings the display back afterwards.
+      # OOMScoreAdjust makes it the preferred victim of a whole-box OOM too.
+      MemoryAccounting=true
+      MemoryHigh={{ browser_memory_high }}
+      MemoryMax={{ browser_memory_max }}
+      OOMScoreAdjust=500
 
       [Install]
       WantedBy=multi-user.target
@@ -83,3 +164,35 @@
     name: browser-stream
     state: started
     enabled: true
+
+# Provisioning-time proof, not a one-off check by whoever last touched this. browser-stream.sh
+# already refuses to start an unsandboxed browser; these two catch the ways the unit itself can
+# drift — someone re-adding --no-sandbox, or the memory cap being dropped from the template —
+# and they run on every box, on every re-provision.
+- name: Read the running browser's command line and limits
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      printf 'CMDLINE=%s\n' "$(pgrep -a -f 'google-chrome-stable --remote-debugging' | head -1)"
+      printf 'MEMMAX=%s\n' "$(systemctl show browser-stream -p MemoryMax --value)"
+      printf 'SANDBOXHELPER=%s\n' "$(pgrep -c -f '/opt/google/chrome/chrome-sandbox' || true)"
+    executable: /bin/bash
+  register: browser_runtime
+  changed_when: false
+  retries: 12
+  delay: 5
+  until: "'CMDLINE=' in browser_runtime.stdout and browser_runtime.stdout is search('CMDLINE=.+')"
+  when: not ci_test
+
+- name: Fail when the browser is running unsandboxed or uncapped
+  ansible.builtin.assert:
+    that:
+      - "'--no-sandbox' not in browser_runtime.stdout"
+      - "'--disable-setuid-sandbox' not in browser_runtime.stdout"
+      - browser_runtime.stdout is not search('MEMMAX=infinity')
+    fail_msg: >-
+      browser-stream is not in the shape this role guarantees. Either Chrome is running with a
+      sandbox flag turned off — it parses LLM-chosen content as the user that owns the gateway
+      token — or MemoryMax is unset and a heavy page can take OpenClaw down with it.
+      Observed: {{ browser_runtime.stdout | default('(no reading)') }}
+  when: not ci_test

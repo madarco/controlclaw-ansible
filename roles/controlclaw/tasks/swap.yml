@@ -1,0 +1,65 @@
+---
+# Swap for an agent box.
+#
+# The default box is a 4 GB cx23 with no swap, and it now runs a browser whose appetite is set by
+# whatever page someone opens, next to an agent that must not die. Without swap the kernel's only
+# move under pressure is to kill something, and the process it picks is usually the largest
+# resident one rather than the one that caused the pressure.
+#
+# This is the floor, not the fix: browser-stream.service also carries MemoryHigh/MemoryMax so the
+# browser is throttled into swap before anything is killed, and OOMScoreAdjust so it is the
+# preferred victim if the whole box runs out anyway.
+
+- name: Check for existing swap
+  ansible.builtin.command:
+    cmd: swapon --noheadings --show=NAME
+  register: swap_existing
+  changed_when: false
+  failed_when: false
+
+- name: Allocate the swap file
+  ansible.builtin.command:
+    cmd: fallocate -l {{ swap_size_mb }}M {{ swap_file }}
+    creates: "{{ swap_file }}"
+  register: swap_allocated
+
+- name: Secure the swap file
+  ansible.builtin.file:
+    path: "{{ swap_file }}"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Format the swap file
+  ansible.builtin.command:
+    cmd: mkswap {{ swap_file }}
+  when: swap_allocated is changed
+  changed_when: true
+
+# fstab first, then swapon: an entry that is written but never activated is a box that comes back
+# from a reboot with swap and has none until then, which is the harder failure to notice.
+- name: Record the swap file in fstab (so it survives a reboot)
+  ansible.posix.mount:
+    path: none
+    src: "{{ swap_file }}"
+    fstype: swap
+    opts: sw
+    state: present
+
+- name: Enable the swap file now
+  ansible.builtin.command:
+    cmd: swapon {{ swap_file }}
+  when: swap_file not in swap_existing.stdout
+  changed_when: true
+
+- name: Confirm swap is active
+  ansible.builtin.command:
+    cmd: swapon --noheadings --show=NAME
+  register: swap_now
+  changed_when: false
+
+- name: Fail when swap did not come up
+  ansible.builtin.assert:
+    that:
+      - swap_file in swap_now.stdout
+    fail_msg: "{{ swap_file }} was created but is not active — the box has no swap."
