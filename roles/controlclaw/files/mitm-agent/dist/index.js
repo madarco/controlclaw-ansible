@@ -778,7 +778,7 @@ var require_dist = __commonJS({
 
 // src/index.ts
 import { createServer as createServer2 } from "http";
-import { readFileSync as readFileSync12, writeFileSync as writeFileSync9 } from "fs";
+import { readFileSync as readFileSync13, writeFileSync as writeFileSync9 } from "fs";
 
 // ../secret-store/dist/index.js
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
@@ -850,20 +850,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a, b) {
   return (a & 15) + (a >> 6 | a >> 3 & 8) << 4 | (b & 15) + (b >> 6 | b >> 3 & 8);
 }
-function writeHexToUInt8(buf, str4) {
-  const size = str4.length >> 1;
+function writeHexToUInt8(buf, str5) {
+  const size = str5.length >> 1;
   for (let i = 0; i < size; i++) {
     const index = i << 1;
-    buf[i] = hexCharCodesToInt(str4.charCodeAt(index), str4.charCodeAt(index + 1));
+    buf[i] = hexCharCodesToInt(str5.charCodeAt(index), str5.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str4, buf) {
-  if (str4.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str5, buf) {
+  if (str5.length !== buf.length * 2) {
     return false;
   }
   for (let i = 0; i < buf.length; i++) {
     const strIndex = i << 1;
-    if (buf[i] !== hexCharCodesToInt(str4.charCodeAt(strIndex), str4.charCodeAt(strIndex + 1))) {
+    if (buf[i] !== hexCharCodesToInt(str5.charCodeAt(strIndex), str5.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -2775,8 +2775,8 @@ var day = hour * 24;
 var week = day * 7;
 var year = day * 365.25;
 var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
-function secs(str4) {
-  const matched = REGEX.exec(str4);
+function secs(str5) {
+  const matched = REGEX.exec(str5);
   if (!matched || matched[4] && matched[1]) {
     throw new TypeError("Invalid time period format");
   }
@@ -3168,6 +3168,7 @@ function makeBoxTokenSigner(keysDir) {
 import { execSync } from "child_process";
 var ACTIONS = /* @__PURE__ */ new Set(["start", "stop", "restart"]);
 var IS_ACTIVE_TIMEOUT_MS = 5e3;
+var MAX_RESULTS_PER_BEAT = 20;
 function defaultExec(cmd, timeoutMs) {
   return execSync(cmd, { encoding: "utf-8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"] });
 }
@@ -3250,7 +3251,7 @@ var FirewallControl = class {
   }
   async beat() {
     for (const r of this.opts.extraResults?.() ?? []) this.pendingResults.push(r);
-    const results = this.pendingResults;
+    const results = this.pendingResults.slice(0, MAX_RESULTS_PER_BEAT);
     const body = {
       proxy: this.proxyStatus(),
       agent_version: this.opts.agentVersion,
@@ -4371,8 +4372,220 @@ var UpdateFirewall = class {
   }
 };
 
-// src/agent-client.ts
+// src/self-update.ts
 import { readFileSync as readFileSync6 } from "fs";
+import { spawn } from "child_process";
+var IDLE = { phase: "idle", detail: null, ref: null, at: null };
+var STALE_MS = 45 * 6e4;
+var LAUNCH_GRACE_MS = 2 * 6e4;
+var RUNNING = /* @__PURE__ */ new Set(["resolving", "installing", "running"]);
+function detach(file2, args) {
+  try {
+    const child = spawn(file2, args, { detached: true, stdio: "ignore" });
+    child.on("error", (error48) => console.error(`[firewall-update] could not start cc-reprovision: ${error48.message}`));
+    child.unref();
+    return { ok: true };
+  } catch (error48) {
+    return { ok: false, error: error48.message };
+  }
+}
+var SelfUpdateService = class {
+  /**
+   * When this process last launched a run, or null. In memory on purpose: the run restarts this
+   * agent, and an agent that restarted is proof the run did start. What this catches is the
+   * opposite case — a launch that never became a run, whose only other trace is a console line.
+   */
+  launchedAt = null;
+  statePath;
+  confPath;
+  spawnImpl;
+  log;
+  now;
+  constructor(opts = {}) {
+    this.statePath = opts.statePath ?? "/opt/controlclaw/state/update.json";
+    this.confPath = opts.confPath ?? "/etc/controlclaw/update.conf";
+    this.spawnImpl = opts.spawnImpl ?? detach;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  /** Whether this box was provisioned with an update pin at all. */
+  pinned() {
+    return this.conf() !== null;
+  }
+  conf() {
+    let raw;
+    try {
+      raw = readFileSync6(this.confPath, "utf8");
+    } catch {
+      return null;
+    }
+    const out = {};
+    for (const line of raw.split("\n")) {
+      const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
+      if (m) out[m[1]] = m[2];
+    }
+    return out.ANSIBLE_REPO ? out : null;
+  }
+  status() {
+    const status = this.readState();
+    if (this.launchedAt !== null) {
+      const reportedAt = status.at ? Date.parse(status.at) : NaN;
+      const forThisRun = Number.isFinite(reportedAt) && reportedAt >= this.launchedAt;
+      if (!forThisRun) {
+        if (this.now() - this.launchedAt > LAUNCH_GRACE_MS) {
+          return {
+            phase: "failed",
+            detail: "The update never started. Check the firewall's logs.",
+            ref: null,
+            at: new Date(this.launchedAt).toISOString()
+          };
+        }
+        return { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(this.launchedAt).toISOString() };
+      }
+    }
+    if (RUNNING.has(status.phase) && status.at && this.now() - Date.parse(status.at) > STALE_MS) {
+      return { ...status, phase: "failed", detail: "The update stopped reporting. Check the firewall's logs." };
+    }
+    return status;
+  }
+  readState() {
+    let raw;
+    try {
+      raw = readFileSync6(this.statePath, "utf8");
+    } catch {
+      return IDLE;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return IDLE;
+    }
+    return {
+      phase: typeof parsed.phase === "string" ? parsed.phase : "idle",
+      detail: typeof parsed.detail === "string" && parsed.detail.length > 0 ? parsed.detail : null,
+      ref: typeof parsed.ref === "string" && parsed.ref.length > 0 ? parsed.ref : null,
+      at: typeof parsed.at === "string" ? parsed.at : null
+    };
+  }
+  running() {
+    return RUNNING.has(this.status().phase);
+  }
+  /**
+   * Start a run, unless one is already going. Returns as soon as it is launched — the run itself
+   * takes minutes and will restart this process before it finishes.
+   */
+  start() {
+    if (!this.pinned()) {
+      throw new Error("This firewall was created before in-place updates; it has to be rebuilt instead.");
+    }
+    const current = this.status();
+    if (RUNNING.has(current.phase)) return current;
+    const launchedAt = this.now();
+    const r = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", "/usr/local/bin/cc-reprovision"]);
+    if (!r.ok) throw new Error(`The update could not be started: ${r.error ?? "unknown error"}`);
+    this.launchedAt = launchedAt;
+    this.log("[firewall-update] started cc-reprovision");
+    return { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(launchedAt).toISOString() };
+  }
+};
+
+// src/firewall-update.ts
+var SCOPE_PREFIX2 = "firewall-update:";
+var SCOPE3 = `${SCOPE_PREFIX2}self`;
+function str4(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function summarize4() {
+  return "Update the software on your firewall";
+}
+var FirewallUpdate = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.boxName = opts.boxName ?? "your firewall";
+    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode });
+  }
+  codes;
+  log;
+  boxName;
+  handlers() {
+    return {
+      "firewall-update.propose": (p) => this.propose(p),
+      "firewall-update.confirm": (p) => this.confirm(p),
+      "firewall-update.cancel": (p) => this.cancel(p)
+    };
+  }
+  /** Whether this box was provisioned with a pin; false means rebuild-only, as for an old agent. */
+  supported() {
+    return this.opts.service.pinned();
+  }
+  /** What the console shows while a run is going; rides the heartbeat, the only path out of here. */
+  status() {
+    return this.opts.service.status();
+  }
+  /** Local, and that is the whole point: nothing is asked of any other box. */
+  apply() {
+    const status = this.opts.service.start();
+    this.log("[firewall-update] started on this box");
+    return { phase: status.phase };
+  }
+  async propose(payload) {
+    const changeId = str4(payload.changeId);
+    if (!changeId) throw new Error("malformed firewall-update.propose payload");
+    const summary = summarize4();
+    const data = { changeId, summary };
+    if (!this.opts.service.pinned()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "This firewall was created before in-place updates; it has to be rebuilt instead.",
+        data
+      };
+    }
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE3);
+      return {
+        ok: false,
+        status: "failed",
+        message: "Connect a channel and approve yourself before updating your firewall.",
+        data
+      };
+    }
+    const sent = await this.codes.send(SCOPE3, { changeId }, this.boxName, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[firewall-update] code sent via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str4(payload.changeId);
+    if (!changeId) throw new Error("malformed firewall-update.confirm payload");
+    const code = str4(payload.code) ?? "";
+    const data = { changeId };
+    const v = this.codes.verify(SCOPE3, changeId, code);
+    if (v.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
+    if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
+    const applied = this.apply();
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize4(), sentVia: v.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str4(payload.changeId);
+    this.codes.cancel(SCOPE3, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/agent-client.ts
+import { readFileSync as readFileSync7 } from "fs";
 var AGENT_PATH_PREFIX = "/__cc/agent";
 var TIMEOUT_MS = 25e3;
 function purposeForPath(path) {
@@ -4381,7 +4594,7 @@ function purposeForPath(path) {
   return "channels";
 }
 function makeAgentTokenSigner(keysDir, boxId) {
-  const read = (name25) => readFileSync6(`${keysDir}/${name25}`, "utf-8").trim();
+  const read = (name25) => readFileSync7(`${keysDir}/${name25}`, "utf-8").trim();
   return async (agentVmId, purpose = "channels") => {
     const key = await importPKCS8(read("vm_private_key.pem"), "EdDSA");
     return new SignJWT({ vmId: agentVmId, purpose, iss: boxId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
@@ -4450,17 +4663,17 @@ function writeProxyConfig(dir, cfg) {
 }
 
 // src/permissions.ts
-import { readFileSync as readFileSync8, existsSync as existsSync6 } from "fs";
+import { readFileSync as readFileSync9, existsSync as existsSync6 } from "fs";
 
 // src/grants.ts
-import { existsSync as existsSync5, readFileSync as readFileSync7, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync8, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { basename, dirname as dirname3, join as join2 } from "path";
 var GrantStore = class {
   constructor(path) {
     this.path = path;
     if (existsSync5(path)) {
       try {
-        this.grants = JSON.parse(readFileSync7(path, "utf8"));
+        this.grants = JSON.parse(readFileSync8(path, "utf8"));
       } catch {
         this.grants = {};
       }
@@ -4524,7 +4737,7 @@ var PermissionBridge = class {
   /** Submit any new pending permission requests to ControlClaw (idempotent). */
   async drainPending() {
     if (!existsSync6(this.opts.pendingPath)) return;
-    const lines = readFileSync8(this.opts.pendingPath, "utf8").split("\n").filter(Boolean);
+    const lines = readFileSync9(this.opts.pendingPath, "utf8").split("\n").filter(Boolean);
     for (const line of lines) {
       let rec;
       try {
@@ -4581,7 +4794,7 @@ var PermissionBridge = class {
 };
 
 // src/log-tail.ts
-import { closeSync, existsSync as existsSync7, fstatSync, mkdirSync as mkdirSync5, openSync, readSync, readFileSync as readFileSync9, renameSync as renameSync4, statSync, writeFileSync as writeFileSync7 } from "fs";
+import { closeSync, existsSync as existsSync7, fstatSync, mkdirSync as mkdirSync5, openSync, readSync, readFileSync as readFileSync10, renameSync as renameSync4, statSync, writeFileSync as writeFileSync7 } from "fs";
 import { basename as basename2, dirname as dirname4, join as join3 } from "path";
 var MAX_CHUNK = 4 * 1024 * 1024;
 var LogTail = class {
@@ -4594,7 +4807,7 @@ var LogTail = class {
   batchSize;
   loadCursor() {
     try {
-      const c = JSON.parse(readFileSync9(this.opts.cursorPath, "utf8"));
+      const c = JSON.parse(readFileSync10(this.opts.cursorPath, "utf8"));
       if (typeof c.inode === "number" && typeof c.offset === "number") return c;
     } catch {
     }
@@ -4694,7 +4907,7 @@ function readAllRecords(logPath) {
   const out = [];
   for (const path of [logPath + ".1", logPath]) {
     if (!existsSync7(path)) continue;
-    for (const line of readFileSync9(path, "utf8").split("\n")) {
+    for (const line of readFileSync10(path, "utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
         out.push(JSON.parse(line));
@@ -5958,14 +6171,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str4 = "";
+  let str5 = "";
   for (let i = 0; i < length; i++) {
-    str4 += chars[Math.floor(Math.random() * chars.length)];
+    str5 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str4;
+  return str5;
 }
-function esc(str4) {
-  return JSON.stringify(str4);
+function esc(str5) {
+  return JSON.stringify(str5);
 }
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -6065,8 +6278,8 @@ var getParsedType = (data) => {
 };
 var propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
 var primitiveTypes = /* @__PURE__ */ new Set(["string", "number", "bigint", "boolean", "symbol", "undefined"]);
-function escapeRegex(str4) {
-  return str4.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str5) {
+  return str5.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -31777,8 +31990,8 @@ async function hashCanonical(value) {
   return toBase64url(new Uint8Array(digest));
 }
 var encoder22 = new TextEncoder();
-function fromBase64url(str4) {
-  return convertBase64ToUint8Array(str4);
+function fromBase64url(str5) {
+  return convertBase64ToUint8Array(str5);
 }
 async function importKey(secret) {
   const keyData = typeof secret === "string" ? encoder22.encode(secret) : secret;
@@ -63807,7 +64020,7 @@ var AiClient = class {
 
 // src/ai/review.ts
 import { createHash as createHash2 } from "crypto";
-import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync10, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync11, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
 import { basename as basename4, dirname as dirname5, join as join4 } from "path";
 
 // src/ai/questions.ts
@@ -64023,7 +64236,7 @@ var AiScanner = class {
   log;
   load() {
     try {
-      const s = JSON.parse(readFileSync10(this.opts.statePath, "utf8"));
+      const s = JSON.parse(readFileSync11(this.opts.statePath, "utf8"));
       if (typeof s.lastScanAt === "number" && s.knownHosts && typeof s.knownHosts === "object") return s;
     } catch {
     }
@@ -64352,11 +64565,11 @@ async function requireAuth(req, res) {
 }
 
 // src/ready.ts
-import { readFileSync as readFileSync11 } from "fs";
+import { readFileSync as readFileSync12 } from "fs";
 var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 function readKeyFile(name25) {
   try {
-    return readFileSync11(`${KEYS_DIR}/${name25}`, "utf-8").trim();
+    return readFileSync12(`${KEYS_DIR}/${name25}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -64422,6 +64635,8 @@ var AI_CURSOR_PATH = process.env.AI_CURSOR_PATH ?? `${TRAFFIC_LOG_PATH}.ai-curso
 var AI_SCAN_STATE_PATH = process.env.AI_SCAN_STATE_PATH ?? `${TRAFFIC_LOG_PATH}.ai-scan.json`;
 var AI_REVIEW_POLL_MS = parseInt(process.env.AI_REVIEW_POLL_MS ?? "60000", 10);
 var AI_JUDGE_PORT = parseInt(process.env.AI_JUDGE_PORT ?? "3101", 10);
+var SELF_UPDATE_STATE_PATH = process.env.SELF_UPDATE_STATE_PATH ?? "/opt/controlclaw/state/update.json";
+var SELF_UPDATE_CONF_PATH = process.env.SELF_UPDATE_CONF_PATH ?? "/etc/controlclaw/update.conf";
 var AGENT_VERSION = process.env.MITM_AGENT_VERSION ?? "0.1.0";
 var SHIP_ONCE = process.env.SHIP_ONCE === "1";
 var ORG_ID = process.env.ORG_ID ?? "";
@@ -64442,6 +64657,7 @@ var identities = [];
 var channels = null;
 var llm = null;
 var updates = null;
+var selfUpdates = null;
 var aiSettings = null;
 var ai = new AiClient({ settings: () => aiSettings, keyFor: (id) => llm?.tokenFor(id) ?? null });
 async function runSync(boxKey) {
@@ -64547,6 +64763,13 @@ async function main() {
       codeRoutes: () => channels?.codeRoutes() ?? [],
       channelsReady: () => channels !== null
     });
+    selfUpdates = new FirewallUpdate({
+      service: new SelfUpdateService({ statePath: SELF_UPDATE_STATE_PATH, confPath: SELF_UPDATE_CONF_PATH }),
+      agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+      codeRoutes: () => channels?.codeRoutes() ?? [],
+      channelsReady: () => channels !== null
+    });
+    console.log(`[mitm-agent] self-update ${selfUpdates.supported() ? "available" : "unavailable (this box has no update pin; rebuild only)"}`);
   }
   try {
     await runSync(boxKey);
@@ -64559,7 +64782,7 @@ async function main() {
     process.exit(0);
   }
   try {
-    setSaasPublicKey(readFileSync12(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+    setSaasPublicKey(readFileSync13(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
   } catch (err) {
     die(`failed to load SaaS public key: ${err.message}`);
   }
@@ -64591,7 +64814,7 @@ async function main() {
     if (CA_CERT_PATH && CA_URL && getToken) {
       void (async () => {
         try {
-          const caCert = readFileSync12(CA_CERT_PATH, "utf8");
+          const caCert = readFileSync13(CA_CERT_PATH, "utf8");
           const caSig = signDetached(KEYS_DIR2, caCert);
           const res = await fetch(CA_URL, {
             method: "POST",
@@ -64646,6 +64869,7 @@ async function main() {
           ...channels?.handlers() ?? {},
           ...llm?.handlers() ?? {},
           ...updates?.handlers() ?? {},
+          ...selfUpdates?.handlers() ?? {},
           "ai.scan": async () => {
             if (!scanner) return { ok: false, status: "unavailable", message: "The traffic log is not set up on this firewall." };
             if (!ai.enabled()) return { ok: false, status: "off", message: "AI review is off or its key is not on the firewall yet." };
@@ -64655,9 +64879,24 @@ async function main() {
           }
         },
         extraResults: () => llm?.drainReports() ?? [],
-        // `included_ai` tells the control plane this firewall can hold the plan's included AI
-        // tokens, and which credential it holds (null after a rebuild, so a new key is sent).
-        status: () => llm ? { features: ["included_ai"], included_ai: llm.includedCredentialId() } : {}
+        // What this firewall can do and how a run of it is going. The beat is the only way either
+        // reaches the console: nothing can call in to this box.
+        //
+        // `included_ai`: it can hold the plan's included AI tokens, and which credential it holds
+        // (null after a rebuild, so a new key is sent).
+        // `self_update`: it can re-provision itself. Gated on the pin actually being on disk, so
+        // the flag means "the Update button will work" rather than "this agent build knows the
+        // word" — a box provisioned before the pin existed can only be rebuilt.
+        status: () => {
+          const features = [];
+          if (llm) features.push("included_ai");
+          if (selfUpdates?.supported()) features.push("self_update");
+          return {
+            ...features.length ? { features } : {},
+            ...llm ? { included_ai: llm.includedCredentialId() } : {},
+            ...selfUpdates ? { update: selfUpdates.status() } : {}
+          };
+        }
       });
       console.log("[mitm-agent] firewall control enabled");
       setInterval(() => void control.tick().catch((e) => console.error("[firewall] tick:", e.message)), FIREWALL_POLL_MS);

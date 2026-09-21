@@ -4,6 +4,35 @@
 # sole internet gateway for the org's OpenClaw box(es). See
 # controlclaw/docs/plans/mitm-box-security-rollout.md.
 
+# The four values this box cannot rebuild for itself, asserted before anything writes.
+#
+# A first provision gets them from cloud-init; a re-run (cc-reprovision) hands them back from disk.
+# Either way an empty one is fatal, and until this assert existed the role wrote the empty string
+# instead of stopping:
+#
+#   - ORG_ID empty  -> the agent dies on "ORG_ID and BOX_ID are required" under Restart=always,
+#                      i.e. a permanent crash loop;
+#   - saas_public_key empty -> every signed command from the control plane 401s;
+#   - controlclaw_url empty -> the --ignore-hosts anchor below matches nothing and the proxy
+#                      intercepts its own control plane.
+#
+# The only way back from any of those is a rebuild, which nulls the keypair every agent in the org
+# has pinned. Stopping here costs a failed run; not stopping costs the org's trust anchor.
+#
+# main.yml asserts the same four before self-update.yml gets a chance to rewrite the pin, which is
+# the check that actually saves the box. This one stays because it is the include that owns these
+# values: anything that reaches mitmbox.yml by another route is still covered.
+- name: Assert the mitm box knows who it is
+  ansible.builtin.assert:
+    that:
+      - vm_id | default('') | length > 0
+      - org_id | default('') | length > 0
+      - controlclaw_url | default('') | length > 0
+      - saas_public_key | default('') | length > 0
+    fail_msg: >-
+      box_role=mitm needs vm_id, org_id, controlclaw_url and saas_public_key. Running without them
+      would blank this box's identity and leave it recoverable only by a rebuild.
+
 # Install mitmproxy into a dedicated venv at a FIXED path. This avoids pipx entirely:
 # Ubuntu 24.04's apt pipx (1.4.3) is too old for the community.general pipx module's
 # `source=` (needs >=1.7.0), and pipx's per-user bin dir made the service binary path
@@ -47,6 +76,18 @@
     # Traffic log + shipper cursor. The parent /opt/controlclaw/mitm is root-owned, so without
     # this directory the proxy (running as controlclaw) could never create its log file.
     - /opt/controlclaw/mitm/logs
+    # The agent's own persistent state: the channel store, the LLM store and the update state
+    # file. This role never created it — only vm-agent.yml does, and that runs on agent boxes.
+    #
+    # It works today by accident: the "controlclaw base" snapshot is built by running this role
+    # with the default box_role (openclaw), so vm-agent.yml bakes the directory into the image and
+    # every mitm box inherits it. Verified on a real box 2026-09-20 — an LLM credential stored
+    # fine. But `resolveBaseImage` falls back to plain Ubuntu when no snapshot is available, and a
+    # mitm box built that way has no /opt/controlclaw/state, an implicit root:root 0755
+    # /opt/controlclaw above it, and an agent running as controlclaw — so the mkdir inside
+    # saveEncryptedJson fails with EACCES and every channel token and model key is silently lost.
+    # Create it here so the role owes nothing to an image side effect.
+    - /opt/controlclaw/state
 
 # Secrets the proxy reads are RAM-only: mount the proxy config dir as tmpfs so decrypted
 # credentials never touch the disk.
@@ -63,6 +104,15 @@
 # On-box keygen: the mitm-agent generates its OWN vm keypair and registers the public key with the
 # bootstrap token below — we do NOT ship vm_private_key.pem (it never leaves the box, and it also
 # signs the published CA). Legacy boxes would still receive vm_private_key separately.
+#
+# Each item is skipped when its value is empty rather than written as ''. A re-run carries no
+# bootstrap token (single-use, and spent at first registration), and blanking the file on disk
+# would be the difference between "already used" and "gone". The same rule protects every other
+# key from a caller that simply did not pass it.
+#
+# org_id and controlclaw_url are written here too. They are not read by the agent — systemd hands
+# it those — but they are what cc-reprovision needs to re-run this role, and the pin file is not
+# the only place they should live: a box whose /etc/controlclaw was lost can still be re-run.
 - name: Write mitm box keys
   ansible.builtin.copy:
     dest: "/opt/controlclaw/keys/{{ item.name }}"
@@ -76,8 +126,10 @@
     - { name: ready_api_url, content: "{{ ready_api_url | default('') }}", mode: '0644' }
     - { name: bootstrap_token, content: "{{ vm_bootstrap_token | default('') }}", mode: '0600' }
     - { name: register_api_url, content: "{{ register_api_url | default('') }}", mode: '0644' }
+    - { name: org_id, content: "{{ org_id | default('') }}", mode: '0644' }
+    - { name: controlclaw_url, content: "{{ controlclaw_url | default('') }}", mode: '0644' }
   no_log: true
-  when: vm_id is defined
+  when: item.content | length > 0
 
 # --- CA: generate on the box; private key stays here, public cert is exported for the
 #     OpenClaw box trust store. (v1 single CA; offline-root/intermediate is hardening.) ---
@@ -203,6 +255,10 @@
 # controlclaw-mitmproxy` for the one command the control plane queues for it
 # (packages/mitm-agent/src/firewall-control.ts). The unit name is the contract between
 # these three lines and that module's SERVICE default. `is-active` needs no sudo.
+#
+# NOT the whole of this box's sudo, despite what this file used to claim: user.yml is ungated and
+# already grants `cc-reprovision` and the `systemd-run` form of it on every role, which is what
+# lets the firewall update itself in place (self-update.yml, files/cc-reprovision).
 - name: Allow the mitm-agent to control the proxy service
   ansible.builtin.copy:
     dest: /etc/sudoers.d/controlclaw-mitm
@@ -211,7 +267,8 @@
     group: root
     validate: /usr/sbin/visudo -cf %s
     content: |
-      # ControlClaw mitm box: proxy service control for the Firewall page, nothing else.
+      # ControlClaw mitm box: proxy service control for the Firewall page.
+      # Re-provisioning is granted separately, in /etc/sudoers.d/ from user.yml.
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start controlclaw-mitmproxy
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop controlclaw-mitmproxy
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart controlclaw-mitmproxy

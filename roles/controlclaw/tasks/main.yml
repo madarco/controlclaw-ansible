@@ -73,11 +73,41 @@
   ansible.builtin.include_tasks: caddy.yml
   when: box_role == 'openclaw'
 
+# The firewall's identity is checked HERE, before anything writes, and not only inside
+# mitmbox.yml. self-update.yml runs first and rewrites /etc/controlclaw/update.conf, which is one
+# of the two places org_id and controlclaw_url live; a re-run that was going to be refused would
+# already have replaced them with empty strings by the time mitmbox.yml's own assert fired. A run
+# that refuses to proceed must not destroy the values it is refusing to proceed without.
+#
+# The other copy is in KEYS_DIR, written by mitmbox.yml, which skips empty items — so with this
+# assert in place a refused re-run leaves both copies intact.
+#
+# (`apt dist-upgrade` in playbooks/install.yml pre_tasks still runs ahead of this. It upgrades
+# packages and touches nothing this box is identified by, so it is noise on a refused run rather
+# than damage; moving the gate earlier would mean asserting in the shared playbook, where the
+# role's defaults are not loaded yet.)
+- name: Assert the mitm box knows who it is, before anything writes
+  ansible.builtin.assert:
+    that:
+      - vm_id | default('') | length > 0
+      - org_id | default('') | length > 0
+      - controlclaw_url | default('') | length > 0
+      - saas_public_key | default('') | length > 0
+    fail_msg: >-
+      box_role=mitm needs vm_id, org_id, controlclaw_url and saas_public_key. Refusing before the
+      update pin is rewritten, so this box keeps both copies of the values it needs.
+  when: box_role == 'mitm'
+
 # Lets a later fix reach this box without rebuilding it. Pins what a re-run is allowed to pull,
 # so the control plane can ask for an update but never choose the code.
+#
+# The firewall box needs this more than an agent does, not less: rebuilding it is the one
+# operation that breaks every agent in the org (it nulls the keypair they pinned), so being able
+# to fix it in place is what keeps that operation off the table. An in-place re-run keeps the
+# keypair, the CA and the box key — all three are generated on the box behind existence guards.
 - name: Include on-demand re-provisioning (pin + cc-reprovision)
   ansible.builtin.include_tasks: self-update.yml
-  when: box_role == 'openclaw'
+  when: box_role in ['openclaw', 'mitm']
 
 - name: Include proxy box tasks (blind L4 proxy)
   ansible.builtin.include_tasks: proxy.yml

@@ -17,6 +17,13 @@
 #
 # The human gate lives elsewhere: the org firewall sends a 6-digit code over the agent's own
 # messaging channel and only calls the vm-agent once the person has typed it back.
+#
+# The firewall box runs this too. Nothing about the mechanism changes there — the pin is the same
+# file, cc-reprovision is the same script — but two things differ. The run is an org-wide outage
+# rather than one box restarting (the agents lose egress, DNS and the permission bridge for its
+# whole length), and the firewall refuses to update itself without a confirmed code even when
+# nobody is approved yet: it holds the CA every agent pins, so trust-on-first-use there would
+# hand the control plane the org's trust anchor.
 
 - name: Create the update config dir
   ansible.builtin.file:
@@ -29,10 +36,17 @@
 # Root-owned and world-readable but NOT writable by the controlclaw user: the agent has to be able
 # to report what it would pull, and must not be able to change it.
 #
-# proxy_ip is here for a blunter reason. It is not persisted anywhere else on the box, and
-# firewall-linux.yml re-opens 80/443 to the whole internet when it is absent — so a re-run that
-# could not recover it would silently undo the box's inbound firewall.
-- name: Write the update pin (repo, branch, proxy IP)
+# Everything below the pin itself is here for a blunter reason: it exists nowhere else the box can
+# reach at update time, and a re-run without it does damage rather than nothing.
+#
+#   - agent box: proxy_ip. firewall-linux.yml re-opens 80/443 to the whole internet when it is
+#     absent, so a re-run that could not recover it would silently undo the inbound firewall.
+#   - firewall box: org_id and controlclaw_url are the two values mitmbox.yml now asserts on,
+#     because writing them empty bricks the box (see the assert at the top of mitmbox.yml).
+#     mitm_private_subnet and mitm_public_iface decide the NAT rule and the DNS listener; the
+#     role's defaults happen to match today, but a box must re-run with the values it was built
+#     from, not with whatever the defaults say later.
+- name: Write the update pin (repo, branch, and what a re-run cannot rediscover)
   ansible.builtin.copy:
     dest: /etc/controlclaw/update.conf
     owner: root
@@ -45,8 +59,15 @@
       ANSIBLE_REPO={{ ansible_repo_url }}
       ANSIBLE_BRANCH={{ ansible_branch | default('main') }}
       ALLOW_UNVERIFIED={{ 'true' if update_allow_unverified | default(false) | bool else 'false' }}
-      PROXY_IP={{ proxy_ip | default('') }}
       BOX_ROLE={{ box_role }}
+      {% if box_role == 'mitm' %}
+      ORG_ID={{ org_id | default('') }}
+      CONTROLCLAW_URL={{ controlclaw_url | default('') }}
+      MITM_PRIVATE_SUBNET={{ mitm_private_subnet | default('') }}
+      MITM_PUBLIC_IFACE={{ mitm_public_iface | default('') }}
+      {% else %}
+      PROXY_IP={{ proxy_ip | default('') }}
+      {% endif %}
   when: ansible_repo_url is defined and ansible_repo_url | length > 0
 
 - name: Deploy cc-reprovision (root-owned, no arguments)

@@ -4,9 +4,13 @@
 # from here". What gets pulled is decided by /etc/controlclaw/update.conf, which is root-owned and
 # was written at provisioning.
 #
-# Detached by design. The role restarts controlclaw-agent, so a run that was a child of the agent
+# Detached by design. The role restarts the agent on whichever box this is (controlclaw-agent on an
+# agent box, controlclaw-mitm-agent on the org firewall), so a run that was a child of the agent
 # would kill itself half way through. The agent calls this via `systemd-run --unit=cc-reprovision`;
 # progress goes to a state file so it survives that restart and the agent can report it afterwards.
+#
+# On the firewall the restart is not the expensive part: the whole run is an org-wide outage,
+# because the org's agents reach the internet, DNS and the permission bridge only through this box.
 set -uo pipefail
 
 CONF=/etc/controlclaw/update.conf
@@ -37,7 +41,13 @@ die() { say failed "$1"; exit 1; }
 . "$CONF"
 
 [ -n "${ANSIBLE_REPO:-}" ] || die "no repo pinned on this box"
-[ "${BOX_ROLE:-openclaw}" = openclaw ] || die "only agent boxes update in place"
+# Agent boxes and the org firewall both update in place. The blind L4 proxy does not: it is
+# shared across orgs and has no consent path of its own.
+ROLE="${BOX_ROLE:-openclaw}"
+case "$ROLE" in
+  openclaw | mitm) ;;
+  *) die "box role $ROLE does not update in place" ;;
+esac
 
 mkdir -p "$(dirname "$STATE")"
 say resolving
@@ -72,28 +82,50 @@ else
 fi
 
 # --- what the box already knows about itself --------------------------------------------------
-# Rebuilt from disk, never accepted from the caller. Two of these are load-bearing: without
-# vm_hostname the role stops and disables Caddy (the box's only inbound path), and without
-# proxy_ip it re-opens 80/443 to the whole internet.
+# Rebuilt from disk, never accepted from the caller. Several of these are load-bearing:
+#
+#   agent box    without vm_hostname the role stops and disables Caddy (its only inbound path),
+#                and without proxy_ip it re-opens 80/443 to the whole internet.
+#   firewall box without org_id, controlclaw_url and saas_public_key mitmbox.yml refuses to run
+#                at all — writing them empty is what bricks the box.
+#
+# vm_hostname is an agent-only requirement. The firewall runs no Caddy and has no hostname, so
+# demanding one there would make every firewall update fail on the first check.
 read_key() { [ -r "$KEYS/$1" ] && tr -d '\n' < "$KEYS/$1"; }
 
 VM_ID=$(read_key vm_id)
-VM_HOSTNAME=$(read_key vm_hostname)
 [ -n "$VM_ID" ] || die "this box has no vm_id on disk"
-[ -n "$VM_HOSTNAME" ] || die "this box has no vm_hostname on disk; refusing (it would disable Caddy)"
+
+VM_HOSTNAME=""
+if [ "$ROLE" = openclaw ]; then
+  VM_HOSTNAME=$(read_key vm_hostname)
+  [ -n "$VM_HOSTNAME" ] || die "this box has no vm_hostname on disk; refusing (it would disable Caddy)"
+fi
+
+# The firewall's identity comes from the pin first and the keys dir second. Both are root-written
+# at provisioning; the second is there so a box that lost /etc/controlclaw can still be re-run.
+ORG_ID="${ORG_ID:-$(read_key org_id)}"
+CONTROLCLAW_URL="${CONTROLCLAW_URL:-$(read_key controlclaw_url)}"
 
 # NOTE: vm_private_key is deliberately never rebuilt. A secured box generated its own keypair and
 # the control plane does not have it; passing one would overwrite the box's identity and every
 # signed call would start failing. The bootstrap token is likewise single-use and already spent.
-vars=$(VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PROXY_IP:-}" \
+# On the firewall the same goes for the CA and the box key: gen-ca.sh and box-key.ts both have
+# existence guards, so a re-run cannot regenerate what every agent in the org has pinned.
+vars=$(BOX_ROLE="$ROLE" VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PROXY_IP:-}" \
   ANSIBLE_REPO="$ANSIBLE_REPO" ANSIBLE_BRANCH="${ANSIBLE_BRANCH:-main}" ALLOW_UNVERIFIED="${ALLOW_UNVERIFIED:-false}" \
   SAAS_PUB="$(read_key saas_public_key.pem)" \
   CONFIG_URL="$(read_key config_api_url)" READY_URL="$(read_key ready_api_url)" \
   REGISTER_URL="$(read_key register_api_url)" \
   MITM_IP="$(read_key mitm_box_private_ip)" MITM_PUB="$(read_key mitm_pinned_pubkey.pem)" \
+  ORG_ID="$ORG_ID" CONTROLCLAW_URL="$CONTROLCLAW_URL" \
+  MITM_PRIVATE_SUBNET="${MITM_PRIVATE_SUBNET:-}" MITM_PUBLIC_IFACE="${MITM_PUBLIC_IFACE:-}" \
   python3 -c '
 import json, os
-v = {"vm_id": os.environ["VM_ID"], "vm_hostname": os.environ["VM_HOSTNAME"], "box_role": "openclaw"}
+role = os.environ["BOX_ROLE"]
+v = {"vm_id": os.environ["VM_ID"], "box_role": role}
+if role == "openclaw":
+    v["vm_hostname"] = os.environ["VM_HOSTNAME"]
 # Hand the pin straight back, so self-update.yml runs on a re-run and rewrites update.conf and
 # cc-reprovision itself. Without this a box keeps whatever updater it was created with, and a fix
 # to the updater would need a rebuild -- exactly the problem this whole thing exists to solve.
@@ -103,10 +135,15 @@ for key, env in (("ansible_repo_url", "ANSIBLE_REPO"), ("ansible_branch", "ANSIB
                  ("update_allow_unverified", "ALLOW_UNVERIFIED")):
     if os.environ.get(env):
         v[key] = os.environ[env]
-for key, env in (("proxy_ip", "PROXY_IP"), ("saas_public_key", "SAAS_PUB"),
-                 ("config_api_url", "CONFIG_URL"), ("ready_api_url", "READY_URL"),
-                 ("register_api_url", "REGISTER_URL"), ("mitm_box_private_ip", "MITM_IP"),
-                 ("mitm_vm_public_key", "MITM_PUB")):
+shared = (("saas_public_key", "SAAS_PUB"), ("ready_api_url", "READY_URL"),
+          ("register_api_url", "REGISTER_URL"))
+agent = (("proxy_ip", "PROXY_IP"), ("config_api_url", "CONFIG_URL"),
+         ("mitm_box_private_ip", "MITM_IP"), ("mitm_vm_public_key", "MITM_PUB"))
+mitm = (("org_id", "ORG_ID"), ("controlclaw_url", "CONTROLCLAW_URL"),
+        ("mitm_private_subnet", "MITM_PRIVATE_SUBNET"), ("mitm_public_iface", "MITM_PUBLIC_IFACE"))
+# An empty value omits the key rather than passing "", so the role falls back to its own default
+# instead of overwriting a working setting with nothing.
+for key, env in shared + (mitm if role == "mitm" else agent):
     if os.environ.get(env):
         v[key] = os.environ[env]
 print(json.dumps(v))')
