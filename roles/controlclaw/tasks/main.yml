@@ -8,8 +8,10 @@
 # Node does not read the OS trust store. Once the box is confined to the org mitm proxy, every
 # npm/pnpm call fails the TLS handshake and then HANGS with no error (25 minutes on one task, real
 # box 2026-09-18) unless NODE_EXTRA_CA_CERTS points at the proxy CA. The CA is installed at runtime
-# by the vm-agent, so it is absent on the first provision (egress is still direct then) and present
-# on every re-run. Look for it once here and hand the variable to the npm/pnpm tasks below.
+# by the vm-agent, which main.yml starts as the LAST step of the play (vm-agent-start.yml), so it is
+# absent for the whole first provision (egress is direct until then) and present on every re-run.
+# Look for it here and hand the variable to the npm/pnpm tasks; openclaw.yml looks again right
+# before its own npm steps, in case anything ever confines the box earlier.
 - name: Look for the org mitm CA in the trust store
   ansible.builtin.stat:
     path: "{{ mitm_ca_path }}"
@@ -108,6 +110,12 @@
 - name: Include on-demand re-provisioning (pin + cc-reprovision)
   ansible.builtin.include_tasks: self-update.yml
   when: box_role in ['openclaw', 'mitm']
+
+# Last step of an agent box: starting the agent confines the box and reports ready, so every task
+# that needs the open internet (npm above all) must already be done. See vm-agent-start.yml.
+- name: Start the VM agent (confines the box and reports ready)
+  ansible.builtin.include_tasks: vm-agent-start.yml
+  when: vm_id is defined and box_role == 'openclaw'
 
 - name: Include proxy box tasks (blind L4 proxy)
   ansible.builtin.include_tasks: proxy.yml

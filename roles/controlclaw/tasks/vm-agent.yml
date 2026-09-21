@@ -154,8 +154,5 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
-- name: Enable and start controlclaw-agent service
-  ansible.builtin.systemd:
-    name: controlclaw-agent
-    state: started
-    enabled: true
+# The agent is NOT started here: see vm-agent-start.yml, which main.yml includes as the last step
+# of an agent box. Starting it is what confines the box to the org firewall.

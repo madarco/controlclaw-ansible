@@ -1,0 +1,40 @@
+---
+# Start the vm-agent LAST.
+#
+# On a secured box the agent's bootstrap waits for the org firewall, installs its CA, turns on the
+# transparent redirect and reports ready, and the control plane answers ready by locking the box's
+# egress to the firewall. Everything after that point reaches the internet only through the mitm
+# proxy, and Node does not read the OS trust store, so an npm step that starts after it fails the
+# TLS handshake three times per package and then falls back to a stale cache: about 70 s per
+# package, hours for OpenClaw's 300+. Real box, 2026-09-21: the agent locked egress at 18:30:08,
+# `npm install -g openclaw@latest` started at 18:30:09 with no NODE_EXTRA_CA_CERTS, and the box
+# sat "Live" in the console with no OpenClaw and no Caddy behind it.
+#
+# The agent used to be started from vm-agent.yml, before OpenClaw and Caddy were installed. That
+# also made "ready" mean "the agent process is up" rather than "the box can be opened": the
+# console showed Open on a box with nothing on 443, and the model provider pushed at ready failed
+# with "fetch failed". Started here, ready means the whole box is installed.
+#
+# On a re-run (cc-reprovision) the agent is already running and this is a no-op; a changed bundle
+# or unit restarts it through the `restart controlclaw-agent` handler at the end of the play.
+- name: Enable and start controlclaw-agent service
+  ansible.builtin.systemd:
+    name: controlclaw-agent
+    state: started
+    enabled: true
+
+# The live browser's gate, checked rather than assumed. Caddy asks the vm-agent
+# (/__cc/verify-view) before it proxies a single frame of noVNC, and the whole design rests on
+# that answering 401 to anyone without a view session. This is the cheap end of that: ask the
+# vm-agent directly, on loopback, with no cookie. Deliberately NOT through Caddy on 443 — the
+# certificate is still being issued at this point in a provision and a flaky security check is
+# one that gets disabled.
+- name: Check the live browser's gate refuses an unauthenticated request
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:3100/__cc/verify-view"
+    status_code: 401
+  register: novnc_gate
+  retries: 10
+  delay: 3
+  until: novnc_gate is succeeded
+  when: vm_hostname is defined and not ci_test and browser_stream_enabled | bool

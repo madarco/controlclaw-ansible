@@ -47,6 +47,17 @@
   changed_when: false
   failed_when: false
 
+# Second look for the firewall CA (main.yml looked once, at the top of the play). If the box has
+# been confined since then, npm must get the CA or it hangs for hours (see vm-agent-start.yml).
+- name: Look again for the org mitm CA before the npm steps
+  ansible.builtin.stat:
+    path: "{{ mitm_ca_path }}"
+  register: mitm_ca_installed_now
+
+- name: Refresh the node TLS environment for the npm steps
+  ansible.builtin.set_fact:
+    controlclaw_node_env: "{{ {'NODE_EXTRA_CA_CERTS': mitm_ca_path} if mitm_ca_installed_now.stat.exists else {} }}"
+
 # --fetch-timeout/--fetch-retries keep this from stalling the whole play when the registry is
 # unreachable: npm's defaults are 5 minutes and 2 retries, and the task already tolerates failure.
 - name: Check the latest published OpenClaw version
