@@ -31021,8 +31021,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "15b20dd" : "unknown",
-  builtAt: true ? "2026-09-22T18:07:17+01:00" : "unknown"
+  commit: true ? "95debd1" : "unknown",
+  builtAt: true ? "2026-09-22T21:11:07+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -34664,7 +34664,7 @@ var server = createServer2(async (req, res) => {
     return;
   }
   if (url2.pathname === "/mitm-ca/refresh" && req.method === "POST") {
-    const r = await ensureMitmCaInstalled(KEYS_DIR2, 1);
+    const r = await ensureMitmCaInstalled(KEYS_DIR2, 4);
     res.writeHead(r.trusted ? 200 : 503, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: r.trusted, installed: r.installed, message: r.message }));
     return;

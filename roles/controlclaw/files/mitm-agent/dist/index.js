@@ -35966,8 +35966,12 @@ var FIREWALL_BACKUP_FILES = [
   "/opt/controlclaw/state/channels.enc",
   "/opt/controlclaw/state/llm.enc",
   "/opt/controlclaw/state/backup.enc",
-  "/opt/controlclaw/mitm/ca/ca.crt",
-  "/opt/controlclaw/mitm/ca/ca.key",
+  // The CA three ways, as gen-ca.sh writes it: the pair the firewall publishes and the agents
+  // install, and the combined key+cert the proxy signs with. They must travel together: a restore
+  // that brought only the combined file back left the proxy signing with one CA while every agent
+  // was told to trust another (prod, 2026-09-22).
+  "/opt/controlclaw/mitm/ca/ca-cert.pem",
+  "/opt/controlclaw/mitm/ca/ca-key.pem",
   "/opt/controlclaw/mitm/ca/mitmproxy-ca.pem",
   "/run/mitm/config/rules.json",
   "/run/mitm/config/grants.json",
@@ -36762,8 +36766,43 @@ var SelfRestore = class {
       staged.push({ path, mode: entry.mode & 4095, staged: stagedPath, bytes: bytes.length });
     }
     if (staged.length === 0) throw new Error("That archive holds no files, so there is nothing to put back.");
+    this.deriveCaPair(staged, stagingDir);
     staged.sort((a, b) => this.allowed().indexOf(a.path) - this.allowed().indexOf(b.path));
     return { manifest, staged };
+  }
+  /**
+   * Backups taken before 2026-09-22 carry the proxy's combined `mitmproxy-ca.pem` but not the
+   * `ca-cert.pem` / `ca-key.pem` pair next to it (the file list named files that did not exist).
+   * Restoring only the combined file left the proxy signing with the old CA while the pair the
+   * firewall publishes, and the agents install, stayed the rebuilt box's. The combined file IS the
+   * pair concatenated (see gen-ca.sh), so when an archive has the one and not the other, the pair
+   * is split out of it here and staged like any other entry. Only for paths on the allow-list.
+   */
+  deriveCaPair(staged, stagingDir) {
+    const combined = staged.find((f) => basename(f.path) === "mitmproxy-ca.pem");
+    if (!combined) return;
+    const dir = dirname4(combined.path);
+    const certPath = join(dir, "ca-cert.pem");
+    const keyPath = join(dir, "ca-key.pem");
+    const allowed = new Set(this.allowed());
+    if (!allowed.has(certPath) || !allowed.has(keyPath)) return;
+    if (staged.some((f) => f.path === certPath) && staged.some((f) => f.path === keyPath)) return;
+    const pem = readFileSync7(combined.staged, "utf8");
+    const key = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----\n?/.exec(pem)?.[0];
+    const cert = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\n?/.exec(pem)?.[0];
+    if (!key || !cert) {
+      this.log("[backup] the archive's mitmproxy-ca.pem holds no key+certificate pair; the published CA is left as it is");
+      return;
+    }
+    const add = (path, body, mode) => {
+      if (staged.some((f) => f.path === path)) return;
+      const stagedPath = join(stagingDir, `derived-${basename(path)}`);
+      writeFileSync6(stagedPath, body, { mode: 384 });
+      staged.push({ path, mode, staged: stagedPath, bytes: Buffer.byteLength(body) });
+    };
+    add(certPath, cert, 420);
+    add(keyPath, key, 384);
+    this.log("[backup] the archive carried only the proxy's combined CA file; ca-cert.pem and ca-key.pem were split out of it so the published CA matches the one the proxy signs with");
   }
   async download(downloadUrl) {
     if (!downloadUrl) throw new Error("There is no archive to put back: neither the bytes nor an address for them.");
@@ -97512,8 +97551,8 @@ import { readFileSync as readFileSync16 } from "fs";
 import { readFileSync as readFileSync15 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "940da79" : "unknown",
-  builtAt: true ? "2026-09-22T20:41:27+01:00" : "unknown"
+  commit: true ? "95debd1" : "unknown",
+  builtAt: true ? "2026-09-22T21:11:07+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
