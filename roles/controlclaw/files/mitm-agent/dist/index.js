@@ -36081,7 +36081,14 @@ var BackupFirewall = class {
       recovery: this.store.recovery ? { fingerprint: this.store.recovery.fingerprint, tofu: this.store.recovery.tofu, setAt: this.store.recovery.setAt } : null
     };
   }
-  /** Generated on first use rather than at provisioning, so a box that never backs up never has one. */
+  /**
+   * Made at start-up (`ensureKeypair`, from index.ts) rather than on first use: a rebuilt firewall
+   * has to report a key on its first beat, or the console keeps showing the torn-down box's key as
+   * this one's and "Put the firewall back" seals to a key that no longer exists.
+   */
+  async ensureKeypair() {
+    await this.keypair();
+  }
   async keypair() {
     if (this.store.keypair) return this.store.keypair;
     const kp = await generateRecipientKeypair();
@@ -96870,8 +96877,8 @@ import { readFileSync as readFileSync15 } from "fs";
 import { readFileSync as readFileSync14 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d6d7b7f" : "unknown",
-  builtAt: true ? "2026-09-22T13:10:55+01:00" : "unknown"
+  commit: true ? "7bda10d" : "unknown",
+  builtAt: true ? "2026-09-22T13:37:04+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -97164,6 +97171,7 @@ async function main() {
           }
         })
       });
+      backups.ensureKeypair().catch((err) => console.error(`[backup] could not make this firewall's backup key: ${err.message}`));
       const b = backups.status();
       console.log(`[mitm-agent] backup store loaded (key ${b ? b.fingerprint : "not generated yet"}, recovery key ${b?.recovery ? b.recovery.fingerprint : "none"})`);
       if (b) console.log(`[mitm-agent] backup key fingerprint: ${b.fingerprint}`);
