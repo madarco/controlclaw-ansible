@@ -77,7 +77,7 @@ var require_libsodium = __commonJS({
           }
         }
         var _Module = Module;
-        Module.ready = new Promise(function(resolve, reject) {
+        Module.ready = new Promise(function(resolve2, reject) {
           var Module2 = _Module;
           Module2.onAbort = reject;
           Module2.print = function(what) {
@@ -89,13 +89,13 @@ var require_libsodium = __commonJS({
           Module2.onRuntimeInitialized = function() {
             try {
               Module2._crypto_secretbox_keybytes();
-              resolve();
+              resolve2();
             } catch (err2) {
               reject(err2);
             }
           };
           Module2.useBackupModule = function() {
-            return new Promise(function(resolve2, reject2) {
+            return new Promise(function(resolve3, reject2) {
               var Module3 = {};
               Module3.onAbort = reject2;
               Module3.getRandomValue = _Module.getRandomValue;
@@ -108,7 +108,7 @@ var require_libsodium = __commonJS({
                 Object.keys(Module3).forEach(function(k) {
                   _Module[k] = Module3[k];
                 });
-                resolve2();
+                resolve3();
               };
               var Module3 = typeof Module3 != "undefined" ? Module3 : {};
               var ENVIRONMENT_IS_WEB2 = !!globalThis.window;
@@ -168,13 +168,13 @@ var require_libsodium = __commonJS({
                   }
                   readAsync2 = async (url2) => {
                     if (isFileURI2(url2)) {
-                      return new Promise((resolve3, reject3) => {
+                      return new Promise((resolve4, reject3) => {
                         var xhr = new XMLHttpRequest();
                         xhr.open("GET", url2, true);
                         xhr.responseType = "arraybuffer";
                         xhr.onload = () => {
                           if (xhr.status == 200 || xhr.status == 0 && xhr.response) {
-                            resolve3(xhr.response);
+                            resolve4(xhr.response);
                             return;
                           }
                           reject3(xhr.status);
@@ -26786,9 +26786,9 @@ var require_libsodium = __commonJS({
                 }
                 var info = getWasmImports2();
                 if (Module3["instantiateWasm"]) {
-                  return new Promise((resolve3, reject3) => {
+                  return new Promise((resolve4, reject3) => {
                     Module3["instantiateWasm"](info, (inst, mod) => {
-                      resolve3(receiveInstance(inst, mod));
+                      resolve4(receiveInstance(inst, mod));
                     });
                   });
                 }
@@ -27289,13 +27289,13 @@ var require_libsodium = __commonJS({
               }
               readAsync = async (url2) => {
                 if (isFileURI(url2)) {
-                  return new Promise((resolve2, reject2) => {
+                  return new Promise((resolve3, reject2) => {
                     var xhr = new XMLHttpRequest();
                     xhr.open("GET", url2, true);
                     xhr.responseType = "arraybuffer";
                     xhr.onload = () => {
                       if (xhr.status == 200 || xhr.status == 0 && xhr.response) {
-                        resolve2(xhr.response);
+                        resolve3(xhr.response);
                         return;
                       }
                       reject2(xhr.status);
@@ -27409,9 +27409,9 @@ var require_libsodium = __commonJS({
             }
             var info = getWasmImports();
             if (Module2["instantiateWasm"]) {
-              return new Promise((resolve2, reject2) => {
+              return new Promise((resolve3, reject2) => {
                 Module2["instantiateWasm"](info, (inst, mod) => {
-                  resolve2(receiveInstance(inst, mod));
+                  resolve3(receiveInstance(inst, mod));
                 });
               });
             }
@@ -30509,6 +30509,7 @@ var require_libsodium_wrappers = __commonJS({
 
 // src/index.ts
 import { createServer as createServer2 } from "http";
+import { randomUUID as randomUUID3 } from "crypto";
 import { readFileSync as readFileSync14 } from "fs";
 
 // src/auth.ts
@@ -30663,13 +30664,13 @@ import { join as join2 } from "path";
 
 // src/http.ts
 async function readJsonBody(req, limit = 16384) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     let data = "";
     let done = false;
     const finish = (v) => {
       if (done) return;
       done = true;
-      resolve(v);
+      resolve2(v);
     };
     req.on("data", (chunk) => {
       data += chunk.toString("utf8");
@@ -30884,7 +30885,7 @@ function browserPage(hostname) {
   );
 }
 function dashboardBootstrapUrl(hostname) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     execFile(
       "/usr/bin/openclaw",
       ["dashboard", "--json", "--no-open"],
@@ -30892,19 +30893,19 @@ function dashboardBootstrapUrl(hostname) {
       (err, stdout) => {
         if (err) {
           console.error("[access] openclaw dashboard failed:", err.message);
-          return resolve(null);
+          return resolve2(null);
         }
         try {
           const out = JSON.parse(stdout);
-          if (!out.browserUrl) return resolve(null);
+          if (!out.browserUrl) return resolve2(null);
           const fragment = new URL(out.browserUrl).hash.slice(1);
           const params = new URLSearchParams(fragment);
-          if (!params.get("bootstrapToken")) return resolve(null);
+          if (!params.get("bootstrapToken")) return resolve2(null);
           params.set("gatewayUrl", `wss://${hostname}`);
-          resolve(`/#${params.toString()}`);
+          resolve2(`/#${params.toString()}`);
         } catch (e) {
           console.error("[access] could not parse dashboard output:", e.message);
-          resolve(null);
+          resolve2(null);
         }
       }
     );
@@ -31021,8 +31022,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d2da34e" : "unknown",
-  builtAt: true ? "2026-09-22T23:13:45+01:00" : "unknown"
+  commit: true ? "a987cea" : "unknown",
+  builtAt: true ? "2026-09-22T23:17:35+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31284,11 +31285,11 @@ function readFile3(path) {
 }
 var sleep4 = (ms) => new Promise((r) => setTimeout(r, ms));
 function probe(host, port, timeoutMs = 3e3) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     const sock = net.connect({ host, port });
     const done = (ok) => {
       sock.destroy();
-      resolve(ok);
+      resolve2(ok);
     };
     sock.setTimeout(timeoutMs);
     sock.once("connect", () => done(true));
@@ -31490,9 +31491,9 @@ function env() {
   return { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" };
 }
 function run(cmd, args, timeout, maxBuffer = 4 * 1024 * 1024) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     execFile2(cmd, args, { timeout, maxBuffer, env: env(), encoding: "utf-8" }, (err, stdout, stderr) => {
-      resolve({
+      resolve2({
         stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
         error: err ? String(stderr ?? "").trim().split("\n")[0] || err.message : null
       });
@@ -31861,11 +31862,11 @@ var GatewayClient = class {
   /** Resolves true once the handshake is done (at once if it already is), false after `timeoutMs`. */
   whenConnected(timeoutMs) {
     if (this._connected) return Promise.resolve(true);
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const done = (ok) => {
         clearTimeout(timer);
         off();
-        resolve(ok);
+        resolve2(ok);
       };
       const timer = setTimeout(() => done(false), timeoutMs);
       const off = this.onConnected(() => done(true));
@@ -31878,12 +31879,12 @@ var GatewayClient = class {
   }
   send(ws, method, params, timeoutMs) {
     const id = String(++this.seq);
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`gateway call ${method} timed out`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve: resolve2, reject, timer });
       try {
         ws.send(JSON.stringify({ type: "req", id, method, params }));
       } catch (err) {
@@ -32434,7 +32435,7 @@ import { randomUUID } from "crypto";
 
 // src/exec.ts
 import { execFile as execFile3 } from "child_process";
-var defaultExec = (file, args, timeoutMs, stdin, opts) => new Promise((resolve, reject) => {
+var defaultExec = (file, args, timeoutMs, stdin, opts) => new Promise((resolve2, reject) => {
   const env2 = { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw", ...opts?.env };
   const child = execFile3(file, args, { timeout: timeoutMs, env: env2, maxBuffer: opts?.maxBuffer }, (err, stdout, stderr) => {
     if (err) {
@@ -32442,7 +32443,7 @@ var defaultExec = (file, args, timeoutMs, stdin, opts) => new Promise((resolve, 
       e.stdout = String(stdout ?? "");
       e.stderr = String(stderr ?? "");
       reject(e);
-    } else resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    } else resolve2({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
   });
   if (child.stdin) {
     if (stdin !== void 0) child.stdin.end(stdin);
@@ -34268,14 +34269,14 @@ var BackupService = class {
     const throwIfConsumeFailed = () => {
       if (consumeError) throw consumeError;
     };
-    const write = (plain) => new Promise((resolve, reject) => {
-      if (gunzip.write(plain)) return resolve();
+    const write = (plain) => new Promise((resolve2, reject) => {
+      if (gunzip.write(plain)) return resolve2();
       const done = (err) => {
         gunzip.off("drain", onDrain);
         gunzip.off("error", onError);
         gunzip.off("close", onClose);
         if (err) reject(err);
-        else resolve();
+        else resolve2();
       };
       const onDrain = () => done();
       const onClose = () => done();
@@ -34376,11 +34377,11 @@ async function swapDirectory(opts) {
     for (const rel of opts.keep ?? []) {
       const from = join5(opts.target, rel);
       const to = join5(opts.staged, rel);
-      const exists = await lstat(from).then(
+      const exists2 = await lstat(from).then(
         () => true,
         () => false
       );
-      if (!exists) continue;
+      if (!exists2) continue;
       await rm(to, { recursive: true, force: true });
       await mkdir(dirname4(to), { recursive: true, mode: 448 });
       await rename(from, to);
@@ -34535,11 +34536,628 @@ async function handleBackup(req, res, url2, service) {
   }
 }
 
+// src/routes/files.ts
+import { createReadStream as createReadStream2 } from "fs";
+import { lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
+import { randomUUID as randomUUID2 } from "crypto";
+import { basename, dirname as dirname5, join as join6, resolve, sep } from "path";
+import { Transform } from "stream";
+import { pipeline as pipeline2 } from "stream/promises";
+var TEXT_PREVIEW_BYTES = 1024 * 1024;
+var IMAGE_PREVIEW_BYTES = 20 * 1024 * 1024;
+var UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
+var RECURSIVE_DELETE_MAX_ENTRIES = 1e4;
+var LIST_MAX_ENTRIES = 5e3;
+var DEFAULT_DENIED = [
+  "/opt/controlclaw",
+  "/opt/controlclaw/keys",
+  "/opt/controlclaw/keys/openclaw_gateway_token",
+  "/opt/controlclaw/state",
+  "/opt/controlclaw/agent",
+  // The account's own credentials. OpenClaw can read them anyway, but the explorer must not be a
+  // second way to read or rewrite them: `~/.ssh/authorized_keys` is what rescue access writes, and
+  // a key dropped in there through this page would be a shell with no grant behind it.
+  `${process.env.HOME ?? "/home/controlclaw"}/.ssh`,
+  `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`
+];
+var EXT_MIME = {
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
+  ".json": "application/json",
+  ".jsonl": "application/json",
+  ".ndjson": "application/json",
+  ".yaml": "text/yaml",
+  ".yml": "text/yaml",
+  ".toml": "text/plain",
+  ".ini": "text/plain",
+  ".conf": "text/plain",
+  ".log": "text/plain",
+  ".csv": "text/csv",
+  ".tsv": "text/tab-separated-values",
+  ".xml": "text/xml",
+  ".html": "text/html",
+  ".htm": "text/html",
+  ".css": "text/css",
+  ".js": "text/javascript",
+  ".mjs": "text/javascript",
+  ".cjs": "text/javascript",
+  ".jsx": "text/javascript",
+  ".ts": "text/typescript",
+  ".tsx": "text/typescript",
+  ".py": "text/x-python",
+  ".rb": "text/x-ruby",
+  ".go": "text/x-go",
+  ".rs": "text/x-rust",
+  ".java": "text/x-java",
+  ".c": "text/x-c",
+  ".h": "text/x-c",
+  ".cpp": "text/x-c++",
+  ".sh": "text/x-shellscript",
+  ".bash": "text/x-shellscript",
+  ".zsh": "text/x-shellscript",
+  ".sql": "text/x-sql",
+  ".php": "text/x-php",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+  ".pdf": "application/pdf",
+  ".zip": "application/zip",
+  ".gz": "application/gzip",
+  ".tgz": "application/gzip",
+  ".tar": "application/x-tar",
+  ".mp3": "audio/mpeg",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".wav": "audio/wav"
+};
+var TEXT_BASENAMES = /* @__PURE__ */ new Set([
+  "dockerfile",
+  "makefile",
+  "procfile",
+  "license",
+  "readme",
+  "changelog",
+  "authors",
+  "notice",
+  ".gitignore",
+  ".dockerignore",
+  ".npmrc",
+  ".bashrc",
+  ".profile",
+  ".bash_profile",
+  ".editorconfig"
+]);
+function mimeFor(name) {
+  const lower = name.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  const ext = dot > 0 ? lower.slice(dot) : "";
+  if (lower === ".env" || lower.startsWith(".env.")) return "text/plain";
+  if (ext && EXT_MIME[ext]) return EXT_MIME[ext];
+  if (TEXT_BASENAMES.has(lower)) return "text/plain";
+  return "application/octet-stream";
+}
+function isTextual(mime) {
+  return mime.startsWith("text/") || mime === "application/json" || mime === "image/svg+xml";
+}
+function isPreviewableImage(mime) {
+  return mime.startsWith("image/") && mime !== "image/svg+xml";
+}
+function humanBytes(n) {
+  if (n < 1e3) return `${n} B`;
+  const units = ["kB", "MB", "GB", "TB"];
+  let v = n / 1e3;
+  let i = 0;
+  while (v >= 1e3 && i < units.length - 1) {
+    v /= 1e3;
+    i++;
+  }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+var FilesError = class extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+};
+function normalizeRelative(input) {
+  const raw = (input ?? "").replace(/\0/g, "");
+  const parts = [];
+  for (const seg of raw.split(/[\\/]+/)) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  return parts.join("/");
+}
+function isInside(root, candidate) {
+  return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+var FilesService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.denied = (opts.denied ?? DEFAULT_DENIED).map((p) => resolve(p));
+    this.limits = {
+      textPreviewBytes: TEXT_PREVIEW_BYTES,
+      imagePreviewBytes: IMAGE_PREVIEW_BYTES,
+      uploadMaxBytes: UPLOAD_MAX_BYTES,
+      recursiveDeleteMaxEntries: RECURSIVE_DELETE_MAX_ENTRIES,
+      listMaxEntries: LIST_MAX_ENTRIES,
+      ...opts.limits
+    };
+  }
+  /** The root's own realpath, resolved once: /home may itself be a symlink. */
+  rootReal = null;
+  denied;
+  limits;
+  get vmId() {
+    return this.opts.vmId;
+  }
+  get openToAnyone() {
+    return this.opts.insecureDevNoAuth === true;
+  }
+  get origins() {
+    const { box, console: consoleOrigin2 } = allowedOrigins();
+    return [box, consoleOrigin2, ...this.opts.extraOrigins ?? []].filter((o) => !!o);
+  }
+  async root() {
+    this.rootReal ??= await realpath(this.opts.root);
+    return this.rootReal;
+  }
+  /**
+   * The deny list, each entry as a real path when it exists. `assertAllowed` is handed real paths,
+   * so an entry under a symlinked directory (macOS's /var → /private/var, or a /home that is a
+   * link) would otherwise never match and the credentials it names would be browsable.
+   */
+  deniedReal = null;
+  async deniedList() {
+    if (!this.deniedReal) {
+      this.deniedReal = await Promise.all(this.denied.map((d) => realpath(d).catch(() => d)));
+    }
+    return this.deniedReal;
+  }
+  async assertAllowed(real) {
+    for (const d of await this.deniedList()) {
+      if (isInside(d, real)) {
+        throw new FilesError(403, "denied", "That path is part of the box's own credentials and is not browsable.");
+      }
+    }
+  }
+  /**
+   * Resolve a path that must already exist. `realpath` is what follows symlinks, so a link the
+   * agent planted at `~/notes -> /opt/controlclaw/keys` lands outside the root and is refused
+   * here rather than read.
+   */
+  async resolveExisting(rel) {
+    const root = await this.root();
+    const normalized = normalizeRelative(rel);
+    let real;
+    try {
+      real = await realpath(normalized ? join6(root, normalized) : root);
+    } catch {
+      throw new FilesError(404, "not_found", "No such file or folder.");
+    }
+    if (!isInside(root, real)) {
+      throw new FilesError(403, "outside_root", "That path leaves the agent's workspace.");
+    }
+    await this.assertAllowed(real);
+    return { rel: normalized, abs: real };
+  }
+  /**
+   * Resolve a path WITHOUT following a symlink in its last segment: the PARENT is resolved the
+   * strict way above and the name is appended, so a symlinked parent cannot smuggle the path out
+   * of the root, while the entry itself stays the entry.
+   *
+   * That distinction is the whole point for a write. Deleting `notes -> /etc` must unlink the
+   * link, not touch /etc; renaming it must move the link. Reading it, on the other hand, goes
+   * through `resolveExisting` and is refused, because reading it really would read /etc.
+   */
+  async resolveEntry(rel) {
+    const normalized = normalizeRelative(rel);
+    if (!normalized) {
+      const root = await this.root();
+      return { rel: "", abs: root, parent: root, name: "" };
+    }
+    const name = basename(normalized);
+    if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
+    const parentRel = dirname5(normalized) === "." ? "" : dirname5(normalized);
+    const parent = await this.resolveExisting(parentRel);
+    const st = await stat2(parent.abs).catch(() => null);
+    if (!st?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
+    const abs = join6(parent.abs, name);
+    await this.assertAllowed(abs);
+    return { rel: normalized, abs, parent: parent.abs, name };
+  }
+  /** The same, for a path that must not be the workspace root (an upload, a new folder, a move). */
+  async resolveForCreate(rel) {
+    const entry = await this.resolveEntry(rel);
+    if (!entry.rel) throw new FilesError(400, "bad_path", "A name is required.");
+    return entry;
+  }
+  async list(rel) {
+    const root = await this.root();
+    const { rel: relPath, abs } = await this.resolveExisting(rel);
+    const dirStat = await stat2(abs);
+    if (!dirStat.isDirectory()) throw new FilesError(400, "not_a_directory", "That is a file, not a folder.");
+    const names = await readdir(abs);
+    const truncated = names.length > this.limits.listMaxEntries;
+    const entries = [];
+    for (const name of names.slice(0, this.limits.listMaxEntries)) {
+      const entry = await describe(root, join6(abs, name), name);
+      if (entry) entries.push(entry);
+    }
+    entries.sort((a, b) => {
+      if (a.kind === "dir" !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
+      return a.name.localeCompare(b.name, "en", { numeric: true, sensitivity: "base" });
+    });
+    return { path: relPath, entries, truncated };
+  }
+  /** The file a read/download is about, with the checks both of them share. */
+  async fileFor(rel) {
+    const { rel: relPath, abs } = await this.resolveExisting(rel);
+    const st = await stat2(abs);
+    if (st.isDirectory()) throw new FilesError(400, "is_a_directory", "That is a folder, not a file.");
+    if (!st.isFile()) throw new FilesError(400, "not_a_file", "That is not a regular file.");
+    return { rel: relPath, abs, size: st.size, mtime: st.mtime.toISOString(), mime: mimeFor(basename(abs)) };
+  }
+  async mkdir(rel) {
+    const target = await this.resolveForCreate(rel);
+    try {
+      await mkdir2(target.abs);
+    } catch (err) {
+      if (err.code === "EEXIST") {
+        throw new FilesError(409, "exists", "Something with that name is already there.");
+      }
+      throw new FilesError(500, "mkdir_failed", "Could not create the folder.");
+    }
+    this.announce({ op: "mkdir", path: target.rel, size: null });
+    return { path: target.rel };
+  }
+  async rename(fromRel, toRel) {
+    const from = await this.resolveEntry(fromRel);
+    if (!from.rel) throw new FilesError(400, "bad_path", "The workspace root cannot be renamed.");
+    if (!await exists(from.abs)) throw new FilesError(404, "not_found", "No such file or folder.");
+    const to = await this.resolveForCreate(toRel);
+    if (await exists(to.abs)) throw new FilesError(409, "exists", "Something with that name is already there.");
+    if (isInside(from.abs, to.abs)) throw new FilesError(400, "bad_path", "A folder cannot be moved into itself.");
+    try {
+      await rename2(from.abs, to.abs);
+    } catch {
+      throw new FilesError(500, "rename_failed", "Could not rename that.");
+    }
+    this.announce({ op: "rename", path: `${from.rel} \u2192 ${to.rel}`, size: null });
+    return { from: from.rel, to: to.rel };
+  }
+  async delete(rel, recursive) {
+    const { rel: relPath, abs } = await this.resolveEntry(rel);
+    if (!relPath) throw new FilesError(400, "bad_path", "The workspace root cannot be deleted.");
+    const st = await lstat2(abs).catch(() => null);
+    if (!st) throw new FilesError(404, "not_found", "No such file or folder.");
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      await unlink(abs).catch(() => {
+        throw new FilesError(500, "delete_failed", "Could not delete that.");
+      });
+      this.announce({ op: "delete", path: relPath, size: st.isSymbolicLink() ? null : st.size });
+      return { path: relPath, entries: 1 };
+    }
+    const names = await readdir(abs);
+    if (names.length > 0 && !recursive) {
+      throw new FilesError(409, "not_empty", "That folder is not empty. Delete it with its contents to remove it.");
+    }
+    const entries = await countEntries(abs, this.limits.recursiveDeleteMaxEntries);
+    if (entries === null) {
+      throw new FilesError(
+        413,
+        "too_many_entries",
+        `That folder holds more than ${this.limits.recursiveDeleteMaxEntries.toLocaleString("en-US")} items. Delete it from the agent's terminal instead.`
+      );
+    }
+    await rm2(abs, { recursive: true, force: true });
+    this.announce({ op: "delete", path: relPath, size: null });
+    return { path: relPath, entries };
+  }
+  /**
+   * Stream the request body into a temp file NEXT TO the target and rename it into place, so a
+   * connection that dies halfway leaves the old file untouched rather than a half-written one.
+   * The rename is atomic because both live in the same directory, i.e. the same filesystem.
+   */
+  async upload(req, rel, overwrite) {
+    const target = await this.resolveForCreate(rel);
+    if (!overwrite && await exists(target.abs)) {
+      throw new FilesError(409, "exists", "A file with that name is already there.");
+    }
+    const max = this.limits.uploadMaxBytes;
+    const declared = Number(req.headers["content-length"] ?? "");
+    if (Number.isFinite(declared) && declared > max) {
+      throw new FilesError(413, "too_large", `Files are limited to ${humanBytes(max)}.`);
+    }
+    const tmp = join6(target.parent, `.cc-upload-${randomUUID2()}.part`);
+    let written = 0;
+    let tooBig = false;
+    const meter = new Transform({
+      transform(chunk, _enc, done) {
+        written += chunk.length;
+        if (written > max) {
+          tooBig = true;
+          done(new Error("upload too large"));
+          return;
+        }
+        done(null, chunk);
+      }
+    });
+    const handle = await open(tmp, "wx", 384);
+    const sink = handle.createWriteStream({ autoClose: false });
+    try {
+      await pipeline2(req, meter, sink);
+      await handle.sync();
+    } catch (err) {
+      sink.destroy();
+      await handle.close().catch(() => {
+      });
+      await unlink(tmp).catch(() => {
+      });
+      if (tooBig) {
+        throw new FilesError(413, "too_large", `Files are limited to ${humanBytes(max)}.`);
+      }
+      console.error("[files] upload failed:", err.message);
+      throw new FilesError(400, "upload_failed", "The upload did not finish.");
+    }
+    sink.destroy();
+    await handle.close().catch(() => {
+    });
+    if (!overwrite && await exists(target.abs)) {
+      await unlink(tmp).catch(() => {
+      });
+      throw new FilesError(409, "exists", "A file with that name is already there.");
+    }
+    try {
+      await rename2(tmp, target.abs);
+    } catch {
+      await unlink(tmp).catch(() => {
+      });
+      throw new FilesError(500, "upload_failed", "Could not save the file.");
+    }
+    this.announce({ op: "upload", path: target.rel, size: written });
+    return { path: target.rel, size: written };
+  }
+  announce(write) {
+    try {
+      this.opts.onWrite?.(write);
+    } catch (err) {
+      console.error("[files] activity report failed:", err.message);
+    }
+  }
+};
+async function exists(path) {
+  return lstat2(path).then(
+    () => true,
+    () => false
+  );
+}
+async function countEntries(dir, max) {
+  let count = 0;
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let names;
+    try {
+      names = await readdir(current);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      count++;
+      if (count > max) return null;
+      const child = join6(current, name);
+      const st = await lstat2(child).catch(() => null);
+      if (st?.isDirectory()) stack.push(child);
+    }
+  }
+  return count;
+}
+async function describe(root, abs, name) {
+  const link = await lstat2(abs).catch(() => null);
+  if (!link) return null;
+  if (!link.isSymbolicLink()) {
+    return {
+      name,
+      kind: link.isDirectory() ? "dir" : link.isFile() ? "file" : "other",
+      size: link.size,
+      mtime: link.mtime.toISOString(),
+      mode: modeOf(link.mode)
+    };
+  }
+  const real = await realpath(abs).catch(() => null);
+  const inside = real !== null && isInside(root, real);
+  const target = inside ? await stat2(abs).catch(() => null) : null;
+  return {
+    name,
+    kind: target?.isDirectory() ? "dir" : target?.isFile() ? "file" : "other",
+    size: target?.size ?? 0,
+    mtime: (target ?? link).mtime.toISOString(),
+    mode: modeOf(link.mode),
+    symlink: true,
+    ...inside ? {} : { blocked: true }
+  };
+}
+function modeOf(mode) {
+  return (mode & 511).toString(8).padStart(4, "0");
+}
+function contentDisposition(name) {
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+function corsHeaders(req, origins2) {
+  const origin = req.headers.origin;
+  if (!origin || !origins2.includes(origin)) return { Vary: "Origin" };
+  return {
+    Vary: "Origin",
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Credentials": "true"
+  };
+}
+function originAllowed2(req, origins2) {
+  if (req.headers["sec-fetch-site"] === "cross-site") return false;
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  return origins2.includes(origin);
+}
+function devCorsHeaders(req) {
+  const origin = req.headers.origin;
+  return { Vary: "Origin", ...origin ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true" } : {} };
+}
+var JSON_OPS = /* @__PURE__ */ new Set(["/files/mkdir", "/files/rename", "/files/delete"]);
+async function handleFiles(req, res, url2, service) {
+  if (!service) {
+    sendJson(res, 503, { error: "The file explorer is not ready yet.", code: "unavailable" });
+    return;
+  }
+  const origins2 = service.origins;
+  const cors = service.openToAnyone ? devCorsHeaders(req) : corsHeaders(req, origins2);
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      ...cors,
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Max-Age": "600"
+    });
+    res.end();
+    return;
+  }
+  if (!service.openToAnyone && !originAllowed2(req, origins2)) {
+    sendJson(res, 403, { error: "This request did not come from your console.", code: "bad_origin" }, cors);
+    return;
+  }
+  if (!service.openToAnyone && (!service.vmId || !await verifySession(req.headers.cookie, service.vmId))) {
+    sendJson(res, 401, { error: "This browser is not signed in to the agent.", code: "unpaired" }, cors);
+    return;
+  }
+  try {
+    await dispatch(req, res, url2, service, cors);
+  } catch (err) {
+    if (res.headersSent || res.writableEnded) {
+      res.destroy();
+      return;
+    }
+    if (err instanceof FilesError) {
+      sendJson(res, err.status, { error: err.message, code: err.code }, cors);
+      return;
+    }
+    console.error("[files]", err.message);
+    sendJson(res, 500, { error: "The file explorer could not read that.", code: "internal" }, cors);
+  }
+}
+async function streamFile(path, res) {
+  try {
+    await pipeline2(createReadStream2(path), res);
+  } catch (err) {
+    const code = err.code;
+    if (code === "ERR_STREAM_PREMATURE_CLOSE" || code === "ECONNRESET" || code === "EPIPE") return;
+    throw err;
+  }
+}
+async function dispatch(req, res, url2, service, cors) {
+  const path = url2.pathname;
+  const q = url2.searchParams.get("path");
+  if (path === "/files/list" && req.method === "GET") {
+    sendJson(res, 200, await service.list(q ?? ""), cors);
+    return;
+  }
+  if (path === "/files/read" && req.method === "GET") {
+    const file = await service.fileFor(q ?? "");
+    const meta = { path: file.rel, name: basename(file.abs), mime: file.mime, size: file.size, mtime: file.mtime };
+    if (isPreviewableImage(file.mime)) {
+      if (file.size > service.limits.imagePreviewBytes) {
+        sendJson(res, 200, { ...meta, kind: "binary", reason: "too_large" }, cors);
+        return;
+      }
+      res.writeHead(200, {
+        ...cors,
+        "Content-Type": file.mime,
+        "Content-Length": String(file.size),
+        // The body is bytes, so the file's own date has to ride a header. Exposed explicitly:
+        // Last-Modified is not CORS-safelisted, and the console reads it cross-origin.
+        "Last-Modified": new Date(file.mtime).toUTCString(),
+        "Access-Control-Expose-Headers": "Last-Modified",
+        "Cache-Control": "no-store",
+        // The bytes are a customer's file: never let a browser sniff one into a script.
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; sandbox"
+      });
+      await streamFile(file.abs, res);
+      return;
+    }
+    if (!isTextual(file.mime)) {
+      sendJson(res, 200, { ...meta, kind: "binary" }, cors);
+      return;
+    }
+    const slice = await readHead(file.abs, Math.min(file.size, service.limits.textPreviewBytes));
+    sendJson(res, 200, { ...meta, kind: "text", truncated: file.size > service.limits.textPreviewBytes, content: slice }, cors);
+    return;
+  }
+  if (path === "/files/download" && req.method === "GET") {
+    const file = await service.fileFor(q ?? "");
+    const name = basename(file.abs);
+    res.writeHead(200, {
+      ...cors,
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(file.size),
+      "Content-Disposition": contentDisposition(name),
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff"
+    });
+    await streamFile(file.abs, res);
+    return;
+  }
+  if (path === "/files/upload" && req.method === "POST") {
+    const overwrite = url2.searchParams.get("overwrite") === "1";
+    sendJson(res, 200, await service.upload(req, q ?? "", overwrite), cors);
+    return;
+  }
+  if (JSON_OPS.has(path) && req.method === "POST") {
+    const body = await readJsonBody(req, 8192);
+    if (!body) throw new FilesError(400, "bad_body", "That request was not understood.");
+    const str6 = (v) => typeof v === "string" ? v : "";
+    if (path === "/files/mkdir") {
+      sendJson(res, 200, await service.mkdir(str6(body.path)), cors);
+      return;
+    }
+    if (path === "/files/rename") {
+      sendJson(res, 200, await service.rename(str6(body.from), str6(body.to)), cors);
+      return;
+    }
+    sendJson(res, 200, await service.delete(str6(body.path), body.recursive === true || body.recursive === 1), cors);
+    return;
+  }
+  sendJson(res, 404, { error: "Not found", code: "not_found" }, cors);
+}
+async function readHead(path, max) {
+  if (max <= 0) return "";
+  const handle = await open(path, "r");
+  try {
+    const buf = Buffer.alloc(max);
+    const { bytesRead } = await handle.read(buf, 0, max, 0);
+    return buf.subarray(0, bytesRead).toString("utf-8");
+  } finally {
+    await handle.close();
+  }
+}
+
 // src/ssh.ts
 import { createHash as createHash2 } from "crypto";
 import { mkdirSync as mkdirSync4, mkdtempSync, readFileSync as readFileSync13, rmSync, writeFileSync as writeFileSync6 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname5, join as join6 } from "path";
+import { dirname as dirname6, join as join7 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -34573,8 +35191,8 @@ var SshAccessService = class {
   status() {
     const state = this.readState();
     if (!state) return { open: false, user: this.user, grantId: null, fingerprint: null, endsAt: null };
-    const open = Date.parse(state.endsAt) > this.now();
-    return { open, user: this.user, grantId: state.grantId, fingerprint: state.fingerprint, endsAt: state.endsAt };
+    const open2 = Date.parse(state.endsAt) > this.now();
+    return { open: open2, user: this.user, grantId: state.grantId, fingerprint: state.fingerprint, endsAt: state.endsAt };
   }
   /**
    * Mint a key, install its public half, open the port and arm the timer. The private half is in
@@ -34619,8 +35237,8 @@ var SshAccessService = class {
   }
   // ---- internals ----
   async mint(grantId) {
-    const dir = mkdtempSync(join6(this.opts.workDir ?? tmpdir2(), "cc-ssh-"));
-    const path = join6(dir, "key");
+    const dir = mkdtempSync(join7(this.opts.workDir ?? tmpdir2(), "cc-ssh-"));
+    const path = join7(dir, "key");
     try {
       await this.exec(
         "ssh-keygen",
@@ -34648,7 +35266,7 @@ var SshAccessService = class {
     if (publicKey) next += `# ${markerFor(grantId)} until ${endsAt}
 ${publicKey}
 `;
-    mkdirSync4(dirname5(path), { recursive: true, mode: 448 });
+    mkdirSync4(dirname6(path), { recursive: true, mode: 448 });
     writeFileSync6(path, next, { mode: 384 });
   }
   readState() {
@@ -34666,7 +35284,7 @@ ${publicKey}
     }
   }
   writeState(state) {
-    mkdirSync4(dirname5(this.opts.statePath), { recursive: true });
+    mkdirSync4(dirname6(this.opts.statePath), { recursive: true });
     writeFileSync6(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
@@ -34721,14 +35339,14 @@ function parseSshdLine(line) {
   return { user: m[1], fromIp: m[2], fingerprint: m[3], at: Number.isFinite(at) ? at : null };
 }
 function journal(cursorPath) {
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     execFile4(
       "journalctl",
       ["-u", "ssh", "-u", "sshd", "--no-pager", "-q", "-o", "short-iso", `--cursor-file=${cursorPath}`],
       { timeout: POLL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
       (err, stdout) => {
-        if (err && !stdout) return resolve([]);
-        resolve(String(stdout ?? "").split("\n").filter(Boolean));
+        if (err && !stdout) return resolve2([]);
+        resolve2(String(stdout ?? "").split("\n").filter(Boolean));
       }
     );
   });
@@ -35037,6 +35655,39 @@ var backup = new BackupService({
   spoolDir: process.env.BACKUP_SPOOL_DIR ?? STATE_DIR,
   service: (action) => runAction(action)
 });
+var fileWriteSequence = 0;
+var getBoxToken = makeBoxTokenSigner(KEYS_DIR2);
+var files = new FilesService({
+  root: process.env.FILES_ROOT ?? process.env.HOME ?? "/home/controlclaw",
+  vmId: readKeyFile(KEYS_DIR2, "vm_id"),
+  onWrite: (write) => void reportFileWrite(write).catch((err) => console.error("[files]", err.message))
+});
+async function reportFileWrite(write) {
+  const base = saasBaseUrl(KEYS_DIR2);
+  if (!base) return;
+  const id = randomUUID3();
+  const size = write.size === null ? "" : ` (${humanBytes(write.size)})`;
+  const res = await fetch(`${base}/api/vm-agent/activity`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await getBoxToken()}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      records: [
+        {
+          source: "tool_action",
+          event_id: `files-${id}`,
+          sequence: ++fileWriteSequence,
+          occurred_at: Date.now(),
+          status: "succeeded",
+          action: write.op,
+          tool_name: `files.${write.op} \xB7 ${write.path}${size}`.slice(0, 120),
+          tool_call_id: `files:${id}`,
+          agent_id: "console"
+        }
+      ]
+    })
+  });
+  if (!res.ok) console.error(`[files] activity report: HTTP ${res.status}`);
+}
 var server = createServer2(async (req, res) => {
   const url2 = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url2.pathname.startsWith("/__cc/")) {
@@ -35069,6 +35720,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/tailscale/")) {
     await handleTailscale(req, res, url2, tailscale);
+    return;
+  }
+  if (url2.pathname.startsWith("/files/")) {
+    await handleFiles(req, res, url2, files);
     return;
   }
   if (!await requireAuth(req, res)) return;
