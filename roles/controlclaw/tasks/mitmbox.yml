@@ -308,6 +308,8 @@
       # SNI-based passthrough for the control plane (works for transparent redsocks CONNECT-to-IP,
       # where --ignore-hosts can't match a hostname). The addon tls_clienthello hook reads this.
       Environment=MITM_CONTROL_PLANE_HOST={{ controlclaw_url | urlsplit('hostname') }}
+      # The backup object store: passed through uninspected, same mechanism (defaults/main.yml).
+      Environment=MITM_BACKUP_HOST={{ controlclaw_backup_host }}
       # --ignore-hosts: do NOT intercept the ControlClaw control plane — tunnel it (real public
       # TLS) so the JWT control channel never depends on this proxy's CA and the proxy can't MITM
       # its own control plane. Anchored to the exact host:port so an agent can't abuse a substring
@@ -356,6 +358,13 @@
       Environment=ACTIVITY_CURSOR_PATH=/opt/controlclaw/mitm/logs/activity.cursor
       # Firewall control channel: heartbeat + the console's start/stop/restart of the proxy.
       Environment=FIREWALL_URL={{ controlclaw_url }}/api/vm-agent/firewall
+      # App integrations (tasks/connector.yml): the runtime on loopback, its admin token from the
+      # root-owned env file (systemd reads it; CONNECTOR_ADMIN_TOKEN is in it), and the gate the
+      # agent boxes dial on this box's private IP. Unset CONNECTOR_URL turns the feature off.
+      EnvironmentFile=/etc/controlclaw/connector.env
+      Environment=CONNECTOR_URL=http://127.0.0.1:{{ connector_port }}
+      Environment=CONNECTOR_GATE_BIND={{ mitm_self_private_ip.stdout | default('') }}
+      Environment=CONNECTOR_GATE_PORT={{ connector_gate_port }}
       ExecStart=/usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
       Restart=always
       RestartSec=10
@@ -381,6 +390,10 @@
     comment: 'ControlClaw mitm agent'
   when: not ci_test
 
+- name: Install the app connector runtime (OpenConnector)
+  ansible.builtin.include_tasks: connector.yml
+  when: not ci_test
+
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
@@ -391,6 +404,7 @@
     state: started
     enabled: true
   loop:
+    - controlclaw-connector
     - controlclaw-mitmproxy
     - controlclaw-mitm-agent
   when: not ci_test

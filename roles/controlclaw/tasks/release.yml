@@ -1,0 +1,42 @@
+---
+# Record which release this box installed, so the console can show it
+# (apps/saas/docs/features/agent-settings.md). `playbook_dir` is the ansible-pull checkout, so
+# this is the commit that is being applied right now: on first provisioning and on every
+# cc-reprovision run alike, since both are an ansible-pull of this repo. Included last from
+# main.yml, so a run that failed half way does not claim a successful install.
+#
+# 0644 and root-owned on purpose: the daemons read it and must not be able to write it, which is
+# what makes the reported release mean something. Nothing about a version is worth failing a
+# provision over: the daemons treat a missing or malformed file as "not reported".
+- name: Record the installed release
+  block:
+    - name: Read the commit this checkout is on
+      ansible.builtin.command:
+        cmd: git -C {{ playbook_dir }} log -1 --format=%H%n%cI
+      register: cc_release
+      changed_when: false
+
+    - name: Make sure /etc/controlclaw exists
+      ansible.builtin.file:
+        path: /etc/controlclaw
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write /etc/controlclaw/release.json
+      ansible.builtin.copy:
+        dest: /etc/controlclaw/release.json
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {
+            "commit": "{{ cc_release.stdout_lines[0] }}",
+            "commitDate": "{{ cc_release.stdout_lines[1] }}",
+            "installedAt": "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          }
+  rescue:
+    - name: A box that cannot name its release still provisions
+      ansible.builtin.debug:
+        msg: "could not record the release; the console will show 'Not reported'"

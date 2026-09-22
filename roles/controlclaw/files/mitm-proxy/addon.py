@@ -80,6 +80,19 @@ TENANT = os.environ.get("MITM_TENANT", "unknown")
 # client reaches us via a transparent redirect (redsocks CONNECT-to-IP), where the CONNECT
 # authority is an IP, not the hostname. See docs/security-design.md.
 CONTROL_PLANE_HOST = os.environ.get("MITM_CONTROL_PLANE_HOST", "").strip().lower()
+# The backup object store's endpoint (e.g. s3.eu-west-1.amazonaws.com). Passed through uninspected,
+# the same way and for much the same reason as the control plane: an agent box uploads its own
+# already-encrypted archive there with a presigned URL, so there is nothing here to inspect (the body
+# is ciphertext), nothing to credential-swap (the signature is in the URL), and multi-gigabyte bodies
+# through mitmproxy's logging would be pure cost. Scoped to this one host, and a built-in of the same
+# shape as CONTROL_PLANE_HOST rather than a `tunnel` rule — so an organisation cannot widen it and a
+# compromised control plane cannot point it elsewhere without an Ansible change.
+# See apps/saas/docs/features/backups.md.
+BACKUP_HOST = os.environ.get("MITM_BACKUP_HOST", "").strip().lower()
+
+# The built-in uninspected destinations. A connection whose SNI matches one of these is passed
+# through without TLS termination; anything else needs a rule.
+PASSTHROUGH_HOSTS = tuple(h for h in (CONTROL_PLANE_HOST, BACKUP_HOST) if h)
 
 # Dev escape hatches. Every MITM_DEV_* flag is refused unless MITM_ALLOW_DEV_FLAGS=1, which only
 # the smoke-test compose files set; the production systemd unit pins them all to 0. This makes
@@ -584,8 +597,9 @@ async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
 # ----- hooks ----------------------------------------------------------------
 
 def tls_clienthello(data) -> None:
-    """Pass a connection through untouched (no TLS interception), matched by SNI: the control-plane
-    host (so the JWT channel is never MITM'd) OR an opt-in `tunnel` rule (uninspected egress).
+    """Pass a connection through untouched (no TLS interception), matched by SNI: a built-in host
+    (the control plane, so the JWT channel is never MITM'd, and the backup object store, whose bodies
+    are already encrypted end to end) OR an opt-in `tunnel` rule (uninspected egress).
 
     Keys off the TLS ClientHello SNI rather than the CONNECT authority, so it works for the explicit
     proxy (CONNECT-by-host) AND transparent redsocks (CONNECT-by-IP). Defensive: a raised exception
@@ -597,7 +611,7 @@ def tls_clienthello(data) -> None:
             return
         ctx = getattr(data, "context", None)
         _, port = _server_addr(ctx)
-        if (CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, sni)) or tunnel_match(
+        if any(host_matches(h, sni) for h in PASSTHROUGH_HOSTS) or tunnel_match(
             sni, port, ctx_vm_id(ctx)
         ):
             data.ignore_connection = True

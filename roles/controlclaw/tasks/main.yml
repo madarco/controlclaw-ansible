@@ -124,3 +124,8 @@
 - name: Include mitm box tasks (secret zone)
   ansible.builtin.include_tasks: mitmbox.yml
   when: box_role == 'mitm'
+
+# Last on purpose: what release this box runs, written only once everything above succeeded.
+- name: Record the installed release
+  ansible.builtin.include_tasks: release.yml
+  when: box_role in ['openclaw', 'mitm']

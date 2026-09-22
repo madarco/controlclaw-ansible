@@ -1,0 +1,103 @@
+---
+# App integrations: the OpenConnector runtime on the firewall box
+# (apps/saas/docs/features/integrations.md, docs/security-design.md "Integrations").
+#
+# The runtime holds the customers' app credentials and makes the calls to the providers, so it
+# lives in the secret zone next to the mitm-agent, as its own service. It is pinned to one image
+# digest (the same one recorded in the control plane's connector-catalog.ts) and bound to
+# loopback only: what an agent box dials is the mitm-agent's gate on the private IP, never the
+# runtime. Its keys are generated on the box behind an existence guard, like the box key and the
+# CA: a re-provision must never regenerate them, or every stored credential is lost.
+
+- name: Create the connector data directory
+  ansible.builtin.file:
+    path: /opt/controlclaw/connector
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# Three secrets, none of which ever leaves the box. The runtime token exists only so that
+# `/v1` and `/mcp` require *some* bearer: without any runtime authentication configured the
+# runtime serves them to anyone who can reach it. Nothing is ever handed this token.
+- name: Generate the connector keys (once)
+  ansible.builtin.shell: |
+    set -e
+    umask 077
+    admin="$(openssl rand -hex 32)"
+    # The admin token twice: under the runtime's name and under the mitm-agent's, because systemd
+    # does not expand ${VAR} in Environment= lines and both units read this one file.
+    printf 'OOMOL_CONNECT_ENCRYPTION_KEY=%s\nOOMOL_CONNECT_ADMIN_TOKEN=%s\nCONNECTOR_ADMIN_TOKEN=%s\nOOMOL_CONNECT_RUNTIME_TOKEN=%s\n' \
+      "$(openssl rand -base64 32)" "$admin" "$admin" "$(openssl rand -hex 32)" \
+      > /etc/controlclaw/connector.env
+  args:
+    creates: /etc/controlclaw/connector.env
+    executable: /bin/bash
+
+- name: Lock the connector env file down
+  ansible.builtin.file:
+    path: /etc/controlclaw/connector.env
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Pull the pinned connector image
+  ansible.builtin.command:
+    cmd: docker pull {{ connector_image }}@{{ connector_image_digest }}
+  register: connector_pull
+  changed_when: "'Downloaded newer image' in connector_pull.stdout"
+  retries: 3
+  delay: 10
+  until: connector_pull.rc == 0
+
+# `--network host` so the runtime's `HOST=127.0.0.1` is the box's own loopback (what the
+# mitm-agent dials) and its provider calls leave through the box's normal egress. The image runs
+# as root and keeps its state in /app/data, which is the root-owned 0700 dir above. The memory
+# cap goes on `docker run`, not the unit: the container lives in docker's cgroup, so a unit-level
+# MemoryMax would only bound the docker client. A runaway action takes the connector down, not
+# the proxy. The SSRF guard stays on (no OOMOL_CONNECT_ALLOW_PRIVATE_NETWORK): a customer's app
+# is on the internet.
+- name: Create controlclaw-connector service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/controlclaw-connector.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=ControlClaw app connector runtime (OpenConnector, loopback only)
+      After=docker.service network-online.target
+      Requires=docker.service
+
+      [Service]
+      Type=simple
+      EnvironmentFile=/etc/controlclaw/connector.env
+      ExecStartPre=-/usr/bin/docker rm -f controlclaw-connector
+      ExecStart=/usr/bin/docker run --rm --name controlclaw-connector \
+        --network host \
+        --memory {{ connector_memory_max }} --oom-score-adj 500 \
+        -v /opt/controlclaw/connector:/app/data \
+        -e HOST=127.0.0.1 \
+        -e PORT={{ connector_port }} \
+        -e OOMOL_CONNECT_CATALOG_LAZY_SCHEMAS=true \
+        -e OOMOL_CONNECT_ORIGIN={{ controlclaw_url }} \
+        -e OOMOL_CONNECT_ENCRYPTION_KEY \
+        -e OOMOL_CONNECT_ADMIN_TOKEN \
+        -e OOMOL_CONNECT_RUNTIME_TOKEN \
+        {{ connector_image }}@{{ connector_image_digest }}
+      ExecStop=/usr/bin/docker stop -t 10 controlclaw-connector
+      Restart=always
+      RestartSec=10
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: restart controlclaw-connector
+
+# The gate: only the execution routes, only from the private network (UFW below). 3910 is
+# loopback and needs no rule.
+- name: Allow the connector gate from the private network only
+  community.general.ufw:
+    rule: allow
+    port: "{{ connector_gate_port }}"
+    proto: tcp
+    src: "{{ mitm_private_subnet }}"
+    comment: "ControlClaw connector gate (private net)"
+  when: not ci_test

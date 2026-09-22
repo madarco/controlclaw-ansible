@@ -97,6 +97,20 @@ mitm_public_iface: eth0              # public interface to masquerade out of
 controlclaw_url: ""                  # ControlClaw base URL (store/rules/permission endpoints)
 org_id: ""                           # org this box serves
 
+# Encrypted backups: the object store agent boxes PUT ciphertext to. Passed through the proxy
+# uninspected: the body is already encrypted end to end and the authorisation is in the URL.
+# Scoped to this one host. Empty disables it, which turns backups off for every box behind
+# this firewall. See apps/saas/docs/features/backups.md.
+controlclaw_backup_host: "controlclaw-backups.s3.eu-west-1.amazonaws.com"
+
+# App integrations: the OpenConnector runtime on the firewall (tasks/connector.yml). Version and
+# digest must match apps/saas/app/(integrations)/lib/connector-catalog.ts in the control plane.
+connector_image: "ghcr.io/oomol-lab/open-connector"
+connector_image_digest: "sha256:f25207e6f71eabc70182c4f5db5c01db79091d0f4523a7495b35e649d5b6c006"
+connector_port: 3910                 # loopback only: the runtime itself
+connector_gate_port: 3900            # private IP: the mitm-agent's gate the agent boxes dial
+connector_memory_max: 512m
+
 # OpenClaw box egress wiring (set when the org has a mitm box)
 mitm_box_private_ip: ""              # private IP of the org mitm box
 mitm_ca_cert: ""                     # public CA cert (PEM) to install in the trust store

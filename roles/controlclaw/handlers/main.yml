@@ -21,6 +21,12 @@
     state: restarted
     daemon_reload: true
 
+- name: restart controlclaw-connector
+  ansible.builtin.systemd:
+    name: controlclaw-connector
+    state: restarted
+    daemon_reload: true
+
 - name: restart dnsmasq
   ansible.builtin.systemd:
     name: dnsmasq
