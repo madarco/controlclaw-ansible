@@ -36162,7 +36162,14 @@ var BackupFirewall = class {
     }).finally(() => this.running.delete(commandId));
   }
   handlers() {
-    return {
+    const frozen = {
+      ok: false,
+      status: "retry",
+      message: "This firewall has been put back from its backup and is restarting onto it. Try again in a minute.",
+      data: {}
+    };
+    const guard = (h) => (p) => this.restoring ? Promise.resolve(frozen) : h(p);
+    const handlers = {
       "backup.run": (p) => this.run(p),
       "backup.firewall-run": (p) => this.runSelf(p),
       "backup.restore.propose": (p) => this.proposeRestore(p),
@@ -36176,6 +36183,7 @@ var BackupFirewall = class {
       "backup.firewall-restore.confirm": (p) => this.confirmSelfRestore(p),
       "backup.firewall-restore.cancel": (p) => this.cancelSelfRestore(p)
     };
+    return Object.fromEntries(Object.entries(handlers).map(([k, h]) => [k, guard(h)]));
   }
   /**
    * What the console shows about backups, carried on the heartbeat because nothing can call in here.
@@ -36226,7 +36234,18 @@ var BackupFirewall = class {
     this.log(`[backup] generated this firewall's backup key (${kp.fingerprint})`);
     return kp;
   }
+  /**
+   * Set the moment a self-restore has landed on disk. From then until systemd restarts this
+   * process, everything in memory (the box key above all) describes the box that was just
+   * replaced, and a single `save()` would put it back over the restored store — which is exactly
+   * what a `backup.recovery.rebind` handled in that window did on prod, 2026-09-22.
+   */
+  restoring = false;
   save() {
+    if (this.restoring) {
+      this.log("[backup] not writing the store: this firewall has been put back from its backup and is restarting onto it");
+      return;
+    }
     saveBackupStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
   }
   target(agent) {
@@ -36624,6 +36643,7 @@ var BackupFirewall = class {
         manifestHash: p.manifestHash,
         dataKey
       });
+      this.restoring = true;
       return { changeId: p.changeId, backupId: p.backupId, entries: r.entries, takenAt: r.takenAt, fingerprint: r.fingerprint, quarantined: r.quarantined };
     });
     return { backupId: p.backupId, replaces: kp.fingerprint };
@@ -97551,8 +97571,8 @@ import { readFileSync as readFileSync16 } from "fs";
 import { readFileSync as readFileSync15 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "95debd1" : "unknown",
-  builtAt: true ? "2026-09-22T21:11:07+01:00" : "unknown"
+  commit: true ? "34b47bb" : "unknown",
+  builtAt: true ? "2026-09-22T22:02:34+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
