@@ -36787,6 +36787,13 @@ var SelfRestore = class {
     } catch (error48) {
       throw new Error("The proxy could not be stopped, so nothing was replaced.", { cause: error48 });
     }
+    const startProxy = () => {
+      try {
+        this.opts.startProxy?.();
+      } catch (error48) {
+        this.log(`[backup] the proxy did not start again: ${error48.message}. Start it from the Firewall page.`);
+      }
+    };
     try {
       for (const file2 of staged) writeAtomic(file2.path, this.rebind(file2, sourceBoxId), file2.mode);
     } catch (error48) {
@@ -36798,8 +36805,10 @@ var SelfRestore = class {
           this.log(`[backup] could not undo ${entry.path}: ${undoError.message}`);
         }
       }
+      startProxy();
       throw new Error(`The swap failed and this firewall was put back as it was: ${error48.message}`);
     }
+    startProxy();
     try {
       return this.quarantineStrangers(staged);
     } catch (error48) {
@@ -97503,8 +97512,8 @@ import { readFileSync as readFileSync16 } from "fs";
 import { readFileSync as readFileSync15 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "15b20dd" : "unknown",
-  builtAt: true ? "2026-09-22T18:07:17+01:00" : "unknown"
+  commit: true ? "940da79" : "unknown",
+  builtAt: true ? "2026-09-22T20:41:27+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -97786,10 +97795,13 @@ async function main() {
         selfRestore: new SelfRestore({
           ids,
           workDir: BACKUP_WORK_DIR,
-          // The proxy reads its CA and its credentials at start-up, so it has to go down for the
-          // swap; systemd starts it again with this process.
+          // The proxy reads its CA and its credentials at start-up, so it goes down for the swap and
+          // is started again right after: a stopped unit does not come back on its own.
           stopProxy: () => {
             execSync2("sudo systemctl stop controlclaw-mitmproxy", { timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
+          },
+          startProxy: () => {
+            execSync2("sudo systemctl start controlclaw-mitmproxy", { timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
           },
           // `Restart=always` on the unit is what brings us back on the restored state. Nothing else
           // can reload a box key and three encrypted stores that were swapped underneath us.
@@ -97859,6 +97871,9 @@ async function main() {
       workDir: BACKUP_WORK_DIR,
       stopProxy: () => {
         execSync2("sudo systemctl stop controlclaw-mitmproxy", { timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
+      },
+      startProxy: () => {
+        execSync2("sudo systemctl start controlclaw-mitmproxy", { timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
       },
       restart: () => {
         console.log(`[recovery] this firewall was put back from its backup; restarting in ${SELF_RESTORE_RESTART_DELAY_MS / 1e3}s`);
