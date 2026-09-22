@@ -31021,8 +31021,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d6d7b7f" : "unknown",
-  builtAt: true ? "2026-09-22T13:10:55+01:00" : "unknown"
+  commit: true ? "15b20dd" : "unknown",
+  builtAt: true ? "2026-09-22T18:07:17+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -33814,64 +33814,7 @@ function parseManifest(json2) {
   return { ...m, excluded: Array.isArray(m.excluded) ? m.excluded : [] };
 }
 
-// ../backup-envelope/src/paths.ts
-var ARCHIVE_ROOTS = {
-  workspace: "workspace",
-  state: "."
-};
-var EXCLUDED_SEGMENTS = new Set(
-  [
-    "node_modules",
-    ".cache",
-    "cache",
-    "caches",
-    "cachestorage",
-    "code cache",
-    "gpucache",
-    "shadercache",
-    "dawncache",
-    "crashpad",
-    "_cacache",
-    ".pnpm-store",
-    ".turbo",
-    ".venv",
-    "__pycache__",
-    "logs",
-    "tmp",
-    ".tmp"
-  ].map((s) => s.toLowerCase())
-);
-var IDENTITY_NAMES = ["openclaw_gateway_token", "saas_public_key.pem", "vm_private_key.pem", "vm_public_key.pem", "mitm_pinned_pubkey.pem", "session_secret"];
-var EXCLUDED_NAMES = new Set([...IDENTITY_NAMES, ".DS_Store"].map((s) => s.toLowerCase()));
-function keepOnRestore(kind) {
-  return kind === "state" ? ["workspace", ...IDENTITY_NAMES] : [];
-}
-var EXCLUDED_SUFFIXES = [".log", ".log.gz", ".sock", ".pid", ".swp", ".core"];
-var RESTORE_SCRATCH = /\.cc-(restoring|previous-\d+)$/;
-function shouldExclude(relPath, kind) {
-  const parts = relPath.split("/").filter((p) => p.length > 0 && p !== ".");
-  if (parts.length === 0) return false;
-  if (kind === "state" && parts[0] === "workspace") return true;
-  if (parts.some((p) => RESTORE_SCRATCH.test(p))) return true;
-  const name = parts[parts.length - 1].toLowerCase();
-  if (EXCLUDED_NAMES.has(name)) return true;
-  if (EXCLUDED_SUFFIXES.some((s) => name.endsWith(s))) return true;
-  return parts.some((p) => EXCLUDED_SEGMENTS.has(p.toLowerCase()));
-}
-var FORBIDDEN_ROOTS = ["/opt/controlclaw/keys", "/opt/controlclaw/mitm", "/etc/ssh", "/root"];
-function assertArchivableRoot(absolutePath) {
-  const p = absolutePath.replace(/\/+$/, "") || "/";
-  if (p === "/") throw new Error("refusing to archive the whole filesystem");
-  for (const bad of FORBIDDEN_ROOTS) {
-    if (p === bad || p.startsWith(`${bad}/`)) throw new Error(`refusing to archive ${bad}: it is this box's identity, not its content`);
-  }
-}
-
-// ../backup-envelope/src/retention.ts
-var EXPIRY_GRACE_MS = 24 * 60 * 60 * 1e3;
-var DAY_MS = 24 * 60 * 60 * 1e3;
-
-// src/tar.ts
+// ../backup-envelope/src/tar.ts
 var BLOCK = 512;
 var ZERO = new Uint8Array(BLOCK);
 function octal(value, width) {
@@ -34015,6 +33958,74 @@ function safeEntryPath(path) {
   if (clean.includes("\0")) throw new Error("this archive contains an entry name with a null byte");
   return parts.filter((p) => p !== "" && p !== ".").join("/");
 }
+
+// ../backup-envelope/src/archive-file.ts
+var ARCHIVE_FILE_MAGIC = "CCBKUP01";
+var ARCHIVE_FILE_HEADER_BYTES = ARCHIVE_FILE_MAGIC.length + 4;
+var MAX_PRELUDE_BYTES = 64 * 1024;
+
+// ../backup-envelope/src/recovery-identity.ts
+var RECOVERY_REPLAY_WINDOW_MS = 5 * 6e4;
+var RECOVERY_BODY_MAGIC = "CCRCV001";
+var RECOVERY_BODY_HEADER_BYTES = RECOVERY_BODY_MAGIC.length + 4;
+var MAX_RECOVERY_HEAD_BYTES = 64 * 1024;
+
+// ../backup-envelope/src/paths.ts
+var ARCHIVE_ROOTS = {
+  workspace: "workspace",
+  state: "."
+};
+var EXCLUDED_SEGMENTS = new Set(
+  [
+    "node_modules",
+    ".cache",
+    "cache",
+    "caches",
+    "cachestorage",
+    "code cache",
+    "gpucache",
+    "shadercache",
+    "dawncache",
+    "crashpad",
+    "_cacache",
+    ".pnpm-store",
+    ".turbo",
+    ".venv",
+    "__pycache__",
+    "logs",
+    "tmp",
+    ".tmp"
+  ].map((s) => s.toLowerCase())
+);
+var IDENTITY_NAMES = ["openclaw_gateway_token", "saas_public_key.pem", "vm_private_key.pem", "vm_public_key.pem", "mitm_pinned_pubkey.pem", "session_secret"];
+var EXCLUDED_NAMES = new Set([...IDENTITY_NAMES, ".DS_Store"].map((s) => s.toLowerCase()));
+function keepOnRestore(kind) {
+  return kind === "state" ? ["workspace", ...IDENTITY_NAMES] : [];
+}
+var EXCLUDED_SUFFIXES = [".log", ".log.gz", ".sock", ".pid", ".swp", ".core"];
+var RESTORE_SCRATCH = /\.cc-(restoring|previous-\d+)$/;
+function shouldExclude(relPath, kind) {
+  const parts = relPath.split("/").filter((p) => p.length > 0 && p !== ".");
+  if (parts.length === 0) return false;
+  if (kind === "state" && parts[0] === "workspace") return true;
+  if (parts.some((p) => RESTORE_SCRATCH.test(p))) return true;
+  const name = parts[parts.length - 1].toLowerCase();
+  if (EXCLUDED_NAMES.has(name)) return true;
+  if (EXCLUDED_SUFFIXES.some((s) => name.endsWith(s))) return true;
+  return parts.some((p) => EXCLUDED_SEGMENTS.has(p.toLowerCase()));
+}
+var FORBIDDEN_ROOTS = ["/opt/controlclaw/keys", "/opt/controlclaw/mitm", "/etc/ssh", "/root"];
+function assertArchivableRoot(absolutePath) {
+  const p = absolutePath.replace(/\/+$/, "") || "/";
+  if (p === "/") throw new Error("refusing to archive the whole filesystem");
+  for (const bad of FORBIDDEN_ROOTS) {
+    if (p === bad || p.startsWith(`${bad}/`)) throw new Error(`refusing to archive ${bad}: it is this box's identity, not its content`);
+  }
+}
+
+// ../backup-envelope/src/retention.ts
+var EXPIRY_GRACE_MS = 24 * 60 * 60 * 1e3;
+var DAY_MS = 24 * 60 * 60 * 1e3;
 
 // src/backup.ts
 var MAX_ARCHIVE_BYTES = 5 * 1024 * 1024 * 1024;

@@ -27523,16 +27523,16 @@ var require_libsodium = __commonJS({
             if (endPtr - idx > 16 && heapOrArray.buffer && UTF8Decoder) {
               return UTF8Decoder.decode(heapOrArray.subarray(idx, endPtr));
             }
-            var str7 = "";
+            var str8 = "";
             while (idx < endPtr) {
               var u0 = heapOrArray[idx++];
               if (!(u0 & 128)) {
-                str7 += String.fromCharCode(u0);
+                str8 += String.fromCharCode(u0);
                 continue;
               }
               var u1 = heapOrArray[idx++] & 63;
               if ((u0 & 224) == 192) {
-                str7 += String.fromCharCode((u0 & 31) << 6 | u1);
+                str8 += String.fromCharCode((u0 & 31) << 6 | u1);
                 continue;
               }
               var u2 = heapOrArray[idx++] & 63;
@@ -27542,13 +27542,13 @@ var require_libsodium = __commonJS({
                 u0 = (u0 & 7) << 18 | u1 << 12 | u2 << 6 | heapOrArray[idx++] & 63;
               }
               if (u0 < 65536) {
-                str7 += String.fromCharCode(u0);
+                str8 += String.fromCharCode(u0);
               } else {
                 var ch = u0 - 65536;
-                str7 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
+                str8 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
               }
             }
-            return str7;
+            return str8;
           };
           var UTF8ToString = (ptr, maxBytesToRead, ignoreNul) => ptr ? UTF8ArrayToString(HEAPU8, ptr, maxBytesToRead, ignoreNul) : "";
           var ___assert_fail = (condition, filename, line, func) => abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : "unknown filename", line, func ? UTF8ToString(func) : "unknown function"]);
@@ -31255,7 +31255,7 @@ var require_dist = __commonJS({
 // src/index.ts
 import { createServer as createServer3 } from "http";
 import { execSync as execSync2 } from "child_process";
-import { readFileSync as readFileSync16, writeFileSync as writeFileSync11 } from "fs";
+import { readFileSync as readFileSync17, writeFileSync as writeFileSync11 } from "fs";
 
 // ../secret-store/dist/index.js
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
@@ -31327,20 +31327,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a, b) {
   return (a & 15) + (a >> 6 | a >> 3 & 8) << 4 | (b & 15) + (b >> 6 | b >> 3 & 8);
 }
-function writeHexToUInt8(buf, str7) {
-  const size = str7.length >> 1;
+function writeHexToUInt8(buf, str8) {
+  const size = str8.length >> 1;
   for (let i = 0; i < size; i++) {
     const index = i << 1;
-    buf[i] = hexCharCodesToInt(str7.charCodeAt(index), str7.charCodeAt(index + 1));
+    buf[i] = hexCharCodesToInt(str8.charCodeAt(index), str8.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str7, buf) {
-  if (str7.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str8, buf) {
+  if (str8.length !== buf.length * 2) {
     return false;
   }
   for (let i = 0; i < buf.length; i++) {
     const strIndex = i << 1;
-    if (buf[i] !== hexCharCodesToInt(str7.charCodeAt(strIndex), str7.charCodeAt(strIndex + 1))) {
+    if (buf[i] !== hexCharCodesToInt(str8.charCodeAt(strIndex), str8.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -31905,14 +31905,14 @@ function generateSalt() {
   return b64(randomBytes(SALT_BYTES));
 }
 async function deriveUserKey(masterPassword, saltB64) {
-  const hex3 = await argon2id({
+  const hex4 = await argon2id({
     password: masterPassword,
     salt: unb64(saltB64),
     ...ARGON2,
     hashLength: KEY_BYTES,
     outputType: "hex"
   });
-  return Buffer.from(hex3, "hex");
+  return Buffer.from(hex4, "hex");
 }
 function aad(ids2, version2) {
   return Buffer.from(`${ids2.orgId}:${ids2.boxId}:${version2}`, "utf8");
@@ -33252,8 +33252,8 @@ var day = hour * 24;
 var week = day * 7;
 var year = day * 365.25;
 var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
-function secs(str7) {
-  const matched = REGEX.exec(str7);
+function secs(str8) {
+  const matched = REGEX.exec(str8);
   if (!matched || matched[4] && matched[1]) {
     throw new TypeError("Invalid time period format");
   }
@@ -35717,8 +35717,8 @@ async function generateRecipientKeypair() {
 async function fingerprint(publicKeyB64) {
   const sodium = await sodiumReady();
   const h = sodium.crypto_generichash(32, fromB64(publicKeyB64));
-  const hex3 = [...h.subarray(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return (hex3.match(/.{4}/g) ?? []).join("-");
+  const hex4 = [...h.subarray(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return (hex4.match(/.{4}/g) ?? []).join("-");
 }
 async function randomDataKey() {
   const sodium = await sodiumReady();
@@ -35845,6 +35845,97 @@ function parseManifest(json3) {
   return { ...m, excluded: Array.isArray(m.excluded) ? m.excluded : [] };
 }
 
+// ../backup-envelope/src/tar.ts
+var BLOCK = 512;
+var ZERO = new Uint8Array(BLOCK);
+
+// ../backup-envelope/src/archive-file.ts
+var ARCHIVE_FILE_MAGIC = "CCBKUP01";
+var ARCHIVE_FILE_HEADER_BYTES = ARCHIVE_FILE_MAGIC.length + 4;
+var MAX_PRELUDE_BYTES = 64 * 1024;
+
+// ../backup-envelope/src/recovery-identity.ts
+var REQUEST_CONTEXT = "controlclaw-recovery-request/v1";
+var PAIR_CONTEXT = "controlclaw-recovery-pair/v1";
+var RECOVERY_REPLAY_WINDOW_MS = 5 * 6e4;
+async function recoveryKeyFingerprint(keys) {
+  const sodium = await sodiumReady();
+  const h = sodium.crypto_generichash(32, utf8(`${PAIR_CONTEXT}
+${keys.publicKey}
+${keys.signingPublicKey}`));
+  const hex4 = [...h.subarray(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return (hex4.match(/.{4}/g) ?? []).join("-");
+}
+function hex(bytes) {
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function recoveryBodyDigest(body) {
+  const sodium = await sodiumReady();
+  return hex(sodium.crypto_generichash(32, body));
+}
+async function createRecoveryBodyHasher() {
+  const sodium = await sodiumReady();
+  const state = sodium.crypto_generichash_init(null, 32);
+  let done = null;
+  return {
+    update(chunk) {
+      if (done !== null) throw new Error("this body has already been hashed");
+      sodium.crypto_generichash_update(state, chunk);
+    },
+    digest() {
+      done ??= hex(sodium.crypto_generichash_final(state, 32));
+      return done;
+    }
+  };
+}
+async function signedString(f) {
+  const digest = f.bodyDigest ?? await recoveryBodyDigest(f.body ?? new Uint8Array(0));
+  return utf8(`${REQUEST_CONTEXT}
+${f.method.toUpperCase()}
+${f.path}
+${f.timestamp}
+${digest}`);
+}
+async function verifyRecoveryRequest(signingPublicKeyB64, signatureB64, f, now2, windowMs = RECOVERY_REPLAY_WINDOW_MS) {
+  if (!Number.isFinite(f.timestamp) || Math.abs(now2 - f.timestamp) > windowMs) {
+    return {
+      ok: false,
+      reason: "stale",
+      message: `This request is dated ${Math.round(Math.abs(now2 - f.timestamp) / 1e3)}s away from the firewall's clock, and the window is ${Math.round(windowMs / 1e3)}s. Check the clock on the machine you are running this from.`
+    };
+  }
+  const sodium = await sodiumReady();
+  let good = false;
+  try {
+    good = sodium.crypto_sign_verify_detached(fromB64(signatureB64), await signedString(f), fromB64(signingPublicKeyB64));
+  } catch {
+    good = false;
+  }
+  return good ? { ok: true } : { ok: false, reason: "bad_signature", message: "This request is not signed by the recovery key this firewall was given." };
+}
+var RECOVERY_BODY_MAGIC = "CCRCV001";
+var RECOVERY_BODY_HEADER_BYTES = RECOVERY_BODY_MAGIC.length + 4;
+var MAX_RECOVERY_HEAD_BYTES = 64 * 1024;
+function decodeRecoveryBody(bytes) {
+  const magic = utf8(RECOVERY_BODY_MAGIC);
+  if (bytes.length < RECOVERY_BODY_HEADER_BYTES) throw new Error("This request is too short to be a recovery request.");
+  for (let i = 0; i < magic.length; i++) if (bytes[i] !== magic[i]) throw new Error("This is not a recovery request.");
+  const at = magic.length;
+  const len = (bytes[at] << 24 | bytes[at + 1] << 16 | bytes[at + 2] << 8 | bytes[at + 3]) >>> 0;
+  if (len === 0 || len > MAX_RECOVERY_HEAD_BYTES || bytes.length < RECOVERY_BODY_HEADER_BYTES + len) {
+    throw new Error("This recovery request's head is the wrong size.");
+  }
+  const end = RECOVERY_BODY_HEADER_BYTES + len;
+  let head;
+  try {
+    head = JSON.parse(new TextDecoder().decode(bytes.subarray(RECOVERY_BODY_HEADER_BYTES, end)));
+  } catch {
+    throw new Error("This recovery request's head is not readable.");
+  }
+  if (!head || typeof head !== "object") throw new Error("This recovery request's head is not readable.");
+  return { head, tail: bytes.subarray(end) };
+}
+
 // ../backup-envelope/src/paths.ts
 var EXCLUDED_SEGMENTS = new Set(
   [
@@ -35897,7 +35988,7 @@ function emptyBackupStore() {
 function loadBackupStore(path, boxKey, ids2) {
   const loaded2 = loadEncryptedJson(path, boxKey, aad5(ids2));
   if (!loaded2) return emptyBackupStore();
-  return { version: 1, keypair: loaded2.keypair ?? null, recovery: loaded2.recovery ?? null };
+  return { version: 1, keypair: loaded2.keypair ?? null, recovery: loaded2.recovery ? { ...loaded2.recovery, signingPublicKey: loaded2.recovery.signingPublicKey ?? null } : null };
 }
 function saveBackupStore(path, store, boxKey, ids2) {
   saveEncryptedJson(path, store, boxKey, aad5(ids2));
@@ -35988,6 +36079,9 @@ var KINDS = /* @__PURE__ */ new Set(["workspace", "state"]);
 function str5(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
+function isPublicKey(v) {
+  return v.length === 44 && /^[A-Za-z0-9+/]{43}=$/.test(v);
+}
 function httpsUrl(v) {
   const s = str5(v);
   if (!s || s.length > 4096) return null;
@@ -36019,6 +36113,7 @@ var BackupFirewall = class {
     this.restoreCodes = new ConsentCodes(codeOpts);
     this.recoveryCodes = new ConsentCodes(codeOpts);
     this.selfRestoreCodes = new ConsentCodes(codeOpts);
+    void this.refreshControlFingerprint();
   }
   store;
   /** Outcomes of work that outlived its command, drained onto the next heartbeat. */
@@ -36030,6 +36125,16 @@ var BackupFirewall = class {
   selfRestoreCodes;
   log;
   now;
+  /**
+   * `recoveryKeyFingerprint` of the pair this firewall holds — the string the owner compares with
+   * what `npx @controlclaw/recover` prints. Cached because it rides every heartbeat and hashing it
+   * is the only async thing `status()` would otherwise need.
+   */
+  controlFingerprint = null;
+  async refreshControlFingerprint() {
+    const r = this.store.recovery;
+    this.controlFingerprint = r?.signingPublicKey ? await recoveryKeyFingerprint({ publicKey: r.publicKey, signingPublicKey: r.signingPublicKey }) : null;
+  }
   /** Drained by `FirewallControl.extraResults` on every beat. */
   drainReports() {
     const out = this.reports;
@@ -36062,6 +36167,7 @@ var BackupFirewall = class {
       "backup.recovery.propose": (p) => this.proposeRecovery(p),
       "backup.recovery.confirm": (p) => this.confirmRecovery(p),
       "backup.recovery.cancel": (p) => this.cancelRecovery(p),
+      "backup.recovery.rebind": (p) => this.rebindRecovery(p),
       "backup.firewall-restore": (p) => this.proposeSelfRestore(p),
       "backup.firewall-restore.confirm": (p) => this.confirmSelfRestore(p),
       "backup.firewall-restore.cancel": (p) => this.cancelSelfRestore(p)
@@ -36078,8 +36184,27 @@ var BackupFirewall = class {
     return {
       publicKey: kp.publicKey,
       fingerprint: kp.fingerprint,
-      recovery: this.store.recovery ? { fingerprint: this.store.recovery.fingerprint, tofu: this.store.recovery.tofu, setAt: this.store.recovery.setAt } : null
+      recovery: this.store.recovery ? {
+        fingerprint: this.store.recovery.fingerprint,
+        tofu: this.store.recovery.tofu,
+        setAt: this.store.recovery.setAt,
+        // Set once the console has sent the Ed25519 half. Null means the recovery CLI cannot
+        // talk to this box yet, which is what the console tells the owner.
+        control: this.controlFingerprint
+      } : null
     };
+  }
+  /**
+   * What `recovery.ts` needs to check a signature: the two public halves of the recovery key this
+   * firewall was given, or null when it has none. Nothing secret crosses this boundary.
+   */
+  recoveryKeys() {
+    const r = this.store.recovery;
+    return r ? { publicKey: r.publicKey, signingPublicKey: r.signingPublicKey ?? null, fingerprint: r.fingerprint } : null;
+  }
+  /** This box's own backup keypair, so a CLI can seal a data key to it. Null before first use. */
+  ownKeypair() {
+    return this.store.keypair;
   }
   /**
    * Made at start-up (`ensureKeypair`, from index.ts) rather than on first use: a rebuilt firewall
@@ -36323,13 +36448,18 @@ var BackupFirewall = class {
     const changeId = str5(payload.changeId);
     const publicKey = str5(payload.publicKey);
     if (!changeId || !publicKey) throw new Error("malformed backup.recovery.propose payload");
-    if (publicKey.length !== 44 || !/^[A-Za-z0-9+/]{43}=$/.test(publicKey)) {
+    if (!isPublicKey(publicKey)) {
+      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
+    }
+    const signingPublicKey = str5(payload.signingPublicKey);
+    if (signingPublicKey && !isPublicKey(signingPublicKey)) {
       return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
     }
     const own = await this.keypair();
     const p = {
       changeId,
       publicKey,
+      signingPublicKey,
       fingerprint: await fingerprint(publicKey),
       replaces: this.store.recovery?.fingerprint ?? null
     };
@@ -36352,10 +36482,72 @@ var BackupFirewall = class {
   setRecovery(p, tofu) {
     this.store = {
       ...this.store,
-      recovery: { publicKey: p.publicKey, fingerprint: p.fingerprint, tofu, setAt: new Date(this.now()).toISOString() }
+      recovery: {
+        publicKey: p.publicKey,
+        signingPublicKey: p.signingPublicKey,
+        fingerprint: p.fingerprint,
+        tofu,
+        setAt: new Date(this.now()).toISOString()
+      }
     };
     this.save();
+    void this.announceRecovery();
     this.log(`[backup] recovery key ${p.replaces ? "replaced" : "set"}: ${p.fingerprint}${tofu ? " (first use, no code)" : ""}`);
+  }
+  /**
+   * On the console, deliberately, and the one line the whole offline path rests on. The control
+   * plane relayed this key; if it substituted one of its own, everything else about the restore
+   * would still look right. So the box prints what it was actually given, on the serial console the
+   * provider gives the owner, and `npx @controlclaw/recover` prints the same string from the key
+   * they typed. See `docs/security-design.md` § Backups.
+   */
+  async announceRecovery() {
+    const r = this.store.recovery;
+    if (!r) return;
+    await this.refreshControlFingerprint();
+    this.log(`[mitm-agent] recovery key fingerprint: ${r.fingerprint}`);
+    this.log(
+      this.controlFingerprint ? `[mitm-agent] recovery command key: ${this.controlFingerprint} \u2014 npx @controlclaw/recover must print this exact line` : "[mitm-agent] recovery command key: none (this key predates the recovery CLI; replace it in Settings \u2192 Backups to use one)"
+    );
+  }
+  /**
+   * A freshly rebuilt firewall holds no recovery key, so it can neither wrap a backup to one nor
+   * check a signature from one. `backup.recovery.rebind` gives it back the pair the organisation
+   * already had, and is accepted ONLY on a firewall that holds none — a box that has one is not in
+   * this situation, and changing it is `backup.recovery.propose`, which asks a person first.
+   *
+   * There is no consent code, for the same reason the first recovery key has none: a box with no
+   * recovery key has no channels either, so there is nobody to ask. That makes this the one thing
+   * the control plane could lie about, which is why the box prints what it was given.
+   */
+  async rebindRecovery(payload) {
+    const publicKey = str5(payload.publicKey);
+    const signingPublicKey = str5(payload.signingPublicKey);
+    if (!publicKey || !signingPublicKey || !isPublicKey(publicKey) || !isPublicKey(signingPublicKey)) {
+      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: {} };
+    }
+    if (this.store.recovery) {
+      return {
+        ok: false,
+        status: "already_set",
+        message: `This firewall already holds a recovery key (${this.store.recovery.fingerprint}), so it will not take another without a confirmation.`,
+        data: { fingerprint: this.store.recovery.fingerprint }
+      };
+    }
+    const own = await this.keypair();
+    const fingerprint2 = await fingerprint(publicKey);
+    this.setRecovery({ changeId: "", publicKey, signingPublicKey, fingerprint: fingerprint2, replaces: null }, true);
+    return {
+      ok: true,
+      status: "applied",
+      // Computed rather than read off the cache, which `setRecovery` refreshes asynchronously.
+      data: {
+        fingerprint: fingerprint2,
+        control: await recoveryKeyFingerprint({ publicKey, signingPublicKey }),
+        firewallFingerprint: own.fingerprint,
+        firewallPublicKey: own.publicKey
+      }
+    };
   }
   async confirmRecovery(payload) {
     const changeId = str5(payload.changeId);
@@ -36530,9 +36722,7 @@ var SelfRestore = class {
   }
   // ---- before the swap: nothing on this box changes ----
   async stage(input, stagingDir) {
-    const res = await this.fetchImpl(input.downloadUrl);
-    if (!res.ok) throw new Error(`The backup store did not serve the archive (HTTP ${res.status}).`);
-    const blob = Buffer.from(await res.arrayBuffer());
+    const blob = input.archive ? Buffer.from(input.archive) : await this.download(input.downloadUrl);
     if (blob.length > MAX_ARCHIVE_BYTES) throw new Error("That archive is far larger than a firewall backup, so it is not one.");
     const dec = await makeDecryptor(input.dataKey, input.header, {
       orgId: this.opts.ids.orgId,
@@ -36574,6 +36764,12 @@ var SelfRestore = class {
     if (staged.length === 0) throw new Error("That archive holds no files, so there is nothing to put back.");
     staged.sort((a, b) => this.allowed().indexOf(a.path) - this.allowed().indexOf(b.path));
     return { manifest, staged };
+  }
+  async download(downloadUrl) {
+    if (!downloadUrl) throw new Error("There is no archive to put back: neither the bytes nor an address for them.");
+    const res = await this.fetchImpl(downloadUrl);
+    if (!res.ok) throw new Error(`The backup store did not serve the archive (HTTP ${res.status}).`);
+    return Buffer.from(await res.arrayBuffer());
   }
   // ---- the swap ----
   /**
@@ -37823,7 +38019,7 @@ __export(external_exports, {
   gte: () => _gte,
   guid: () => guid2,
   hash: () => hash,
-  hex: () => hex2,
+  hex: () => hex3,
   hostname: () => hostname2,
   httpUrl: () => httpUrl,
   includes: () => _includes,
@@ -38477,14 +38673,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str7 = "";
+  let str8 = "";
   for (let i = 0; i < length; i++) {
-    str7 += chars[Math.floor(Math.random() * chars.length)];
+    str8 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str7;
+  return str8;
 }
-function esc(str7) {
-  return JSON.stringify(str7);
+function esc(str8) {
+  return JSON.stringify(str8);
 }
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -38584,8 +38780,8 @@ var getParsedType = (data) => {
 };
 var propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
 var primitiveTypes = /* @__PURE__ */ new Set(["string", "number", "bigint", "boolean", "symbol", "undefined"]);
-function escapeRegex(str7) {
-  return str7.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str8) {
+  return str8.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -38946,8 +39142,8 @@ function base64urlToUint8Array(base64url3) {
 function uint8ArrayToBase64url(bytes) {
   return uint8ArrayToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
-function hexToUint8Array(hex3) {
-  const cleanHex = hex3.replace(/^0x/, "");
+function hexToUint8Array(hex4) {
+  const cleanHex = hex4.replace(/^0x/, "");
   if (cleanHex.length % 2 !== 0) {
     throw new Error("Invalid hex string length");
   }
@@ -39210,7 +39406,7 @@ __export(regexes_exports, {
   emoji: () => emoji,
   extendedDuration: () => extendedDuration,
   guid: () => guid,
-  hex: () => hex,
+  hex: () => hex2,
   hostname: () => hostname,
   html5Email: () => html5Email,
   idnEmail: () => idnEmail,
@@ -39323,7 +39519,7 @@ var _null = /^null$/i;
 var _undefined = /^undefined$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
-var hex = /^[0-9a-fA-F]*$/;
+var hex2 = /^[0-9a-fA-F]*$/;
 function fixedBase64(bodyLength, padding) {
   return new RegExp(`^[A-Za-z0-9+/]{${bodyLength}}${padding}$`);
 }
@@ -49657,7 +49853,7 @@ __export(schemas_exports2, {
   function: () => _function,
   guid: () => guid2,
   hash: () => hash,
-  hex: () => hex2,
+  hex: () => hex3,
   hostname: () => hostname2,
   httpUrl: () => httpUrl,
   instanceof: () => _instanceof,
@@ -50165,7 +50361,7 @@ function stringFormat(format, fnOrRegex, _params = {}) {
 function hostname2(_params) {
   return _stringFormat(ZodCustomStringFormat, "hostname", regexes_exports.hostname, _params);
 }
-function hex2(_params) {
+function hex3(_params) {
   return _stringFormat(ZodCustomStringFormat, "hex", regexes_exports.hex, _params);
 }
 function hash(alg, params) {
@@ -64296,8 +64492,8 @@ async function hashCanonical(value) {
   return toBase64url(new Uint8Array(digest));
 }
 var encoder22 = new TextEncoder();
-function fromBase64url(str7) {
-  return convertBase64ToUint8Array(str7);
+function fromBase64url(str8) {
+  return convertBase64ToUint8Array(str8);
 }
 async function importKey(secret) {
   const keyData = typeof secret === "string" ? encoder22.encode(secret) : secret;
@@ -96870,15 +97066,445 @@ async function requireAuth(req, res) {
   return true;
 }
 
+// src/recovery.ts
+import { createWriteStream, existsSync as existsSync11, mkdirSync as mkdirSync9, readdirSync as readdirSync2, rmSync as rmSync2, statSync as statSync3 } from "fs";
+import { createReadStream } from "fs";
+import { join as join6 } from "path";
+import { randomBytes as randomBytes3 } from "crypto";
+var RECOVERY_RATE_PER_MINUTE = 10;
+var RECOVERY_BAD_SIGNATURES = 5;
+var RECOVERY_LOCKOUT_MS = 15 * 6e4;
+var MAX_FIREWALL_ARCHIVE_BYTES = 32 * 1024 * 1024;
+var MAX_AGENT_ARCHIVE_BYTES = 6 * 1024 * 1024 * 1024;
+var STAGED_TTL_MS = 60 * 6e4;
+var RECOVERY_PATH_PREFIX = "/recovery/";
+function str7(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+var RecoveryRoutes = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? ((l) => console.log(l));
+  }
+  now;
+  log;
+  /** Timestamps of the VERIFIED requests in the last minute, oldest first. */
+  recent = [];
+  badSignatures = 0;
+  lockedUntil = 0;
+  /** Archives handed over for an agent restore, by one-time token. */
+  staged = /* @__PURE__ */ new Map();
+  /** True for anything this module owns, so the muxer can tell TLS-only paths from the rest. */
+  static owns(path) {
+    return path === "/recovery" || path.startsWith(RECOVERY_PATH_PREFIX);
+  }
+  // ---- the plain-HTTP half: handing a staged archive to an agent box ----
+  /**
+   * The one route that is NOT signed and NOT on TLS, because its client is an agent box rather than
+   * a person: `GET /recovery/staged/<token>`, over the private network, once.
+   *
+   * That is safe because of what it serves — sealed ciphertext whose data key is not in it, bound by
+   * the envelope to one org, one box, one backup and one archive — and because the token is 32
+   * random bytes, single use, and gone an hour later. The agent box has no way to reach the object
+   * store on this path (that is the whole point: nothing has to be reachable from the firewall), so
+   * the bytes the owner streamed in are staged here and streamed straight back out.
+   */
+  serveStaged(path, res) {
+    if (!path.startsWith(`${RECOVERY_PATH_PREFIX}staged/`)) return false;
+    const token = path.slice(`${RECOVERY_PATH_PREFIX}staged/`.length);
+    this.sweepStaged();
+    const entry = this.staged.get(token);
+    if (!entry || !existsSync11(entry.path)) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return true;
+    }
+    this.staged.delete(token);
+    res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(entry.bytes) });
+    const stream = createReadStream(entry.path);
+    stream.on("error", () => res.destroy());
+    stream.on("close", () => rmSync2(entry.path, { force: true }));
+    stream.pipe(res);
+    return true;
+  }
+  sweepStaged() {
+    const cutoff = this.now() - STAGED_TTL_MS;
+    for (const [token, entry] of this.staged) {
+      if (entry.at >= cutoff) continue;
+      this.staged.delete(token);
+      rmSync2(entry.path, { force: true });
+    }
+  }
+  // ---- the TLS half: the signed routes ----
+  async handle(req, res, path) {
+    const reply = (status, body2) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body2));
+    };
+    if (req.method !== "POST") return reply(405, { error: "Use POST." });
+    const keys = this.opts.recoveryKeys();
+    const signature = str7(req.headers["x-cc-recovery-signature"]);
+    const timestamp = Number(req.headers["x-cc-recovery-timestamp"] ?? NaN);
+    const locked = this.lockedUntil - this.now();
+    if (!signature || !Number.isFinite(timestamp)) {
+      this.countBad();
+      return reply(401, { error: "This request is not signed." });
+    }
+    const spill = path === `${RECOVERY_PATH_PREFIX}agent-restore`;
+    const spillPath = spill ? this.newSpillPath() : null;
+    let body;
+    try {
+      body = await this.read(req, spillPath);
+    } catch (error48) {
+      rmSync2(spillPath ?? "", { force: true });
+      return reply(400, { error: error48.message });
+    }
+    try {
+      const verdict = keys?.signingPublicKey ? await verifyRecoveryRequest(keys.signingPublicKey, signature, { method: "POST", path, timestamp, bodyDigest: body.digest }, this.now(), RECOVERY_REPLAY_WINDOW_MS) : { ok: false, reason: "bad_signature", message: "This firewall has not been given a recovery key to check signatures against." };
+      if (!verdict.ok) {
+        if (verdict.reason === "bad_signature") this.countBad();
+        if (locked > 0) return reply(429, { error: `Too many unsigned or badly signed requests. The recovery routes are closed to them for another ${Math.ceil(locked / 6e4)} minute(s).` });
+        return reply(401, { error: verdict.message });
+      }
+      this.badSignatures = 0;
+      this.lockedUntil = 0;
+      if (!this.allowRate()) return reply(429, { error: `The recovery routes take ${RECOVERY_RATE_PER_MINUTE} signed requests a minute. Wait a moment and try again.` });
+      if (path === `${RECOVERY_PATH_PREFIX}hello`) return reply(200, await this.hello(keys));
+      const eligible = this.opts.eligibility();
+      if (!eligible.ok) return reply(409, { error: eligible.reason });
+      if (path === `${RECOVERY_PATH_PREFIX}firewall-restore`) return reply(200, await this.firewallRestore(body));
+      if (path === `${RECOVERY_PATH_PREFIX}agent-restore`) return reply(200, await this.agentRestore(body));
+      return reply(404, { error: "Not found" });
+    } catch (error48) {
+      this.log(`[recovery] ${path} failed: ${error48.message}`);
+      return reply(400, { error: error48.message });
+    } finally {
+      if (body.tailPath && ![...this.staged.values()].some((s) => s.path === body.tailPath)) rmSync2(body.tailPath, { force: true });
+    }
+  }
+  allowRate() {
+    const cutoff = this.now() - 6e4;
+    this.recent = this.recent.filter((t) => t > cutoff);
+    if (this.recent.length >= RECOVERY_RATE_PER_MINUTE) return false;
+    this.recent.push(this.now());
+    return true;
+  }
+  countBad() {
+    this.badSignatures++;
+    if (this.badSignatures < RECOVERY_BAD_SIGNATURES) return;
+    this.lockedUntil = this.now() + RECOVERY_LOCKOUT_MS;
+    this.badSignatures = 0;
+    this.log(`[recovery] ${RECOVERY_BAD_SIGNATURES} unsigned or badly signed requests; the routes are closed to them for ${RECOVERY_LOCKOUT_MS / 6e4} minutes`);
+  }
+  /**
+   * Read the whole body, hashing it as it arrives so a 5 GB archive is never held. `spill` writes
+   * everything after the JSON head to a file; without it the tail stays in memory, which is what a
+   * firewall archive wants.
+   */
+  /**
+   * Where an agent archive lands while it streams in. Created here so a failed read can delete it.
+   *
+   * It also sweeps the directory, which is the backstop for the one case the `finally` in
+   * `agentRestore` cannot cover: this process being killed between staging an archive and the
+   * agent box fetching it. Everything else is retired the moment the restore returns, so the
+   * normal lifetime of a staged file is seconds, not the hour this allows.
+   */
+  newSpillPath() {
+    mkdirSync9(this.opts.staging.dir, { recursive: true, mode: 448 });
+    this.sweepStaged();
+    const cutoff = this.now() - STAGED_TTL_MS;
+    for (const name25 of readdirSync2(this.opts.staging.dir)) {
+      const path = join6(this.opts.staging.dir, name25);
+      try {
+        if (statSync3(path).mtimeMs < cutoff) rmSync2(path, { force: true });
+      } catch {
+      }
+    }
+    return join6(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes3(6).toString("hex")}`);
+  }
+  async read(req, spillPath) {
+    const hasher = await createRecoveryBodyHasher();
+    const max = spillPath ? MAX_AGENT_ARCHIVE_BYTES : MAX_FIREWALL_ARCHIVE_BYTES;
+    let framed = Buffer.alloc(0);
+    let head = null;
+    const tail = [];
+    let tailBytes = 0;
+    const tailPath = spillPath;
+    const sink = spillPath ? createWriteStream(spillPath, { mode: 384 }) : null;
+    let total = 0;
+    try {
+      for await (const chunk of req) {
+        const buf = chunk;
+        total += buf.length;
+        if (total > max) throw new Error("That archive is larger than this firewall will take.");
+        hasher.update(buf);
+        if (head === null) {
+          framed = framed.length === 0 ? buf : Buffer.concat([framed, buf]);
+          try {
+            const decoded = decodeRecoveryBody(framed);
+            head = decoded.head;
+            const rest = Buffer.from(decoded.tail);
+            if (rest.length > 0) {
+              if (sink) await write(sink, rest);
+              else tail.push(rest);
+              tailBytes += rest.length;
+            }
+          } catch (error48) {
+            if (/not a recovery request/.test(error48.message)) throw error48;
+            if (framed.length > 128 * 1024) throw error48;
+          }
+          continue;
+        }
+        if (sink) await write(sink, buf);
+        else tail.push(buf);
+        tailBytes += buf.length;
+      }
+    } finally {
+      if (sink) await new Promise((resolve2) => sink.end(resolve2));
+    }
+    if (head === null) throw new Error("This request's head never arrived in full.");
+    return { head, tail: sink ? null : Buffer.concat(tail), tailPath, tailBytes, digest: hasher.digest() };
+  }
+  // ---- the routes ----
+  /**
+   * What the CLI needs before it does anything: which box this is, what it holds, whether it will
+   * take a restore, and the fingerprints the owner compares with their firewall's serial console.
+   * Every value here is public by construction; the request is signed all the same, because a
+   * firewall should not tell a stranger which organisation it belongs to.
+   */
+  async hello(keys) {
+    const backup = this.opts.backupKey();
+    const eligible = this.opts.eligibility();
+    return {
+      ok: true,
+      orgId: this.opts.ids.orgId,
+      boxId: this.opts.ids.boxId,
+      backupPublicKey: backup?.publicKey ?? null,
+      backupFingerprint: backup?.fingerprint ?? null,
+      recoveryFingerprint: keys.fingerprint,
+      recoveryKeyFingerprint: keys.signingPublicKey ? await recoveryKeyFingerprint({ publicKey: keys.publicKey, signingPublicKey: keys.signingPublicKey }) : null,
+      certFingerprint: this.opts.certFingerprint(),
+      canRestore: eligible.ok,
+      reason: eligible.ok ? null : eligible.reason,
+      agents: this.opts.identities().map((i) => ({ name: i.name ?? i.vm_id, vmId: i.vm_id }))
+    };
+  }
+  /**
+   * Put this firewall back. The CLI has already unsealed the data key with the recovery key and
+   * re-sealed it to THIS box's backup key, so what arrives is a wrap only this box can open — the
+   * owner's recovery key never touches the network.
+   */
+  async firewallRestore(body) {
+    const service = this.opts.selfRestore;
+    if (!service) throw new Error("This firewall cannot put itself back.");
+    const head = body.head;
+    const backupId = str7(head.backupId);
+    const sourceBoxId = str7(head.sourceBoxId);
+    const header = str7(head.header);
+    const manifestHash2 = str7(head.manifestHash);
+    const sealed = str7(head.dataKeySealedToFirewall);
+    if (!backupId || !sourceBoxId || !header || !manifestHash2 || !sealed) throw new Error("This request does not name a backup to put back.");
+    const dataKey = await this.openDataKey(sealed);
+    const given = str7(head.archiveUrl);
+    const archive = given ? void 0 : this.requireInline(body.tail);
+    const r = await service.run({
+      backupId,
+      sourceBoxId,
+      ...archive ? { archive } : { downloadUrl: this.checkedUrl(given) },
+      header,
+      manifestHash: manifestHash2,
+      dataKey
+    });
+    this.log(`[recovery] this firewall was put back from ${backupId} (${r.entries} file(s), backup key ${r.fingerprint ?? "unknown"})`);
+    return { ok: true, entries: r.entries, takenAt: r.takenAt, fingerprint: r.fingerprint, quarantined: r.quarantined };
+  }
+  /**
+   * Restore one archive onto an agent box, through `POST /backup/restore` — the same route the
+   * console's restore uses, reached with the same signed token. Nothing about the restore itself is
+   * duplicated here; what is new is only who asked.
+   */
+  async agentRestore(body) {
+    const head = body.head;
+    const backupId = str7(head.backupId);
+    const kind = str7(head.kind);
+    const header = str7(head.header);
+    const manifestHash2 = str7(head.manifestHash);
+    const sealed = str7(head.dataKeySealedToFirewall);
+    const agentName = str7(head.agent);
+    if (!backupId || !header || !manifestHash2 || !sealed || !agentName) throw new Error("This request does not name a backup to restore.");
+    if (kind !== "workspace" && kind !== "state") throw new Error(`A ${kind ?? "missing"} archive is not something an agent can be restored from.`);
+    const target = this.resolveAgent(agentName);
+    const dataKey = await this.openDataKey(sealed);
+    const staged = this.stagedUrl(head, body.tailPath);
+    let r;
+    try {
+      r = await this.opts.agent.post(target, "/backup/restore", {
+        orgId: this.opts.ids.orgId,
+        // The box the archive was taken on and the box it is going onto have to be the same: the
+        // envelope binds every chunk to a vm id. A mismatch fails to decrypt on the agent, with the
+        // envelope's own sentence, which is a better answer than a guess made here.
+        vmId: target.vmId,
+        backupId,
+        kind,
+        dataKey,
+        header,
+        manifestHash: manifestHash2,
+        downloadUrl: staged.url
+      });
+    } finally {
+      this.dropStaged(staged.token);
+    }
+    this.log(`[recovery] restored ${kind} onto ${agentName}`);
+    return { ok: true, vmId: target.vmId, kind, entries: r.entries, restarted: r.restarted };
+  }
+  resolveAgent(name25) {
+    const wanted = name25.toLowerCase();
+    const match = this.opts.identities().find((i) => (i.name ?? "").toLowerCase() === wanted || i.vm_id === name25);
+    if (!match?.hostname) {
+      const known = this.opts.identities().map((i) => i.name ?? i.vm_id).join(", ");
+      throw new Error(`This firewall does not know an agent called ${name25}.${known ? ` It knows: ${known}.` : " It knows none yet."}`);
+    }
+    return { vmId: match.vm_id, hostname: match.hostname };
+  }
+  /** Open the data key with this box's own backup key. The CLI sealed it to exactly this key. */
+  async openDataKey(sealed) {
+    const backup = this.opts.backupKey();
+    if (!backup) throw new Error("This firewall has no backup key yet, so nothing can be sealed to it.");
+    try {
+      return await unwrapDataKey(sealed, backup.secretKey);
+    } catch {
+      throw new Error(`That key was not sealed to this firewall. Its backup key is ${backup.fingerprint}.`);
+    }
+  }
+  requireInline(tail) {
+    if (!tail || tail.length === 0) throw new Error("No archive arrived, and no address was given for one.");
+    return tail;
+  }
+  checkedUrl(given) {
+    let url2;
+    try {
+      url2 = new URL(given);
+    } catch {
+      throw new Error("That archive address is not a URL.");
+    }
+    if (url2.protocol !== "https:") throw new Error("An archive address has to be https.");
+    return given;
+  }
+  /**
+   * Where the AGENT box will read the archive from. Either the owner passed an address it can
+   * fetch, or they streamed the bytes — in which case they are already on this box's disk and it
+   * hands out a one-time address on its own private interface. The bytes never leave the pair of
+   * machines involved, and nothing about it depends on the object store being reachable.
+   */
+  stagedUrl(head, tailPath) {
+    const given = str7(head.archiveUrl);
+    if (given) return { url: this.checkedUrl(given), token: null };
+    if (!tailPath || !existsSync11(tailPath) || statSync3(tailPath).size === 0) throw new Error("No archive arrived, and no address was given for one.");
+    if (!this.opts.staging.baseUrl) {
+      throw new Error("This firewall has no private address to serve the archive from, so pass --archive-url with somewhere the agent box can fetch it.");
+    }
+    const token = randomBytes3(32).toString("hex");
+    this.staged.set(token, { path: tailPath, bytes: statSync3(tailPath).size, at: this.now() });
+    return { url: `${this.opts.staging.baseUrl}${RECOVERY_PATH_PREFIX}staged/${token}`, token };
+  }
+  /** Retire a staged archive and its file. Safe to call twice; `serveStaged` may have got there. */
+  dropStaged(token) {
+    if (!token) return;
+    const entry = this.staged.get(token);
+    this.staged.delete(token);
+    if (entry) rmSync2(entry.path, { force: true });
+  }
+};
+function write(sink, chunk) {
+  return new Promise((resolve2, reject) => {
+    sink.write(chunk, (error48) => error48 ? reject(error48) : resolve2());
+  });
+}
+
+// src/recovery-tls.ts
+import { execFileSync } from "child_process";
+import { createHash as createHash4 } from "crypto";
+import { chmodSync as chmodSync2, existsSync as existsSync12, mkdirSync as mkdirSync10, readFileSync as readFileSync14 } from "fs";
+import { createServer as createNetServer } from "net";
+import { createServer as createHttpsServer } from "https";
+import { join as join7 } from "path";
+var CERT_DAYS = 3650;
+function loadOrCreateRecoveryTls(dir, subject, log = console.log) {
+  const keyPath = join7(dir, "recovery_key.pem");
+  const certPath = join7(dir, "recovery_cert.pem");
+  try {
+    if (!existsSync12(keyPath) || !existsSync12(certPath)) {
+      mkdirSync10(dir, { recursive: true, mode: 448 });
+      execFileSync(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-keyout",
+          keyPath,
+          "-out",
+          certPath,
+          "-days",
+          String(CERT_DAYS),
+          "-subj",
+          `/CN=${subject}`
+        ],
+        { stdio: ["ignore", "ignore", "pipe"], timeout: 6e4 }
+      );
+      chmodSync2(keyPath, 384);
+      chmodSync2(certPath, 420);
+      log(`[recovery] generated this box's recovery certificate (${certPath})`);
+    }
+    const cert = readFileSync14(certPath, "utf8");
+    return { key: readFileSync14(keyPath, "utf8"), cert, fingerprint: certFingerprint(cert) };
+  } catch (error48) {
+    log(`[recovery] no recovery certificate on this box, so the recovery routes are off: ${error48.message}`);
+    return null;
+  }
+}
+function certFingerprint(certPem) {
+  const body = certPem.replace(/-----BEGIN CERTIFICATE-----/g, "").replace(/-----END CERTIFICATE-----/g, "").replace(/\s+/g, "");
+  const der = Buffer.from(body, "base64");
+  const hex4 = createHash4("sha256").update(der).digest("hex").toUpperCase();
+  return `sha256:${(hex4.match(/.{2}/g) ?? []).join(":")}`;
+}
+var TLS_HANDSHAKE = 22;
+var FIRST_BYTE_TIMEOUT_MS = 3e4;
+function muxTlsAndHttp(plain, tls) {
+  return createNetServer((socket) => {
+    const earlyError = () => socket.destroy();
+    socket.on("error", earlyError);
+    socket.setTimeout(FIRST_BYTE_TIMEOUT_MS, () => socket.destroy());
+    socket.once("data", (chunk) => {
+      socket.setTimeout(0);
+      socket.off("error", earlyError);
+      socket.pause();
+      socket.unshift(chunk);
+      (chunk[0] === TLS_HANDSHAKE ? tls : plain).emit("connection", socket);
+      process.nextTick(() => socket.resume());
+    });
+  });
+}
+function makeRecoveryTlsServer(tls, onRequest) {
+  const server = createHttpsServer({ key: tls.key, cert: tls.cert }, onRequest);
+  server.on("tlsClientError", () => void 0);
+  server.on("clientError", (_e, socket) => socket.destroy());
+  return server;
+}
+
 // src/ready.ts
-import { readFileSync as readFileSync15 } from "fs";
+import { readFileSync as readFileSync16 } from "fs";
 
 // src/software.ts
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7bda10d" : "unknown",
-  builtAt: true ? "2026-09-22T13:37:04+01:00" : "unknown"
+  commit: true ? "15b20dd" : "unknown",
+  builtAt: true ? "2026-09-22T18:07:17+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -96888,7 +97514,7 @@ function clip2(value) {
 function readRelease(path = RELEASE_PATH) {
   let raw;
   try {
-    raw = JSON.parse(readFileSync14(path, "utf8"));
+    raw = JSON.parse(readFileSync15(path, "utf8"));
   } catch {
     return null;
   }
@@ -96908,7 +97534,7 @@ function boxSoftware(releasePath = RELEASE_PATH) {
 var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 function readKeyFile(name25) {
   try {
-    return readFileSync15(`${KEYS_DIR}/${name25}`, "utf-8").trim();
+    return readFileSync16(`${KEYS_DIR}/${name25}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -96975,6 +97601,8 @@ var LLM_STORE_PATH = process.env.LLM_STORE_PATH ?? "/opt/controlclaw/state/llm.e
 var BACKUP_STORE_PATH = process.env.BACKUP_STORE_PATH ?? "/opt/controlclaw/state/backup.enc";
 var BACKUP_WORK_DIR = process.env.BACKUP_WORK_DIR ?? "/opt/controlclaw/state";
 var SELF_RESTORE_RESTART_DELAY_MS = 2e4;
+var RECOVERY_STAGING_DIR = process.env.RECOVERY_STAGING_DIR ?? "/opt/controlclaw/state/recovery";
+var RECOVERY_ROUTES = process.env.RECOVERY_ROUTES !== "0";
 var CA_PUBLISH_WAIT_MS = 1e4;
 var LLM_PLAIN_KEYS = process.env.LLM_PLAIN_KEYS === "1";
 var LLM_REFRESH_POLL_MS = parseInt(process.env.LLM_REFRESH_POLL_MS ?? "60000", 10);
@@ -97175,6 +97803,7 @@ async function main() {
       const b = backups.status();
       console.log(`[mitm-agent] backup store loaded (key ${b ? b.fingerprint : "not generated yet"}, recovery key ${b?.recovery ? b.recovery.fingerprint : "none"})`);
       if (b) console.log(`[mitm-agent] backup key fingerprint: ${b.fingerprint}`);
+      void backups.announceRecovery();
     } catch (err) {
       console.error(`[mitm-agent] backup store unreadable, backup commands disabled: ${err.message}`);
     }
@@ -97202,12 +97831,59 @@ async function main() {
     process.exit(0);
   }
   try {
-    setSaasPublicKey(readFileSync16(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+    setSaasPublicKey(readFileSync17(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
   } catch (err) {
     die(`failed to load SaaS public key: ${err.message}`);
   }
+  const recoveryTls = RECOVERY_ROUTES ? loadOrCreateRecoveryTls(KEYS_DIR2, `controlclaw-firewall-${BOX_ID}`) : null;
+  const recovery = recoveryTls && backups ? new RecoveryRoutes({
+    ids,
+    backupKey: () => backups.ownKeypair(),
+    recoveryKeys: () => backups.recoveryKeys(),
+    // The box's own answer to the console's `firewallRestoreView`: a restore is for a firewall
+    // that was rebuilt and has nothing on it yet, and this box knows what it holds without
+    // asking anybody. A store that would not load is a refusal, not an empty list.
+    eligibility: () => {
+      if (!channels) return { ok: false, reason: "This firewall cannot read its channel list right now, so it will not take a restore. Try again shortly." };
+      const bound = channels.summary().filter((c) => c.assignedVmId).length + (llm?.summary().agents ?? 0) + (connectors?.summary().agents ?? 0);
+      if (bound > 0) {
+        return {
+          ok: false,
+          reason: "This only works on a firewall nothing has been set up on yet. Putting one back replaces its keys, so the channels, models and integrations your agents use now would stop working. Take them off this firewall first."
+        };
+      }
+      return { ok: true };
+    },
+    selfRestore: new SelfRestore({
+      ids,
+      workDir: BACKUP_WORK_DIR,
+      stopProxy: () => {
+        execSync2("sudo systemctl stop controlclaw-mitmproxy", { timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
+      },
+      restart: () => {
+        console.log(`[recovery] this firewall was put back from its backup; restarting in ${SELF_RESTORE_RESTART_DELAY_MS / 1e3}s`);
+        setTimeout(() => process.exit(0), SELF_RESTORE_RESTART_DELAY_MS).unref();
+      }
+    }),
+    agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+    identities: () => identities,
+    staging: {
+      dir: RECOVERY_STAGING_DIR,
+      // The agent boxes reach this box on its private NIC, the same address the connector
+      // gate is bound to. Without one there is no address to hand out and the CLI is told to
+      // pass `--archive-url` instead.
+      baseUrl: CONNECTOR_GATE_BIND ? `http://${CONNECTOR_GATE_BIND}:${PORT}` : null
+    },
+    certFingerprint: () => recoveryTls.fingerprint
+  }) : null;
   const server = createServer3(async (req, res) => {
     const url2 = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+    if (recovery && req.method === "GET" && recovery.serveStaged(url2.pathname, res)) return;
+    if (RecoveryRoutes.owns(url2.pathname)) {
+      res.writeHead(426, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "The recovery routes are HTTPS only. Use https:// and pin this box's certificate." }));
+      return;
+    }
     if (!await requireAuth(req, res)) return;
     if (url2.pathname === "/health" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -97228,13 +97904,35 @@ async function main() {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Not found" }));
   });
-  server.listen(PORT, "0.0.0.0", () => {
+  const tlsServer = recoveryTls ? makeRecoveryTlsServer(recoveryTls, (req, res) => {
+    const url2 = new URL(req.url ?? "/", `https://localhost:${PORT}`);
+    if (!recovery || !RecoveryRoutes.owns(url2.pathname)) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+    void recovery.handle(req, res, url2.pathname).catch((error48) => {
+      console.error("[recovery]", error48.message);
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "That could not be done." }));
+      }
+    });
+  }) : null;
+  const listener = tlsServer ? muxTlsAndHttp(server, tlsServer) : server;
+  listener.listen(PORT, "0.0.0.0", () => {
     console.log(`[mitm-agent] listening on ${PORT} (org=${ORG_ID} box=${BOX_ID})`);
+    if (recoveryTls && recovery) {
+      console.log(`[mitm-agent] recovery routes on ${PORT} over TLS (${RECOVERY_PATH_PREFIX}*)`);
+      console.log(`[mitm-agent] recovery certificate fingerprint: ${recoveryTls.fingerprint}`);
+    } else {
+      console.log(`[mitm-agent] recovery routes off (${RECOVERY_ROUTES ? "no certificate on this box, or backups are not set up" : "RECOVERY_ROUTES=0"})`);
+    }
     setInterval(() => void runSync(boxKey).catch((e) => console.error("[mitm-agent] resync:", e.message)), SYNC_INTERVAL_MS);
     const publishCa = async () => {
       if (!CA_CERT_PATH || !CA_URL || !getToken) return;
       try {
-        const caCert = readFileSync16(CA_CERT_PATH, "utf8");
+        const caCert = readFileSync17(CA_CERT_PATH, "utf8");
         const caSig = signDetached(KEYS_DIR2, caCert);
         const res = await fetch(CA_URL, {
           method: "POST",
@@ -97317,13 +98015,14 @@ async function main() {
           if (selfUpdates?.supported()) features.push("self_update");
           if (backups) features.push("backups");
           const backupStatus = backups?.status() ?? null;
+          const recoveryRoutes = recoveryTls && recovery ? { enabled: true, port: PORT, certFingerprint: recoveryTls.fingerprint } : { enabled: false, port: PORT, certFingerprint: null };
           const inventory = firewallInventory(channels, llm);
           return {
             ...features.length ? { features } : {},
             ...inventory ? { inventory } : {},
             ...llm ? { included_ai: llm.includedCredentialId() } : {},
             ...selfUpdates ? { update: selfUpdates.status() } : {},
-            ...backupStatus ? { backup: backupStatus } : {},
+            ...backupStatus ? { backup: { ...backupStatus, recoveryRoutes } } : {},
             software: boxSoftware()
           };
         }

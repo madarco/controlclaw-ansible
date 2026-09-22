@@ -4,18 +4,20 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
-  "//exports": "The daemon is run, not imported. These subpaths exist so the control plane's e2e scripts can drive the real firewall modules against a real OpenConnector container instead of a mock (apps/saas/app/(integrations)/lib/connectors.e2e.test.ts).",
+  "//exports": "The daemon is run, not imported. These subpaths exist so the control plane's e2e scripts can drive the real firewall modules against a real OpenConnector container instead of a mock (apps/saas/app/(integrations)/lib/connectors.e2e.test.ts), and so packages/recover's tests can drive the REAL recovery routes rather than a stand-in for them.",
   "exports": {
     ".": "./dist/index.js",
     "./connectors": "./src/connectors.ts",
     "./connector-client": "./src/connector-client.ts",
-    "./connector-store": "./src/connector-store.ts"
+    "./connector-store": "./src/connector-store.ts",
+    "./recovery": "./src/recovery.ts",
+    "./recovery-tls": "./src/recovery-tls.ts"
   },
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "sync-once": "tsx src/index.ts",
-    "test": "tsx src/activity.test.ts && tsx src/firewall-control.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts && tsx src/connectors.test.ts && tsx src/update.test.ts && tsx src/firewall-update.test.ts && tsx src/ai/review.test.ts && tsx src/ai/judge.test.ts && tsx src/backup.test.ts && tsx src/self-restore.test.ts && tsx src/software.test.ts"
+    "test": "tsx src/activity.test.ts && tsx src/firewall-control.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts && tsx src/connectors.test.ts && tsx src/update.test.ts && tsx src/firewall-update.test.ts && tsx src/ai/review.test.ts && tsx src/ai/judge.test.ts && tsx src/backup.test.ts && tsx src/self-restore.test.ts && tsx src/software.test.ts && tsx src/recovery.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

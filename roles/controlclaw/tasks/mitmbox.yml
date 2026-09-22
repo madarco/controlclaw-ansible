@@ -390,6 +390,23 @@
     comment: 'ControlClaw mitm agent'
   when: not ci_test
 
+# Recovery over the network without the control plane (`npx @controlclaw/recover`,
+# apps/saas/docs/features/backups.md). The agent creates both of these itself; they are here so a
+# reader of this role can see them, and so a base image change cannot quietly remove openssl.
+- name: Recovery archive staging directory
+  ansible.builtin.file:
+    path: /opt/controlclaw/state/recovery
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "0700"
+
+- name: openssl is present for the recovery certificate
+  ansible.builtin.apt:
+    name: openssl
+    state: present
+  when: not ci_test
+
 - name: Install the app connector runtime (OpenConnector)
   ansible.builtin.include_tasks: connector.yml
   when: not ci_test
