@@ -27519,16 +27519,16 @@ var require_libsodium = __commonJS({
             if (endPtr - idx > 16 && heapOrArray.buffer && UTF8Decoder) {
               return UTF8Decoder.decode(heapOrArray.subarray(idx, endPtr));
             }
-            var str5 = "";
+            var str6 = "";
             while (idx < endPtr) {
               var u0 = heapOrArray[idx++];
               if (!(u0 & 128)) {
-                str5 += String.fromCharCode(u0);
+                str6 += String.fromCharCode(u0);
                 continue;
               }
               var u1 = heapOrArray[idx++] & 63;
               if ((u0 & 224) == 192) {
-                str5 += String.fromCharCode((u0 & 31) << 6 | u1);
+                str6 += String.fromCharCode((u0 & 31) << 6 | u1);
                 continue;
               }
               var u2 = heapOrArray[idx++] & 63;
@@ -27538,13 +27538,13 @@ var require_libsodium = __commonJS({
                 u0 = (u0 & 7) << 18 | u1 << 12 | u2 << 6 | heapOrArray[idx++] & 63;
               }
               if (u0 < 65536) {
-                str5 += String.fromCharCode(u0);
+                str6 += String.fromCharCode(u0);
               } else {
                 var ch = u0 - 65536;
-                str5 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
+                str6 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
               }
             }
-            return str5;
+            return str6;
           };
           var UTF8ToString = (ptr, maxBytesToRead, ignoreNul) => ptr ? UTF8ArrayToString(HEAPU8, ptr, maxBytesToRead, ignoreNul) : "";
           var ___assert_fail = (condition, filename, line, func) => abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : "unknown filename", line, func ? UTF8ToString(func) : "unknown function"]);
@@ -31021,8 +31021,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "95debd1" : "unknown",
-  builtAt: true ? "2026-09-22T21:11:07+01:00" : "unknown"
+  commit: true ? "e8712ab" : "unknown",
+  builtAt: true ? "2026-09-22T22:33:30+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -34535,6 +34535,153 @@ async function handleBackup(req, res, url2, service) {
   }
 }
 
+// src/tailscale.ts
+var UP_TIMEOUT_MS = 12e4;
+var CLI_TIMEOUT_MS3 = 2e4;
+var JOIN_SETTLE_TRIES = 10;
+var JOIN_SETTLE_DELAY_MS = 1500;
+var sleep5 = (ms) => new Promise((r) => setTimeout(r, ms));
+var HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
+function str5(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function trimDot(name) {
+  return name ? name.replace(/\.$/, "") : null;
+}
+function health(v) {
+  return Array.isArray(v) ? v.map(str5).find((l) => !!l) ?? null : str5(v);
+}
+function pickIp(ips) {
+  if (!Array.isArray(ips)) return null;
+  const v4 = ips.find((i) => typeof i === "string" && /^\d+\.\d+\.\d+\.\d+$/.test(i));
+  return typeof v4 === "string" ? v4 : str5(ips[0]) ?? null;
+}
+var TailscaleService = class {
+  constructor(opts = {}) {
+    this.opts = opts;
+    this.exec = opts.execImpl ?? defaultExec;
+    this.log = opts.log ?? ((line) => console.log(line));
+  }
+  exec;
+  log;
+  helper() {
+    return this.opts.helper ?? "/usr/local/bin/cc-tailscale";
+  }
+  /** Join the tailnet. Resolves with what the box became; the key is gone when this returns. */
+  async apply(input) {
+    if (!HOSTNAME_RE.test(input.hostname)) throw new Error("that hostname is not one a tailnet will accept");
+    try {
+      await this.exec("sudo", [this.helper(), "up", input.hostname, input.ssh ? "ssh1" : "ssh0"], UP_TIMEOUT_MS, `${input.authKey}
+`);
+    } catch (err) {
+      throw new Error(`Tailscale could not join the network: ${execFailureLine(err)}`);
+    }
+    let status = await this.status();
+    for (let i = 1; i < JOIN_SETTLE_TRIES && status.state !== "joined" && status.state !== "off"; i++) {
+      await sleep5(JOIN_SETTLE_DELAY_MS);
+      status = await this.status();
+    }
+    if (status.state !== "joined") {
+      throw new Error(status.message ?? "Tailscale accepted the key but the box has no address on the tailnet yet.");
+    }
+    this.log(`[tailscale] joined as ${status.name ?? status.ip ?? "an unnamed node"} (ssh ${input.ssh ? "on" : "off"})`);
+    return { ok: true, ssh: input.ssh, node: { name: status.name, ip: status.ip } };
+  }
+  /** Leave the tailnet. Needs no key, which is why the console can offer it unconditionally. */
+  async logout() {
+    try {
+      await this.exec("sudo", [this.helper(), "logout"], CLI_TIMEOUT_MS3);
+    } catch (err) {
+      throw new Error(`Tailscale could not leave the network: ${execFailureLine(err)}`);
+    }
+    this.log("[tailscale] left the tailnet");
+    return { ok: true };
+  }
+  /**
+   * What the box is on the tailnet right now. Never throws: a box without Tailscale installed, or
+   * with the daemon down, answers `unavailable` so the console can say so rather than showing an
+   * error where a status belongs.
+   */
+  async status() {
+    let raw;
+    try {
+      raw = (await this.exec("sudo", [this.helper(), "status"], CLI_TIMEOUT_MS3)).stdout;
+    } catch (err) {
+      return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message: execFailureLine(err) };
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message: "Tailscale did not report a status this box could read." };
+    }
+    const self2 = parsed.Self ?? {};
+    const backendState = str5(parsed.BackendState);
+    const name = trimDot(str5(self2.DNSName)) ?? str5(self2.HostName);
+    const ip = pickIp(self2.TailscaleIPs);
+    const ssh = Array.isArray(self2.sshHostKeys) && self2.sshHostKeys.length > 0;
+    if (backendState === "Running" && ip) return { state: "joined", name, ip, ssh, backendState, message: null };
+    if (backendState === "Starting" || backendState === "NoState") {
+      return { state: "starting", name, ip, ssh, backendState, message: "Tailscale is still starting on this box." };
+    }
+    return {
+      state: "off",
+      name: null,
+      ip: null,
+      ssh: false,
+      backendState,
+      message: backendState === "NeedsLogin" ? "This box is not signed in to a tailnet." : health(parsed.Health)
+    };
+  }
+};
+
+// src/routes/tailscale.ts
+var AUTH_KEY_RE = /^tskey-auth-[A-Za-z0-9]+-[A-Za-z0-9]+$/;
+function parseApply3(body) {
+  if (typeof body.authKey !== "string" || !AUTH_KEY_RE.test(body.authKey)) return "authKey must be a Tailscale auth key";
+  if (typeof body.hostname !== "string" || !body.hostname) return "hostname required";
+  return { authKey: body.authKey, ssh: body.ssh === true, hostname: body.hostname };
+}
+async function handleTailscale(req, res, url2, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "tailscale") : await verifyMitmRequest(req, "tailscale") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "network changes must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  try {
+    if (url2.pathname === "/tailscale/status" && req.method === "GET") {
+      sendJson(res, 200, await service.status());
+      return;
+    }
+    if (!write) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+    if (url2.pathname === "/tailscale/logout") {
+      sendJson(res, 200, await service.logout());
+      return;
+    }
+    if (url2.pathname === "/tailscale/apply") {
+      const body = await readJsonBody(req);
+      if (!body) {
+        sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
+        return;
+      }
+      const input = parseApply3(body);
+      if (typeof input === "string") {
+        sendJson(res, 400, { ok: false, error: input });
+        return;
+      }
+      sendJson(res, 200, await service.apply(input));
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -34611,6 +34758,7 @@ var channels = null;
 var llm = null;
 var connectors = null;
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
+var tailscale = new TailscaleService({});
 var backup = new BackupService({
   home: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw`,
   spoolDir: process.env.BACKUP_SPOOL_DIR ?? STATE_DIR,
@@ -34640,6 +34788,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/backup/")) {
     await handleBackup(req, res, url2, backup);
+    return;
+  }
+  if (url2.pathname.startsWith("/tailscale/")) {
+    await handleTailscale(req, res, url2, tailscale);
     return;
   }
   if (!await requireAuth(req, res)) return;

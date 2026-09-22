@@ -59,3 +59,26 @@
       - ""
       - "Get auth key from: https://login.tailscale.com/admin/settings/keys"
   when: tailscale_status.rc != 0
+
+# Owner access over the owner's own tailnet (controlclaw PR #85, apps/saas/docs/features/tailscale.md).
+# Both tasks run whatever `tailscale_enabled` says: that flag is about joining at provisioning; this
+# is about joining later, when the owner asks. The helper is the only privileged Tailscale surface
+# on the box: a fixed verb set, the auth key on stdin, never an argument.
+- name: Install the cc-tailscale root helper
+  ansible.builtin.copy:
+    src: cc-tailscale
+    dest: /usr/local/bin/cc-tailscale
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Allow the controlclaw user to run exactly that helper
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-tailscale
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+    content: |
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-tailscale
+

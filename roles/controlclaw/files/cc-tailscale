@@ -1,0 +1,52 @@
+#!/bin/sh
+# ControlClaw: the only privileged Tailscale surface on an agent box.
+#
+# Called by the vm-agent as `sudo /usr/local/bin/cc-tailscale <verb> [args]`. A fixed verb set with
+# no free-form arguments, so taking the vm-agent buys an attacker exactly these three things.
+#
+#   cc-tailscale up <hostname> ssh0|ssh1   the auth key on STDIN
+#   cc-tailscale logout
+#   cc-tailscale status
+#
+# The key is read from stdin and written to a 0600 file under /run for the length of
+# `tailscale up --auth-key=file:…`, then deleted. It is never an argument: `ps` on this box must
+# not show the owner's Tailscale key to the agent running on it.
+set -eu
+
+TAILSCALE=/usr/bin/tailscale
+
+case "${1:-}" in
+  up)
+    host="${2:-}"
+    ssh="${3:-ssh0}"
+    # Same check the vm-agent makes, made again here because this side is the privileged one.
+    printf '%s' "$host" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$' || {
+      echo "cc-tailscale: refusing hostname" >&2; exit 2; }
+    [ "$ssh" = "ssh0" ] || [ "$ssh" = "ssh1" ] || { echo "cc-tailscale: ssh0 or ssh1" >&2; exit 2; }
+    systemctl enable --now tailscaled >/dev/null 2>&1 || true
+    umask 077
+    key=$(mktemp /run/cc-tailscale-key.XXXXXXXX)
+    trap 'rm -f "$key"' EXIT INT TERM
+    cat > "$key"
+    [ -s "$key" ] || { echo "cc-tailscale: no auth key on stdin" >&2; exit 2; }
+    # --accept-dns=false: MagicDNS would replace the resolver that points at the org's proxy box,
+    #   which is how every connection this agent makes is inspected. A tailnet must not move it.
+    # --accept-routes=false: this box takes no subnet routes from the tailnet.
+    # --reset: a rejoin must not inherit flags from a previous `up` on this machine.
+    set -- up --auth-key="file:$key" --hostname="$host" --accept-dns=false --accept-routes=false --reset
+    [ "$ssh" = "ssh1" ] && set -- "$@" --ssh
+    "$TAILSCALE" "$@"
+    ;;
+  logout)
+    "$TAILSCALE" logout
+    "$TAILSCALE" down || true
+    ;;
+  status)
+    # Non-zero when the box is not up yet, and the JSON is still on stdout; the vm-agent reads it.
+    "$TAILSCALE" status --json || true
+    ;;
+  *)
+    echo "usage: cc-tailscale up <hostname> ssh0|ssh1 | logout | status" >&2
+    exit 2
+    ;;
+esac

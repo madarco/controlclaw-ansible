@@ -94,6 +94,25 @@ BACKUP_HOST = os.environ.get("MITM_BACKUP_HOST", "").strip().lower()
 # through without TLS termination; anything else needs a rule.
 PASSTHROUGH_HOSTS = tuple(h for h in (CONTROL_PLANE_HOST, BACKUP_HOST) if h)
 
+# Tailscale, for the agent boxes their owner has put on their own tailnet
+# (apps/saas/docs/features/tailscale.md). `tailscaled` reaches the coordination server
+# (`controlplane.tailscale.com`), the login service (`login.tailscale.com`) and the DERP relays
+# (`derpN.tailscale.com`) over TLS on 443, and none of it can be inspected: the payload is a Noise
+# session and, on DERP, WireGuard inside it. There is nothing here to read and no credential to
+# swap, so the connection is passed through the way the control plane's and the backup store's are.
+#
+# Two differences from those two, both deliberate:
+#   * it is NOT an env var. The hosts are Tailscale's own and there is nothing for a deployment to
+#     configure, so this cannot be pointed somewhere else without a change to this file;
+#   * it is PER BOX. A box only gets it once its owner has joined it, which the ORG FIREWALL
+#     records (not the control plane) and publishes in the identity map as `tailscale: true`. An
+#     agent whose owner never asked for this cannot reach tailscale.com at all.
+#
+# UDP is a separate matter and is not opened: the box's provider firewall allows outbound UDP only
+# to the firewall box, so direct WireGuard (41641) and STUN never leave and Tailscale falls back to
+# DERP over 443. See the doc for what that means for the owner.
+TAILSCALE_HOSTS = ("*.tailscale.com",)
+
 # Dev escape hatches. Every MITM_DEV_* flag is refused unless MITM_ALLOW_DEV_FLAGS=1, which only
 # the smoke-test compose files set; the production systemd unit pins them all to 0. This makes
 # "dev flags are off on secured boxes" a property of the proxy binary, not of a checklist.
@@ -228,6 +247,16 @@ def vm_id_for_ip(ip: str) -> str | None:
         if ent.get("private_ip") == ip:
             return ent.get("vm_id")
     return None
+
+
+def tailscale_allowed(vm_id: str | None) -> bool:
+    """True when the org firewall says THIS box is on its owner's tailnet (identity map flag)."""
+    if not vm_id:
+        return False
+    for ent in _identities.get():
+        if ent.get("vm_id") == vm_id:
+            return ent.get("tailscale") is True
+    return False
 
 
 def flow_vm_id(flow) -> str | None:
@@ -599,7 +628,8 @@ async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
 def tls_clienthello(data) -> None:
     """Pass a connection through untouched (no TLS interception), matched by SNI: a built-in host
     (the control plane, so the JWT channel is never MITM'd, and the backup object store, whose bodies
-    are already encrypted end to end) OR an opt-in `tunnel` rule (uninspected egress).
+    are already encrypted end to end), Tailscale for a box whose owner joined it to their tailnet,
+    OR an opt-in `tunnel` rule (uninspected egress).
 
     Keys off the TLS ClientHello SNI rather than the CONNECT authority, so it works for the explicit
     proxy (CONNECT-by-host) AND transparent redsocks (CONNECT-by-IP). Defensive: a raised exception
@@ -611,8 +641,11 @@ def tls_clienthello(data) -> None:
             return
         ctx = getattr(data, "context", None)
         _, port = _server_addr(ctx)
-        if any(host_matches(h, sni) for h in PASSTHROUGH_HOSTS) or tunnel_match(
-            sni, port, ctx_vm_id(ctx)
+        vm_id = ctx_vm_id(ctx)
+        if (
+            any(host_matches(h, sni) for h in PASSTHROUGH_HOSTS)
+            or (tailscale_allowed(vm_id) and any(host_matches(h, sni) for h in TAILSCALE_HOSTS))
+            or tunnel_match(sni, port, vm_id)
         ):
             data.ignore_connection = True
     except Exception as exc:  # noqa: BLE001 — never break interception over a match error
