@@ -31021,8 +31021,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "51c85f5" : "unknown",
-  builtAt: true ? "2026-09-22T08:43:11+01:00" : "unknown"
+  commit: true ? "d6d7b7f" : "unknown",
+  builtAt: true ? "2026-09-22T13:10:55+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31205,22 +31205,22 @@ function readFile2(path) {
   }
 }
 var sleep3 = (ms) => new Promise((r) => setTimeout(r, ms));
-async function ensureMitmCaInstalled(keysDir2) {
+async function ensureMitmCaInstalled(keysDir2, maxAttempts = 60) {
   const mitmIp = readFile2(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
-    return true;
+    return { trusted: true, installed: false, message: "This box is not behind a firewall proxy." };
   }
   const configUrl = readFile2(`${keysDir2}/config_api_url`);
   const vmId = readFile2(`${keysDir2}/vm_id`);
   const privateKey = readFile2(`${keysDir2}/vm_private_key.pem`);
   if (!configUrl || !vmId || !privateKey) {
     console.warn("[mitm-ca] missing config_api_url / vm_id / vm_private_key.pem \u2014 cannot install CA");
-    return false;
+    return { trusted: false, installed: false, message: "This box cannot ask for the firewall's certificate." };
   }
   const pinPath = `${keysDir2}/mitm_pinned_pubkey.pem`;
   const fprPath = `${keysDir2}/mitm_ca_fingerprint`;
   const caSrcPath = `${keysDir2}/mitm-ca.crt`;
-  const maxAttempts = 60;
+  let last = "The firewall has not published a certificate yet.";
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const token = await signBoxToken(vmId, privateKey);
@@ -31237,29 +31237,33 @@ async function ensureMitmCaInstalled(keysDir2) {
           }
           if (!pin) {
             console.warn(`[mitm-ca] attempt ${attempt}: CA present but no pin available yet`);
+            last = "This box has no pinned firewall key yet.";
           } else if (!verifyDetached(mitm.caCert, mitm.caSig, pin)) {
             console.error(`[mitm-ca] attempt ${attempt}: CA signature does NOT match pinned key \u2014 refusing`);
+            last = "The certificate on offer is not signed by this box's pinned firewall key, so it was refused.";
           } else {
             const fpr = sha256Hex(mitm.caCert);
-            if (readFile2(fprPath) === fpr) return true;
+            if (readFile2(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
             installCa(caSrcPath, mitm.caCert);
             writeFileSync3(fprPath, fpr, { mode: 420 });
             console.log(`[mitm-ca] installed mitm CA (sha256=${fpr.slice(0, 16)}\u2026)`);
-            return true;
+            return { trusted: true, installed: true, message: `Installed the firewall's certificate (sha256=${fpr.slice(0, 16)}\u2026).` };
           }
         } else {
           console.log(`[mitm-ca] attempt ${attempt}/${maxAttempts}: mitm CA not published yet`);
         }
       } else {
         console.warn(`[mitm-ca] attempt ${attempt}/${maxAttempts}: config HTTP ${res.status}`);
+        last = `The control plane answered HTTP ${res.status}.`;
       }
     } catch (err) {
       console.warn(`[mitm-ca] attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
+      last = err.message;
     }
-    await sleep3(Math.min(3e3 * attempt, 15e3));
+    if (attempt < maxAttempts) await sleep3(Math.min(3e3 * attempt, 15e3));
   }
   console.error("[mitm-ca] gave up waiting for a trusted mitm CA");
-  return false;
+  return { trusted: false, installed: false, message: last };
 }
 function installCa(caSrcPath, caCert) {
   writeFileSync3(caSrcPath, caCert, { mode: 420 });
@@ -34554,7 +34558,7 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client) {
   ensureVmKeypair(KEYS_DIR2);
   await registerPublicKey(KEYS_DIR2);
-  const caReady = await ensureMitmCaInstalled(KEYS_DIR2);
+  const caReady = (await ensureMitmCaInstalled(KEYS_DIR2)).trusted;
   if (!caReady) {
     console.error("[bootstrap] mitm CA not installed \u2014 skipping ready report (box stays initializing)");
     return;
@@ -34646,6 +34650,12 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname === "/status" && req.method === "GET") {
     handleStatus(res);
+    return;
+  }
+  if (url2.pathname === "/mitm-ca/refresh" && req.method === "POST") {
+    const r = await ensureMitmCaInstalled(KEYS_DIR2, 1);
+    res.writeHead(r.trusted ? 200 : 503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: r.trusted, installed: r.installed, message: r.message }));
     return;
   }
   if (url2.pathname === "/logs" && req.method === "GET") {
