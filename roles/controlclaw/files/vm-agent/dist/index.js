@@ -30509,7 +30509,7 @@ var require_libsodium_wrappers = __commonJS({
 
 // src/index.ts
 import { createServer as createServer2 } from "http";
-import { readFileSync as readFileSync13 } from "fs";
+import { readFileSync as readFileSync14 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -31021,8 +31021,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e8712ab" : "unknown",
-  builtAt: true ? "2026-09-22T22:33:30+01:00" : "unknown"
+  commit: true ? "d2da34e" : "unknown",
+  builtAt: true ? "2026-09-22T23:13:45+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31708,13 +31708,13 @@ function parseLines(url2) {
 async function handleLogs(url2, res) {
   const lines = parseLines(url2);
   const fromFile = readFileTail(lines);
-  const [gateway, journal, service] = await Promise.all([
+  const [gateway, journal2, service] = await Promise.all([
     fromFile ? Promise.resolve({ lines: fromFile.lines, warning: null }) : readCliSnapshot(lines),
     readJournal(),
     readServiceState()
   ]);
   const ts = (l) => Date.parse(l.time) || 0;
-  const merged = [...gateway.lines, ...journal].sort((a, b) => ts(a) - ts(b)).slice(-lines);
+  const merged = [...gateway.lines, ...journal2].sort((a, b) => ts(a) - ts(b)).slice(-lines);
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify({ service, lines: merged, ...gateway.warning ? { warning: gateway.warning } : {} }));
 }
@@ -34535,6 +34535,260 @@ async function handleBackup(req, res, url2, service) {
   }
 }
 
+// src/ssh.ts
+import { createHash as createHash2 } from "crypto";
+import { mkdirSync as mkdirSync4, mkdtempSync, readFileSync as readFileSync13, rmSync, writeFileSync as writeFileSync6 } from "fs";
+import { tmpdir as tmpdir2 } from "os";
+import { dirname as dirname5, join as join6 } from "path";
+var MIN_SECONDS = 5 * 60;
+var MAX_SECONDS = 72 * 60 * 60;
+var KEYGEN_TIMEOUT_MS = 2e4;
+var SUDO_TIMEOUT_MS = 3e4;
+function fingerprintOf(publicKey) {
+  const blob = publicKey.trim().split(/\s+/)[1] ?? "";
+  const digest = createHash2("sha256").update(Buffer.from(blob, "base64")).digest("base64");
+  return `SHA256:${digest.replace(/=+$/, "")}`;
+}
+var MARK = "controlclaw-rescue";
+function markerFor(grantId) {
+  return `${MARK}-${grantId}`;
+}
+function stripManagedKeys(content) {
+  const kept = content.split("\n").filter((line) => !line.includes(MARK)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
+  return kept.trim() ? `${kept.replace(/\s+$/, "")}
+` : "";
+}
+var SshAccessService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.user = opts.user ?? "controlclaw";
+    this.exec = opts.exec ?? defaultExec;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  user;
+  exec;
+  log;
+  now;
+  status() {
+    const state = this.readState();
+    if (!state) return { open: false, user: this.user, grantId: null, fingerprint: null, endsAt: null };
+    const open = Date.parse(state.endsAt) > this.now();
+    return { open, user: this.user, grantId: state.grantId, fingerprint: state.fingerprint, endsAt: state.endsAt };
+  }
+  /**
+   * Mint a key, install its public half, open the port and arm the timer. The private half is in
+   * the reply and nowhere else.
+   *
+   * **Not idempotent, and it cannot be.** A second `open` for the same grant mints a second key
+   * and replaces the first, which silently invalidates the key the control plane already sealed.
+   * There is nothing better available: this box keeps no private key, so a repeat cannot be
+   * answered from the state file either. What stops it is upstream — `ConsentCodes.verify` drops
+   * the proposal on the first success, so the firewall has nothing left to send a second time.
+   */
+  async open(input) {
+    const seconds = Math.round(input.seconds);
+    if (!Number.isFinite(seconds) || seconds < MIN_SECONDS || seconds > MAX_SECONDS) {
+      throw new Error(`a shell access window must be between ${MIN_SECONDS} and ${MAX_SECONDS} seconds`);
+    }
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(input.grantId)) throw new Error("malformed grant id");
+    const { publicKey, privateKey } = await this.mint(input.grantId);
+    const endsAt = new Date(this.now() + seconds * 1e3).toISOString();
+    this.install(publicKey, input.grantId, endsAt);
+    await this.exec("sudo", ["/usr/local/bin/cc-ssh-open", String(seconds)], SUDO_TIMEOUT_MS);
+    const fingerprint2 = fingerprintOf(publicKey);
+    this.writeState({ grantId: input.grantId, fingerprint: fingerprint2, endsAt, openedAt: new Date(this.now()).toISOString() });
+    this.log(`[ssh] opened for ${this.user} until ${endsAt} (${fingerprint2})`);
+    return { user: this.user, fingerprint: fingerprint2, publicKey, privateKey, endsAt, sudo: this.opts.sudo };
+  }
+  /**
+   * Take the key out and shut the port. Safe to call when nothing is open — the console offers
+   * "Close now" whatever the box thinks, and a close that finds nothing should still succeed.
+   */
+  async close() {
+    const was = this.readState();
+    this.install(null, null, null);
+    try {
+      await this.exec("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
+    } catch (err) {
+      this.log(`[ssh] cc-ssh-close failed, the key is removed anyway: ${err.message}`);
+    }
+    rmSync(this.opts.statePath, { force: true });
+    if (was) this.log(`[ssh] closed for ${this.user} (was ${was.fingerprint})`);
+    return { user: this.user, closed: !!was };
+  }
+  // ---- internals ----
+  async mint(grantId) {
+    const dir = mkdtempSync(join6(this.opts.workDir ?? tmpdir2(), "cc-ssh-"));
+    const path = join6(dir, "key");
+    try {
+      await this.exec(
+        "ssh-keygen",
+        ["-q", "-t", "ed25519", "-N", "", "-C", markerFor(grantId), "-f", path],
+        KEYGEN_TIMEOUT_MS
+      );
+      return {
+        publicKey: readFileSync13(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync13(path, "utf8")
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  /** Replace whatever we manage in `authorized_keys` with this key, or with nothing. */
+  install(publicKey, grantId, endsAt) {
+    const path = this.opts.authorizedKeysPath;
+    let current = "";
+    try {
+      current = readFileSync13(path, "utf8");
+    } catch {
+      current = "";
+    }
+    let next = stripManagedKeys(current);
+    if (publicKey) next += `# ${markerFor(grantId)} until ${endsAt}
+${publicKey}
+`;
+    mkdirSync4(dirname5(path), { recursive: true, mode: 448 });
+    writeFileSync6(path, next, { mode: 384 });
+  }
+  readState() {
+    try {
+      const parsed = JSON.parse(readFileSync13(this.opts.statePath, "utf8"));
+      if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
+      return {
+        grantId: parsed.grantId,
+        fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : "",
+        endsAt: parsed.endsAt,
+        openedAt: typeof parsed.openedAt === "string" ? parsed.openedAt : parsed.endsAt
+      };
+    } catch {
+      return null;
+    }
+  }
+  writeState(state) {
+    mkdirSync4(dirname5(this.opts.statePath), { recursive: true });
+    writeFileSync6(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+  }
+};
+
+// src/routes/ssh.ts
+async function handleSsh(req, res, pathname, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "ssh") : await verifyMitmRequest(req, "ssh") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "shell access must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  if (!service) {
+    sendJson(res, 503, { ok: false, error: "This box cannot open a shell session" });
+    return;
+  }
+  try {
+    if (pathname === "/ssh/status" && req.method === "GET") {
+      sendJson(res, 200, { ok: true, ...service.status() });
+      return;
+    }
+    if (pathname === "/ssh/open" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      if (!body || typeof body.grantId !== "string" || typeof body.seconds !== "number") {
+        sendJson(res, 400, { ok: false, error: "grantId and seconds required" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, ...await service.open({ grantId: body.grantId, seconds: body.seconds }) });
+      return;
+    }
+    if (pathname === "/ssh/close" && req.method === "POST") {
+      sendJson(res, 200, { ok: true, ...await service.close() });
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+// src/ssh-logins.ts
+import { createHash as createHash3 } from "crypto";
+import { execFile as execFile4 } from "child_process";
+var POLL_TIMEOUT_MS = 15e3;
+var MAX_PER_TICK = 50;
+var MAX_BUFFERED = 500;
+function parseSshdLine(line) {
+  const m = /Accepted publickey for (\S+) from (\S+) port \d+ ssh2:\s+\S+\s+(SHA256:\S+)/.exec(line);
+  if (!m) return null;
+  const stamp = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z)?)/.exec(line);
+  const at = stamp ? Date.parse(stamp[1].replace(/([+-]\d{2})(\d{2})$/, "$1:$2")) : NaN;
+  return { user: m[1], fromIp: m[2], fingerprint: m[3], at: Number.isFinite(at) ? at : null };
+}
+function journal(cursorPath) {
+  return new Promise((resolve) => {
+    execFile4(
+      "journalctl",
+      ["-u", "ssh", "-u", "sshd", "--no-pager", "-q", "-o", "short-iso", `--cursor-file=${cursorPath}`],
+      { timeout: POLL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err && !stdout) return resolve([]);
+        resolve(String(stdout ?? "").split("\n").filter(Boolean));
+      }
+    );
+  });
+}
+var SshLoginWatcher = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.readJournal = opts.readJournal ?? (() => journal(opts.cursorPath));
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  readJournal;
+  fetchImpl;
+  log;
+  now;
+  /**
+   * Records read but not yet accepted. `journalctl --cursor-file` moves the cursor when it READS,
+   * so a failed POST would otherwise lose those logins for good — a hole in the one audit trail
+   * this feature exists to produce.
+   */
+  pending = [];
+  /** One pass. Returns how many sessions it reported, for the tests. */
+  async tick() {
+    const lines = await this.readJournal();
+    const tickTs = Math.round(this.now() / 1e3);
+    for (const line of lines) {
+      const parsed = parseSshdLine(line);
+      if (!parsed) continue;
+      this.pending.push({
+        source: "ssh_login",
+        // The line itself is the identity of the session: same second, same port, same key means
+        // the same login. The journal cursor already stops the common repeat; this stops the rest.
+        login_id: createHash3("sha256").update(line).digest("hex").slice(0, 32),
+        // The journal's own stamp, so a backlog shipped after a restart does not land as "now"
+        // and sort wrongly against the grant it belongs to.
+        ts: parsed.at !== null ? Math.round(parsed.at / 1e3) : tickTs,
+        user: parsed.user,
+        fingerprint: parsed.fingerprint,
+        from_ip: parsed.fromIp
+      });
+    }
+    if (this.pending.length > MAX_BUFFERED) this.pending = this.pending.slice(-MAX_BUFFERED);
+    if (this.pending.length === 0) return 0;
+    const records = this.pending.slice(0, MAX_PER_TICK);
+    const res = await this.fetchImpl(this.opts.activityUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
+      body: JSON.stringify({ records })
+    });
+    if (!res.ok) {
+      this.log(`[ssh] could not report ${records.length} login(s): HTTP ${res.status}; keeping them for the next pass`);
+      return 0;
+    }
+    this.pending = this.pending.slice(records.length);
+    this.log(`[ssh] reported ${records.length} login(s)`);
+    return records.length;
+  }
+};
+
 // src/tailscale.ts
 var UP_TIMEOUT_MS = 12e4;
 var CLI_TIMEOUT_MS3 = 2e4;
@@ -34619,10 +34873,10 @@ var TailscaleService = class {
     const backendState = str5(parsed.BackendState);
     const name = trimDot(str5(self2.DNSName)) ?? str5(self2.HostName);
     const ip = pickIp(self2.TailscaleIPs);
-    const ssh = Array.isArray(self2.sshHostKeys) && self2.sshHostKeys.length > 0;
-    if (backendState === "Running" && ip) return { state: "joined", name, ip, ssh, backendState, message: null };
+    const ssh2 = Array.isArray(self2.sshHostKeys) && self2.sshHostKeys.length > 0;
+    if (backendState === "Running" && ip) return { state: "joined", name, ip, ssh: ssh2, backendState, message: null };
     if (backendState === "Starting" || backendState === "NoState") {
-      return { state: "starting", name, ip, ssh, backendState, message: "Tailscale is still starting on this box." };
+      return { state: "starting", name, ip, ssh: ssh2, backendState, message: "Tailscale is still starting on this box." };
     }
     return {
       state: "off",
@@ -34692,8 +34946,9 @@ var GATEWAY_READY_TIMEOUT_MS2 = parseInt(process.env.GATEWAY_READY_TIMEOUT_MS ??
 var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
+var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 try {
-  const saasPublicKey2 = readFileSync13(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync14(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -34701,7 +34956,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync13(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync14(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -34731,6 +34986,19 @@ async function bootstrap(client) {
   }
   await reportReady();
 }
+function startSshLoginWatch() {
+  const base = saasBaseUrl(KEYS_DIR2);
+  if (!base) {
+    console.log("[ssh] no config_api_url in KEYS_DIR: login reporting off");
+    return;
+  }
+  const watcher = new SshLoginWatcher({
+    activityUrl: `${base}/api/vm-agent/activity`,
+    getToken: makeBoxTokenSigner(KEYS_DIR2),
+    cursorPath: `${STATE_DIR}/ssh-logins.cursor`
+  });
+  setInterval(() => void watcher.tick().catch((err) => console.error(`[ssh] login watch failed: ${err.message}`)), SSH_LOGIN_POLL_MS);
+}
 function startGatewayBridge() {
   const token = readKeyFile(KEYS_DIR2, "openclaw_gateway_token");
   const base = saasBaseUrl(KEYS_DIR2);
@@ -34758,6 +35026,11 @@ var channels = null;
 var llm = null;
 var connectors = null;
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
+var ssh = new SshAccessService({
+  authorizedKeysPath: `${process.env.HOME ?? "/home/controlclaw"}/.ssh/authorized_keys`,
+  statePath: `${STATE_DIR}/ssh.json`,
+  sudo: true
+});
 var tailscale = new TailscaleService({});
 var backup = new BackupService({
   home: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw`,
@@ -34788,6 +35061,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/backup/")) {
     await handleBackup(req, res, url2, backup);
+    return;
+  }
+  if (url2.pathname.startsWith("/ssh/")) {
+    await handleSsh(req, res, url2.pathname, ssh);
     return;
   }
   if (url2.pathname.startsWith("/tailscale/")) {
@@ -34835,6 +35112,7 @@ var server = createServer2(async (req, res) => {
 server.listen(PORT, BIND, () => {
   console.log(`ControlClaw agent listening on ${BIND}:${PORT}`);
   const client = startGatewayBridge();
+  startSshLoginWatch();
   void bootstrap(client).catch((err) => console.error("[bootstrap] failed:", err));
   channels = new ChannelsService({
     client,

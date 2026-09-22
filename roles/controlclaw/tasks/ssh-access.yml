@@ -1,0 +1,110 @@
+---
+# Rescue shell access (apps/saas/docs/features/shell-access.md).
+#
+# Two root scripts and one sudoers line. Neither script ever sees key material: the agent writes
+# the key into its OWN ~/.ssh/authorized_keys as the user that owns the file, and asks root only
+# for the port and the timer. cc-ssh-open takes a number of seconds and nothing else.
+
+- name: Rescue shell access | the open script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-ssh-open
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      # cc-ssh-open <seconds> — open 22 and arm the timer that closes it again.
+      set -euo pipefail
+      SECONDS_ARG="${1:-}"
+      [[ "$SECONDS_ARG" =~ ^[0-9]+$ ]] || { echo "usage: cc-ssh-open <seconds>" >&2; exit 2; }
+      # Bounded here as well as in the agent: root must not take an unbounded window from a
+      # process that has been taken over.
+      if [ "$SECONDS_ARG" -lt 300 ] || [ "$SECONDS_ARG" -gt 259200 ]; then
+        echo "cc-ssh-open: window must be between 300 and 259200 seconds" >&2
+        exit 2
+      fi
+      ufw allow 22/tcp >/dev/null
+      cat > /etc/systemd/system/cc-ssh-close.service <<'UNIT'
+      [Unit]
+      Description=Close ControlClaw rescue shell access
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cc-ssh-close
+      UNIT
+      cat > /etc/systemd/system/cc-ssh-close.timer <<UNIT
+      [Unit]
+      Description=Close ControlClaw rescue shell access when the window ends
+      [Timer]
+      OnActiveSec=${SECONDS_ARG}
+      AccuracySec=30s
+      Unit=cc-ssh-close.service
+      UNIT
+      systemctl daemon-reload
+      # Restarted, not started: a second grant must reset the clock rather than inherit the first
+      # one's deadline.
+      systemctl restart cc-ssh-close.timer
+      echo "cc-ssh-open: 22 open, closing in ${SECONDS_ARG}s"
+
+- name: Rescue shell access | the close script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-ssh-close
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      # cc-ssh-close — remove every ControlClaw-managed key and shut the port. No arguments.
+      # Safe to run when nothing is open; the timer runs it unattended.
+      set -uo pipefail
+      KEYS="/home/{{ controlclaw_user | default('controlclaw') }}/.ssh/authorized_keys"
+      if [ -f "$KEYS" ]; then
+        # The same marker packages/vm-agent/src/ssh.ts writes. Anything without it is the
+        # customer's own key and is left alone.
+        tmp=$(mktemp)
+        grep -v 'controlclaw-rescue' "$KEYS" > "$tmp" || true
+        install -o {{ controlclaw_user | default('controlclaw') }} \
+                -g {{ controlclaw_user | default('controlclaw') }} -m 0600 "$tmp" "$KEYS"
+        rm -f "$tmp"
+      fi
+      ufw delete allow 22/tcp >/dev/null 2>&1 || true
+      systemctl stop cc-ssh-close.timer >/dev/null 2>&1 || true
+      rm -f /opt/controlclaw/state/ssh.json
+      echo "cc-ssh-close: keys removed, 22 closed"
+
+- name: Rescue shell access | sudoers for the two scripts
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-ssh
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -csf %s
+    content: |
+      # Rescue shell access. The agent asks root for the port and the timer, never for anything
+      # that touches key material.
+      {{ controlclaw_user | default('controlclaw') }} ALL=(root) NOPASSWD: /usr/local/bin/cc-ssh-open, /usr/local/bin/cc-ssh-close
+
+- name: Rescue shell access | the boot unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-ssh-close-at-boot.service
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Close any ControlClaw rescue shell access left over from before a reboot
+      After=network.target
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cc-ssh-close
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd
+
+- name: Rescue shell access | shut the door on every boot
+  # A box that was rebooted mid-grant comes back with its key still in authorized_keys and no
+  # timer (timers do not survive a reboot). Closing at boot is the fail-safe: the customer's
+  # window is not extended by a restart.
+  ansible.builtin.systemd:
+    name: cc-ssh-close-at-boot
+    enabled: true
+    daemon_reload: true

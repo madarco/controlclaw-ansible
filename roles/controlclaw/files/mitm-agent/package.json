@@ -17,7 +17,7 @@
     "build": "tsup",
     "dev": "tsx src/index.ts",
     "sync-once": "tsx src/index.ts",
-    "test": "tsx src/activity.test.ts && tsx src/firewall-control.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts && tsx src/tailscale.test.ts && tsx src/connectors.test.ts && tsx src/update.test.ts && tsx src/firewall-update.test.ts && tsx src/ai/review.test.ts && tsx src/ai/judge.test.ts && tsx src/backup.test.ts && tsx src/self-restore.test.ts && tsx src/software.test.ts && tsx src/recovery.test.ts"
+    "test": "tsx src/activity.test.ts && tsx src/firewall-control.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts && tsx src/tailscale.test.ts && tsx src/connectors.test.ts && tsx src/ssh.test.ts && tsx src/update.test.ts && tsx src/firewall-update.test.ts && tsx src/ai/review.test.ts && tsx src/ai/judge.test.ts && tsx src/backup.test.ts && tsx src/self-restore.test.ts && tsx src/software.test.ts && tsx src/recovery.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

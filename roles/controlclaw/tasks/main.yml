@@ -111,6 +111,12 @@
   ansible.builtin.include_tasks: self-update.yml
   when: box_role in ['openclaw', 'mitm']
 
+# Rescue shell access on request (controlclaw PR #86, apps/saas/docs/features/shell-access.md):
+# two root scripts, one sudoers line, a close-at-boot unit. Nothing opens until an owner grants it.
+- name: Include rescue shell access tasks
+  ansible.builtin.include_tasks: ssh-access.yml
+  when: not ci_test and box_role in ['openclaw', 'mitm']
+
 # Last step of an agent box: starting the agent confines the box and reports ready, so every task
 # that needs the open internet (npm above all) must already be done. See vm-agent-start.yml.
 - name: Start the VM agent (confines the box and reports ready)
