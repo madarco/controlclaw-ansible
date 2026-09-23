@@ -31022,8 +31022,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "a987cea" : "unknown",
-  builtAt: true ? "2026-09-22T23:17:35+01:00" : "unknown"
+  commit: true ? "1f7276d" : "unknown",
+  builtAt: true ? "2026-09-23T06:29:24+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31046,11 +31046,11 @@ function readJson(path) {
 function readRelease(path = RELEASE_PATH) {
   const raw = readJson(path);
   if (!raw) return null;
-  const commit = clip(raw.commit);
+  const commit2 = clip(raw.commit);
   const commitDate = clip(raw.commitDate);
   const installedAt = clip(raw.installedAt);
-  if (!commit || !commitDate || !installedAt) return null;
-  return { commit, commitDate, installedAt };
+  if (!commit2 || !commitDate || !installedAt) return null;
+  return { commit: commit2, commitDate, installedAt };
 }
 function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BIN) {
   for (const path of candidates) {
@@ -34538,7 +34538,7 @@ async function handleBackup(req, res, url2, service) {
 
 // src/routes/files.ts
 import { createReadStream as createReadStream2 } from "fs";
-import { lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
+import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID2 } from "crypto";
 import { basename, dirname as dirname5, join as join6, resolve, sep } from "path";
 import { Transform } from "stream";
@@ -34683,6 +34683,21 @@ function normalizeRelative(input) {
 function isInside(root, candidate) {
   return candidate === root || candidate.startsWith(root.endsWith(sep) ? root : root + sep);
 }
+async function realpathLenient(path) {
+  const missing = [];
+  let cursor = resolve(path);
+  for (; ; ) {
+    try {
+      const real = await realpath(cursor);
+      return missing.length ? join6(real, ...missing.reverse()) : real;
+    } catch {
+      const parent = dirname5(cursor);
+      if (parent === cursor) return resolve(path);
+      missing.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
 var FilesService = class {
   constructor(opts) {
     this.opts = opts;
@@ -34715,15 +34730,18 @@ var FilesService = class {
     return this.rootReal;
   }
   /**
-   * The deny list, each entry as a real path when it exists. `assertAllowed` is handed real paths,
-   * so an entry under a symlinked directory (macOS's /var → /private/var, or a /home that is a
-   * link) would otherwise never match and the credentials it names would be browsable.
+   * The deny list, each entry as a real path. `assertAllowed` is handed real paths, so an entry
+   * under a symlinked directory (macOS's /var → /private/var, or a /home that is a link) would
+   * otherwise never match and the credentials it names would be browsable.
+   *
+   * An entry that does not exist yet (`~/.ssh` on a fresh box) is resolved through its nearest
+   * existing ancestor. Falling back to the unresolved path, and caching that, meant the first
+   * request to the box decided for good whether that entry could ever match: it could not, and a
+   * later write into it was allowed.
    */
   deniedReal = null;
   async deniedList() {
-    if (!this.deniedReal) {
-      this.deniedReal = await Promise.all(this.denied.map((d) => realpath(d).catch(() => d)));
-    }
+    this.deniedReal ??= await Promise.all(this.denied.map(realpathLenient));
     return this.deniedReal;
   }
   async assertAllowed(real) {
@@ -34876,12 +34894,84 @@ var FilesService = class {
     if (!overwrite && await exists(target.abs)) {
       throw new FilesError(409, "exists", "A file with that name is already there.");
     }
-    const max = this.limits.uploadMaxBytes;
-    const declared = Number(req.headers["content-length"] ?? "");
-    if (Number.isFinite(declared) && declared > max) {
-      throw new FilesError(413, "too_large", `Files are limited to ${humanBytes(max)}.`);
+    const spooled = await this.spool(req, target.parent, this.limits.uploadMaxBytes, "upload");
+    if (!overwrite && await exists(target.abs)) {
+      await unlink(spooled.tmp).catch(() => {
+      });
+      throw new FilesError(409, "exists", "A file with that name is already there.");
     }
-    const tmp = join6(target.parent, `.cc-upload-${randomUUID2()}.part`);
+    await commit(spooled.tmp, target.abs, "upload_failed");
+    this.announce({ op: "upload", path: target.rel, size: spooled.written });
+    return { path: target.rel, size: spooled.written };
+  }
+  /**
+   * An edit made in the console, written back. The same temp-file-and-rename as an upload, with
+   * two differences.
+   *
+   * The cap is the text preview's, because what the editor holds is the preview: saving a file
+   * bigger than that would write back the first megabyte and silently drop the rest.
+   *
+   * And the write is optimistic: `expectMtime` is the file's date as the editor loaded it. The
+   * agent writes to this tree too, so a file can change while someone is typing into it, and
+   * overwriting that blindly would lose the agent's work with nothing to say so. Mismatched, the
+   * write is refused and the console offers Reload or Overwrite; `expectMtime` null is that
+   * Overwrite. `create` is New file: nothing may be there at all.
+   */
+  async write(req, rel, opts) {
+    const target = await this.resolveForCreate(rel);
+    if (opts.create && await exists(target.abs)) {
+      throw new FilesError(409, "exists", "Something with that name is already there.");
+    }
+    if (!opts.create) await this.assertWritableFile(target.abs, opts.expectMtime);
+    const spooled = await this.spool(req, target.parent, this.limits.textPreviewBytes, "write");
+    try {
+      if (opts.create && await exists(target.abs)) {
+        throw new FilesError(409, "exists", "Something with that name is already there.");
+      }
+      if (!opts.create) await this.assertWritableFile(target.abs, opts.expectMtime);
+    } catch (err) {
+      await unlink(spooled.tmp).catch(() => {
+      });
+      throw err;
+    }
+    const previous = await stat2(target.abs).catch(() => null);
+    await chmod2(spooled.tmp, previous ? previous.mode & 511 : 420).catch(() => {
+    });
+    await commit(spooled.tmp, target.abs, "write_failed");
+    const st = await stat2(target.abs).catch(() => null);
+    this.announce({ op: "write", path: target.rel, size: spooled.written });
+    return { path: target.rel, size: spooled.written, mtime: (st?.mtime ?? /* @__PURE__ */ new Date()).toISOString() };
+  }
+  /**
+   * What must be true of the thing on disk before an edit is renamed over it.
+   *
+   * `lstat`, not `stat`: renaming over a symlink replaces the LINK, so saving an edit to one
+   * would quietly turn it into a plain file and break whatever it pointed at. A folder is a 400
+   * rather than the EISDIR the rename would otherwise raise.
+   *
+   * Then the optimistic check. A null `expect` is the console saying "overwrite whatever is
+   * there", which is what the conflict dialog's second button sends.
+   */
+  async assertWritableFile(abs, expect) {
+    const st = await lstat2(abs).catch(() => null);
+    if (st && !st.isFile()) {
+      throw new FilesError(400, "not_a_file", "Only a plain file can be edited here.");
+    }
+    if (expect === null) return;
+    if (!st) throw new FilesError(404, "not_found", "That file is no longer on the box.");
+    if (st.mtime.toISOString() !== expect) {
+      throw new FilesError(409, "changed", "The agent changed this file while you were editing it.");
+    }
+  }
+  /**
+   * The request body, on disk in a temp file next to where it is going, capped at `max`. Nothing
+   * is renamed into place here: the caller re-checks its own preconditions first, because the
+   * body took time to arrive and the tree may have moved under it.
+   */
+  async spool(req, parent, max, op) {
+    const declared = Number(req.headers["content-length"] ?? "");
+    if (Number.isFinite(declared) && declared > max) throw tooLargeError(op, max);
+    const tmp = join6(parent, `.cc-${op}-${randomUUID2()}.part`);
     let written = 0;
     let tooBig = false;
     const meter = new Transform({
@@ -34889,7 +34979,7 @@ var FilesService = class {
         written += chunk.length;
         if (written > max) {
           tooBig = true;
-          done(new Error("upload too large"));
+          done(new Error("body too large"));
           return;
         }
         done(null, chunk);
@@ -34906,29 +34996,14 @@ var FilesService = class {
       });
       await unlink(tmp).catch(() => {
       });
-      if (tooBig) {
-        throw new FilesError(413, "too_large", `Files are limited to ${humanBytes(max)}.`);
-      }
-      console.error("[files] upload failed:", err.message);
-      throw new FilesError(400, "upload_failed", "The upload did not finish.");
+      if (tooBig) throw tooLargeError(op, max);
+      console.error(`[files] ${op} failed:`, err.message);
+      throw op === "write" ? new FilesError(400, "write_failed", "The edit did not reach the box.") : new FilesError(400, "upload_failed", "The upload did not finish.");
     }
     sink.destroy();
     await handle.close().catch(() => {
     });
-    if (!overwrite && await exists(target.abs)) {
-      await unlink(tmp).catch(() => {
-      });
-      throw new FilesError(409, "exists", "A file with that name is already there.");
-    }
-    try {
-      await rename2(tmp, target.abs);
-    } catch {
-      await unlink(tmp).catch(() => {
-      });
-      throw new FilesError(500, "upload_failed", "Could not save the file.");
-    }
-    this.announce({ op: "upload", path: target.rel, size: written });
-    return { path: target.rel, size: written };
+    return { tmp, written };
   }
   announce(write) {
     try {
@@ -34938,6 +35013,18 @@ var FilesService = class {
     }
   }
 };
+async function commit(tmp, abs, code) {
+  try {
+    await rename2(tmp, abs);
+  } catch {
+    await unlink(tmp).catch(() => {
+    });
+    throw new FilesError(500, code, "Could not save the file.");
+  }
+}
+function tooLargeError(op, max) {
+  return op === "write" ? new FilesError(413, "too_large", `The editor saves files up to ${humanBytes(max)}. Download this one, change it, and upload it back.`) : new FilesError(413, "too_large", `Files are limited to ${humanBytes(max)}.`);
+}
 async function exists(path) {
   return lstat2(path).then(
     () => true,
@@ -35122,6 +35209,12 @@ async function dispatch(req, res, url2, service, cors) {
   if (path === "/files/upload" && req.method === "POST") {
     const overwrite = url2.searchParams.get("overwrite") === "1";
     sendJson(res, 200, await service.upload(req, q ?? "", overwrite), cors);
+    return;
+  }
+  if (path === "/files/write" && req.method === "POST") {
+    const expectMtime = url2.searchParams.get("mtime");
+    const create = url2.searchParams.get("create") === "1";
+    sendJson(res, 200, await service.write(req, q ?? "", { expectMtime, create }), cors);
     return;
   }
   if (JSON_OPS.has(path) && req.method === "POST") {
