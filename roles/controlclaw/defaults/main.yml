@@ -51,6 +51,19 @@ browser_memory_max: "2G"
 # what is already there, so it is derived once here rather than spelled out twice.
 openclaw_cdp_url: "http://127.0.0.1:{{ browser_cdp_port }}"
 
+# OpenClaw drives that Chrome with playwright-core, which announces itself on the CDP wire:
+# it turns the Runtime domain on for every page it attaches to, and injects its init scripts
+# into the page's own JS world. patchright-core is the same Playwright release with those
+# removed, and the same package layout, so tasks/openclaw.yml points OpenClaw's
+# `playwright-core` at it instead of replacing any OpenClaw code.
+#
+# The version must be the playwright-core version OpenClaw itself depends on — patchright
+# publishes a build per Playwright release, and the two are the same API only at the same
+# number. openclaw.yml reads OpenClaw's own dependency and stops the play if they differ, so
+# bumping this is the chore that comes with an OpenClaw release that moves Playwright.
+patchright_version: "1.63.0"
+patchright_prefix: /opt/controlclaw/patchright
+
 # Swap (tasks/swap.yml). The stock box has none, which leaves the kernel no move under memory
 # pressure except to kill something. 0 disables.
 swap_size_mb: 4096

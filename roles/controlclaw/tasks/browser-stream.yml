@@ -113,6 +113,7 @@
     owner: root
     group: root
     mode: '0755'
+  register: browser_stream_script
 
 - name: Create browser-stream systemd service
   ansible.builtin.copy:
@@ -154,6 +155,7 @@
 
       [Install]
       WantedBy=multi-user.target
+  register: browser_stream_unit
 
 - name: Reload systemd daemon
   ansible.builtin.systemd:
@@ -165,10 +167,23 @@
     state: started
     enabled: true
 
+# `state: started` leaves an already-running browser alone, so without this a re-provision drops
+# a new script on the box and the old Chrome keeps running until something reboots it — the flags
+# below are then asserted against a process that never read them. Restarted here rather than from
+# a handler because those run at the end of the play, after the assertion. It costs the customer
+# their open tabs, which is why it fires on a changed script or unit only.
+- name: Restart browser-stream when the script or the unit changed
+  ansible.builtin.systemd:
+    name: browser-stream
+    state: restarted
+    daemon_reload: true
+  when: (browser_stream_script is changed or browser_stream_unit is changed) and not ci_test
+
 # Provisioning-time proof, not a one-off check by whoever last touched this. browser-stream.sh
 # already refuses to start an unsandboxed browser; these two catch the ways the unit itself can
-# drift — someone re-adding --no-sandbox, or the memory cap being dropped from the template —
-# and they run on every box, on every re-provision.
+# drift — someone re-adding --no-sandbox, the memory cap being dropped from the template, or the
+# flags that keep this browser indistinguishable from a person's going missing — and they run on
+# every box, on every re-provision.
 - name: Read the running browser's command line and limits
   ansible.builtin.shell:
     cmd: |
@@ -184,15 +199,19 @@
   until: "'CMDLINE=' in browser_runtime.stdout and browser_runtime.stdout is search('CMDLINE=.+')"
   when: not ci_test
 
-- name: Fail when the browser is running unsandboxed or uncapped
+- name: Fail when the browser is running unsandboxed, uncapped or self-identifying
   ansible.builtin.assert:
     that:
       - "'--no-sandbox' not in browser_runtime.stdout"
       - "'--disable-setuid-sandbox' not in browser_runtime.stdout"
       - browser_runtime.stdout is not search('MEMMAX=infinity')
+      - "'--headless' not in browser_runtime.stdout"
+      - "'--enable-automation' not in browser_runtime.stdout"
+      - "'--disable-blink-features=AutomationControlled' in browser_runtime.stdout"
     fail_msg: >-
       browser-stream is not in the shape this role guarantees. Either Chrome is running with a
       sandbox flag turned off — it parses LLM-chosen content as the user that owns the gateway
-      token — or MemoryMax is unset and a heavy page can take OpenClaw down with it.
+      token — or MemoryMax is unset and a heavy page can take OpenClaw down with it, or the
+      window is one a site can tell is automated.
       Observed: {{ browser_runtime.stdout | default('(no reading)') }}
   when: not ci_test
