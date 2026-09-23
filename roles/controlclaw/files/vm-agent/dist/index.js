@@ -30551,7 +30551,7 @@ async function verifyLoginToken(token, vmId, purpose) {
   const payload = await verifySaasToken(token);
   if (!payload || payload.purpose !== purpose || payload.vmId !== vmId) return null;
   if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
-  return payload;
+  return { ...payload, canWrite: payload.canWrite === true };
 }
 async function verifyMitmRequest(req, purpose = "channels") {
   const authHeader = req.headers.authorization;
@@ -30598,9 +30598,9 @@ function ensureSessionSecret(keysDir2) {
   }
   secret = Buffer.from(readFileSync(path, "utf8").trim(), "hex");
 }
-async function issueSession(vmId) {
+async function issueSession(vmId, claims = { canWrite: false }) {
   if (!secret) throw new Error("session secret not initialised");
-  return new SignJWT({ sub: vmId }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
+  return new SignJWT({ sub: vmId, ...claims.canWrite ? { canWrite: true } : {} }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
 }
 function sessionCookie(token) {
   return `${SESSION_COOKIE}=${token}; Path=/; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
@@ -30608,16 +30608,20 @@ function sessionCookie(token) {
 function clearSessionCookie() {
   return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
-async function verifySession(cookieHeader, vmId) {
-  if (!secret || !cookieHeader) return false;
+async function readSession(cookieHeader, vmId) {
+  if (!secret || !cookieHeader) return null;
   const token = parseCookie(cookieHeader, SESSION_COOKIE);
-  if (!token) return false;
+  if (!token) return null;
   try {
     const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"] });
-    return payload.sub === vmId && payload.aud === void 0;
+    if (payload.sub !== vmId || payload.aud !== void 0) return null;
+    return { canWrite: payload.canWrite === true };
   } catch {
-    return false;
+    return null;
   }
+}
+async function verifySession(cookieHeader, vmId) {
+  return await readSession(cookieHeader, vmId) !== null;
 }
 async function issueViewSession(vmId) {
   if (!secret) throw new Error("session secret not initialised");
@@ -30949,7 +30953,7 @@ async function handleAccess(req, res, pathname) {
       const gatewayToken = readKey("openclaw_gateway_token");
       if (gatewayToken) next = `/#token=${encodeURIComponent(gatewayToken)}`;
     }
-    const session = await issueSession(vmId);
+    const session = await issueSession(vmId, { canWrite: payload.canWrite === true });
     const install = installId(readKey("openclaw_gateway_token"), vmId);
     json(res, 200, { next, install }, { "Set-Cookie": sessionCookie(session) });
     return;
@@ -31022,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "1f7276d" : "unknown",
-  builtAt: true ? "2026-09-23T06:29:24+01:00" : "unknown"
+  commit: true ? "ad0dd00" : "unknown",
+  builtAt: true ? "2026-09-23T21:54:15+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -34721,6 +34725,10 @@ var FilesService = class {
   get openToAnyone() {
     return this.opts.insecureDevNoAuth === true;
   }
+  /** What an `openToAnyone` box pretends the session said. Writable unless told otherwise. */
+  get openToAnyoneCanWrite() {
+    return this.opts.insecureDevReadOnly !== true;
+  }
   get origins() {
     const { box, console: consoleOrigin2 } = allowedOrigins();
     return [box, consoleOrigin2, ...this.opts.extraOrigins ?? []].filter((o) => !!o);
@@ -35104,6 +35112,7 @@ function devCorsHeaders(req) {
   return { Vary: "Origin", ...origin ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true" } : {} };
 }
 var JSON_OPS = /* @__PURE__ */ new Set(["/files/mkdir", "/files/rename", "/files/delete"]);
+var WRITE_OPS = /* @__PURE__ */ new Set(["/files/upload", "/files/write", "/files/mkdir", "/files/rename", "/files/delete"]);
 async function handleFiles(req, res, url2, service) {
   if (!service) {
     sendJson(res, 503, { error: "The file explorer is not ready yet.", code: "unavailable" });
@@ -35125,12 +35134,13 @@ async function handleFiles(req, res, url2, service) {
     sendJson(res, 403, { error: "This request did not come from your console.", code: "bad_origin" }, cors);
     return;
   }
-  if (!service.openToAnyone && (!service.vmId || !await verifySession(req.headers.cookie, service.vmId))) {
+  const session = service.openToAnyone ? { canWrite: service.openToAnyoneCanWrite } : service.vmId ? await readSession(req.headers.cookie, service.vmId) : null;
+  if (!session) {
     sendJson(res, 401, { error: "This browser is not signed in to the agent.", code: "unpaired" }, cors);
     return;
   }
   try {
-    await dispatch(req, res, url2, service, cors);
+    await dispatch(req, res, url2, service, cors, session);
   } catch (err) {
     if (res.headersSent || res.writableEnded) {
       res.destroy();
@@ -35153,9 +35163,18 @@ async function streamFile(path, res) {
     throw err;
   }
 }
-async function dispatch(req, res, url2, service, cors) {
+async function dispatch(req, res, url2, service, cors, session) {
   const path = url2.pathname;
   const q = url2.searchParams.get("path");
+  if (WRITE_OPS.has(path) && !session.canWrite) {
+    sendJson(
+      res,
+      403,
+      { error: "Your pass for this agent can read its files but not change them.", code: "read_only" },
+      cors
+    );
+    return;
+  }
   if (path === "/files/list" && req.method === "GET") {
     sendJson(res, 200, await service.list(q ?? ""), cors);
     return;
