@@ -310,13 +310,28 @@
       Environment=MITM_CONTROL_PLANE_HOST={{ controlclaw_url | urlsplit('hostname') }}
       # The backup object store: passed through uninspected, same mechanism (defaults/main.yml).
       Environment=MITM_BACKUP_HOST={{ controlclaw_backup_host }}
+      # The org's residential exit, written by the mitm-agent from its encrypted store
+      # (apps/saas/docs/features/residential-exit.md). An org without one gets
+      # `{"enabled": false}` here and every residential rule fails closed.
+      Environment=MITM_EXIT_PATH=/run/mitm/config/exit.json
       # --ignore-hosts: do NOT intercept the ControlClaw control plane — tunnel it (real public
       # TLS) so the JWT control channel never depends on this proxy's CA and the proxy can't MITM
       # its own control plane. Anchored to the exact host:port so an agent can't abuse a substring
       # match (e.g. controlclaw.com.attacker.com) to exfiltrate through an un-inspected tunnel.
       # NOTE: $$ — systemd expands $VAR in ExecStart, so a literal regex '$' must be doubled.
+      # connection_strategy=lazy: mitmproxy's default (eager) opens the connection to the
+      # destination BEFORE the addon is asked what to do with it. For a residential rule that is
+      # fatal twice over — the firewall has already completed a TCP connection from this box's
+      # address to the very site the customer is reaching from somewhere else, and the relay would
+      # then run over that socket instead of the tunnel. The addon refuses to run the residential
+      # path when it sees an already-open connection, so without this flag the feature is off
+      # rather than wrong; the flag is what turns it on. What it costs everything else: mitmproxy
+      # no longer mirrors the server's ALPN to the client (it picks from the client's offers and
+      # translates h2/h1 itself, which it already does), and a connect failure surfaces as a 502
+      # at request time instead of at CONNECT time.
       ExecStart=/opt/controlclaw/mitm/venv/bin/mitmdump --listen-port {{ mitm_proxy_port }} \
         --ignore-hosts "^{{ controlclaw_url | urlsplit('hostname') | regex_escape }}:[0-9]+$$" \
+        --set connection_strategy=lazy \
         --set confdir=/opt/controlclaw/mitm/ca -s /opt/controlclaw/mitm/proxy/addon.py
       Restart=always
       RestartSec=5
@@ -365,6 +380,10 @@
       Environment=CONNECTOR_URL=http://127.0.0.1:{{ connector_port }}
       Environment=CONNECTOR_GATE_BIND={{ mitm_self_private_ip.stdout | default('') }}
       Environment=CONNECTOR_GATE_PORT={{ connector_gate_port }}
+      # Residential exit: the org's upstream proxy account and this month's usage, encrypted under
+      # the box key. On the state volume with the other stores, so a firewall restore brings it
+      # back with them.
+      Environment=EXIT_STORE_PATH=/opt/controlclaw/state/exit.enc
       ExecStart=/usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
       Restart=always
       RestartSec=10
