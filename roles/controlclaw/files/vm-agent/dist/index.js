@@ -30510,7 +30510,7 @@ var require_libsodium_wrappers = __commonJS({
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID3 } from "crypto";
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ad0dd00" : "unknown",
-  builtAt: true ? "2026-09-23T21:54:15+01:00" : "unknown"
+  commit: true ? "7d09769" : "unknown",
+  builtAt: true ? "2026-09-23T23:23:56+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31420,7 +31420,7 @@ function handleStop(res) {
 function handleRestart(res) {
   handleAction(res, "restart");
 }
-function handleStatus(res) {
+function handleStatus(res, drive2) {
   const status = runIsActive();
   const summary = runStatusSummary();
   send(res, 200, {
@@ -31429,7 +31429,10 @@ function handleStatus(res) {
     active: status === "active",
     status,
     message: summary,
-    software: boxSoftware()
+    software: boxSoftware(),
+    // A count, not the detail: this is polled for every agent, so it reads a file and makes no
+    // rclone call. `GET /drive/status` is where the cache sizes and queues live.
+    ...drive2 ? { drive: drive2 } : {}
   });
 }
 
@@ -33542,8 +33545,256 @@ async function handleConnectors(req, res, url2, service) {
   }
 }
 
+// src/drive.ts
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync12, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname4 } from "path";
+var LAUNCH_TIMEOUT_MS = 2e4;
+var RC_TIMEOUT_MS = 3e3;
+var MAX_MOUNTS = 8;
+var APPLY_UNIT = "cc-drive-apply";
+var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
+var isValidName = (name) => NAME_RE.test(name) && !name.endsWith(" ");
+var FOLDER_ID_RE = /^[A-Za-z0-9_-]{10,200}$/;
+var PLACEHOLDER_RE = /^CC-DRIVE-[0-9a-f]{8,64}$/;
+var SETTING_RE = /^[A-Za-z0-9,.]{1,64}$/;
+var DRIVE_SCOPES = /* @__PURE__ */ new Set([
+  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/drive.readonly",
+  "https://www.googleapis.com/auth/drive.metadata.readonly"
+]);
+function parseApply3(body) {
+  const placeholder = typeof body.placeholder === "string" ? body.placeholder : "";
+  if (!PLACEHOLDER_RE.test(placeholder)) return "placeholder is not the shape the firewall generates";
+  const scope = typeof body.scope === "string" ? body.scope : "";
+  if (!DRIVE_SCOPES.has(scope)) return "scope is not a Google Drive scope";
+  const d = body.defaults ?? {};
+  const defaults = {
+    exportFormats: typeof d.exportFormats === "string" ? d.exportFormats : "docx,xlsx,pdf",
+    vfsCacheMaxSize: typeof d.vfsCacheMaxSize === "string" ? d.vfsCacheMaxSize : "2G",
+    vfsCacheMinFreeSpace: typeof d.vfsCacheMinFreeSpace === "string" ? d.vfsCacheMinFreeSpace : "4G"
+  };
+  for (const [key, value] of Object.entries(defaults)) {
+    if (!SETTING_RE.test(value)) return `defaults.${key} has characters that cannot go on a command line`;
+  }
+  if (!Array.isArray(body.mounts)) return "mounts must be an array";
+  const raw = body.mounts;
+  if (raw.length > MAX_MOUNTS) return `at most ${MAX_MOUNTS} Drive folders`;
+  const mounts = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const m of raw) {
+    const name = typeof m.name === "string" ? m.name : "";
+    const folderId = typeof m.folderId === "string" ? m.folderId : "";
+    if (!isValidName(name)) return `mounts[].name ${JSON.stringify(name)} cannot be a directory name`;
+    if (!FOLDER_ID_RE.test(folderId)) return `mounts[].folderId ${JSON.stringify(folderId)} is invalid`;
+    if (m.mode !== "ro" && m.mode !== "rw") return "mounts[].mode must be ro or rw";
+    if (seen.has(name.toLowerCase())) return `two folders are both named ${JSON.stringify(name)}`;
+    seen.add(name.toLowerCase());
+    mounts.push({ name, folderId, mode: m.mode });
+  }
+  return { placeholder, scope, connected: body.connected === true, defaults, mounts };
+}
+function writeAtomic(path, body, mode) {
+  mkdirSync4(dirname4(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync6(tmp, body, { mode });
+  renameSync3(tmp, path);
+}
+var DriveService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.exec = opts.exec ?? defaultExec;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.applyScript = opts.applyScript ?? "/usr/local/bin/cc-drive-apply";
+  }
+  exec;
+  fetchImpl;
+  log;
+  applyScript;
+  /**
+   * The modes of the set that was last asked for. Read fresh from the desired file rather than
+   * cached: a cached map drifts from the file the moment an apply does not finish, and then the
+   * console is told a folder is writable on the strength of a reconcile that failed.
+   */
+  modes() {
+    const out = /* @__PURE__ */ new Map();
+    try {
+      const desired = JSON.parse(readFileSync12(this.opts.desiredPath, "utf8"));
+      for (const m of desired.mounts ?? []) if (m?.name) out.set(m.name, m.mode);
+    } catch {
+    }
+    return out;
+  }
+  /**
+   * The reconcile's own report. Written by a root script that lives in another repo, so its shape
+   * is checked rather than trusted: an `/opt/controlclaw/state` half-written by a killed reconcile
+   * used to throw straight out of the `/status` handler, which has no catch above it, and took the
+   * whole agent down on the control plane's next poll.
+   */
+  readState() {
+    try {
+      const raw = JSON.parse(readFileSync12(this.opts.statePath, "utf8"));
+      if (!raw || typeof raw !== "object" || !Array.isArray(raw.mounts)) return null;
+      const mounts = raw.mounts.filter((m) => !!m && typeof m.name === "string" && typeof m.rcPort === "number");
+      return {
+        status: typeof raw.status === "string" ? raw.status : "unknown",
+        detail: typeof raw.detail === "string" ? raw.detail : "",
+        connected: raw.connected === true,
+        unsaved: Array.isArray(raw.unsaved) ? raw.unsaved.filter((u) => !!u && typeof u.name === "string") : [],
+        mounts,
+        at: typeof raw.at === "string" ? raw.at : ""
+      };
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * Hand a mount set to the box. Writes the desired set, launches the reconcile detached, and
+   * returns — see the note at the top of this file for why it does not wait. `reconciling: false`
+   * means one was already running and this set will be picked up by it or by the next push.
+   */
+  async apply(input) {
+    const previous = this.readDesiredRaw();
+    writeAtomic(this.opts.desiredPath, JSON.stringify(input, null, 2), 416);
+    try {
+      await this.exec("sudo", ["/usr/bin/systemd-run", `--unit=${APPLY_UNIT}`, "--collect", this.applyScript], LAUNCH_TIMEOUT_MS);
+    } catch (err) {
+      const line = execFailureLine(err);
+      if (/already loaded|already exists|already running/i.test(line)) {
+        this.log(`[drive] a reconcile is already running; the new set is on disk and will be applied`);
+        return { ok: true, reconciling: false, folders: input.mounts.map((m) => m.name) };
+      }
+      if (previous !== null) writeAtomic(this.opts.desiredPath, previous, 416);
+      this.log(`[drive] could not launch the reconcile: ${line}`);
+      return { ok: false, error: line };
+    }
+    this.log(`[drive] reconciling ${input.mounts.length} folder(s)${input.connected ? "" : " (no Google connection, they stay unmounted)"}`);
+    return { ok: true, reconciling: true, folders: input.mounts.map((m) => m.name) };
+  }
+  /** The desired file as written, so a failed launch can put it back byte for byte. */
+  readDesiredRaw() {
+    try {
+      return readFileSync12(this.opts.desiredPath, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  /** `vfs/stats` from one mount's rclone, on loopback. Null when it is not answering. */
+  async stats(port) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), RC_TIMEOUT_MS);
+    try {
+      const res = await this.fetchImpl(`http://127.0.0.1:${port}/vfs/stats`, { method: "POST", signal: controller.signal });
+      if (!res.ok) return null;
+      const body = await res.json();
+      const c = body.diskCache;
+      if (!c) return null;
+      const num = (v) => typeof v === "number" ? v : 0;
+      return {
+        bytesUsed: num(c.bytesUsed),
+        uploadsQueued: num(c.uploadsQueued),
+        uploadsInProgress: num(c.uploadsInProgress),
+        erroredFiles: num(c.erroredFiles),
+        outOfSpace: c.outOfSpace === true
+      };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  /**
+   * What the heartbeat carries. Every mount is reported even when its rclone is not answering:
+   * "mounted, but I cannot ask it anything" is the state a customer most needs to see, and
+   * dropping the row would read as "this folder is gone".
+   */
+  async status() {
+    const state = this.readState();
+    if (!state) return { connected: false, applyStatus: "none", applyDetail: "", unsaved: [], mounts: [], at: null };
+    const modes = this.modes();
+    const mounts = await Promise.all(
+      state.mounts.map(async (m) => {
+        const stats = m.mounted ? await this.stats(m.rcPort) : null;
+        return {
+          name: m.name,
+          mode: modes.get(m.name) ?? null,
+          mounted: m.mounted,
+          active: m.active,
+          cacheBytes: stats?.bytesUsed ?? null,
+          queuedUploads: stats?.uploadsQueued ?? null,
+          erroredFiles: stats?.erroredFiles ?? null,
+          outOfSpace: stats?.outOfSpace ?? null,
+          // Only silent when the organisation has no Google connection: then every folder is
+          // deliberately down and saying so per row is noise. Otherwise a mount that is not up gets
+          // a reason, including `inactive` — systemd leaves a unit that was stopped or gave up
+          // inactive rather than failed, and "not mounted, no reason given" is the worst row to
+          // show somebody. The journal has the detail; the console links to the Logs page.
+          lastError: m.mounted || !state.connected ? null : `the mount is ${m.active}`
+        };
+      })
+    );
+    return { connected: state.connected, applyStatus: state.status, applyDetail: state.detail, unsaved: state.unsaved, mounts, at: state.at };
+  }
+  /**
+   * A count for the agent's `/status`, which the console polls for every agent. Reads the state
+   * file and nothing else — no rclone call per mount — so putting it on a hot path costs a file
+   * read. The full picture, with cache sizes and queues, is `GET /drive/status`.
+   */
+  summary() {
+    const state = this.readState();
+    if (!state) return null;
+    return { folders: state.mounts.length, mounted: state.mounts.filter((m) => m.mounted).length, connected: state.connected };
+  }
+  /** Whether this box has Drive support installed at all (an older box does not). */
+  supported() {
+    return existsSync7(this.applyScript);
+  }
+};
+
+// src/routes/drive.ts
+async function handleDrive(req, res, url2, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "drive") : await verifyMitmRequest(req, "drive") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "Drive folder changes must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  if (!service) {
+    sendJson(res, 501, { error: "This agent's software does not support Drive folders yet. Update it." });
+    return;
+  }
+  try {
+    if (url2.pathname === "/drive/apply" && write) {
+      const body = await readJsonBody(req);
+      if (!body) {
+        sendJson(res, 400, { error: "invalid JSON body" });
+        return;
+      }
+      const input = parseApply3(body);
+      if (typeof input === "string") {
+        sendJson(res, 400, { error: input });
+        return;
+      }
+      const result = await service.apply(input);
+      if (!result.ok) {
+        sendJson(res, 500, { error: result.error });
+        return;
+      }
+      sendJson(res, 202, { ok: true, reconciling: result.reconciling, folders: result.folders });
+      return;
+    }
+    if (url2.pathname === "/drive/status" && req.method === "GET") {
+      sendJson(res, 200, await service.status());
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
 // src/update.ts
-import { readFileSync as readFileSync12 } from "fs";
+import { readFileSync as readFileSync13 } from "fs";
 import { spawn as spawn2 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -33575,7 +33826,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync12(path, "utf8");
+      raw = readFileSync13(path, "utf8");
     } catch {
       return null;
     }
@@ -33589,7 +33840,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync12(this.opts.statePath, "utf8");
+      raw = readFileSync13(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -33661,7 +33912,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname as dirname4, join as join5 } from "path";
+import { dirname as dirname5, join as join5 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -34167,7 +34418,7 @@ var BackupService = class {
         takenAt: manifest.takenAt
       };
     } finally {
-      if (spool) await rm(dirname4(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (spool) await rm(dirname5(spool), { recursive: true, force: true }).catch(() => void 0);
       this.busy = null;
     }
   }
@@ -34251,7 +34502,7 @@ var BackupService = class {
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
             continue;
           }
-          await mkdir(dirname4(abs), { recursive: true, mode: 448 });
+          await mkdir(dirname5(abs), { recursive: true, mode: 448 });
           if (e.type === "link") {
             await symlink(e.target ?? "", abs).catch(() => void 0);
             continue;
@@ -34387,7 +34638,7 @@ async function swapDirectory(opts) {
       );
       if (!exists2) continue;
       await rm(to, { recursive: true, force: true });
-      await mkdir(dirname4(to), { recursive: true, mode: 448 });
+      await mkdir(dirname5(to), { recursive: true, mode: 448 });
       await rename(from, to);
       moved.push({ from, to });
     }
@@ -34544,7 +34795,7 @@ async function handleBackup(req, res, url2, service) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID2 } from "crypto";
-import { basename, dirname as dirname5, join as join6, resolve, sep } from "path";
+import { basename, dirname as dirname6, join as join6, resolve, sep } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -34695,7 +34946,7 @@ async function realpathLenient(path) {
       const real = await realpath(cursor);
       return missing.length ? join6(real, ...missing.reverse()) : real;
     } catch {
-      const parent = dirname5(cursor);
+      const parent = dirname6(cursor);
       if (parent === cursor) return resolve(path);
       missing.push(basename(cursor));
       cursor = parent;
@@ -34796,7 +35047,7 @@ var FilesService = class {
     }
     const name = basename(normalized);
     if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
-    const parentRel = dirname5(normalized) === "." ? "" : dirname5(normalized);
+    const parentRel = dirname6(normalized) === "." ? "" : dirname6(normalized);
     const parent = await this.resolveExisting(parentRel);
     const st = await stat2(parent.abs).catch(() => null);
     if (!st?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
@@ -35267,9 +35518,9 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync4, mkdtempSync, readFileSync as readFileSync13, rmSync, writeFileSync as writeFileSync6 } from "fs";
+import { mkdirSync as mkdirSync5, mkdtempSync, readFileSync as readFileSync14, rmSync, writeFileSync as writeFileSync7 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname6, join as join7 } from "path";
+import { dirname as dirname7, join as join7 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -35358,8 +35609,8 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync13(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync13(path, "utf8")
+        publicKey: readFileSync14(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync14(path, "utf8")
       };
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -35370,7 +35621,7 @@ var SshAccessService = class {
     const path = this.opts.authorizedKeysPath;
     let current = "";
     try {
-      current = readFileSync13(path, "utf8");
+      current = readFileSync14(path, "utf8");
     } catch {
       current = "";
     }
@@ -35378,12 +35629,12 @@ var SshAccessService = class {
     if (publicKey) next += `# ${markerFor(grantId)} until ${endsAt}
 ${publicKey}
 `;
-    mkdirSync4(dirname6(path), { recursive: true, mode: 448 });
-    writeFileSync6(path, next, { mode: 384 });
+    mkdirSync5(dirname7(path), { recursive: true, mode: 448 });
+    writeFileSync7(path, next, { mode: 384 });
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync13(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync14(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -35396,8 +35647,8 @@ ${publicKey}
     }
   }
   writeState(state) {
-    mkdirSync4(dirname6(this.opts.statePath), { recursive: true });
-    writeFileSync6(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    mkdirSync5(dirname7(this.opts.statePath), { recursive: true });
+    writeFileSync7(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -35621,7 +35872,7 @@ var TailscaleService = class {
 
 // src/routes/tailscale.ts
 var AUTH_KEY_RE = /^tskey-auth-[A-Za-z0-9]+-[A-Za-z0-9]+$/;
-function parseApply3(body) {
+function parseApply4(body) {
   if (typeof body.authKey !== "string" || !AUTH_KEY_RE.test(body.authKey)) return "authKey must be a Tailscale auth key";
   if (typeof body.hostname !== "string" || !body.hostname) return "hostname required";
   return { authKey: body.authKey, ssh: body.ssh === true, hostname: body.hostname };
@@ -35652,7 +35903,7 @@ async function handleTailscale(req, res, url2, service) {
         sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
         return;
       }
-      const input = parseApply3(body);
+      const input = parseApply4(body);
       if (typeof input === "string") {
         sendJson(res, 400, { ok: false, error: input });
         return;
@@ -35678,7 +35929,7 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 try {
-  const saasPublicKey2 = readFileSync14(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync15(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -35686,7 +35937,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync14(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync15(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -35755,6 +36006,7 @@ function startGatewayBridge() {
 var channels = null;
 var llm = null;
 var connectors = null;
+var drive = null;
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
 var ssh = new SshAccessService({
   authorizedKeysPath: `${process.env.HOME ?? "/home/controlclaw"}/.ssh/authorized_keys`,
@@ -35818,6 +36070,10 @@ var server = createServer2(async (req, res) => {
     await handleConnectors(req, res, url2, connectors);
     return;
   }
+  if (url2.pathname.startsWith("/drive/")) {
+    await handleDrive(req, res, url2, drive);
+    return;
+  }
   if (url2.pathname === "/update") {
     await handleUpdate(req, res, url2.pathname, update);
     return;
@@ -35856,7 +36112,7 @@ var server = createServer2(async (req, res) => {
     return;
   }
   if (url2.pathname === "/status" && req.method === "GET") {
-    handleStatus(res);
+    handleStatus(res, drive?.summary() ?? null);
     return;
   }
   if (url2.pathname === "/mitm-ca/refresh" && req.method === "POST") {
@@ -35896,5 +36152,11 @@ server.listen(PORT, BIND, () => {
     cliEnvPath: `${home}/.config/oomol/connector.env`
   });
   connectors.startRelay();
+  const driveService = new DriveService({
+    desiredPath: `${STATE_DIR}/drive.json`,
+    statePath: `${STATE_DIR}/drive-mounts.json`
+  });
+  drive = driveService.supported() ? driveService : null;
+  if (!drive) console.log("[drive] cc-drive-apply is not on this box: Drive folders off until it is re-provisioned");
   client?.onConnected(() => void channels?.reconcile());
 });

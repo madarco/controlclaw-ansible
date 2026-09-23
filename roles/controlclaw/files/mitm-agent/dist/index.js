@@ -27523,16 +27523,16 @@ var require_libsodium = __commonJS({
             if (endPtr - idx > 16 && heapOrArray.buffer && UTF8Decoder) {
               return UTF8Decoder.decode(heapOrArray.subarray(idx, endPtr));
             }
-            var str10 = "";
+            var str13 = "";
             while (idx < endPtr) {
               var u0 = heapOrArray[idx++];
               if (!(u0 & 128)) {
-                str10 += String.fromCharCode(u0);
+                str13 += String.fromCharCode(u0);
                 continue;
               }
               var u1 = heapOrArray[idx++] & 63;
               if ((u0 & 224) == 192) {
-                str10 += String.fromCharCode((u0 & 31) << 6 | u1);
+                str13 += String.fromCharCode((u0 & 31) << 6 | u1);
                 continue;
               }
               var u2 = heapOrArray[idx++] & 63;
@@ -27542,13 +27542,13 @@ var require_libsodium = __commonJS({
                 u0 = (u0 & 7) << 18 | u1 << 12 | u2 << 6 | heapOrArray[idx++] & 63;
               }
               if (u0 < 65536) {
-                str10 += String.fromCharCode(u0);
+                str13 += String.fromCharCode(u0);
               } else {
                 var ch = u0 - 65536;
-                str10 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
+                str13 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
               }
             }
-            return str10;
+            return str13;
           };
           var UTF8ToString = (ptr, maxBytesToRead, ignoreNul) => ptr ? UTF8ArrayToString(HEAPU8, ptr, maxBytesToRead, ignoreNul) : "";
           var ___assert_fail = (condition, filename, line, func) => abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : "unknown filename", line, func ? UTF8ToString(func) : "unknown function"]);
@@ -31327,20 +31327,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a, b) {
   return (a & 15) + (a >> 6 | a >> 3 & 8) << 4 | (b & 15) + (b >> 6 | b >> 3 & 8);
 }
-function writeHexToUInt8(buf, str10) {
-  const size = str10.length >> 1;
+function writeHexToUInt8(buf, str13) {
+  const size = str13.length >> 1;
   for (let i = 0; i < size; i++) {
     const index = i << 1;
-    buf[i] = hexCharCodesToInt(str10.charCodeAt(index), str10.charCodeAt(index + 1));
+    buf[i] = hexCharCodesToInt(str13.charCodeAt(index), str13.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str10, buf) {
-  if (str10.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str13, buf) {
+  if (str13.length !== buf.length * 2) {
     return false;
   }
   for (let i = 0; i < buf.length; i++) {
     const strIndex = i << 1;
-    if (buf[i] !== hexCharCodesToInt(str10.charCodeAt(strIndex), str10.charCodeAt(strIndex + 1))) {
+    if (buf[i] !== hexCharCodesToInt(str13.charCodeAt(strIndex), str13.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -33252,8 +33252,8 @@ var day = hour * 24;
 var week = day * 7;
 var year = day * 365.25;
 var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
-function secs(str10) {
-  const matched = REGEX.exec(str10);
+function secs(str13) {
+  const matched = REGEX.exec(str13);
   if (!matched || matched[4] && matched[1]) {
     throw new TypeError("Invalid time period format");
   }
@@ -33880,32 +33880,32 @@ import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as rea
 import { dirname as dirname2 } from "path";
 var NONCE_BYTES2 = 12;
 var TAG_BYTES2 = 16;
-function encryptJson(value, boxKeyB64, aad7) {
+function encryptJson(value, boxKeyB64, aad9) {
   const key = Buffer.from(boxKeyB64, "base64");
   const nonce = randomBytes2(NONCE_BYTES2);
   const cipher = createCipheriv2("aes-256-gcm", key, nonce);
-  cipher.setAAD(Buffer.from(aad7, "utf8"));
+  cipher.setAAD(Buffer.from(aad9, "utf8"));
   const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(value), "utf8")), cipher.final(), cipher.getAuthTag()]);
   return JSON.stringify({ alg: "AES-256-GCM", nonce: nonce.toString("base64"), ct: ct.toString("base64") });
 }
-function decryptJson(raw, boxKeyB64, aad7) {
+function decryptJson(raw, boxKeyB64, aad9) {
   const { nonce, ct } = JSON.parse(raw);
   const key = Buffer.from(boxKeyB64, "base64");
   const buf = Buffer.from(ct, "base64");
   const decipher = createDecipheriv2("aes-256-gcm", key, Buffer.from(nonce, "base64"));
-  decipher.setAAD(Buffer.from(aad7, "utf8"));
+  decipher.setAAD(Buffer.from(aad9, "utf8"));
   decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES2));
   const pt = Buffer.concat([decipher.update(buf.subarray(0, buf.length - TAG_BYTES2)), decipher.final()]);
   return JSON.parse(pt.toString("utf8"));
 }
-function loadEncryptedJson(path, boxKeyB64, aad7) {
+function loadEncryptedJson(path, boxKeyB64, aad9) {
   if (!existsSync4(path)) return null;
-  return decryptJson(readFileSync5(path, "utf8"), boxKeyB64, aad7);
+  return decryptJson(readFileSync5(path, "utf8"), boxKeyB64, aad9);
 }
-function saveEncryptedJson(path, value, boxKeyB64, aad7) {
+function saveEncryptedJson(path, value, boxKeyB64, aad9) {
   mkdirSync3(dirname2(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync4(tmp, encryptJson(value, boxKeyB64, aad7), { mode: 384 });
+  writeFileSync4(tmp, encryptJson(value, boxKeyB64, aad9), { mode: 384 });
   renameSync(tmp, path);
 }
 
@@ -34315,8 +34315,631 @@ var ChannelsFirewall = class {
   }
 };
 
-// src/llm-store.ts
+// src/drive.ts
+import { randomBytes as randomBytes3 } from "crypto";
+
+// src/drive-store.ts
+function isServiceAccountSecret(s) {
+  return "privateKey" in s;
+}
+var DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive";
+var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
+function isValidFolderName(name25) {
+  return NAME_RE.test(name25) && !name25.endsWith(" ");
+}
+var FOLDER_ID_RE = /^[A-Za-z0-9_-]{10,200}$/;
+function isValidFolderId(id) {
+  return FOLDER_ID_RE.test(id);
+}
 function aad3(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:drive`;
+}
+function emptyDriveStore() {
+  return { version: 1, accounts: {}, folders: {}, agents: {} };
+}
+function loadDriveStore(path, boxKeyB64, ids2) {
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad3(ids2));
+  return parsed && parsed.version === 1 && parsed.accounts && parsed.folders && parsed.agents ? parsed : emptyDriveStore();
+}
+function saveDriveStore(path, store, boxKeyB64, ids2) {
+  saveEncryptedJson(path, store, boxKeyB64, aad3(ids2));
+}
+
+// src/drive-tokens.ts
+var TIMEOUT_MS = 3e4;
+var ASSERTION_TTL_SEC = 3600;
+var FATAL_OAUTH_ERRORS = /* @__PURE__ */ new Set(["invalid_grant", "invalid_client", "unauthorized_client", "invalid_scope", "access_denied"]);
+function isPermanentRefusal(status, body) {
+  if (status !== 400 && status !== 401) return false;
+  const code = typeof body.error === "string" ? body.error : "";
+  return FATAL_OAUTH_ERRORS.has(code);
+}
+function str2(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function reasonOf(body, status) {
+  return str2(body.error_description) ?? str2(body.error) ?? `HTTP ${status}`;
+}
+async function postForm(fetchImpl, url2, form) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetchImpl(url2, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+      body: new URLSearchParams(form).toString(),
+      signal: controller.signal
+    });
+    const body = await res.json().catch(() => ({}));
+    return { status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+var ServiceAccountTokenSource = class {
+  constructor(fetchImpl = fetch) {
+    this.fetchImpl = fetchImpl;
+  }
+  async mint(account, now2) {
+    if (!isServiceAccountSecret(account.secret)) return { ok: false, permanent: true, reason: "This connection is not a service account." };
+    const sa = account.secret;
+    let assertion;
+    try {
+      const key = await importPKCS8(sa.privateKey, "RS256");
+      assertion = await new SignJWT({ scope: account.scope, ...sa.subject ? { sub: sa.subject } : {} }).setProtectedHeader({ alg: "RS256", typ: "JWT" }).setIssuer(sa.clientEmail).setAudience(sa.tokenUri).setIssuedAt(Math.floor(now2 / 1e3)).setExpirationTime(Math.floor(now2 / 1e3) + ASSERTION_TTL_SEC).sign(key);
+    } catch (err) {
+      return { ok: false, permanent: true, reason: `The service account key could not be used: ${err.message}` };
+    }
+    let answer;
+    try {
+      answer = await postForm(this.fetchImpl, sa.tokenUri, { grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion });
+    } catch (err) {
+      return { ok: false, permanent: false, reason: err.message };
+    }
+    const token = str2(answer.body.access_token);
+    if (answer.status !== 200 || !token) {
+      return { ok: false, permanent: isPermanentRefusal(answer.status, answer.body), reason: reasonOf(answer.body, answer.status) };
+    }
+    const expiresIn = typeof answer.body.expires_in === "number" ? answer.body.expires_in : 3600;
+    return { ok: true, token, expires: now2 + expiresIn * 1e3, accountLabel: sa.clientEmail };
+  }
+};
+var OAuthTokenSource = class {
+  constructor(fetchImpl = fetch) {
+    this.fetchImpl = fetchImpl;
+  }
+  async mint(account, now2) {
+    if (isServiceAccountSecret(account.secret)) return { ok: false, permanent: true, reason: "This connection is not an OAuth account." };
+    if (!account.oauth) return { ok: false, permanent: true, reason: "This connection has no token endpoint." };
+    let answer;
+    try {
+      answer = await postForm(this.fetchImpl, account.oauth.tokenEndpoint, {
+        grant_type: "refresh_token",
+        refresh_token: account.secret.refresh,
+        client_id: account.oauth.clientId,
+        client_secret: account.oauth.clientSecret
+      });
+    } catch (err) {
+      return { ok: false, permanent: false, reason: err.message };
+    }
+    const token = str2(answer.body.access_token);
+    if (answer.status !== 200 || !token) {
+      return { ok: false, permanent: isPermanentRefusal(answer.status, answer.body), reason: reasonOf(answer.body, answer.status) };
+    }
+    const expiresIn = typeof answer.body.expires_in === "number" ? answer.body.expires_in : 3600;
+    const rotated = str2(answer.body.refresh_token);
+    return {
+      ok: true,
+      token,
+      expires: now2 + expiresIn * 1e3,
+      ...rotated && rotated !== account.secret.refresh ? { secret: { refresh: rotated } } : {}
+    };
+  }
+};
+function tokenSourceFor(account, fetchImpl = fetch) {
+  return account.kind === "service_account" ? new ServiceAccountTokenSource(fetchImpl) : new OAuthTokenSource(fetchImpl);
+}
+
+// src/drive.ts
+var DRIVE_REFRESH_AHEAD_MS = 15 * 6e4;
+var SCOPE2 = "org";
+var DRIVE_EXPORT_FORMATS = "docx,xlsx,pdf";
+var DRIVE_VFS_CACHE_MAX_SIZE = "2G";
+var DRIVE_VFS_CACHE_MIN_FREE_SPACE = "4G";
+var MAX_FOLDERS_PER_ORG = 8;
+var MAX_FOLDERS_PER_AGENT = 4;
+function str3(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function isKind2(v) {
+  return v === "connect_account" || v === "replace_account" || v === "forget_account" || v === "add_folder" || v === "edit_folder" || v === "remove_folder" || v === "assign" || v === "unassign";
+}
+function modeLabel(mode) {
+  return mode === "rw" ? "read and write" : "read-only";
+}
+function agentList(agents) {
+  const names = agents.map((a) => a.name).filter(Boolean);
+  if (names.length === 0) return "no agent yet";
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+function summarize2(p) {
+  const f = p.folder;
+  switch (p.kind) {
+    case "connect_account":
+      return `Connect Google Drive (${p.account?.accountLabel ?? "a Google account"})`;
+    case "replace_account":
+      return `Reconnect Google Drive (${p.account?.accountLabel ?? "a Google account"})`;
+    case "forget_account":
+      return "Disconnect Google Drive and unmount every folder";
+    case "add_folder":
+      return p.agents.length ? `Mount the Drive folder ${f?.name ?? ""} (${modeLabel(f?.mode ?? "ro")}) on ${agentList(p.agents)}`.replace(/\s+/g, " ") : `Add the Drive folder ${f?.name ?? ""} (${modeLabel(f?.mode ?? "ro")})`.replace(/\s+/g, " ");
+    case "edit_folder":
+      return `Change the Drive folder ${f?.name ?? ""} to ${modeLabel(f?.mode ?? "ro")}`.replace(/\s+/g, " ");
+    case "remove_folder":
+      return `Stop mounting the Drive folder ${f?.name ?? ""} everywhere`.replace(/\s+/g, " ");
+    case "assign":
+      return `Mount the Drive folder ${f?.name ?? ""} (${modeLabel(f?.mode ?? "ro")}) on ${agentList(p.agents)}`.replace(/\s+/g, " ");
+    case "unassign":
+      return `Stop mounting the Drive folder ${f?.name ?? ""} on ${agentList(p.agents)}`.replace(/\s+/g, " ");
+  }
+}
+function parseSecret(raw) {
+  if (!raw) return null;
+  if (str3(raw.refresh)) return { refresh: String(raw.refresh) };
+  if (str3(raw.clientEmail) && str3(raw.privateKey) && str3(raw.tokenUri)) {
+    return {
+      clientEmail: String(raw.clientEmail),
+      privateKey: String(raw.privateKey),
+      tokenUri: String(raw.tokenUri),
+      subject: str3(raw.subject)
+    };
+  }
+  return null;
+}
+function parseAgents(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((a) => a).filter((a) => str3(a.vmId)).map((a) => ({ vmId: String(a.vmId), name: str3(a.name) ?? "", hostname: str3(a.hostname) }));
+}
+function parseProposal2(payload) {
+  const changeId = str3(payload.changeId);
+  const kind = payload.kind;
+  if (!changeId || !isKind2(kind)) throw new Error("malformed drive.propose payload");
+  const acc = payload.account;
+  const oauth = acc?.oauth;
+  const accKind = acc?.kind === "oauth" ? "oauth" : acc?.kind === "service_account" ? "service_account" : null;
+  const accScope = str3(acc?.scope);
+  const account = accKind && accScope ? {
+    kind: accKind,
+    scope: accScope,
+    accountLabel: str3(acc?.accountLabel),
+    oauth: oauth && str3(oauth.tokenEndpoint) && str3(oauth.clientId) && str3(oauth.clientSecret) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId), clientSecret: String(oauth.clientSecret) } : null
+  } : null;
+  const f = payload.folder;
+  const mode = f?.mode === "ro" ? "ro" : f?.mode === "rw" ? "rw" : null;
+  const folderId = str3(f?.folderId);
+  const folderRowId = str3(f?.id);
+  const folderName = str3(f?.name);
+  const folder = mode && folderId && folderRowId && folderName ? { id: folderRowId, folderId, name: folderName, mode } : null;
+  return {
+    changeId,
+    kind,
+    accountId: str3(payload.accountId),
+    account,
+    secret: parseSecret(payload.secret),
+    folder,
+    agents: parseAgents(payload.agents)
+  };
+}
+var DriveFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadDriveStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  fetchImpl;
+  reports = [];
+  minting = false;
+  handlers() {
+    return {
+      "drive.propose": (p) => this.propose(p),
+      "drive.confirm": (p) => this.confirm(p),
+      "drive.cancel": (p) => this.cancel(p),
+      "drive.push": (p) => this.push(p),
+      "drive.read": async () => ({ ok: true, status: "read", data: this.summary() })
+    };
+  }
+  /**
+   * Proxy credential entries: one per agent that mounts at least one folder, scoped to that
+   * agent's own traffic. `www.googleapis.com` covers listing, metadata, media download, resumable
+   * upload and Google-doc export; rclone's Drive backend uses no other host.
+   */
+  credentials() {
+    const out = [];
+    for (const vmId of Object.keys(this.store.agents)) {
+      const folders = this.foldersFor(vmId);
+      if (folders.length === 0) continue;
+      const account = this.store.accounts[folders[0].accountId];
+      if (!account?.access || account.failed) continue;
+      out.push({
+        placeholder: this.store.agents[vmId].placeholder,
+        match_domain: "www.googleapis.com",
+        secret: account.access.token,
+        locations: ["header:authorization"],
+        vm_id: vmId
+      });
+    }
+    return out;
+  }
+  /** What the console may see: no secret, no access token. */
+  summary() {
+    return {
+      accounts: Object.entries(this.store.accounts).map(([id, a]) => ({
+        id,
+        kind: a.kind,
+        accountLabel: a.accountLabel,
+        scope: a.scope,
+        connected: !!a.access && !a.failed,
+        failed: a.failed
+      })),
+      folders: Object.entries(this.store.folders).map(([id, f]) => ({ id, folderId: f.folderId, name: f.name, mode: f.mode, agents: [...f.agents] }))
+    };
+  }
+  /** Reports made outside a command (mint failures), drained by the heartbeat. */
+  drainReports() {
+    const r = this.reports;
+    this.reports = [];
+    return r;
+  }
+  // ---- store helpers ----
+  save() {
+    saveDriveStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  agentOf(ref) {
+    let a = this.store.agents[ref.vmId];
+    if (!a) {
+      a = { name: ref.name, hostname: ref.hostname, placeholder: `CC-DRIVE-${randomBytes3(12).toString("hex")}` };
+      this.store.agents[ref.vmId] = a;
+    }
+    if (ref.name) a.name = ref.name;
+    if (ref.hostname) a.hostname = ref.hostname;
+    return a;
+  }
+  target(vmId) {
+    const host = this.store.agents[vmId]?.hostname ?? null;
+    if (!host) throw new Error("This agent has no hostname yet.");
+    return { vmId, hostname: host };
+  }
+  foldersFor(vmId) {
+    return Object.values(this.store.folders).filter((f) => f.agents.includes(vmId));
+  }
+  /** v1 holds one account; this is what "the organisation's Google connection" means. */
+  theAccount() {
+    const entry = Object.entries(this.store.accounts)[0];
+    return entry ? { id: entry[0], account: entry[1] } : null;
+  }
+  // ---- commands ----
+  async propose(payload) {
+    const p = parseProposal2(payload);
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data: { changeId: p.changeId }
+      };
+    }
+    this.validate(p);
+    const summary = summarize2(p);
+    const data = { changeId: p.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE2);
+      const applied = await this.apply(p);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE2, p, "your organization's Google Drive folders", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[drive] code sent for ${p.kind} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str3(payload.changeId);
+    const code = str3(payload.code) ?? "";
+    if (!changeId) throw new Error("malformed drive.confirm payload");
+    const data = { changeId };
+    const v = this.codes.verify(SCOPE2, changeId, code);
+    if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
+    const applied = await this.apply(v.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize2(v.proposal), sentVia: v.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str3(payload.changeId);
+    this.codes.cancel(SCOPE2, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  async push(payload) {
+    const vmId = str3(payload.vmId);
+    if (!vmId) throw new Error("malformed drive.push payload");
+    const agent = this.store.agents[vmId];
+    if (!agent) return { ok: true, status: "applied", data: { vmId, mounts: [], failed: [] } };
+    if (str3(payload.hostname)) agent.hostname = String(payload.hostname);
+    if (str3(payload.name)) agent.name = String(payload.name);
+    this.save();
+    const failed = await this.pushAgents([vmId]);
+    const mounts = this.foldersFor(vmId).map((f) => f.name);
+    this.log(`[drive] re-applied ${mounts.length} folder(s) on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
+    return {
+      ok: failed.length === 0,
+      status: failed.length ? "failed" : "applied",
+      message: failed.map((f) => f.error).join("; "),
+      data: { vmId, mounts: failed.length ? [] : mounts, failed }
+    };
+  }
+  // ---- validation ----
+  /**
+   * Refuse a proposal the control plane should not have sent. The names and ids become a path and
+   * a unit name on the box, and a read-write folder on a read-only grant would be discovered as a
+   * 403 in the agent's face rather than here.
+   */
+  validate(p) {
+    if (p.folder) {
+      if (!isValidFolderName(p.folder.name)) throw new Error("That folder name cannot be used as a directory name on the box.");
+      if (!isValidFolderId(p.folder.folderId)) throw new Error("That does not look like a Google Drive folder id.");
+    }
+    if (p.kind === "connect_account" || p.kind === "replace_account") {
+      if (!p.account) throw new Error("the proposal is missing the account");
+      if (!p.secret) throw new Error("no secret in the proposal");
+      if (p.account.kind === "oauth" && !p.account.oauth) throw new Error("an OAuth connection needs its token endpoint, client id and client secret");
+      if (p.account.scope !== DRIVE_WRITE_SCOPE) {
+        const writable = Object.values(this.store.folders).filter((f) => f.mode === "rw");
+        if (writable.length > 0) {
+          const names = writable.map((f) => f.name).join(", ");
+          throw new Error(`This connection has no write access, but ${names} ${writable.length === 1 ? "is" : "are"} mounted read-write. Make ${writable.length === 1 ? "it" : "them"} read-only first, or reconnect with write access.`);
+        }
+      }
+      return;
+    }
+    if (p.kind === "add_folder" || p.kind === "assign" || p.kind === "edit_folder") {
+      const existing = this.theAccount();
+      if (!existing) throw new Error("Connect a Google account before adding folders.");
+      if ((p.folder?.mode ?? "ro") === "rw" && existing.account.scope !== DRIVE_WRITE_SCOPE) {
+        throw new Error("This Google connection is read-only. Reconnect it with write access to make a folder writable.");
+      }
+    }
+    if (p.kind === "add_folder" || p.kind === "edit_folder") {
+      const clash = Object.entries(this.store.folders).find(([id, f]) => id !== p.folder?.id && f.name === p.folder?.name);
+      if (clash) throw new Error(`Another Drive folder is already mounted as ${p.folder?.name}. Pick a different name.`);
+    }
+    if (p.kind === "add_folder") {
+      const row = this.store.folders[p.folder?.id ?? ""];
+      if (row && row.folderId !== p.folder?.folderId) {
+        throw new Error("That Drive folder row already points at a different folder. Remove it, or edit it instead.");
+      }
+      if (!row && Object.keys(this.store.folders).length >= MAX_FOLDERS_PER_ORG) {
+        throw new Error(`An organization can mount at most ${MAX_FOLDERS_PER_ORG} Drive folders.`);
+      }
+    }
+    if (p.kind === "add_folder" || p.kind === "assign") {
+      for (const a of p.agents) {
+        const already = this.foldersFor(a.vmId).filter((f) => this.rowIdOf(f) !== p.folder?.id).length;
+        if (already >= MAX_FOLDERS_PER_AGENT) throw new Error(`An agent can mount at most ${MAX_FOLDERS_PER_AGENT} Drive folders.`);
+      }
+    }
+  }
+  /** The store key of a folder row, for checks that must count rows rather than Drive folders. */
+  rowIdOf(folder) {
+    return Object.entries(this.store.folders).find(([, f]) => f === folder)?.[0] ?? null;
+  }
+  // ---- applying ----
+  /**
+   * The whole desired state of one agent box: which folders to mount, how, and the placeholder to
+   * put in `Authorization`. A box reconciles against this list, so a folder that is gone is simply
+   * absent rather than named in a removal instruction.
+   */
+  applyBody(vmId) {
+    const agent = this.store.agents[vmId];
+    const folders = this.foldersFor(vmId);
+    const account = folders.length ? this.store.accounts[folders[0].accountId] : null;
+    return {
+      placeholder: agent?.placeholder ?? null,
+      // rclone writes this into its config. It changes nothing about what the box can do — the
+      // grant is on the token the proxy swaps in — but it keeps the config honest.
+      scope: account?.scope ?? DRIVE_WRITE_SCOPE,
+      // False when the organisation has no working Google connection: the box reports the mounts
+      // as unconfigured instead of starting them to collect 401s.
+      connected: !!account?.access && !account.failed,
+      defaults: {
+        exportFormats: DRIVE_EXPORT_FORMATS,
+        vfsCacheMaxSize: DRIVE_VFS_CACHE_MAX_SIZE,
+        vfsCacheMinFreeSpace: DRIVE_VFS_CACHE_MIN_FREE_SPACE
+      },
+      mounts: folders.map((f) => ({ name: f.name, folderId: f.folderId, mode: f.mode }))
+    };
+  }
+  async pushAgents(vmIds) {
+    const failed = [];
+    for (const vmId of vmIds) {
+      try {
+        await this.opts.agent.post(this.target(vmId), "/drive/apply", this.applyBody(vmId));
+      } catch (err) {
+        failed.push({ vmId, error: err.message });
+      }
+    }
+    return failed;
+  }
+  /** Every agent that mounts something, plus any named in the proposal. */
+  affected(p, before) {
+    return [.../* @__PURE__ */ new Set([...before, ...p.agents.map((a) => a.vmId)])];
+  }
+  async apply(p) {
+    switch (p.kind) {
+      case "connect_account":
+      case "replace_account": {
+        if (!p.account || !p.secret) throw new Error("the proposal is missing the account or its secret");
+        const id = p.accountId ?? "account";
+        const existing = this.theAccount();
+        const account = {
+          kind: p.account.kind,
+          accountLabel: p.account.accountLabel,
+          scope: p.account.scope,
+          ...p.account.oauth ? { oauth: p.account.oauth } : {},
+          secret: p.secret,
+          access: null,
+          failed: null,
+          updatedAt: new Date(this.now()).toISOString()
+        };
+        const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
+        if (!minted.ok) throw new Error(`Google refused this connection: ${minted.reason}`);
+        account.access = { token: minted.token, expires: minted.expires };
+        if (minted.secret) account.secret = minted.secret;
+        if (minted.accountLabel !== void 0 && minted.accountLabel !== null) account.accountLabel = minted.accountLabel;
+        this.store.accounts = { [id]: account };
+        for (const f of Object.values(this.store.folders)) f.accountId = id;
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const targets = Object.keys(this.store.agents).filter((vmId) => this.foldersFor(vmId).length > 0);
+        const failed = await this.pushAgents(targets);
+        this.log(`[drive] connected ${account.kind} ${account.accountLabel ?? ""} (${existing ? "replaced" : "new"})`);
+        return { accountId: id, accountLabel: account.accountLabel, applied: targets.filter((v) => !failed.some((f) => f.vmId === v)), failed };
+      }
+      case "forget_account": {
+        const before = Object.keys(this.store.agents).filter((vmId) => this.foldersFor(vmId).length > 0);
+        this.store.accounts = {};
+        this.store.folders = {};
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const failed = await this.pushAgents(before);
+        this.log("[drive] disconnected the Google account and dropped every folder");
+        return { applied: before.filter((v) => !failed.some((f) => f.vmId === v)), failed };
+      }
+      case "add_folder": {
+        if (!p.folder) throw new Error("the proposal is missing the folder");
+        const account = this.theAccount();
+        if (!account) throw new Error("Connect a Google account before adding folders.");
+        const before = this.agentsOf(p.folder.id);
+        const kept = this.store.folders[p.folder.id]?.agents ?? [];
+        for (const a of p.agents) this.agentOf(a);
+        this.store.folders[p.folder.id] = {
+          accountId: account.id,
+          folderId: p.folder.folderId,
+          name: p.folder.name,
+          mode: p.folder.mode,
+          agents: [.../* @__PURE__ */ new Set([...kept, ...p.agents.map((a) => a.vmId)])],
+          updatedAt: new Date(this.now()).toISOString()
+        };
+        return this.finish(p, before);
+      }
+      case "edit_folder": {
+        if (!p.folder) throw new Error("the proposal is missing the folder");
+        const f = this.store.folders[p.folder.id];
+        if (!f) throw new Error("That folder is not set up on the firewall. Add it again.");
+        const before = [...f.agents];
+        f.name = p.folder.name;
+        f.mode = p.folder.mode;
+        f.updatedAt = new Date(this.now()).toISOString();
+        return this.finish(p, before);
+      }
+      case "remove_folder": {
+        if (!p.folder) throw new Error("the proposal is missing the folder");
+        const before = this.agentsOf(p.folder.id);
+        delete this.store.folders[p.folder.id];
+        return this.finish(p, before);
+      }
+      case "assign": {
+        if (!p.folder) throw new Error("the proposal is missing the folder");
+        const f = this.store.folders[p.folder.id];
+        if (!f) throw new Error("That folder is not set up on the firewall. Add it again.");
+        const before = [...f.agents];
+        for (const a of p.agents) this.agentOf(a);
+        f.agents = [.../* @__PURE__ */ new Set([...f.agents, ...p.agents.map((a) => a.vmId)])];
+        f.updatedAt = new Date(this.now()).toISOString();
+        return this.finish(p, before);
+      }
+      case "unassign": {
+        if (!p.folder) throw new Error("the proposal is missing the folder");
+        const f = this.store.folders[p.folder.id];
+        if (!f) throw new Error("That folder is not set up on the firewall. Add it again.");
+        const before = [...f.agents];
+        const drop = new Set(p.agents.map((a) => a.vmId));
+        f.agents = f.agents.filter((vmId) => !drop.has(vmId));
+        f.updatedAt = new Date(this.now()).toISOString();
+        return this.finish(p, before);
+      }
+    }
+  }
+  agentsOf(folderRowId) {
+    return [...this.store.folders[folderRowId]?.agents ?? []];
+  }
+  /** Save, re-sync the proxy, and push to everyone the change touched, gone or arrived. */
+  async finish(p, before) {
+    this.save();
+    await this.opts.onCredentialsChanged?.();
+    const targets = this.affected(p, before);
+    const failed = await this.pushAgents(targets);
+    return { applied: targets.filter((v) => !failed.some((f) => f.vmId === v)), failed };
+  }
+  // ---- token minting ----
+  /**
+   * Keep every account's access token live. Called on a timer and once at start. A 4xx from
+   * Google is permanent (revoked, deleted, or seven days old on an External app still in
+   * Testing), so the account is marked failed and the console asks for a new connection; anything
+   * else is retried on the next tick with the old token still in place.
+   */
+  async refreshDue() {
+    if (this.minting) return;
+    this.minting = true;
+    try {
+      let changed = false;
+      for (const [id, account] of Object.entries(this.store.accounts)) {
+        if (account.failed) continue;
+        if (account.access && account.access.expires - this.now() > DRIVE_REFRESH_AHEAD_MS) continue;
+        const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
+        if (this.store.accounts[id] !== account) {
+          this.log(`[drive] token answer for ${id} arrived after the account was replaced; dropped`);
+          continue;
+        }
+        if (this.record(id, account, minted)) changed = true;
+      }
+      if (changed) {
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+      }
+    } finally {
+      this.minting = false;
+    }
+  }
+  /** Apply a mint answer to an account still in the store. Returns whether anything changed. */
+  record(id, account, minted) {
+    if (!minted.ok) {
+      if (!minted.permanent) {
+        this.log(`[drive] token for ${account.accountLabel ?? id} failed (${minted.reason}); will retry`);
+        return false;
+      }
+      account.failed = `Google refused the connection: ${minted.reason}. Connect the account again.`;
+      account.access = null;
+      this.reports.push({ command_id: `drive.token:${id}`, ok: false, status: "failed", message: account.failed, data: { accountId: id } });
+      this.log(`[drive] token for ${account.accountLabel ?? id} refused: ${minted.reason}`);
+      return true;
+    }
+    account.access = { token: minted.token, expires: minted.expires };
+    if (minted.secret) account.secret = minted.secret;
+    account.updatedAt = new Date(this.now()).toISOString();
+    this.log(`[drive] minted a token for ${account.accountLabel ?? id} (expires in ${Math.round((minted.expires - this.now()) / 6e4)} min)`);
+    return true;
+  }
+};
+
+// src/llm-store.ts
+function aad4(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:llm`;
 }
 function emptyLlmStore() {
@@ -34332,21 +34955,21 @@ function withRoles(store) {
   return store;
 }
 function loadLlmStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad3(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad4(ids2));
   return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? withRoles(parsed) : emptyLlmStore();
 }
 function saveLlmStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad3(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad4(ids2));
 }
 
 // src/llm.ts
 var REFRESH_AHEAD_MS = 15 * 6e4;
 var REFRESH_TIMEOUT_MS = 3e4;
-var SCOPE2 = "org";
-function str2(v) {
+var SCOPE3 = "org";
+function str4(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-function isKind2(v) {
+function isKind3(v) {
   return v === "add" || v === "replace" || v === "remove" || v === "bind" || v === "unbind" || v === "set_model";
 }
 function roleLabel(role) {
@@ -34357,7 +34980,7 @@ function modelShort(model) {
   const bare = at > 0 && model.slice(at + 1).includes(":") ? model.slice(0, at) : model;
   return bare.includes("/") ? bare.slice(bare.indexOf("/") + 1) : bare;
 }
-function summarize2(p) {
+function summarize3(p) {
   const a = p.agents[0];
   const replaced = p.replaces ? `, replacing ${p.replaces}` : "";
   switch (p.kind) {
@@ -34375,26 +34998,26 @@ function summarize2(p) {
       return `Stop using ${p.providerName} on ${a?.name ?? "the agent"}`;
   }
 }
-function parseSecret(secret) {
+function parseSecret2(secret) {
   if (!secret) return void 0;
-  if (str2(secret.apiKey)) return { apiKey: String(secret.apiKey) };
-  if (str2(secret.token)) return { token: String(secret.token) };
+  if (str4(secret.apiKey)) return { apiKey: String(secret.apiKey) };
+  if (str4(secret.token)) return { token: String(secret.token) };
   const o = secret.oauth;
-  if (o && str2(o.access) && str2(o.refresh)) {
+  if (o && str4(o.access) && str4(o.refresh)) {
     return {
       access: String(o.access),
       refresh: String(o.refresh),
       expires: typeof o.expires === "number" ? o.expires : 0,
-      accountId: str2(o.accountId),
-      email: str2(o.email)
+      accountId: str4(o.accountId),
+      email: str4(o.email)
     };
   }
   return void 0;
 }
 function parseProviderBlock(raw) {
   const b = raw;
-  if (!b || !str2(b.baseUrl) || !str2(b.api) || !Array.isArray(b.models)) return null;
-  const models = b.models.filter((m) => str2(m?.id)).map((m) => ({ id: String(m.id), name: str2(m.name) ?? String(m.id) }));
+  if (!b || !str4(b.baseUrl) || !str4(b.api) || !Array.isArray(b.models)) return null;
+  const models = b.models.filter((m) => str4(m?.id)).map((m) => ({ id: String(m.id), name: str4(m.name) ?? String(m.id) }));
   return models.length ? { baseUrl: String(b.baseUrl), api: String(b.api), models } : null;
 }
 function parseModelList(raw) {
@@ -34402,11 +35025,11 @@ function parseModelList(raw) {
   const list = raw.filter((m) => typeof m === "string" && m.length > 0);
   return list.length ? list : null;
 }
-function parseProposal2(payload) {
-  const changeId = str2(payload.changeId);
-  const credentialId = str2(payload.credentialId);
-  const provider = str2(payload.provider);
-  if (!changeId || !credentialId || !provider || !isKind2(payload.kind)) throw new Error("malformed llm.propose payload");
+function parseProposal3(payload) {
+  const changeId = str4(payload.changeId);
+  const credentialId = str4(payload.credentialId);
+  const provider = str4(payload.provider);
+  if (!changeId || !credentialId || !provider || !isKind3(payload.kind)) throw new Error("malformed llm.propose payload");
   const swap = payload.swap;
   const oauth = payload.oauth;
   const agents = Array.isArray(payload.agents) ? payload.agents : [];
@@ -34416,19 +35039,19 @@ function parseProposal2(payload) {
     kind: payload.kind,
     credentialId,
     provider,
-    providerName: str2(payload.providerName) ?? provider,
+    providerName: str4(payload.providerName) ?? provider,
     credKind: credKind === "api_key" || credKind === "token" || credKind === "oauth" ? credKind : null,
-    placeholder: str2(payload.placeholder),
-    hint: str2(payload.hint),
-    label: str2(payload.label),
-    profileId: str2(payload.profileId),
-    swap: swap && str2(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
-    oauth: oauth && str2(oauth.tokenEndpoint) && str2(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId) } : null,
+    placeholder: str4(payload.placeholder),
+    hint: str4(payload.hint),
+    label: str4(payload.label),
+    profileId: str4(payload.profileId),
+    swap: swap && str4(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
+    oauth: oauth && str4(oauth.tokenEndpoint) && str4(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId), ...str4(oauth.clientSecret) ? { clientSecret: String(oauth.clientSecret) } : {} } : null,
     providerBlock: parseProviderBlock(payload.providerBlock),
     allowedModels: parseModelList(payload.allowedModels),
-    replaces: str2(payload.replaces),
-    agents: agents.filter((a) => str2(a.vmId) && str2(a.model)).map((a) => ({ vmId: String(a.vmId), name: str2(a.name) ?? String(a.vmId), hostname: str2(a.hostname), model: String(a.model), role: a.role === "secondary" ? "secondary" : "primary" })),
-    secret: parseSecret(payload.secret)
+    replaces: str4(payload.replaces),
+    agents: agents.filter((a) => str4(a.vmId) && str4(a.model)).map((a) => ({ vmId: String(a.vmId), name: str4(a.name) ?? String(a.vmId), hostname: str4(a.hostname), model: String(a.model), role: a.role === "secondary" ? "secondary" : "primary" })),
+    secret: parseSecret2(payload.secret)
   };
 }
 function removeEntry(c) {
@@ -34536,43 +35159,43 @@ var LlmFirewall = class {
   }
   // ---- commands ----
   async propose(payload) {
-    const p = parseProposal2(payload);
-    const summary = summarize2(p);
+    const p = parseProposal3(payload);
+    const summary = summarize3(p);
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE2);
+      this.codes.drop(SCOPE3);
       const applied = await this.apply(p);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
-    const sent = await this.codes.send(SCOPE2, p, "your organization's model providers", summary, routes);
+    const sent = await this.codes.send(SCOPE3, p, "your organization's model providers", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[llm] code sent for ${p.kind} ${p.provider} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str2(payload.changeId);
-    const code = str2(payload.code) ?? "";
+    const changeId = str4(payload.changeId);
+    const code = str4(payload.code) ?? "";
     if (!changeId) throw new Error("malformed llm.confirm payload");
     const data = { changeId };
-    const v = this.codes.verify(SCOPE2, changeId, code);
+    const v = this.codes.verify(SCOPE3, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize2(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize3(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
-    const changeId = str2(payload.changeId);
-    this.codes.cancel(SCOPE2, changeId);
+    const changeId = str4(payload.changeId);
+    this.codes.cancel(SCOPE3, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   async push(payload) {
-    const vmId = str2(payload.vmId);
+    const vmId = str4(payload.vmId);
     if (!vmId) throw new Error("malformed llm.push payload");
     const agent = this.store.agents[vmId];
     if (!agent || agent.bindings.length === 0) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
-    if (str2(payload.hostname)) agent.hostname = String(payload.hostname);
-    if (str2(payload.name)) agent.name = String(payload.name);
+    if (str4(payload.hostname)) agent.hostname = String(payload.hostname);
+    if (str4(payload.name)) agent.name = String(payload.name);
     this.save();
     const failed = await this.pushAgents([vmId], []);
     this.log(`[llm] re-applied ${agent.bindings.length} provider(s) on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
@@ -34729,12 +35352,19 @@ var LlmFirewall = class {
       const res = await this.fetchImpl(c.oauth.tokenEndpoint, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.secret.refresh, client_id: c.oauth.clientId }).toString(),
+        // `client_secret` only when the provider needs one: a PKCE client refuses a refresh that
+        // carries one, and Google refuses one that does not.
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: c.secret.refresh,
+          client_id: c.oauth.clientId,
+          ...c.oauth.clientSecret ? { client_secret: c.oauth.clientSecret } : {}
+        }).toString(),
         signal: controller.signal
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || typeof body.access_token !== "string") {
-        const reason = str2(body.error_description) ?? str2(body.error) ?? `HTTP ${res.status}`;
+        const reason = str4(body.error_description) ?? str4(body.error) ?? `HTTP ${res.status}`;
         if (res.status >= 400 && res.status < 500) {
           c.failed = `Token refresh refused: ${reason}. Connect the account again.`;
           this.reports.push({ command_id: `llm.refresh:${id}`, ok: false, status: "failed", message: c.failed, data: { credentialId: id } });
@@ -34764,42 +35394,42 @@ var LlmFirewall = class {
 };
 
 // src/tailscale-store.ts
-function aad4(ids2) {
+function aad5(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:tailscale`;
 }
 function emptyTailscaleStore() {
   return { version: 1, agents: {} };
 }
 function loadTailscaleStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad4(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad5(ids2));
   return parsed && parsed.version === 1 && parsed.agents ? parsed : emptyTailscaleStore();
 }
 function saveTailscaleStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad4(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad5(ids2));
 }
 
 // src/tailscale.ts
 var SCOPE_PREFIX = "tailscale:";
-function str3(v) {
+function str5(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-function summarize3(p) {
+function summarize4(p) {
   return p.kind === "join" ? `Put ${p.agent.name} on your Tailscale network${p.ssh ? ", with Tailscale SSH" : ""}` : `Take ${p.agent.name} off your Tailscale network`;
 }
-function parseProposal3(payload) {
-  const changeId = str3(payload.changeId);
+function parseProposal4(payload) {
+  const changeId = str5(payload.changeId);
   const kind = payload.kind === "leave" ? "leave" : payload.kind === "join" ? "join" : null;
   const agent = payload.agent ?? {};
-  const vmId = str3(agent.vmId);
-  const hostname3 = str3(agent.hostname);
+  const vmId = str5(agent.vmId);
+  const hostname3 = str5(agent.hostname);
   if (!changeId || !kind || !vmId || !hostname3) throw new Error("malformed tailscale.propose payload");
-  const authKey = str3(payload.authKey);
+  const authKey = str5(payload.authKey);
   if (kind === "join" && !authKey) throw new Error("a join needs an auth key");
   return {
     changeId,
     kind,
     ssh: payload.ssh === true,
-    agent: { vmId, name: str3(agent.name) ?? vmId, hostname: hostname3, tailnetHostname: str3(agent.tailnetHostname) ?? str3(agent.name) ?? vmId },
+    agent: { vmId, name: str5(agent.name) ?? vmId, hostname: hostname3, tailnetHostname: str5(agent.tailnetHostname) ?? str5(agent.name) ?? vmId },
     ...authKey ? { authKey } : {}
   };
 }
@@ -34876,15 +35506,15 @@ var TailscaleFirewall = class {
       throw err;
     }
     const node = r.node ?? {};
-    entry.node = { name: str3(node.name), ip: str3(node.ip) };
+    entry.node = { name: str5(node.name), ip: str5(node.ip) };
     entry.ssh = r.ssh === true;
     this.save();
     this.log(`[tailscale] ${p.agent.name} joined as ${entry.node.name ?? entry.node.ip ?? "an unnamed node"} (ssh ${entry.ssh ? "on" : "off"})`);
     return { vmId: p.agent.vmId, ssh: entry.ssh, node: entry.node };
   }
   async propose(payload) {
-    const p = parseProposal3(payload);
-    const summary = summarize3(p);
+    const p = parseProposal4(payload);
+    const summary = summarize4(p);
     const data = { changeId: p.changeId, summary };
     if (!this.opts.channelsReady()) {
       return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
@@ -34901,21 +35531,497 @@ var TailscaleFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str3(payload.changeId);
-    const vmId = str3(payload.vmId);
+    const changeId = str5(payload.changeId);
+    const vmId = str5(payload.vmId);
     if (!changeId || !vmId) throw new Error("malformed tailscale.confirm payload");
-    const code = str3(payload.code) ?? "";
+    const code = str5(payload.code) ?? "";
     const data = { changeId };
     const v = this.codes.verify(this.scope(vmId), changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize3(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize4(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
-    const changeId = str3(payload.changeId);
-    const vmId = str3(payload.vmId);
+    const changeId = str5(payload.changeId);
+    const vmId = str5(payload.vmId);
     if (vmId) this.codes.cancel(this.scope(vmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/exit.ts
+import { createHmac, randomBytes as randomBytes4 } from "crypto";
+
+// src/exit-check.ts
+import { connect as tcpConnect } from "net";
+import { connect as tlsConnect } from "tls";
+var CHECK_SESSION = "__check";
+var DEFAULT_URL = "https://api.ipify.org/";
+var TIMEOUT_MS2 = 15e3;
+function fail(socket, message2) {
+  socket?.destroy();
+  return { ok: false, exitIp: null, latencyMs: 0, error: message2.slice(0, 200) };
+}
+function readUntil(socket, done, timeoutMs, endsOk = false) {
+  return new Promise((resolve2, reject) => {
+    let buf = Buffer.alloc(0);
+    const timer = setTimeout(() => cleanup(new Error("timed out")), timeoutMs);
+    const onData = (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (done(buf)) cleanup(null);
+    };
+    const onEnd = () => cleanup(endsOk ? null : new Error("the connection closed early"));
+    function cleanup(err) {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("end", onEnd);
+      socket.off("error", onErr);
+      if (err) reject(err);
+      else resolve2(buf);
+    }
+    const onErr = (err) => cleanup(err);
+    socket.on("data", onData);
+    socket.on("end", onEnd);
+    socket.on("error", onErr);
+  });
+}
+function dial(host, port, timeoutMs) {
+  return new Promise((resolve2, reject) => {
+    const socket = tcpConnect({ host, port });
+    socket.setTimeout(timeoutMs, () => socket.destroy(new Error("timed out connecting to the exit")));
+    socket.once("connect", () => resolve2(socket));
+    socket.once("error", reject);
+  });
+}
+async function httpConnect(socket, target, user, password) {
+  const auth = Buffer.from(`${user}:${password}`).toString("base64");
+  socket.write(
+    `CONNECT ${target} HTTP/1.1\r
+Host: ${target}\r
+Proxy-Authorization: Basic ${auth}\r
+Proxy-Connection: keep-alive\r
+\r
+`
+  );
+  const head = await readUntil(socket, (b) => b.includes("\r\n\r\n"), TIMEOUT_MS2);
+  const status = head.subarray(0, head.indexOf("\r\n")).toString();
+  if (!/^HTTP\/1\.[01] 2\d\d/.test(status)) throw new Error(`the exit refused the tunnel: ${status}`);
+}
+async function socks5Connect(socket, host, port, user, password) {
+  socket.write(Buffer.from([5, 1, 2]));
+  const greeting = await readUntil(socket, (b) => b.length >= 2, TIMEOUT_MS2);
+  if (greeting[0] !== 5 || greeting[1] !== 2) throw new Error("the exit refused username/password auth");
+  const u = Buffer.from(user, "utf8");
+  const p = Buffer.from(password, "utf8");
+  socket.write(Buffer.concat([Buffer.from([1, u.length]), u, Buffer.from([p.length]), p]));
+  const authReply = await readUntil(socket, (b) => b.length >= 2, TIMEOUT_MS2);
+  if (authReply[1] !== 0) throw new Error("the exit rejected the credential");
+  const name25 = Buffer.from(host, "utf8");
+  socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, name25.length]), name25, portBytes(port)]));
+  const reply = await readUntil(socket, socks5ReplyComplete, TIMEOUT_MS2);
+  if (reply[1] !== 0) throw new Error(`the exit refused the connection (reply ${reply[1]})`);
+}
+function socks5ReplyComplete(b) {
+  if (b.length < 5) return false;
+  const atyp = b[3];
+  if (atyp === 1) return b.length >= 10;
+  if (atyp === 4) return b.length >= 22;
+  if (atyp === 3) return b.length >= 7 + b[4];
+  return true;
+}
+function responseComplete(b) {
+  const end = b.indexOf("\r\n\r\n");
+  if (end < 0) return false;
+  const head = b.subarray(0, end).toString("latin1");
+  const length = /content-length:\s*(\d+)/i.exec(head);
+  if (!length) return false;
+  return b.length >= end + 4 + Number(length[1]);
+}
+function portBytes(port) {
+  const b = Buffer.alloc(2);
+  b.writeUInt16BE(port);
+  return b;
+}
+async function checkExit(upstream, render, opts = {}) {
+  const started = Date.now();
+  const url2 = new URL(opts.url || process.env.MITM_EXIT_CHECK_URL || DEFAULT_URL);
+  const host = url2.hostname;
+  const port = Number(url2.port || 443);
+  const session = opts.session === void 0 ? CHECK_SESSION : opts.session;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS2;
+  const user = render(upstream.usernameTemplate, upstream.username, "", session);
+  const password = render(upstream.passwordTemplate, "", upstream.password, session);
+  let socket = null;
+  try {
+    socket = await dial(upstream.host, upstream.port, timeoutMs);
+    if (upstream.scheme === "socks5") await socks5Connect(socket, host, port, user, password);
+    else await httpConnect(socket, `${host}:${port}`, user, password);
+    const tls = tlsConnect({ socket, servername: host });
+    await new Promise((resolve2, reject) => {
+      tls.once("secureConnect", () => resolve2());
+      tls.once("error", reject);
+    });
+    tls.write(`GET ${url2.pathname}${url2.search} HTTP/1.1\r
+Host: ${host}\r
+User-Agent: controlclaw-firewall\r
+Connection: close\r
+\r
+`);
+    const raw = await readUntil(tls, responseComplete, timeoutMs, true);
+    tls.destroy();
+    const body = raw.subarray(raw.indexOf("\r\n\r\n") + 4).toString("utf8").trim();
+    const ip = body.split("\n").map((l) => l.trim()).find((l) => /^[0-9a-fA-F.:]{7,45}$/.test(l)) ?? null;
+    return { ok: true, exitIp: ip, latencyMs: Date.now() - started, error: null };
+  } catch (err) {
+    return fail(socket, err.message || "the exit could not be reached");
+  } finally {
+    socket?.destroy();
+  }
+}
+
+// src/exit-store.ts
+function aad6(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:exit`;
+}
+function monthKey(now2) {
+  return new Date(now2).toISOString().slice(0, 7);
+}
+function emptyExitStore(now2 = Date.now()) {
+  return {
+    version: 1,
+    upstream: null,
+    sticky: false,
+    stickySalt: "",
+    capBytes: null,
+    usage: { month: monthKey(now2), bytesIn: 0, bytesOut: 0 },
+    lastCheck: null,
+    updatedAt: new Date(now2).toISOString()
+  };
+}
+function loadExitStore(path, boxKeyB64, ids2) {
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad6(ids2));
+  return parsed && parsed.version === 1 ? { ...emptyExitStore(), ...parsed } : emptyExitStore();
+}
+function saveExitStore(path, store, boxKeyB64, ids2) {
+  saveEncryptedJson(path, store, boxKeyB64, aad6(ids2));
+}
+
+// src/exit.ts
+var SCOPE4 = "org";
+var CHECK_INTERVAL_MS = 15 * 6e4;
+var DEFAULT_CAP_BYTES = 5 * 1024 ** 3;
+var COUNTED_IDS_KEPT = 2e4;
+function str6(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function num(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+function isKind4(v) {
+  return v === "add" || v === "replace" || v === "remove" || v === "settings";
+}
+function isScheme(v) {
+  return v === "http" || v === "https" || v === "socks5";
+}
+function renderTemplate(template, username, password, session) {
+  const out = (template || "").replace(/\[([^[\]]*)\]/g, (_m, inner) => session ? inner : "");
+  return out.replaceAll("{username}", username || "").replaceAll("{password}", password || "").replaceAll("{session}", session || "");
+}
+function summarize5(p) {
+  const who = p.usernameHint ? ` (${p.usernameHint})` : "";
+  switch (p.kind) {
+    case "add":
+      return `Send some sites out through ${p.providerName}${who} instead of your firewall`;
+    case "replace":
+      return `Replace the ${p.providerName} credential${who}`;
+    case "remove":
+      return "Stop sending any traffic out through a residential exit";
+    case "settings":
+      return p.sticky ? "Give each agent its own residential IP" : "Stop giving each agent its own residential IP";
+  }
+}
+function parseProposal5(payload) {
+  const changeId = str6(payload.changeId);
+  if (!changeId || !isKind4(payload.kind)) throw new Error("malformed exit.propose payload");
+  const kind = payload.kind;
+  const port = num(payload.port);
+  const provider = str6(payload.provider) ?? "custom";
+  if (kind === "add" || kind === "replace") {
+    if (!str6(payload.host) || !port || !isScheme(payload.scheme)) throw new Error("malformed exit.propose payload");
+  }
+  return {
+    changeId,
+    kind,
+    provider,
+    providerName: str6(payload.providerName) ?? provider,
+    scheme: isScheme(payload.scheme) ? payload.scheme : "http",
+    host: str6(payload.host) ?? "",
+    port: port ?? 0,
+    usernameTemplate: str6(payload.usernameTemplate) ?? "{username}",
+    passwordTemplate: str6(payload.passwordTemplate) ?? "{password}",
+    usernameHint: str6(payload.usernameHint),
+    sticky: payload.sticky === true,
+    // An absent key and an explicit `undefined` mean the same thing — say nothing about the cap.
+    // Only `null` removes it. (Over the wire only the absent form can occur, but the two must not
+    // diverge: the difference between "leave it" and "remove it" is a customer's invoice.)
+    capBytes: payload.capBytes === void 0 ? void 0 : num(payload.capBytes),
+    ...str6(payload.username) ? { username: String(payload.username) } : {},
+    ...str6(payload.password) ? { password: String(payload.password) } : {}
+  };
+}
+var ExitFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
+    this.check = opts.checkImpl ?? checkExit;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadExitStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  check;
+  reports = [];
+  checking = false;
+  lastCheckStartedAt = 0;
+  /**
+   * Flow ids already added to this month's total. Shipping is at-least-once — a POST that
+   * succeeded but whose cursor write did not lands the same batch again — and the control plane
+   * dedupes on `flow_id` but this counter had nothing to dedupe on, so a retry pushed the org
+   * towards its cap on bytes it had already been charged for. Bounded and in memory: a restart
+   * loses it, which leaves one batch's worth of a window, and the cap is a courtesy, not a ledger.
+   */
+  counted = /* @__PURE__ */ new Set();
+  handlers() {
+    return {
+      "exit.propose": (p) => this.propose(p),
+      "exit.confirm": (p) => this.confirm(p),
+      "exit.cancel": (p) => this.cancel(p),
+      "exit.check": () => this.runCheckCommand()
+    };
+  }
+  /**
+   * What the proxy reads (`exit.json`). The password is in it: the proxy is the one process that
+   * has to present it, and the file is written to a tmpfs the agent owns. Same bargain as the
+   * credential swap.
+   */
+  exitConfig() {
+    const u = this.store.upstream;
+    if (!u) return { enabled: false };
+    return {
+      enabled: true,
+      upstream: {
+        scheme: u.scheme,
+        host: u.host,
+        port: u.port,
+        username: u.username,
+        password: u.password,
+        username_template: u.usernameTemplate,
+        password_template: u.passwordTemplate
+      },
+      sticky: this.store.sticky,
+      sticky_salt: this.store.stickySalt,
+      cap_bytes: this.store.capBytes,
+      used_bytes: this.usedThisMonth()
+    };
+  }
+  /** What rides the heartbeat. No secret, and no field the control plane could mistake for policy. */
+  status() {
+    const u = this.store.upstream;
+    this.rollMonth();
+    return {
+      configured: !!u,
+      provider: u?.provider ?? null,
+      sticky: this.store.sticky,
+      hint: u?.usernameHint ?? null,
+      cap_bytes: this.store.capBytes,
+      last_check: this.store.lastCheck ? {
+        at: Math.round(this.store.lastCheck.at / 1e3),
+        ok: this.store.lastCheck.ok,
+        exit_ip: this.store.lastCheck.exitIp,
+        error: this.store.lastCheck.error
+      } : null,
+      usage: { month: this.store.usage.month, bytes_in: this.store.usage.bytesIn, bytes_out: this.store.usage.bytesOut }
+    };
+  }
+  /** Reports made without a command behind them (a check that ran on its own), drained per beat. */
+  drainReports() {
+    const r = this.reports;
+    this.reports = [];
+    return r;
+  }
+  usedThisMonth() {
+    this.rollMonth();
+    return this.store.usage.bytesIn + this.store.usage.bytesOut;
+  }
+  rollMonth() {
+    const month = monthKey(this.now());
+    if (this.store.usage.month !== month) {
+      this.store.usage = { month, bytesIn: 0, bytesOut: 0 };
+      this.save();
+    }
+  }
+  /**
+   * Add up what the relayed flows moved. Fed from the traffic log by the activity shipper, which
+   * is already reading every record on its way to the control plane, so this needs no second
+   * reader and no IPC. One consequence worth knowing: while the control plane is unreachable the
+   * shipper does not advance, so the cap under-counts for the length of the outage.
+   */
+  noteTraffic(records) {
+    if (!this.store.upstream) return;
+    let bytesIn = 0;
+    let bytesOut = 0;
+    for (const raw of records) {
+      const r = raw;
+      if (r?.effect !== "residential") continue;
+      const id = typeof r.flow_id === "string" ? r.flow_id : null;
+      if (id) {
+        if (this.counted.has(id)) continue;
+        this.counted.add(id);
+        if (this.counted.size > COUNTED_IDS_KEPT) {
+          for (const old of [...this.counted].slice(0, this.counted.size - COUNTED_IDS_KEPT)) this.counted.delete(old);
+        }
+      }
+      if (typeof r.bytes_in === "number") bytesIn += Math.max(0, r.bytes_in);
+      if (typeof r.bytes_out === "number") bytesOut += Math.max(0, r.bytes_out);
+    }
+    if (!bytesIn && !bytesOut) return;
+    this.rollMonth();
+    this.store.usage.bytesIn += bytesIn;
+    this.store.usage.bytesOut += bytesOut;
+    this.save();
+  }
+  /** Called on a timer. Runs the reachability check when it is due and the org has an exit. */
+  async tick() {
+    if (!this.store.upstream || this.checking) return;
+    if (this.now() - this.lastCheckStartedAt < CHECK_INTERVAL_MS) return;
+    await this.runCheck();
+  }
+  async runCheck() {
+    const upstream = this.store.upstream;
+    if (!upstream || this.checking) return null;
+    this.checking = true;
+    this.lastCheckStartedAt = this.now();
+    try {
+      const result = await this.check(upstream, renderTemplate, { session: this.store.sticky ? CHECK_SESSION : null });
+      const before = this.store.lastCheck;
+      this.store.lastCheck = { at: this.now(), ok: result.ok, exitIp: result.exitIp, error: result.error };
+      this.save();
+      if (!before || before.ok !== result.ok || before.exitIp !== result.exitIp) {
+        this.log(`[exit] ${result.ok ? `reachable, exiting from ${result.exitIp ?? "an unknown address"}` : `unreachable: ${result.error}`}`);
+      }
+      return result;
+    } catch (err) {
+      this.store.lastCheck = { at: this.now(), ok: false, exitIp: null, error: err.message.slice(0, 200) };
+      this.save();
+      return null;
+    } finally {
+      this.checking = false;
+    }
+  }
+  save() {
+    this.store.updatedAt = new Date(this.now()).toISOString();
+    saveExitStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  // ---- commands ----
+  async runCheckCommand() {
+    if (!this.store.upstream) return { ok: false, status: "failed", message: "No residential exit is set up." };
+    this.lastCheckStartedAt = 0;
+    const result = await this.runCheck();
+    if (!result) return { ok: false, status: "failed", message: "The check could not run." };
+    return {
+      ok: result.ok,
+      status: result.ok ? "applied" : "failed",
+      message: result.error ?? "",
+      data: { exitIp: result.exitIp, latencyMs: result.latencyMs }
+    };
+  }
+  async apply(p) {
+    if (p.kind === "remove") {
+      this.store.upstream = null;
+      this.store.stickySalt = "";
+      this.store.lastCheck = null;
+      this.save();
+      await this.opts.onExitChanged?.();
+      this.log("[exit] residential exit removed");
+      return { configured: false };
+    }
+    if (p.kind === "settings") {
+      this.store.sticky = p.sticky;
+      if (p.capBytes !== void 0) this.store.capBytes = p.capBytes;
+      this.save();
+      await this.opts.onExitChanged?.();
+      this.log(`[exit] sticky ${p.sticky ? "on" : "off"}, cap ${p.capBytes ?? "none"}`);
+      return { configured: !!this.store.upstream, sticky: p.sticky };
+    }
+    const previous = this.store.upstream;
+    const username = p.username ?? previous?.username ?? "";
+    const password = p.password ?? previous?.password ?? "";
+    if (!password) throw new Error("This change carries no credential.");
+    const upstream = {
+      provider: p.provider,
+      scheme: p.scheme,
+      host: p.host,
+      port: p.port,
+      username,
+      password,
+      usernameTemplate: p.usernameTemplate,
+      passwordTemplate: p.passwordTemplate,
+      usernameHint: p.usernameHint ?? previous?.usernameHint ?? null
+    };
+    this.store.upstream = upstream;
+    this.store.sticky = p.sticky;
+    if (p.capBytes !== void 0) this.store.capBytes = p.capBytes;
+    else if (!previous) this.store.capBytes = DEFAULT_CAP_BYTES;
+    this.store.stickySalt = randomBytes4(32).toString("hex");
+    this.store.lastCheck = null;
+    this.save();
+    await this.opts.onExitChanged?.();
+    this.log(`[exit] ${p.kind === "add" ? "connected" : "replaced"} ${p.providerName} (${p.scheme}://${p.host}:${p.port}, sticky ${p.sticky ? "on" : "off"})`);
+    const result = await this.runCheck();
+    return {
+      configured: true,
+      sticky: p.sticky,
+      reachable: result?.ok ?? false,
+      exitIp: result?.exitIp ?? null,
+      ...result && !result.ok ? { checkError: result.error } : {}
+    };
+  }
+  async propose(payload) {
+    const p = parseProposal5(payload);
+    const summary = summarize5(p);
+    const data = { changeId: p.changeId, summary };
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", data, message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly." };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE4);
+      const applied = await this.apply(p);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE4, p, "your organization's exit", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[exit] code sent for ${p.kind} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str6(payload.changeId);
+    if (!changeId) throw new Error("malformed exit.confirm payload");
+    const code = str6(payload.code) ?? "";
+    const data = { changeId };
+    const v = this.codes.verify(SCOPE4, changeId, code);
+    if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
+    const applied = await this.apply(v.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize5(v.proposal), sentVia: v.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str6(payload.changeId);
+    this.codes.cancel(SCOPE4, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
 };
@@ -35051,18 +36157,18 @@ var ConnectorRuntime = class {
 };
 
 // src/connector-store.ts
-function aad5(ids2) {
+function aad7(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:connectors`;
 }
 function emptyConnectorStore() {
   return { version: 1, connections: {}, agents: {} };
 }
 function loadConnectorStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad5(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad7(ids2));
   return parsed && parsed.version === 1 && parsed.connections && parsed.agents ? parsed : emptyConnectorStore();
 }
 function saveConnectorStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad5(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad7(ids2));
 }
 function servicesFor(store, agent) {
   const services = /* @__PURE__ */ new Set();
@@ -35074,9 +36180,9 @@ function servicesFor(store, agent) {
 }
 
 // src/connectors.ts
-var SCOPE3 = "org";
+var SCOPE5 = "org";
 var OAUTH_PENDING_MS = 15 * 6e4;
-function str4(v) {
+function str7(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 function strMap(v, max = 20) {
@@ -35088,32 +36194,32 @@ function strMap(v, max = 20) {
   }
   return out;
 }
-function isKind3(v) {
+function isKind5(v) {
   return v === "connect" || v === "replace" || v === "remove" || v === "assign" || v === "unassign" || v === "oauth_connect" || v === "oauth_reconnect";
 }
 var SERVICE_RE = /^[a-z0-9][a-z0-9_]{0,60}$/;
 function parseConnectorProposal(payload) {
-  const changeId = str4(payload.changeId);
-  const service = str4(payload.service);
-  if (!changeId || !service || !SERVICE_RE.test(service) || !isKind3(payload.kind)) throw new Error("malformed connectors.propose payload");
+  const changeId = str7(payload.changeId);
+  const service = str7(payload.service);
+  if (!changeId || !service || !SERVICE_RE.test(service) || !isKind5(payload.kind)) throw new Error("malformed connectors.propose payload");
   const agents = Array.isArray(payload.agents) ? payload.agents : [];
   const secret = payload.secret;
   return {
     changeId,
     kind: payload.kind,
     service,
-    serviceName: str4(payload.serviceName) ?? service,
-    connectionId: str4(payload.connectionId),
-    label: str4(payload.label),
+    serviceName: str7(payload.serviceName) ?? service,
+    connectionId: str7(payload.connectionId),
+    label: str7(payload.label),
     extra: strMap(payload.extra),
-    clientId: str4(payload.clientId),
+    clientId: str7(payload.clientId),
     authorizationOptionIds: Array.isArray(payload.authorizationOptionIds) ? payload.authorizationOptionIds.filter((s) => typeof s === "string" && s.length > 0).slice(0, 40) : [],
-    agents: agents.filter((a) => str4(a.vmId)).map((a) => ({ vmId: String(a.vmId), name: str4(a.name) ?? String(a.vmId), hostname: str4(a.hostname), privateIp: str4(a.privateIp) })),
+    agents: agents.filter((a) => str7(a.vmId)).map((a) => ({ vmId: String(a.vmId), name: str7(a.name) ?? String(a.vmId), hostname: str7(a.hostname), privateIp: str7(a.privateIp) })),
     ...secret ? {
       secret: {
-        ...str4(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {},
+        ...str7(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {},
         ...secret.values ? { values: strMap(secret.values, 30) } : {},
-        ...str4(secret.clientSecret) ? { clientSecret: String(secret.clientSecret) } : {},
+        ...str7(secret.clientSecret) ? { clientSecret: String(secret.clientSecret) } : {},
         ...secret.extraSecret ? { extraSecret: strMap(secret.extraSecret, 20) } : {}
       }
     } : {}
@@ -35181,10 +36287,10 @@ var ConnectorsFirewall = class {
   }
   // ---- reads ----
   async read(payload) {
-    const kind = str4(payload.kind);
+    const kind = str7(payload.kind);
     try {
       if (kind === "setup") {
-        const service = str4(payload.service);
+        const service = str7(payload.service);
         if (!service || !SERVICE_RE.test(service)) throw new Error("connectors.read setup needs a service");
         const setup = await this.opts.runtime.setup(service);
         return { ok: true, status: "done", data: { kind, service, auth: setup.auth ?? [], oauthClient: setup.oauthClient ?? null } };
@@ -35244,7 +36350,7 @@ var ConnectorsFirewall = class {
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE3);
+      this.codes.drop(SCOPE5);
       try {
         const applied = await this.apply(p);
         return { ok: true, status: applied.status, message: applied.message ?? "", data: { ...data, ...applied.data, tofu: true } };
@@ -35252,17 +36358,17 @@ var ConnectorsFirewall = class {
         return { ok: false, status: "failed", message: messageOf(err), data };
       }
     }
-    const sent = await this.codes.send(SCOPE3, p, "your organization's app connections", summary, routes);
+    const sent = await this.codes.send(SCOPE5, p, "your organization's app connections", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[connectors] code sent for ${p.kind} ${p.service} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str4(payload.changeId);
-    const code = str4(payload.code) ?? "";
+    const changeId = str7(payload.changeId);
+    const code = str7(payload.code) ?? "";
     if (!changeId) throw new Error("malformed connectors.confirm payload");
     const data = { changeId };
-    const v = this.codes.verify(SCOPE3, changeId, code);
+    const v = this.codes.verify(SCOPE5, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     try {
@@ -35273,8 +36379,8 @@ var ConnectorsFirewall = class {
     }
   }
   async cancel(payload) {
-    const changeId = str4(payload.changeId);
-    this.codes.cancel(SCOPE3, changeId);
+    const changeId = str7(payload.changeId);
+    this.codes.cancel(SCOPE5, changeId);
     for (const [state, pending] of this.pendingOauth) if (pending.proposal.changeId === changeId) this.pendingOauth.delete(state);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -35401,9 +36507,9 @@ var ConnectorsFirewall = class {
    * replays it on loopback, and reads the outcome from the runtime's own request record.
    */
   async callback(payload) {
-    const state = str4(payload.state);
-    const code = str4(payload.code);
-    const error48 = str4(payload.error);
+    const state = str7(payload.state);
+    const code = str7(payload.code);
+    const error48 = str7(payload.error);
     if (!state) throw new Error("malformed connectors.callback payload");
     this.forgetStaleOauth();
     const pending = this.pendingOauth.get(state);
@@ -35524,7 +36630,7 @@ var ConnectorsFirewall = class {
    * and no MCP entry had been pushed.
    */
   async push(payload) {
-    const vmId = str4(payload.vmId);
+    const vmId = str7(payload.vmId);
     if (!vmId) throw new Error("malformed connectors.push payload");
     const a = this.store.agents[vmId];
     if (!a || a.connections.length === 0) {
@@ -35535,9 +36641,9 @@ var ConnectorsFirewall = class {
         data: { vmId, applied: [], failed: [], held: 0 }
       };
     }
-    if (str4(payload.hostname)) a.hostname = String(payload.hostname);
-    if (str4(payload.name)) a.name = String(payload.name);
-    if (str4(payload.privateIp)) a.privateIp = String(payload.privateIp);
+    if (str7(payload.hostname)) a.hostname = String(payload.hostname);
+    if (str7(payload.name)) a.name = String(payload.name);
+    if (str7(payload.privateIp)) a.privateIp = String(payload.privateIp);
     this.save();
     const pushed = await this.pushAgents([vmId]);
     return {
@@ -35553,7 +36659,7 @@ var ConnectorsFirewall = class {
    * the insecure outcome.
    */
   async forget(payload) {
-    const vmId = str4(payload.vmId);
+    const vmId = str7(payload.vmId);
     if (!vmId) throw new Error("malformed connectors.forget payload");
     const a = this.store.agents[vmId];
     if (!a) return { ok: true, status: "applied", data: { vmId, revoked: false } };
@@ -35731,19 +36837,19 @@ function createConnectorGate(opts) {
 
 // src/update.ts
 var SCOPE_PREFIX2 = "update:";
-function str5(v) {
+function str8(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-function summarize4(p) {
+function summarize6(p) {
   return `Update the software on ${p.agent.name}`;
 }
-function parseProposal4(payload) {
-  const changeId = str5(payload.changeId);
+function parseProposal6(payload) {
+  const changeId = str8(payload.changeId);
   const agent = payload.agent ?? {};
-  const vmId = str5(agent.vmId);
-  const hostname3 = str5(agent.hostname);
+  const vmId = str8(agent.vmId);
+  const hostname3 = str8(agent.hostname);
   if (!changeId || !vmId || !hostname3) throw new Error("malformed update.propose payload");
-  return { changeId, agent: { vmId, name: str5(agent.name) ?? vmId, hostname: hostname3 } };
+  return { changeId, agent: { vmId, name: str8(agent.name) ?? vmId, hostname: hostname3 } };
 }
 var UpdateFirewall = class {
   constructor(opts) {
@@ -35773,8 +36879,8 @@ var UpdateFirewall = class {
     return { vmId: p.agent.vmId, phase: r?.status?.phase ?? "resolving" };
   }
   async propose(payload) {
-    const p = parseProposal4(payload);
-    const summary = summarize4(p);
+    const p = parseProposal6(payload);
+    const summary = summarize6(p);
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (!this.opts.channelsReady()) {
@@ -35796,20 +36902,20 @@ var UpdateFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str5(payload.changeId);
-    const vmId = str5(payload.vmId);
+    const changeId = str8(payload.changeId);
+    const vmId = str8(payload.vmId);
     if (!changeId || !vmId) throw new Error("malformed update.confirm payload");
-    const code = str5(payload.code) ?? "";
+    const code = str8(payload.code) ?? "";
     const data = { changeId };
     const v = this.codes.verify(this.scope(vmId), changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize4(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize6(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
-    const changeId = str5(payload.changeId);
-    const vmId = str5(payload.vmId);
+    const changeId = str8(payload.changeId);
+    const vmId = str8(payload.vmId);
     if (vmId) this.codes.cancel(this.scope(vmId), changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -36123,6 +37229,7 @@ var FIREWALL_BACKUP_FILES = [
   "/opt/controlclaw/state/channels.enc",
   "/opt/controlclaw/state/llm.enc",
   "/opt/controlclaw/state/backup.enc",
+  "/opt/controlclaw/state/drive.enc",
   // The CA three ways, as gen-ca.sh writes it: the pair the firewall publishes and the agents
   // install, and the combined key+cert the proxy signs with. They must travel together: a restore
   // that brought only the combined file back left the proxy signing with one CA while every agent
@@ -36140,19 +37247,19 @@ var EXPIRY_GRACE_MS = 24 * 60 * 60 * 1e3;
 var DAY_MS = 24 * 60 * 60 * 1e3;
 
 // src/backup-store.ts
-function aad6(ids2) {
+function aad8(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:backup`;
 }
 function emptyBackupStore() {
   return { version: 1, keypair: null, recovery: null };
 }
 function loadBackupStore(path, boxKey, ids2) {
-  const loaded2 = loadEncryptedJson(path, boxKey, aad6(ids2));
+  const loaded2 = loadEncryptedJson(path, boxKey, aad8(ids2));
   if (!loaded2) return emptyBackupStore();
   return { version: 1, keypair: loaded2.keypair ?? null, recovery: loaded2.recovery ? { ...loaded2.recovery, signingPublicKey: loaded2.recovery.signingPublicKey ?? null } : null };
 }
 function saveBackupStore(path, store, boxKey, ids2) {
-  saveEncryptedJson(path, store, boxKey, aad6(ids2));
+  saveEncryptedJson(path, store, boxKey, aad8(ids2));
 }
 
 // src/self-backup.ts
@@ -36237,14 +37344,14 @@ var RESTORE_PREFIX = "backup-restore:";
 var RECOVERY_SCOPE = "backup-recovery:org";
 var SELF_RESTORE_SCOPE = "backup-firewall-restore:self";
 var KINDS = /* @__PURE__ */ new Set(["workspace", "state"]);
-function str6(v) {
+function str9(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 function isPublicKey(v) {
   return v.length === 44 && /^[A-Za-z0-9+/]{43}=$/.test(v);
 }
 function httpsUrl(v) {
-  const s = str6(v);
+  const s = str9(v);
   if (!s || s.length > 4096) return null;
   try {
     return new URL(s).protocol === "https:" ? s : null;
@@ -36410,10 +37517,10 @@ var BackupFirewall = class {
   }
   parseAgent(payload) {
     const a = payload.agent ?? {};
-    const vmId = str6(a.vmId);
-    const hostname3 = str6(a.hostname);
+    const vmId = str9(a.vmId);
+    const hostname3 = str9(a.hostname);
     if (!vmId || !hostname3) throw new Error("malformed backup payload: the agent is not named");
-    return { vmId, name: str6(a.name) ?? vmId, hostname: hostname3 };
+    return { vmId, name: str9(a.name) ?? vmId, hostname: hostname3 };
   }
   // ---- taking one ----
   /**
@@ -36422,7 +37529,7 @@ var BackupFirewall = class {
    * one blob can never be served in place of the other.
    */
   async run(payload) {
-    const backupId = str6(payload.backupId);
+    const backupId = str9(payload.backupId);
     if (!backupId) throw new Error("malformed backup.run payload: no backupId");
     const agent = this.parseAgent(payload);
     const uploads = payload.uploads ?? {};
@@ -36475,7 +37582,7 @@ var BackupFirewall = class {
   }
   /** This box's own state. Wrapped to the recovery key only — its own key is one of the files. */
   async runSelf(payload) {
-    const backupId = str6(payload.backupId);
+    const backupId = str9(payload.backupId);
     const uploadUrl = httpsUrl(payload.uploadUrl);
     if (!backupId || !uploadUrl) throw new Error("malformed backup.firewall-run payload");
     if (!this.opts.selfBackup) return { ok: false, status: "unavailable", message: "This firewall cannot back itself up.", data: { backupId } };
@@ -36514,13 +37621,13 @@ var BackupFirewall = class {
   }
   // ---- putting one back ----
   parseRestore(payload) {
-    const changeId = str6(payload.changeId);
-    const backupId = str6(payload.backupId);
-    const kind = str6(payload.kind);
-    const header = str6(payload.header);
-    const manifestHash2 = str6(payload.manifestHash);
+    const changeId = str9(payload.changeId);
+    const backupId = str9(payload.backupId);
+    const kind = str9(payload.kind);
+    const header = str9(payload.header);
+    const manifestHash2 = str9(payload.manifestHash);
     const downloadUrl = httpsUrl(payload.downloadUrl);
-    const wrapped = str6(payload.wrapped);
+    const wrapped = str9(payload.wrapped);
     if (!changeId || !backupId || !kind || !KINDS.has(kind) || !header || !manifestHash2 || !downloadUrl || !wrapped) {
       throw new Error("malformed backup.restore.propose payload");
     }
@@ -36533,7 +37640,7 @@ var BackupFirewall = class {
       manifestHash: manifestHash2,
       downloadUrl,
       wrapped,
-      takenAt: str6(payload.takenAt)
+      takenAt: str9(payload.takenAt)
     };
   }
   /**
@@ -36607,31 +37714,31 @@ var BackupFirewall = class {
     return `${RESTORE_PREFIX}${vmId}`;
   }
   async confirmRestore(payload) {
-    const changeId = str6(payload.changeId);
-    const vmId = str6(payload.vmId);
+    const changeId = str9(payload.changeId);
+    const vmId = str9(payload.vmId);
     if (!changeId || !vmId) throw new Error("malformed backup.restore.confirm payload");
     const data = { changeId };
-    const v = this.restoreCodes.verify(this.scopeFor(vmId), changeId, str6(payload.code) ?? "");
+    const v = this.restoreCodes.verify(this.scopeFor(vmId), changeId, str9(payload.code) ?? "");
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No restore is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.applyRestore(v.proposal);
     return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeRestore(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancelRestore(payload) {
-    const changeId = str6(payload.changeId);
-    const vmId = str6(payload.vmId);
+    const changeId = str9(payload.changeId);
+    const vmId = str9(payload.vmId);
     if (vmId) this.restoreCodes.cancel(this.scopeFor(vmId), changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   // ---- the recovery key ----
   async proposeRecovery(payload) {
-    const changeId = str6(payload.changeId);
-    const publicKey = str6(payload.publicKey);
+    const changeId = str9(payload.changeId);
+    const publicKey = str9(payload.publicKey);
     if (!changeId || !publicKey) throw new Error("malformed backup.recovery.propose payload");
     if (!isPublicKey(publicKey)) {
       return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
     }
-    const signingPublicKey = str6(payload.signingPublicKey);
+    const signingPublicKey = str9(payload.signingPublicKey);
     if (signingPublicKey && !isPublicKey(signingPublicKey)) {
       return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
     }
@@ -36701,8 +37808,8 @@ var BackupFirewall = class {
    * the control plane could lie about, which is why the box prints what it was given.
    */
   async rebindRecovery(payload) {
-    const publicKey = str6(payload.publicKey);
-    const signingPublicKey = str6(payload.signingPublicKey);
+    const publicKey = str9(payload.publicKey);
+    const signingPublicKey = str9(payload.signingPublicKey);
     if (!publicKey || !signingPublicKey || !isPublicKey(publicKey) || !isPublicKey(signingPublicKey)) {
       return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: {} };
     }
@@ -36730,10 +37837,10 @@ var BackupFirewall = class {
     };
   }
   async confirmRecovery(payload) {
-    const changeId = str6(payload.changeId);
+    const changeId = str9(payload.changeId);
     if (!changeId) throw new Error("malformed backup.recovery.confirm payload");
     const data = { changeId };
-    const v = this.recoveryCodes.verify(RECOVERY_SCOPE, changeId, str6(payload.code) ?? "");
+    const v = this.recoveryCodes.verify(RECOVERY_SCOPE, changeId, str9(payload.code) ?? "");
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No recovery key is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const own = await this.keypair();
@@ -36753,23 +37860,23 @@ var BackupFirewall = class {
     };
   }
   async cancelRecovery(payload) {
-    const changeId = str6(payload.changeId);
+    const changeId = str9(payload.changeId);
     this.recoveryCodes.cancel(RECOVERY_SCOPE, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   // ---- putting this firewall back from its own backup ----
   parseSelfRestore(payload) {
-    const changeId = str6(payload.changeId);
-    const backupId = str6(payload.backupId);
-    const sourceBoxId = str6(payload.sourceBoxId);
-    const header = str6(payload.header);
-    const manifestHash2 = str6(payload.manifestHash);
+    const changeId = str9(payload.changeId);
+    const backupId = str9(payload.backupId);
+    const sourceBoxId = str9(payload.sourceBoxId);
+    const header = str9(payload.header);
+    const manifestHash2 = str9(payload.manifestHash);
     const downloadUrl = httpsUrl(payload.downloadUrl);
-    const wrapped = str6(payload.wrappedKey);
+    const wrapped = str9(payload.wrappedKey);
     if (!changeId || !backupId || !sourceBoxId || !header || !manifestHash2 || !downloadUrl || !wrapped) {
       throw new Error("malformed backup.firewall-restore payload");
     }
-    return { changeId, backupId, sourceBoxId, header, manifestHash: manifestHash2, downloadUrl, wrapped, takenAt: str6(payload.takenAt) };
+    return { changeId, backupId, sourceBoxId, header, manifestHash: manifestHash2, downloadUrl, wrapped, takenAt: str9(payload.takenAt) };
   }
   /**
    * Unseal the data key and hand the whole job to `self-restore.ts`. The unwrap happens HERE,
@@ -36833,10 +37940,10 @@ var BackupFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirmSelfRestore(payload) {
-    const changeId = str6(payload.changeId);
+    const changeId = str9(payload.changeId);
     if (!changeId) throw new Error("malformed backup.firewall-restore.confirm payload");
     const data = { changeId };
-    const v = this.selfRestoreCodes.verify(SELF_RESTORE_SCOPE, changeId, str6(payload.code) ?? "");
+    const v = this.selfRestoreCodes.verify(SELF_RESTORE_SCOPE, changeId, str9(payload.code) ?? "");
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No firewall restore is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const own = await this.keypair();
@@ -36844,7 +37951,7 @@ var BackupFirewall = class {
     return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeSelfRestore(v.proposal, own.fingerprint), sentVia: v.sentVia, tofu: false } };
   }
   async cancelSelfRestore(payload) {
-    const changeId = str6(payload.changeId);
+    const changeId = str9(payload.changeId);
     this.selfRestoreCodes.cancel(SELF_RESTORE_SCOPE, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -36857,7 +37964,8 @@ var ENC_PURPOSES = {
   "channels.enc": "channels",
   "llm.enc": "llm",
   "backup.enc": "backup",
-  "connectors.enc": "connectors"
+  "connectors.enc": "connectors",
+  "drive.enc": "drive"
 };
 var MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
 function basename(path) {
@@ -37215,11 +38323,11 @@ var SelfUpdateService = class {
 
 // src/firewall-update.ts
 var SCOPE_PREFIX3 = "firewall-update:";
-var SCOPE4 = `${SCOPE_PREFIX3}self`;
-function str7(v) {
+var SCOPE6 = `${SCOPE_PREFIX3}self`;
+function str10(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-function summarize5() {
+function summarize7() {
   return "Update the software on your firewall";
 }
 var FirewallUpdate = class {
@@ -37254,9 +38362,9 @@ var FirewallUpdate = class {
     return { phase: status.phase };
   }
   async propose(payload) {
-    const changeId = str7(payload.changeId);
+    const changeId = str10(payload.changeId);
     if (!changeId) throw new Error("malformed firewall-update.propose payload");
-    const summary = summarize5();
+    const summary = summarize7();
     const data = { changeId, summary };
     if (!this.opts.service.pinned()) {
       return {
@@ -37276,7 +38384,7 @@ var FirewallUpdate = class {
     }
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE4);
+      this.codes.drop(SCOPE6);
       return {
         ok: false,
         status: "failed",
@@ -37284,25 +38392,25 @@ var FirewallUpdate = class {
         data
       };
     }
-    const sent = await this.codes.send(SCOPE4, { changeId }, this.boxName, summary, routes);
+    const sent = await this.codes.send(SCOPE6, { changeId }, this.boxName, summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[firewall-update] code sent via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str7(payload.changeId);
+    const changeId = str10(payload.changeId);
     if (!changeId) throw new Error("malformed firewall-update.confirm payload");
-    const code = str7(payload.code) ?? "";
+    const code = str10(payload.code) ?? "";
     const data = { changeId };
-    const v = this.codes.verify(SCOPE4, changeId, code);
+    const v = this.codes.verify(SCOPE6, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = this.apply();
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize5(), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize7(), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
-    const changeId = str7(payload.changeId);
-    this.codes.cancel(SCOPE4, changeId);
+    const changeId = str10(payload.changeId);
+    this.codes.cancel(SCOPE6, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
 };
@@ -37310,7 +38418,7 @@ var FirewallUpdate = class {
 // src/ssh.ts
 var SCOPE_PREFIX4 = "ssh:";
 var SELF = "self";
-function str8(v) {
+function str11(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 function hours(seconds) {
@@ -37318,19 +38426,19 @@ function hours(seconds) {
   if (h >= 24 && h % 24 === 0) return `${h / 24} day${h === 24 ? "" : "s"}`;
   return `${h} hour${h === 1 ? "" : "s"}`;
 }
-function summarize6(p, boxName) {
+function summarize8(p, boxName) {
   return `Let ControlClaw support open a shell on ${p.agent?.name ?? boxName} for ${hours(p.seconds)}`;
 }
-function parseProposal5(payload) {
-  const changeId = str8(payload.changeId);
+function parseProposal7(payload) {
+  const changeId = str11(payload.changeId);
   const seconds = typeof payload.seconds === "number" ? Math.round(payload.seconds) : 0;
   if (!changeId || !Number.isFinite(seconds) || seconds <= 0) throw new Error("malformed ssh.propose payload");
   const raw = payload.agent;
   if (!raw) return { changeId, seconds, agent: null };
-  const vmId = str8(raw.vmId);
-  const hostname3 = str8(raw.hostname);
+  const vmId = str11(raw.vmId);
+  const hostname3 = str11(raw.hostname);
   if (!vmId || !hostname3) throw new Error("malformed ssh.propose payload");
-  return { changeId, seconds, agent: { vmId, name: str8(raw.name) ?? vmId, hostname: hostname3 } };
+  return { changeId, seconds, agent: { vmId, name: str11(raw.name) ?? vmId, hostname: hostname3 } };
 }
 var SshFirewall = class {
   constructor(opts) {
@@ -37376,8 +38484,8 @@ var SshFirewall = class {
     return this.opts.agent.post({ vmId: p.agent.vmId, hostname: p.agent.hostname }, "/ssh/close", {});
   }
   async propose(payload) {
-    const p = parseProposal5(payload);
-    const summary = summarize6(p, this.boxName);
+    const p = parseProposal7(payload);
+    const summary = summarize8(p, this.boxName);
     const data = { changeId: p.changeId, summary };
     if (!this.opts.channelsReady()) {
       return {
@@ -37403,10 +38511,10 @@ var SshFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str8(payload.changeId);
+    const changeId = str11(payload.changeId);
     if (!changeId) throw new Error("malformed ssh.confirm payload");
-    const vmId = str8(payload.vmId);
-    const code = str8(payload.code) ?? "";
+    const vmId = str11(payload.vmId);
+    const code = str11(payload.code) ?? "";
     const data = { changeId };
     const v = this.codes.verify(`${SCOPE_PREFIX4}${vmId ?? SELF}`, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No shell access is waiting for a code, or the code expired.", data };
@@ -37417,12 +38525,12 @@ var SshFirewall = class {
       status: "opened",
       // `privateKey` rides in here and is taken out of the result by the control plane before
       // anything is written down (`app/(ssh)/lib/ssh-access.server.ts`). It is not logged here.
-      data: { ...data, ...opened, summary: summarize6(v.proposal, this.boxName), sentVia: v.sentVia, vmId: v.proposal.agent?.vmId ?? null }
+      data: { ...data, ...opened, summary: summarize8(v.proposal, this.boxName), sentVia: v.sentVia, vmId: v.proposal.agent?.vmId ?? null }
     };
   }
   async cancel(payload) {
-    const changeId = str8(payload.changeId);
-    const vmId = str8(payload.vmId);
+    const changeId = str11(payload.changeId);
+    const vmId = str11(payload.vmId);
     this.codes.cancel(`${SCOPE_PREFIX4}${vmId ?? SELF}`, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -37433,9 +38541,9 @@ var SshFirewall = class {
    * does what it says.
    */
   async close(payload) {
-    const changeId = str8(payload.changeId);
+    const changeId = str11(payload.changeId);
     const raw = payload.agent;
-    const agent = raw && str8(raw.vmId) && str8(raw.hostname) ? { vmId: str8(raw.vmId), hostname: str8(raw.hostname) } : null;
+    const agent = raw && str11(raw.vmId) && str11(raw.hostname) ? { vmId: str11(raw.vmId), hostname: str11(raw.hostname) } : null;
     this.codes.drop(`${SCOPE_PREFIX4}${agent?.vmId ?? SELF}`);
     const closed = await this.closeOn({ agent });
     this.log(`[ssh] closed on ${agent?.vmId ?? "this firewall"}`);
@@ -37647,7 +38755,7 @@ var SshLoginWatcher = class {
 // src/agent-client.ts
 import { readFileSync as readFileSync10 } from "fs";
 var AGENT_PATH_PREFIX = "/__cc/agent";
-var TIMEOUT_MS = 25e3;
+var TIMEOUT_MS3 = 25e3;
 var BACKUP_TIMEOUT_MS = 60 * 6e4;
 function purposeForPath(path) {
   if (path.startsWith("/llm/")) return "llm";
@@ -37656,6 +38764,7 @@ function purposeForPath(path) {
   if (path.startsWith("/backup/")) return "backup";
   if (path.startsWith("/ssh/")) return "ssh";
   if (path.startsWith("/tailscale/")) return "tailscale";
+  if (path.startsWith("/drive/")) return "drive";
   return "channels";
 }
 function makeAgentTokenSigner(keysDir, boxId) {
@@ -37667,7 +38776,7 @@ function makeAgentTokenSigner(keysDir, boxId) {
 }
 function makeAgentClient(opts) {
   const fetchImpl = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS3;
   const backupTimeoutMs = opts.backupTimeoutMs ?? BACKUP_TIMEOUT_MS;
   async function request(agent, method, path, body) {
     const controller = new AbortController();
@@ -37726,6 +38835,7 @@ function writeProxyConfig(dir, cfg) {
   writeAtomic2("credentials.json", cfg.credentials ?? []);
   writeAtomic2("rules.json", cfg.rules ?? []);
   writeAtomic2("identities.json", cfg.identities ?? []);
+  writeAtomic2("exit.json", cfg.exit ?? { enabled: false });
 }
 
 // src/permissions.ts
@@ -38009,6 +39119,11 @@ var ActivityShipper = class {
         if (!ok) return false;
         total.accepted += ok.accepted;
         total.duplicates += ok.duplicates;
+        try {
+          if (ok.delivered) this.opts.onShipped?.(records);
+        } catch (err) {
+          console.error(`[activity] onShipped failed: ${err.message}`);
+        }
         return true;
       });
       total.read = r.read;
@@ -38028,12 +39143,12 @@ var ActivityShipper = class {
       if (res.status === 400 || res.status === 413) {
         console.error(`[activity] batch rejected (HTTP ${res.status}); dropping ${records.length} records`);
         this.backoffMs = 0;
-        return { accepted: 0, duplicates: 0 };
+        return { accepted: 0, duplicates: 0, delivered: false };
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       this.backoffMs = 0;
-      return { accepted: body.accepted ?? 0, duplicates: body.duplicates ?? 0 };
+      return { accepted: body.accepted ?? 0, duplicates: body.duplicates ?? 0, delivered: true };
     } catch (err) {
       this.backoffMs = Math.min(this.backoffMs ? this.backoffMs * 2 : 5e3, 6e4);
       this.nextAttemptAt = Date.now() + this.backoffMs;
@@ -39237,14 +40352,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str10 = "";
+  let str13 = "";
   for (let i = 0; i < length; i++) {
-    str10 += chars[Math.floor(Math.random() * chars.length)];
+    str13 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str10;
+  return str13;
 }
-function esc(str10) {
-  return JSON.stringify(str10);
+function esc(str13) {
+  return JSON.stringify(str13);
 }
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -39344,8 +40459,8 @@ var getParsedType = (data) => {
 };
 var propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
 var primitiveTypes = /* @__PURE__ */ new Set(["string", "number", "bigint", "boolean", "symbol", "undefined"]);
-function escapeRegex(str10) {
-  return str10.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str13) {
+  return str13.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -53357,8 +54472,8 @@ function isIPv4(hostname3) {
   const parts = hostname3.split(".");
   if (parts.length !== 4) return false;
   return parts.every((part) => {
-    const num = Number(part);
-    return Number.isInteger(num) && num >= 0 && num <= 255 && String(num) === part;
+    const num2 = Number(part);
+    return Number.isInteger(num2) && num2 >= 0 && num2 <= 255 && String(num2) === part;
   });
 }
 function isPrivateIPv4(ip) {
@@ -65056,8 +66171,8 @@ async function hashCanonical(value) {
   return toBase64url(new Uint8Array(digest));
 }
 var encoder22 = new TextEncoder();
-function fromBase64url(str10) {
-  return convertBase64ToUint8Array(str10);
+function fromBase64url(str13) {
+  return convertBase64ToUint8Array(str13);
 }
 async function importKey(secret) {
   const keyData = typeof secret === "string" ? encoder22.encode(secret) : secret;
@@ -97634,7 +98749,7 @@ async function requireAuth(req, res) {
 import { createWriteStream, existsSync as existsSync11, mkdirSync as mkdirSync10, readdirSync as readdirSync2, rmSync as rmSync3, statSync as statSync3 } from "fs";
 import { createReadStream } from "fs";
 import { join as join7 } from "path";
-import { randomBytes as randomBytes3 } from "crypto";
+import { randomBytes as randomBytes5 } from "crypto";
 var RECOVERY_RATE_PER_MINUTE = 10;
 var RECOVERY_BAD_SIGNATURES = 5;
 var RECOVERY_LOCKOUT_MS = 15 * 6e4;
@@ -97642,7 +98757,7 @@ var MAX_FIREWALL_ARCHIVE_BYTES = 32 * 1024 * 1024;
 var MAX_AGENT_ARCHIVE_BYTES = 6 * 1024 * 1024 * 1024;
 var STAGED_TTL_MS = 60 * 6e4;
 var RECOVERY_PATH_PREFIX = "/recovery/";
-function str9(v) {
+function str12(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 var RecoveryRoutes = class {
@@ -97708,7 +98823,7 @@ var RecoveryRoutes = class {
     };
     if (req.method !== "POST") return reply(405, { error: "Use POST." });
     const keys = this.opts.recoveryKeys();
-    const signature = str9(req.headers["x-cc-recovery-signature"]);
+    const signature = str12(req.headers["x-cc-recovery-signature"]);
     const timestamp = Number(req.headers["x-cc-recovery-timestamp"] ?? NaN);
     const locked = this.lockedUntil - this.now();
     if (!signature || !Number.isFinite(timestamp)) {
@@ -97785,7 +98900,7 @@ var RecoveryRoutes = class {
       } catch {
       }
     }
-    return join7(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes3(6).toString("hex")}`);
+    return join7(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes5(6).toString("hex")}`);
   }
   async read(req, spillPath) {
     const hasher = await createRecoveryBodyHasher();
@@ -97863,14 +98978,14 @@ var RecoveryRoutes = class {
     const service = this.opts.selfRestore;
     if (!service) throw new Error("This firewall cannot put itself back.");
     const head = body.head;
-    const backupId = str9(head.backupId);
-    const sourceBoxId = str9(head.sourceBoxId);
-    const header = str9(head.header);
-    const manifestHash2 = str9(head.manifestHash);
-    const sealed = str9(head.dataKeySealedToFirewall);
+    const backupId = str12(head.backupId);
+    const sourceBoxId = str12(head.sourceBoxId);
+    const header = str12(head.header);
+    const manifestHash2 = str12(head.manifestHash);
+    const sealed = str12(head.dataKeySealedToFirewall);
     if (!backupId || !sourceBoxId || !header || !manifestHash2 || !sealed) throw new Error("This request does not name a backup to put back.");
     const dataKey = await this.openDataKey(sealed);
-    const given = str9(head.archiveUrl);
+    const given = str12(head.archiveUrl);
     const archive = given ? void 0 : this.requireInline(body.tail);
     const r = await service.run({
       backupId,
@@ -97890,12 +99005,12 @@ var RecoveryRoutes = class {
    */
   async agentRestore(body) {
     const head = body.head;
-    const backupId = str9(head.backupId);
-    const kind = str9(head.kind);
-    const header = str9(head.header);
-    const manifestHash2 = str9(head.manifestHash);
-    const sealed = str9(head.dataKeySealedToFirewall);
-    const agentName = str9(head.agent);
+    const backupId = str12(head.backupId);
+    const kind = str12(head.kind);
+    const header = str12(head.header);
+    const manifestHash2 = str12(head.manifestHash);
+    const sealed = str12(head.dataKeySealedToFirewall);
+    const agentName = str12(head.agent);
     if (!backupId || !header || !manifestHash2 || !sealed || !agentName) throw new Error("This request does not name a backup to restore.");
     if (kind !== "workspace" && kind !== "state") throw new Error(`A ${kind ?? "missing"} archive is not something an agent can be restored from.`);
     const target = this.resolveAgent(agentName);
@@ -97962,13 +99077,13 @@ var RecoveryRoutes = class {
    * machines involved, and nothing about it depends on the object store being reachable.
    */
   stagedUrl(head, tailPath) {
-    const given = str9(head.archiveUrl);
+    const given = str12(head.archiveUrl);
     if (given) return { url: this.checkedUrl(given), token: null };
     if (!tailPath || !existsSync11(tailPath) || statSync3(tailPath).size === 0) throw new Error("No archive arrived, and no address was given for one.");
     if (!this.opts.staging.baseUrl) {
       throw new Error("This firewall has no private address to serve the archive from, so pass --archive-url with somewhere the agent box can fetch it.");
     }
-    const token = randomBytes3(32).toString("hex");
+    const token = randomBytes5(32).toString("hex");
     this.staged.set(token, { path: tailPath, bytes: statSync3(tailPath).size, at: this.now() });
     return { url: `${this.opts.staging.baseUrl}${RECOVERY_PATH_PREFIX}staged/${token}`, token };
   }
@@ -98067,8 +99182,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d2da34e" : "unknown",
-  builtAt: true ? "2026-09-22T23:13:45+01:00" : "unknown"
+  commit: true ? "7d09769" : "unknown",
+  builtAt: true ? "2026-09-23T23:23:56+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -98162,7 +99277,10 @@ var FIREWALL_POLL_MS = parseInt(process.env.FIREWALL_POLL_MS ?? "5000", 10);
 var CHANNEL_STORE_PATH = process.env.CHANNEL_STORE_PATH ?? "/opt/controlclaw/state/channels.enc";
 var CHANNELS_PLACEHOLDER_SWAP = process.env.CHANNELS_PLACEHOLDER_SWAP === "1";
 var LLM_STORE_PATH = process.env.LLM_STORE_PATH ?? "/opt/controlclaw/state/llm.enc";
+var DRIVE_STORE_PATH = process.env.DRIVE_STORE_PATH ?? "/opt/controlclaw/state/drive.enc";
 var TAILSCALE_STORE_PATH = process.env.TAILSCALE_STORE_PATH ?? "/opt/controlclaw/state/tailscale.enc";
+var EXIT_STORE_PATH = process.env.EXIT_STORE_PATH ?? "/opt/controlclaw/state/exit.enc";
+var EXIT_CHECK_POLL_MS = parseInt(process.env.EXIT_CHECK_POLL_MS ?? "60000", 10);
 var BACKUP_STORE_PATH = process.env.BACKUP_STORE_PATH ?? "/opt/controlclaw/state/backup.enc";
 var BACKUP_WORK_DIR = process.env.BACKUP_WORK_DIR ?? "/opt/controlclaw/state";
 var SELF_RESTORE_RESTART_DELAY_MS = 2e4;
@@ -98171,6 +99289,7 @@ var RECOVERY_ROUTES = process.env.RECOVERY_ROUTES !== "0";
 var CA_PUBLISH_WAIT_MS = 1e4;
 var LLM_PLAIN_KEYS = process.env.LLM_PLAIN_KEYS === "1";
 var LLM_REFRESH_POLL_MS = parseInt(process.env.LLM_REFRESH_POLL_MS ?? "60000", 10);
+var DRIVE_TOKEN_POLL_MS = parseInt(process.env.DRIVE_TOKEN_POLL_MS ?? "60000", 10);
 var CONNECTOR_URL = process.env.CONNECTOR_URL ?? "";
 var CONNECTOR_ADMIN_TOKEN = process.env.CONNECTOR_ADMIN_TOKEN ?? "";
 var CONNECTOR_STORE_PATH = process.env.CONNECTOR_STORE_PATH ?? "/opt/controlclaw/state/connectors.enc";
@@ -98207,7 +99326,9 @@ var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 var identities = [];
 var channels = null;
 var llm = null;
+var drive = null;
 var tailscale = null;
+var exitFirewall = null;
 var connectors = null;
 var updates = null;
 var backups = null;
@@ -98238,9 +99359,13 @@ async function runSync(boxKey) {
   if (llm) {
     cfg.credentials = [...cfg.credentials ?? [], ...llm.credentials()];
   }
+  if (drive) {
+    cfg.credentials = [...cfg.credentials ?? [], ...drive.credentials()];
+  }
+  cfg.exit = exitFirewall?.exitConfig() ?? { enabled: false };
   writeProxyConfig(PROXY_CONFIG_DIR, cfg);
   console.log(
-    `[mitm-agent] synced v${record2?.version ?? 0}: ${(cfg.credentials ?? []).length} creds, ${(cfg.rules ?? []).length} rules, ${(cfg.identities ?? []).length} identities, ai review ${aiSettings ? `on (${aiSettings.provider}/${aiSettings.model})` : "off"}`
+    `[mitm-agent] synced v${record2?.version ?? 0}: ${(cfg.credentials ?? []).length} creds, ${(cfg.rules ?? []).length} rules, ${(cfg.identities ?? []).length} identities, ai review ${aiSettings ? `on (${aiSettings.provider}/${aiSettings.model})` : "off"}, residential exit ${cfg.exit?.enabled ? "on" : "off"}`
   );
 }
 async function maybeMigrate() {
@@ -98274,7 +99399,10 @@ function makeShipper() {
     logPath: TRAFFIC_LOG_PATH,
     cursorPath: ACTIVITY_CURSOR_PATH,
     activityUrl: ACTIVITY_URL,
-    getToken
+    getToken,
+    // The residential exit's byte count comes off the same records, so nothing tails the traffic
+    // log twice. It is also what the monthly cap is checked against, by way of `exit.json`.
+    onShipped: (records) => exitFirewall?.noteTraffic(records)
   });
 }
 async function main() {
@@ -98327,6 +99455,21 @@ async function main() {
       console.error(`[mitm-agent] llm store unreadable, llm commands disabled: ${err.message}`);
     }
     try {
+      drive = new DriveFirewall({
+        storePath: DRIVE_STORE_PATH,
+        boxKey,
+        ids,
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+        codeRoutes: () => channels?.codeRoutes() ?? [],
+        channelsReady: () => channels !== null,
+        onCredentialsChanged: () => runSync(boxKey)
+      });
+      const ds = drive.summary();
+      console.log(`[mitm-agent] drive store loaded (${ds.accounts.length} account(s), ${ds.folders.length} folder(s))`);
+    } catch (err) {
+      console.error(`[mitm-agent] drive store unreadable, drive commands disabled: ${err.message}`);
+    }
+    try {
       tailscale = new TailscaleFirewall({
         storePath: TAILSCALE_STORE_PATH,
         boxKey,
@@ -98341,6 +99484,24 @@ async function main() {
       console.log(`[mitm-agent] tailscale store loaded (${ts.length} agent(s) on the tailnet)`);
     } catch (err) {
       console.error(`[mitm-agent] tailscale store unreadable, tailscale commands disabled: ${err.message}`);
+    }
+    try {
+      exitFirewall = new ExitFirewall({
+        storePath: EXIT_STORE_PATH,
+        boxKey,
+        ids,
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+        codeRoutes: () => channels?.codeRoutes() ?? [],
+        channelsReady: () => channels !== null,
+        // The proxy reads the exit from a file this writes, so the config has to land before the
+        // command reports back — otherwise the console says "connected" while the next request
+        // out still fails closed.
+        onExitChanged: () => runSync(boxKey)
+      });
+      const es = exitFirewall.status();
+      console.log(`[mitm-agent] exit store loaded (residential exit ${es?.configured ? `via ${es.provider}, sticky ${es.sticky ? "on" : "off"}` : "not set up"})`);
+    } catch (err) {
+      console.error(`[mitm-agent] exit store unreadable, residential exit disabled: ${err.message}`);
     }
     if (CONNECTOR_URL && CONNECTOR_ADMIN_TOKEN && !CONNECTOR_GATE_BIND) {
       console.error("[mitm-agent] CONNECTOR_GATE_BIND/PRIVATE_IP unset: integrations stay off (there is no address to give the agent boxes)");
@@ -98592,7 +99753,9 @@ async function main() {
         handlers: {
           ...channels?.handlers() ?? {},
           ...llm?.handlers() ?? {},
+          ...drive?.handlers() ?? {},
           ...tailscale?.handlers() ?? {},
+          ...exitFirewall?.handlers() ?? {},
           ...connectors?.handlers() ?? {},
           ...updates?.handlers() ?? {},
           ...selfUpdates?.handlers() ?? {},
@@ -98606,7 +99769,7 @@ async function main() {
             return { ok: true, status: "done", message: `Scanned ${r.agents} agent(s), ${r.findings} finding(s).`, data: r };
           }
         },
-        extraResults: () => [...llm?.drainReports() ?? [], ...backups?.drainReports() ?? []],
+        extraResults: () => [...llm?.drainReports() ?? [], ...drive?.drainReports() ?? [], ...backups?.drainReports() ?? [], ...exitFirewall?.drainReports() ?? []],
         // What this firewall can do and how a run of it is going. The beat is the only way either
         // reaches the console: nothing can call in to this box.
         //
@@ -98621,9 +99784,11 @@ async function main() {
           const features = [];
           if (llm) features.push("included_ai");
           if (tailscale) features.push("tailscale");
+          if (drive) features.push("drive_folders");
           if (connectors) features.push("connectors");
           if (selfUpdates?.supported()) features.push("self_update");
           if (backups) features.push("backups");
+          if (exitFirewall) features.push("residential_exit");
           const backupStatus = backups?.status() ?? null;
           const recoveryRoutes = recoveryTls && recovery ? { enabled: true, port: PORT, certFingerprint: recoveryTls.fingerprint } : { enabled: false, port: PORT, certFingerprint: null };
           const inventory = firewallInventory(channels, llm);
@@ -98633,6 +99798,10 @@ async function main() {
             ...llm ? { included_ai: llm.includedCredentialId() } : {},
             ...selfUpdates ? { update: selfUpdates.status() } : {},
             ...backupStatus ? { backup: { ...backupStatus, recoveryRoutes } } : {},
+            // `residential`: whether an exit is set up, what the last reachability check saw
+            // (including the address the world sees) and this month's bytes. Reported, never
+            // authoritative: the control plane displays it and decides nothing from it.
+            ...exitFirewall ? { residential: exitFirewall.status() } : {},
             software: boxSoftware()
           };
         }
@@ -98647,6 +99816,16 @@ async function main() {
       const l = llm;
       setInterval(() => void l.refreshDue().catch((e) => console.error("[llm] refresh:", e.message)), LLM_REFRESH_POLL_MS);
       void l.refreshDue().catch((e) => console.error("[llm] refresh:", e.message));
+    }
+    if (drive) {
+      const d = drive;
+      setInterval(() => void d.refreshDue().catch((e) => console.error("[drive] token:", e.message)), DRIVE_TOKEN_POLL_MS);
+      void d.refreshDue().catch((e) => console.error("[drive] token:", e.message));
+    }
+    if (exitFirewall) {
+      const e = exitFirewall;
+      setInterval(() => void e.tick().catch((err) => console.error("[exit] check:", err.message)), EXIT_CHECK_POLL_MS);
+      void e.tick().catch((err) => console.error("[exit] check:", err.message));
     }
     if (connectors && CONNECTOR_URL && CONNECTOR_ADMIN_TOKEN) {
       const c = connectors;

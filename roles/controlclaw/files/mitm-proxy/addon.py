@@ -23,6 +23,18 @@ Implements the security-critical core of the two-box architecture
      `allowed_models` is the plan's AI Gateway key. It is only swapped into requests for one of
      those models (plus the model list); anything else is answered here and never reaches the
      gateway. A "budget used up" answer from the gateway is rewritten into plain words.
+  6. Residential exit (apps/saas/docs/features/residential-exit.md): a rule may carry
+     `exit: "residential"`, which sends that destination out through the org's own upstream
+     residential proxy instead of this box's address. Such a flow is RELAYED, not inspected — the
+     client's own TLS bytes reach the site, so its handshake is the browser's real one — and it
+     gets host-level logging and byte counts, no credential swap and no AI review. It never falls
+     back to this box's IP: every failure closes the connection and logs why.
+
+This addon requires `connection_strategy=lazy` (the firewall's systemd unit sets it). With
+mitmproxy's default, `eager`, the destination is connected BEFORE any layer decision is made,
+which for a residential flow both leaks a connection from this box's address to the very site the
+customer is reaching from elsewhere and leaves the relay running over the wrong socket. The
+residential path refuses to run rather than do either, and says so in the log.
 
 v1 loads rules/credentials from JSON files (hot-reloaded on mtime change). On real
 boxes these come from the box-key-decrypted store (later parts). Tenant identity is
@@ -36,8 +48,10 @@ unit pins every MITM_DEV_* flag to 0.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -47,12 +61,58 @@ from typing import Any
 
 import logging
 
+from mitmproxy import connection
 from mitmproxy import http
 
 try:  # raw-TCP passthrough layer (used by next_layer); guarded so a version skew can't break import
     from mitmproxy.proxy import layers as _proxy_layers
 except Exception:  # pragma: no cover
     _proxy_layers = None
+
+# The residential exit (docs/plans/residential-exit.md) needs four more pieces of mitmproxy's proxy
+# core. Each is guarded the same way `_proxy_layers` is: a version skew must not stop the proxy
+# starting, because the proxy is the org's only way out. What it must not do either is silently send
+# a residential flow out of THIS box's IP, so `_residential_ready()` refuses every residential rule
+# when any of these is missing and the flow is closed with a logged reason (`_ExitUnavailable`).
+#
+# `_upstream_proxy` is private (leading underscore) and the only one of the four that is. It is
+# worth it: `HttpUpstreamProxy` already speaks CONNECT, already handles a TLS-wrapped proxy, and
+# already fires `http_connect_upstream` so the credential can be attached per flow. The smoke test
+# asserts the import resolves, so a mitmproxy bump breaks CI rather than a customer's exit IP.
+# Two blocks, not one, and the split is the whole point: the first holds public modules that a
+# mitmproxy release is not going to move, and it is what builds the layer that CLOSES a connection
+# the exit cannot carry. If the second (private) block were in with it, a version skew would take
+# the fail-closed path down with the feature, `_use_residential` would raise NameError into
+# `next_layer`'s catch-all, mitmproxy's own choice would stand, and the flow would leave from this
+# box's address — the exact thing this feature exists to prevent.
+try:
+    from mitmproxy.proxy import commands as _commands
+    from mitmproxy.proxy import layer as _layer
+    from mitmproxy.proxy import tunnel as _tunnel
+    from mitmproxy.proxy.layers.tls import parse_client_hello
+except Exception as _exc:  # pragma: no cover
+    _commands = _layer = _tunnel = None
+    parse_client_hello = None
+    _CORE_IMPORT_ERROR: str | None = str(_exc)
+else:
+    _CORE_IMPORT_ERROR = None
+
+try:
+    from mitmproxy.proxy.layers.http import _upstream_proxy
+except Exception as _exc:  # pragma: no cover
+    _upstream_proxy = None
+    _UPSTREAM_IMPORT_ERROR: str | None = str(_exc)
+else:
+    _UPSTREAM_IMPORT_ERROR = None
+
+_RESIDENTIAL_IMPORT_ERROR = _CORE_IMPORT_ERROR or _UPSTREAM_IMPORT_ERROR
+
+# Where a residential flow is sent when this proxy cannot even build the layer that would close it
+# (both import blocks failed). RFC 6598 space that no agent box routes: mitmproxy terminates the
+# TLS, fails to connect, and answers the client with an error. Nothing reaches the real
+# destination and nothing leaves from this box's address towards it — which is the promise. The
+# record written alongside says what happened.
+BLACKHOLE_ADDR = ("192.0.2.1", 9)
 
 log = logging.getLogger("mitm")
 
@@ -66,6 +126,10 @@ CREDS_PATH = os.environ.get("MITM_CREDENTIALS_PATH", "/config/credentials.json")
 # NIC), so VM-scoped rules/credentials apply and logs are attributed per VM.
 IDENTITIES_PATH = os.environ.get("MITM_IDENTITIES_PATH", "/config/identities.json")
 GRANTS_PATH = os.environ.get("MITM_GRANTS_PATH", "/config/grants.json")
+# Residential exit (apps/saas/docs/features/residential-exit.md): the org's upstream proxy, written
+# by the mitm-agent from its encrypted store into the same tmpfs as the credentials. `{}` / a
+# missing file means the org has no exit, which is the normal case.
+EXIT_PATH = os.environ.get("MITM_EXIT_PATH", "/config/exit.json")
 PENDING_PATH = os.environ.get("MITM_PENDING_PATH", "/config/pending.jsonl")
 PERMISSION_TTL = int(os.environ.get("MITM_PERMISSION_TTL", "300"))
 LOG_PATH = os.environ.get("MITM_LOG_FILE", "")  # append JSONL here if set
@@ -163,17 +227,28 @@ _identities = _Cache(IDENTITIES_PATH)
 
 
 class _DictCache:
-    """Like _Cache but for a JSON object (grants map), hot-reloaded on mtime."""
+    """Like _Cache but for a JSON object (grants map), hot-reloaded on mtime.
 
-    def __init__(self, path: str):
+    `missing_is_empty` decides what a file that has gone away means. For grants it means "keep
+    what we have": a grant is permission the user already gave, and a vanished file is far more
+    likely to be a transient read error than a revocation. For the residential exit it is the
+    opposite — the file IS the credential, and the obvious way to revoke one is to delete it, so
+    holding the last-loaded upstream host and password indefinitely would be exactly wrong.
+    """
+
+    def __init__(self, path: str, missing_is_empty: bool = False):
         self.path = path
         self.mtime = -1.0
         self.data: dict[str, Any] = {}
+        self.missing_is_empty = missing_is_empty
 
     def get(self) -> dict[str, Any]:
         try:
             mtime = os.path.getmtime(self.path)
         except OSError:
+            if self.missing_is_empty:
+                self.mtime = -1.0
+                self.data = {}
             return self.data
         if mtime != self.mtime:
             try:
@@ -186,6 +261,7 @@ class _DictCache:
 
 
 _grants = _DictCache(GRANTS_PATH)
+_exit = _DictCache(EXIT_PATH, missing_is_empty=True)
 # permission_ids already recorded as pending this process — avoid duplicate prompts.
 _pending_seen: set[str] = set()
 
@@ -342,6 +418,168 @@ def tunnel_match(host: str, port: int | None, vm_id: str | None = None) -> dict[
             continue
         return rule
     return None
+
+
+# ----- residential exit -------------------------------------------------------
+#
+# A rule may say where its traffic leaves from: this box (`exit` absent or "firewall", the default)
+# or the org's upstream residential proxy (`exit: "residential"`). A residential flow is NEVER
+# inspected: the proxy opens a CONNECT through the upstream and relays the client's own TLS bytes,
+# so the site sees the agent browser's real handshake. That is the whole point — a re-originated
+# TLS session would carry mitmproxy's Python fingerprint, which on a residential IP reads worse
+# than a datacenter IP with a real Chrome one. It also means no credential swap and no AI review
+# on these flows, and the console says so before a rule can be marked.
+#
+# Residential NEVER falls back to this box's own IP. Every failure closes the connection and logs
+# one record; see `_ExitUnavailable` and `tcp_error`.
+
+# Emit an interim usage record every this many bytes, so a long-lived connection (a websocket, a
+# large download) is accounted for before it ends. Without it the monthly cap could be blown by a
+# single flow that never closes, and a stream still running when the proxy restarts would vanish.
+RESIDENTIAL_INTERIM_BYTES = 64 * 1024 * 1024
+
+
+def exit_config() -> dict[str, Any]:
+    cfg = _exit.get()
+    return cfg if isinstance(cfg, dict) else {}
+
+
+# `exit: residential` turns a rule into an uninspected relay, so it is only honoured on the two
+# effects that already let traffic out. On a `block` or `require_permission` rule it would quietly
+# undo the decision the rule exists to make — the console refuses to set it, and so does this, so a
+# control plane that sent one anyway cannot disable the firewall with a field.
+RESIDENTIAL_EFFECTS = ("allow", "tunnel")
+
+
+# One warning per misconfigured rule, not one per connection: this is reached from `next_layer`
+# and `tls_clienthello` on every connection the box makes, and a single bad rule would otherwise
+# write two lines a request for as long as it exists.
+_warned_rules: set[str] = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    if key in _warned_rules:
+        return
+    _warned_rules.add(key)
+    log.warning(message)
+
+
+def _connection_matches(rule: dict[str, Any], host: str, port: int | None, vm_id: str | None) -> bool:
+    """Could this rule apply to this destination, judged from what a connection alone tells us?
+
+    `match_path` and `match_method` cannot be evaluated here — there is no request yet — so a rule
+    carrying one is treated as "might apply". That is the safe direction: it can only make the
+    decision below more conservative, never less.
+    """
+    if not _rule_applies_to_vm(rule, vm_id):
+        return False
+    pattern = rule.get("match_domain", "")
+    if _is_ip(host) and (pattern == "*" or pattern.startswith("*.")):
+        # An IP is what we are left with when the destination has no name we could read. A
+        # wildcard domain matching it would send a connection out by IP — which the provider
+        # cannot route on and which throws away the whole point of resolving at the exit. A rule
+        # meant for a raw address says that address.
+        return False
+    if not host_matches(pattern, host):
+        return False
+    mp = rule.get("match_port")
+    if mp is not None and port is not None and int(mp) != int(port):
+        return False
+    return True
+
+
+def residential_rule(host: str, port: int | None, vm_id: str | None = None) -> dict[str, Any] | None:
+    """The rule sending this destination out through the upstream, or None.
+
+    Precedence is the whole engine's, not this feature's: the rule that wins is the one
+    `match_rule` would pick for this destination, and residential happens only if THAT rule is the
+    residential one. Picking the best *residential* rule on its own was a way to walk past a
+    higher-priority `block` — an org with `block *.facebook.com` at priority 10 and
+    `allow *.com exit=residential` at 500 would have had facebook relayed out uninspected, with
+    the block never consulted.
+
+    Anything we cannot judge yet counts against relaying. A rule with a `match_path` might or
+    might not apply to the request that follows, so if it outranks the residential rule the
+    connection is intercepted and the per-request matcher decides — inspection is the safe answer
+    when the answer is not knowable here.
+    """
+    if not host:
+        return None
+    candidates = [r for r in _rules.get() if _connection_matches(r, host, port, vm_id)]
+    if not candidates:
+        return None
+    winner = sorted(candidates, key=lambda r: r.get("priority", 1000))[0]
+    if winner.get("exit") != "residential":
+        return None
+    if winner.get("effect", "allow") not in RESIDENTIAL_EFFECTS:
+        _warn_once(
+            f"{winner.get('name')}:{winner.get('effect')}",
+            f"[mitm] ignoring exit=residential on a {winner.get('effect')} rule ({winner.get('name')})",
+        )
+        return None
+    return winner
+
+
+def _residential_ready() -> tuple[dict[str, Any] | None, str | None]:
+    """The upstream to use, or (None, why not). Every "why not" is a closed connection, by design."""
+    if _CORE_IMPORT_ERROR is not None:
+        # The scheme-specific one is checked in `_residential_stack`, where the scheme is known:
+        # a SOCKS5 exit uses our own tunnel layer and keeps working when the private HTTP upstream
+        # module moves, which is the reason the imports are split at all.
+        return None, f"this firewall's proxy cannot chain upstream ({_CORE_IMPORT_ERROR})"
+    cfg = exit_config()
+    if not cfg.get("enabled"):
+        return None, "no residential exit is configured"
+    up = cfg.get("upstream")
+    if not isinstance(up, dict) or not up.get("host") or not up.get("port"):
+        return None, "the residential exit is not configured"
+    if up.get("scheme") not in ("http", "https", "socks5"):
+        return None, f"unsupported residential exit scheme {up.get('scheme')!r}"
+    if cfg.get("sticky") and len(str(cfg.get("sticky_salt") or "")) < 32:
+        # The salt is what makes a box's exit IP underivable off-box. Without it the session is a
+        # function of the vm id alone, which the control plane knows — so this fails closed rather
+        # than hand out a sticky IP anyone can work out.
+        return None, "this firewall's sticky-session salt is missing"
+    cap = cfg.get("cap_bytes")
+    used = cfg.get("used_bytes") or 0
+    if cap and used >= cap:
+        return None, "this month's residential data cap is used up"
+    return up, None
+
+
+def render_template(template: str, username: str, password: str, session: str | None) -> str:
+    """Render a provider's username/password template.
+
+    Providers put the knobs in different fields — Oxylabs and Bright Data in the username, IPRoyal
+    in the password — so the shape is data, never code. `{username}`, `{password}` and `{session}`
+    substitute; `[...]` is a segment kept only when there IS a session, which is how one template
+    serves both the sticky and the rotating case (`{username}[-session-{session}]`).
+    """
+    out = re.sub(r"\[([^\[\]]*)\]", (lambda m: m.group(1)) if session else (lambda m: ""), template or "")
+    return (out.replace("{username}", username or "")
+               .replace("{password}", password or "")
+               .replace("{session}", session or ""))
+
+
+def session_for(vm_id: str | None) -> str | None:
+    """The upstream session token for one agent box, or None when sticky IPs are off.
+
+    Derived here, from a salt that was generated on this firewall and never leaves it, so neither
+    the control plane nor an agent box can work out (or choose) which exit IP a box gets. Stable
+    for the life of the credential: rotating the credential rotates the salt.
+    """
+    cfg = exit_config()
+    if not cfg.get("sticky") or not vm_id:
+        return None
+    salt = str(cfg.get("sticky_salt") or "")
+    return hmac.new(salt.encode("utf-8"), vm_id.encode("utf-8"), hashlib.sha256).hexdigest()[:12]
+
+
+def upstream_credentials(up: dict[str, Any], vm_id: str | None) -> tuple[str, str]:
+    session = session_for(vm_id)
+    user = render_template(str(up.get("username_template") or "{username}"), str(up.get("username") or ""), "", session)
+    pw = render_template(str(up.get("password_template") or "{password}"), "", str(up.get("password") or ""), session)
+    return user, pw
 
 
 def _server_addr(ctx) -> tuple[str, int | None]:
@@ -623,6 +861,182 @@ async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
     return out
 
 
+# ----- residential layers -----------------------------------------------------
+
+if _layer is not None:
+
+    class _ExitUnavailable(_layer.Layer):
+        """Close a residential connection that cannot go out through the upstream.
+
+        This is the fail-closed path and the reason it is a layer rather than an early return:
+        letting the flow fall through to mitmproxy's defaults would send it out of THIS box's IP,
+        which is exactly the correlation the customer bought a residential exit to avoid. They see
+        a failed request and one Activity line saying why; they never see a job that quietly ran
+        from a datacenter address.
+        """
+
+        def __init__(self, context, record: dict[str, Any]) -> None:
+            super().__init__(context)
+            self._record = record
+            self._closed = False
+
+        def _handle_event(self, event):
+            if not self._closed:
+                self._closed = True
+                _log(self._record)
+                yield _commands.CloseConnection(self.context.client)
+
+    class _Socks5Upstream(_tunnel.TunnelLayer):
+        """SOCKS5 with username/password auth (RFC 1928 + RFC 1929) to the upstream proxy.
+
+        mitmproxy's own `Server.via` only knows http/https (`mitmproxy/net/server_spec.py`), so the
+        SOCKS5 half of "HTTP CONNECT and SOCKS5" is ours. Two deliberate choices: the greeting
+        offers method 0x02 ONLY, so a proxy that would have taken us unauthenticated cannot talk us
+        out of sending credentials; and the request carries ATYP=domain, so the NAME is resolved at
+        the exit rather than here (see `next_layer` — the whole point of CONNECTing by hostname).
+        """
+
+        def __init__(self, context, tunnel_conn, username: str, password: str) -> None:
+            super().__init__(context, tunnel_connection=tunnel_conn, conn=context.server)
+            self._user = username.encode("utf-8")[:255]
+            self._pass = password.encode("utf-8")[:255]
+            self._state = "greeting"
+            self._buf = b""
+
+        @classmethod
+        def make(cls, ctx, address, username: str, password: str):
+            stack = _tunnel.LayerStack()
+            stack /= cls(ctx, connection.Server(address=address), username, password)
+            return stack
+
+        def start_handshake(self):
+            yield _commands.SendData(self.tunnel_connection, b"\x05\x01\x02")
+
+        def receive_handshake_data(self, data: bytes):
+            self._buf += data
+            if self._state == "greeting":
+                if len(self._buf) < 2:
+                    return False, None
+                ver, method = self._buf[0], self._buf[1]
+                self._buf = self._buf[2:]
+                if ver != 0x05 or method != 0x02:
+                    return False, f"socks5: upstream refused username/password auth (method {method:#04x})"
+                self._state = "auth"
+                yield _commands.SendData(
+                    self.tunnel_connection,
+                    bytes([0x01, len(self._user)]) + self._user + bytes([len(self._pass)]) + self._pass,
+                )
+                return False, None
+            if self._state == "auth":
+                if len(self._buf) < 2:
+                    return False, None
+                status = self._buf[1]
+                self._buf = self._buf[2:]
+                if status != 0x00:
+                    return False, "socks5: upstream rejected the credential"
+                self._state = "connect"
+                host, port = self.conn.address
+                raw = encode_host(host) or b""
+                yield _commands.SendData(
+                    self.tunnel_connection,
+                    b"\x05\x01\x00\x03" + bytes([len(raw)]) + raw + int(port).to_bytes(2, "big"),
+                )
+                return False, None
+            # connect reply: VER REP RSV ATYP ADDR PORT — length depends on ATYP.
+            if len(self._buf) < 5:
+                return False, None
+            if self._buf[1] != 0x00:
+                return False, f"socks5: upstream refused the connection (reply {self._buf[1]:#04x})"
+            atyp = self._buf[3]
+            need = {0x01: 10, 0x04: 22}.get(atyp, 7 + self._buf[4] if atyp == 0x03 else 0)
+            if not need or len(self._buf) < need:
+                return (False, None) if need else (False, f"socks5: bad address type {atyp:#04x}")
+            rest = self._buf[need:]
+            self._buf = b""
+            if rest:
+                yield from self.receive_data(rest)
+            return True, None
+
+
+def _is_ip(host: str) -> bool:
+    return bool(re.fullmatch(r"[0-9.]+", host or "")) or ":" in (host or "")
+
+
+def encode_host(host: str) -> bytes | None:
+    """The hostname as it goes on the wire, or None if it cannot go there at all.
+
+    A browser will happily put things in an SNI that `idna` refuses: a label over 63 bytes, a
+    trailing dot, an underscore. Finding that out inside a handshake generator raises through
+    `TunnelLayer`, which does not guard it, and the flow dies as an unhandled proxy error instead
+    of the logged fail-closed record. So it is decided before the stack is built.
+    """
+    if not host or len(host) > 253:
+        return None
+    if _is_ip(host):
+        return host.encode("ascii", "ignore") or None
+    try:
+        # `idna` is the rule that actually applies: mitmproxy's own CONNECT does `encode("idna")`,
+        # so anything it rejects would raise there instead of here. Checking ascii-ness instead
+        # would let a 70-byte label through this gate and blow up inside the handshake.
+        return host.encode("idna")
+    except (UnicodeError, ValueError):
+        return None
+
+
+def _exit_record(ctx, rule: dict[str, Any] | None, host: str, port: int | None,
+                 vm_id: str | None, error: str) -> dict[str, Any]:
+    """The one record a refused residential connection leaves behind."""
+    return {
+        "flow_id": "res_" + hashlib.sha256(f"{time.time()}{host}{port}".encode()).hexdigest()[:24],
+        "ts": time.time(), "tenant": TENANT, "vm_id": vm_id,
+        "host": host, "port": port, "effect": "residential",
+        "rule": (rule or {}).get("name"), "exit": "residential", "error": error[:200],
+    }
+
+
+def _residential_stack(ctx, host: str, port: int, rule: dict[str, Any], vm_id: str | None):
+    """The layer stack for one residential flow, or None if it cannot be built (caller fails closed).
+
+    CONNECT by NAME, not by the IP redsocks handed us: the destination is then resolved at the
+    exit, which is what makes a geo-targeted exit reach the right edge of a CDN. (The agent box
+    still resolved the name locally to get an IP to connect to at all — that DNS query leaks this
+    datacenter even though the connection does not. Documented, not fixed.)
+    """
+    up, why = _residential_ready()
+    if not up:
+        return None, why
+    if _upstream_proxy is None and str(up.get("scheme")) != "socks5":
+        return None, f"this firewall's proxy cannot chain upstream ({_UPSTREAM_IMPORT_ERROR})"
+    if encode_host(host) is None:
+        return None, f"{host[:60]!r} cannot be put in a CONNECT request"
+    if ctx.server.connected:
+        # mitmproxy opened the destination before we were asked. That is `connection_strategy=eager`
+        # (its default), which for a residential flow has already leaked a TCP connection from this
+        # box's own IP to the very site we are trying to reach from somewhere else — and would then
+        # relay over that socket instead of the tunnel. The firewall's unit sets `lazy`; if it did
+        # not, say so plainly instead of quietly exiting from the wrong address.
+        return None, "this firewall's proxy is running with connection_strategy=eager"
+    user, pw = upstream_credentials(up, vm_id)
+    session = session_for(vm_id)
+    scheme = str(up.get("scheme"))
+    ctx.server.address = (host, int(port))
+    if scheme == "socks5":
+        # No `via` here: mitmproxy's ServerSpec has no socks5 scheme, and setting a made-up one
+        # would be read by any other code path that trusts it. The address goes straight in.
+        stack = _Socks5Upstream.make(ctx, (str(up["host"]), int(up["port"])), user, pw)
+    else:
+        ctx.server.via = (scheme, (str(up["host"]), int(up["port"])))
+        stack = _upstream_proxy.HttpUpstreamProxy.make(ctx, True)
+    relay = _proxy_layers.TCPLayer(ctx)  # ignore=False: a real TCPFlow, so we get bytes and hooks
+    relay.flow.metadata["cc_exit"] = {
+        "rule": rule.get("name") or rule.get("match_domain"),
+        "host": host, "port": int(port), "vm_id": vm_id,
+        "session": session, "in": 0, "out": 0, "billed_in": 0, "billed_out": 0, "seq": 0,
+    }
+    stack /= relay
+    return stack[0], None
+
+
 # ----- hooks ----------------------------------------------------------------
 
 def tls_clienthello(data) -> None:
@@ -642,6 +1056,12 @@ def tls_clienthello(data) -> None:
         ctx = getattr(data, "context", None)
         _, port = _server_addr(ctx)
         vm_id = ctx_vm_id(ctx)
+        if residential_rule(sni, port, vm_id) is not None:
+            # Residential is decided in `next_layer`, which runs first and has the ClientHello.
+            # Reaching here means that decision was missed, and `ignore_connection` would send the
+            # flow out of THIS box's IP — the one outcome a residential rule must never produce.
+            log.error(f"[mitm] residential rule reached tls_clienthello for {sni}; refusing to pass through")
+            return
         if (
             any(host_matches(h, sni) for h in PASSTHROUGH_HOSTS)
             or (tailscale_allowed(vm_id) and any(host_matches(h, sni) for h in TAILSCALE_HOSTS))
@@ -653,11 +1073,22 @@ def tls_clienthello(data) -> None:
 
 
 def next_layer(data) -> None:
-    """Raw-TCP (non-TLS) handling for the redirect-ALL model. TLS is handled by tls_clienthello.
+    """Where a connection's fate is decided before any layer exists. Three jobs:
 
     - A raw connection to a `tunnel` destination (by IP:port) is passed through uninspected.
-    - Everything else non-TLS falls through to mitmproxy's default → a TCP flow → dropped in
-      `tcp_start` (HTTP/TLS are detected by mitmproxy and intercepted as usual).
+    - A connection matching a **residential** rule is relayed through the org's upstream proxy,
+      untouched, so the site sees the agent browser's own TLS handshake. For TLS that means
+      reading the SNI out of the ClientHello HERE, because the hook that normally does it
+      (`tls_clienthello`) can only pass a connection through DIRECT, which is the one thing a
+      residential rule must not do.
+    - Everything else falls through to mitmproxy's defaults: HTTP/TLS are intercepted as usual,
+      and any other raw TCP becomes a flow that `tcp_start` drops.
+
+    This addon's hook runs after mitmproxy's own, so `data.layer` already holds its choice: an
+    override assigns, and a *deferral* must clear it back to None (which makes mitmproxy buffer and
+    ask again when more bytes arrive). Chrome's ClientHello with post-quantum key shares is ~2 KB
+    and arrives in two TCP segments, so that deferral is the normal path, not an edge case.
+
     Fully guarded: any error leaves mitmproxy's default layer selection untouched.
     """
     if _proxy_layers is None:
@@ -665,24 +1096,101 @@ def next_layer(data) -> None:
     try:
         ctx = getattr(data, "context", None)
         host, port = _server_addr(ctx)
+        vm_id = ctx_vm_id(ctx)
         peeked = b""
         try:
             peeked = bytes(data.data_client())
         except Exception:
             peeked = b""
-        is_tls = len(peeked) >= 1 and peeked[0] == 0x16  # TLS handshake record
-        if not is_tls and tunnel_match(host, port, ctx_vm_id(ctx)) is not None:
-            data.layer = _proxy_layers.TCPLayer(ctx, ignore=True)
+        if not peeked:
+            # Nothing to judge by yet. mitmproxy calls this hook again on the first bytes; acting
+            # now would mean treating every connection as raw TCP and matching it by IP.
+            return
+        is_tls = peeked[0] == 0x16  # TLS handshake record
+        sni = ""  # set below for TLS; stays empty for raw TCP, which matches by IP and port
+
+        if is_tls and parse_client_hello is not None:
+            readable = True
+            try:
+                hello = parse_client_hello(peeked)
+            except ValueError:
+                hello, readable = None, False  # not a ClientHello we can read; leave it to mitmproxy
+            if hello is None and readable and residential_configured():
+                # Incomplete ClientHello. Clear mitmproxy's choice and wait for the rest; this is
+                # the normal path for Chrome, whose hello spans two segments.
+                data.layer = None
+                return
+            if hello is not None:
+                sni = (hello.sni or "").lower()
+            if sni:
+                rule = residential_rule(sni, port, vm_id)
+                if rule is not None:
+                    _use_residential(data, ctx, sni, port or 443, rule, vm_id)
+                    return
+            elif residential_configured():
+                # No SNI, or a ClientHello we could not read. The destination cannot be named, so
+                # a rule written against a domain cannot be matched and this flow is about to be
+                # intercepted and sent from this box's own address. That may be right — most such
+                # connections are not residential at all — but it is the one case where the
+                # customer could believe otherwise, so it goes in the log rather than nowhere. A
+                # residential rule pinned to this IP and port still matches, below.
+                log.info(f"[mitm] no readable SNI for {host}:{port}; residential rules by domain cannot apply")
+
+        # Raw TCP, and TLS we could not name: both can still match a rule pinned to this exact
+        # IP and port, which is how a residential rule for something without an SNI is written.
+        if not is_tls or not sni:
+            rule = residential_rule(host, port, vm_id)
+            if rule is not None:
+                _use_residential(data, ctx, host, port or 0, rule, vm_id)
+                return
+        if not is_tls:
+            if tunnel_match(host, port, vm_id) is not None:
+                data.layer = _proxy_layers.TCPLayer(ctx, ignore=True)
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[mitm] next_layer passthrough check failed: {exc}")
+
+
+def residential_configured() -> bool:
+    """Whether ANY residential rule exists — the cheap test that decides if deferring for a full
+    ClientHello is worth the wait. An org with no residential rules never pays for this."""
+    return any(r.get("exit") == "residential" for r in _rules.get())
+
+
+def _use_residential(data, ctx, host: str, port: int, rule: dict[str, Any], vm_id: str | None) -> None:
+    """Install the residential stack, or the layer that closes the connection and says why."""
+    stack, why = _residential_stack(ctx, host, port, rule, vm_id)
+    if stack is not None:
+        data.layer = stack
+        log.info(f"[mitm] residential exit for {host}:{port} (rule={rule.get('name')}, tenant={TENANT})")
+        return
+    reason = f"residential exit unavailable: {why}"
+    log.warning(f"[mitm] {reason} ({host}:{port})")
+    record = _exit_record(ctx, rule, host, port, vm_id, reason)
+    if _layer is None:
+        # We cannot even build a layer (the core import failed). Point the connection at a
+        # black hole so mitmproxy's own machinery ends it: the client gets an error and nothing
+        # goes to the real destination from this box.
+        _log(record)
+        try:
+            ctx.server.address = BLACKHOLE_ADDR
+        except Exception as exc:  # noqa: BLE001
+            log.error(f"[mitm] could not fail a residential flow closed: {exc}")
+        return
+    data.layer = _ExitUnavailable(ctx, record)
 
 
 def tcp_start(flow) -> None:
     """Central drop: any RAW TCP flow that reaches interception is non-HTTP/TLS and not an
     allowlisted tunnel (those are passed through in next_layer/tls_clienthello and never become a
     TCP flow). Since the box redirects ALL TCP here, this is the "drop everything not allowed" point.
+
+    The one exception is a residential relay, which IS a raw TCP flow on purpose: it is how the
+    client's own TLS bytes reach the site unmodified, and it is a flow rather than an ignored
+    connection so that its bytes can be counted. `next_layer` marks it when it builds the stack.
     """
     try:
+        if flow.metadata.get("cc_exit"):
+            return
         host, port = "", None
         addr = getattr(getattr(flow, "server_conn", None), "address", None)
         if addr:
@@ -693,6 +1201,119 @@ def tcp_start(flow) -> None:
         flow.kill()
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[mitm] tcp_start drop failed: {exc}")
+
+
+def tcp_message(flow) -> None:
+    """Count a residential relay's bytes, then drop the message from the flow.
+
+    `TCPLayer` appends every chunk to `flow.messages` and only then sends it (`layers/tcp.py`), so
+    a flow left alone would hold an entire multi-gigabyte transfer in this process's memory. The
+    send reads the message object the layer already holds, so trimming the list here is safe — and
+    it is also what keeps the promise that a relayed flow's *contents* are never stored anywhere.
+    """
+    meta = flow.metadata.get("cc_exit")
+    if not meta:
+        return
+    try:
+        msg = flow.messages[-1]
+        size = len(msg.content or b"")
+        meta["out" if msg.from_client else "in"] += size
+        del flow.messages[:-1]
+        unbilled = (meta["in"] - meta["billed_in"]) + (meta["out"] - meta["billed_out"])
+        if unbilled >= RESIDENTIAL_INTERIM_BYTES:
+            _log(_residential_record(flow, meta, interim=True))
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[mitm] tcp_message accounting failed: {exc}")
+
+
+def tcp_end(flow) -> None:
+    """One record per residential relay: host, port, bytes and how long it was open. Never a path
+    (there is none to have) and never a byte of content."""
+    if flow.metadata.get("cc_exit"):
+        _log(_residential_record(flow, flow.metadata["cc_exit"]))
+
+
+def tcp_error(flow) -> None:
+    """A residential relay that never opened: the upstream refused the CONNECT, rejected the
+    credential, or was unreachable. This is the fail-closed outcome the customer sees in Activity."""
+    meta = flow.metadata.get("cc_exit")
+    if not meta:
+        return
+    rec = _residential_record(flow, meta)
+    rec["error"] = f"residential exit unreachable: {str(getattr(flow, 'error', '') or 'upstream error')}"[:200]
+    _log(rec)
+
+
+def _residential_record(flow, meta: dict[str, Any], interim: bool = False) -> dict[str, Any]:
+    """A usage record for one relay. Interim records carry only the bytes since the last one and a
+    suffixed flow id, so the shipper's at-least-once upload still dedupes and nothing double-counts.
+    """
+    moved_in = meta["in"] - meta["billed_in"]
+    moved_out = meta["out"] - meta["billed_out"]
+    meta["billed_in"], meta["billed_out"] = meta["in"], meta["out"]
+    seq = meta["seq"]
+    meta["seq"] = seq + 1
+    rec = {
+        "flow_id": flow.id if seq == 0 else f"{flow.id}#{seq}",
+        "ts": time.time(), "tenant": TENANT, "vm_id": meta.get("vm_id"),
+        "host": meta.get("host") or "", "port": meta.get("port"),
+        "effect": "residential", "rule": meta.get("rule"), "exit": "residential",
+        "bytes_in": moved_in, "bytes_out": moved_out,
+    }
+    start = getattr(getattr(flow, "client_conn", None), "timestamp_start", None)
+    if start and not interim:
+        rec["duration_ms"] = int((time.time() - start) * 1000)
+    return rec
+
+
+def http_connect_upstream(flow: http.HTTPFlow) -> None:
+    """Authenticate this firewall to the org's upstream residential proxy.
+
+    mitmproxy fires this just before it writes the CONNECT, which is the only place a per-flow
+    credential can go: the username carries the agent's sticky session, so two agent boxes get two
+    exit IPs from one account. The credential is never logged, never put in a traffic record, and
+    never sent anywhere but the proxy named in the org's own exit configuration.
+    """
+    try:
+        up, why = _residential_ready()
+        if not up:
+            log.warning(f"[mitm] upstream CONNECT without a usable exit: {why}")
+            return
+        vm_id = vm_id_for_ip(_peer_ip(flow.client_conn.peername))
+        user, pw = upstream_credentials(up, vm_id)
+        if user or pw:
+            token = base64.b64encode(f"{user}:{pw}".encode("utf-8")).decode("ascii")
+            flow.request.headers["Proxy-Authorization"] = f"Basic {token}"
+    except Exception as exc:  # noqa: BLE001
+        log.warning(f"[mitm] upstream auth failed: {exc}")
+
+
+def _residential_http_record(flow: http.HTTPFlow) -> dict[str, Any]:
+    """A plaintext residential request's record: host and port, like every other relayed flow.
+
+    Port 80 carries no handshake to protect and the request line was readable to anyone on the
+    path — but the promise made to the customer is that a residential flow is logged at host level
+    and no finer, and a promise with an exception in it is not one. So `method` and `path` come
+    back out of the record `_http_record` built.
+    """
+    rec = _http_record(flow, "residential")
+    rec.pop("method", None)
+    rec.pop("path", None)
+    rec.update({"port": flow.request.port, "exit": "residential"})
+    return rec
+
+
+def _refuse_residential_http(flow: http.HTTPFlow, host: str, why: str) -> None:
+    """Answer a plaintext residential request the exit cannot carry, and say why in one record."""
+    flow.response = http.Response.make(
+        BLOCK_STATUS,
+        json.dumps({"error": "residential_exit_unavailable", "host": host, "tenant": TENANT}),
+        {"Content-Type": "application/json"},
+    )
+    flow.metadata["cc_effect"] = "residential"
+    rec = _residential_http_record(flow)
+    rec.update({"status": BLOCK_STATUS, "error": f"residential exit unavailable: {why}"[:200]})
+    _log_once(flow, rec)
 
 
 async def request(flow: http.HTTPFlow) -> None:
@@ -706,6 +1327,45 @@ async def request(flow: http.HTTPFlow) -> None:
     effect = (rule or {}).get("effect", "allow")
     flow.metadata["cc_effect"] = effect
     flow.metadata["cc_rule"] = (rule or {}).get("name") or (rule or {}).get("match_domain")
+
+    if rule is not None and rule.get("exit") == "residential" and effect in RESIDENTIAL_EFFECTS:
+        # Plaintext HTTP to a residential destination. A TLS flow never gets here (next_layer
+        # relays it whole); this is port 80, where there is no handshake to preserve and the
+        # bytes were readable to anyone on the path anyway. It still goes out through the upstream
+        # and it still gets residential's terms: no credential swap, no AI review, host-level
+        # logging only. `via` is mitmproxy's own per-flow upstream mechanism, honoured by the HTTP
+        # layer, so nothing needs to be built here.
+        up, why = _residential_ready()
+        if not up:
+            _refuse_residential_http(flow, host, why or "no residential exit is configured")
+            return
+        if str(up.get("scheme")) == "socks5":
+            # mitmproxy's `via` cannot express SOCKS5, and a plaintext HTTP request is not worth a
+            # second tunnel implementation. Fail closed rather than leaving from this box's IP.
+            _refuse_residential_http(flow, host, "plain HTTP needs an HTTP upstream, not SOCKS5")
+            return
+        if encode_host(host) is None:
+            _refuse_residential_http(flow, host, f"{host[:60]!r} cannot be put in a CONNECT request")
+            return
+        # A FRESH Server, not `flow.server_conn.via = ...`. `Context.fork()` hands every stream on
+        # one client connection the SAME Server object, so setting `via` on it is not per-request:
+        # the next request on that connection — to any host, residential or not — would inherit
+        # the upstream and be billed to the customer's provider account. The HTTP layer reads
+        # `via` and `transport_protocol` off `flow.server_conn` when it makes the connection, so
+        # replacing the object routes this request and only this request.
+        flow.server_conn = connection.Server(
+            address=(host, flow.request.port),
+            via=(str(up.get("scheme")), (str(up["host"]), int(up["port"]))),
+        )
+        # `make_server_connection` takes the CONNECT authority from `request.host`, which behind
+        # redsocks is the IP the agent box resolved. Put the name back: resolving at the exit is
+        # what makes a geo-targeted exit reach the right edge, and it is the only way the provider
+        # can route at all. The `Host` header is a separate field and is left exactly as it was.
+        if flow.request.host != host:
+            flow.request.host = host
+        flow.metadata["cc_effect"] = "residential"
+        flow.metadata["cc_exit_http"] = True
+        return
 
     if effect == "allow" and rule and rule.get("ai_review"):
         # A human grant for this exact request (after an earlier AI "ask") wins over asking again.
@@ -815,6 +1475,13 @@ def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
 
 
 def response(flow: http.HTTPFlow) -> None:
+    if flow.metadata.get("cc_exit_http"):
+        rec = _residential_http_record(flow)
+        rec.update({"status": flow.response.status_code,
+                    "bytes_out": len(flow.request.raw_content or b""),
+                    "bytes_in": len(flow.response.raw_content or b"")})
+        _log_once(flow, rec)
+        return
     if flow.metadata.get("cc_effect") not in (None, "allow"):
         return
     if reword_exhausted(flow):
@@ -834,6 +1501,11 @@ def response(flow: http.HTTPFlow) -> None:
 
 def error(flow: http.HTTPFlow) -> None:
     """Allowed request that never got a response (upstream refused, TLS failed, client went away)."""
+    if flow.metadata.get("cc_exit_http"):
+        rec = _residential_http_record(flow)
+        rec["error"] = f"residential exit unreachable: {getattr(flow.error, 'msg', '') or 'upstream error'}"[:200]
+        _log_once(flow, rec)
+        return
     if flow.metadata.get("cc_effect") not in (None, "allow"):
         return
     if not getattr(flow, "request", None):
