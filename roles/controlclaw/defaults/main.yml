@@ -64,7 +64,11 @@ openclaw_cdp_url: "http://127.0.0.1:{{ browser_cdp_port }}"
 # so a hard stop would take every provisioning box down over a fingerprint. Bumping this is the
 # chore that comes with an OpenClaw release that moves Playwright.
 patchright_version: "1.63.0"
-patchright_prefix: /opt/controlclaw/patchright
+# Deliberately NOT under /opt/controlclaw: OpenClaw resolves this path as the controlclaw user,
+# and that tree is 0750/0700 root-owned in places (it holds keys/). A box where the gateway
+# cannot traverse to the package loses its browser tool entirely — seen on a real box before
+# this moved. /usr/local/lib is where a locally installed library belongs anyway.
+patchright_prefix: /usr/local/lib/controlclaw-patchright
 
 # Swap (tasks/swap.yml). The stock box has none, which leaves the kernel no move under memory
 # pressure except to kill something. 0 disables.
