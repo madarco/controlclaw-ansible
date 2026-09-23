@@ -40,14 +40,21 @@ openbox &
 # UDP/443 first, gets nothing back, and eats a timeout before falling back — once per navigation.
 #
 # The flags are also what a site's bot check reads first, so the list is chosen for that as much
-# as for behaviour. What is NOT here matters most: no --headless, no --enable-automation and no
-# --disable-gpu, which is why navigator.webdriver is false and the user agent carries no
-# "HeadlessChrome". --disable-blink-features=AutomationControlled keeps it that way if a future
-# Chrome starts inferring automation from the open debugging port. --enable-unsafe-swiftshader
-# restores WebGL: Chrome stopped falling back to software GL on its own, and a box with no GPU
-# then answered every WebGL question with "no context", which is a louder signal than a software
-# renderer is. --lang pins the language list rather than letting it follow whatever locale the
-# image happens to boot with.
+# as for behaviour. What is NOT here matters most: no --headless and no --enable-automation,
+# which is why navigator.webdriver is false and the user agent carries no "HeadlessChrome".
+# --disable-blink-features=AutomationControlled keeps it that way if a future Chrome starts
+# inferring automation from the open debugging port; those three flags are the whole of it, and
+# nothing else in this list touches navigator.webdriver.
+#
+# --enable-unsafe-swiftshader restores WebGL. Chrome stopped falling back to software GL on its
+# own, and a box with no GPU then answered every WebGL question with "no context" — a louder
+# signal than a software renderer is. It is not free: a WebGL-heavy page now rasterizes on the
+# CPU inside the unit's MemoryMax instead of failing cheaply, so a page that used to cost
+# nothing can now push the browser cgroup towards the wall.
+#
+# --lang pins the language list rather than letting it follow whatever locale the image boots
+# with. It does not make the box look local: en-US with a UTC clock on a German IP is its own
+# mismatch, and nothing here pretends otherwise.
 #
 # THE SANDBOX IS ON. There is deliberately no --no-sandbox / --disable-setuid-sandbox here: this
 # browser parses whatever page an LLM decides to open, as the user that owns the gateway token,

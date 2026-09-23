@@ -168,16 +168,34 @@
     enabled: true
 
 # `state: started` leaves an already-running browser alone, so without this a re-provision drops
-# a new script on the box and the old Chrome keeps running until something reboots it — the flags
-# below are then asserted against a process that never read them. Restarted here rather than from
-# a handler because those run at the end of the play, after the assertion. It costs the customer
-# their open tabs, which is why it fires on a changed script or unit only.
-- name: Restart browser-stream when the script or the unit changed
+# a new script on the box and the old Chrome keeps running until something reboots it — and the
+# assertion below, which reads the RUNNING process, then fails against flags that were never
+# applied. Restarted here rather than from a handler because handlers run at the end of the play,
+# after that assertion.
+#
+# The trigger is the running command line, not only `changed`: `copy` reports changed exactly
+# once, so a run that writes a new script and is then interrupted before the restart (an
+# ansible-pull that times out, a control-plane retry) would leave every later run seeing an
+# unchanged file, skipping the restart, and failing the assertion forever. Reading what is
+# actually running is self-healing. It costs the customer their open tabs, so it fires only when
+# the script changed or the flags really are stale.
+- name: Read the running browser's flags before deciding on a restart
+  ansible.builtin.command:
+    cmd: pgrep -a -f "google-chrome-stable --remote-debugging"
+  register: browser_cmdline_now
+  changed_when: false
+  failed_when: false
+  when: not ci_test
+
+- name: Restart browser-stream when its script, its unit or the running flags are stale
   ansible.builtin.systemd:
     name: browser-stream
     state: restarted
     daemon_reload: true
-  when: (browser_stream_script is changed or browser_stream_unit is changed) and not ci_test
+  when:
+    - not ci_test
+    - browser_stream_script is changed or browser_stream_unit is changed or
+      '--disable-blink-features=AutomationControlled' not in (browser_cmdline_now.stdout | default(''))
 
 # Provisioning-time proof, not a one-off check by whoever last touched this. browser-stream.sh
 # already refuses to start an unsandboxed browser; these two catch the ways the unit itself can

@@ -58,9 +58,11 @@ openclaw_cdp_url: "http://127.0.0.1:{{ browser_cdp_port }}"
 # `playwright-core` at it instead of replacing any OpenClaw code.
 #
 # The version must be the playwright-core version OpenClaw itself depends on — patchright
-# publishes a build per Playwright release, and the two are the same API only at the same
-# number. openclaw.yml reads OpenClaw's own dependency and stops the play if they differ, so
-# bumping this is the chore that comes with an OpenClaw release that moves Playwright.
+# publishes a build per Playwright release (not for every one of them), and the two are the same
+# API only at the same number. openclaw.yml reads OpenClaw's own dependency and, when they
+# differ, skips the alias and warns rather than failing the play: `openclaw@latest` is unpinned,
+# so a hard stop would take every provisioning box down over a fingerprint. Bumping this is the
+# chore that comes with an OpenClaw release that moves Playwright.
 patchright_version: "1.63.0"
 patchright_prefix: /opt/controlclaw/patchright
 
