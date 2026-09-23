@@ -4,6 +4,16 @@
 # CI testing mode - skips tasks that require systemd, Docker-in-Docker, or kernel access
 ci_test: false
 
+# Residential exit relay (box_role=exit-relay). The secrets have NO defaults on purpose: the role
+# asserts them and refuses rather than building a relay that cannot verify a token or report a
+# byte. Terraform passes them all (controlclaw repo, infra/exit-relay.tf).
+exit_relay_port: 8443
+exit_relay_acme_email: "ops@controlclaw.com"
+exit_relay_upstream_host: "proxy.apify.com"
+exit_relay_upstream_port: 8000
+exit_relay_upstream_groups: "RESIDENTIAL"
+exit_relay_id: "relay-1"
+
 # Tailscale settings
 tailscale_enabled: false
 tailscale_authkey: ""
