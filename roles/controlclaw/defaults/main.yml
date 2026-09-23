@@ -39,6 +39,27 @@ browser_novnc_port: 6080
 # cannot drift apart and leave a border of dead space around the window.
 browser_screen_geometry: "1280x800"
 
+# OpenClaw's own Systems tab, pointed at that same screen.
+#
+# The gateway reports a desktop for its host when `desktop.host.enabled` is true, and observing
+# it means attaching to a loopback VNC server — which OpenClaw REFUSES to do unless the server
+# asks for a password ("refusing unauthenticated VNC server"). The console's mirror on
+# browser_vnc_port has no password and must not grow one: noVNC would start prompting the
+# customer in the Browser tab. So browser-stream.sh runs a SECOND x11vnc over the same display
+# :1, password-protected, on this port, and OpenClaw is pointed at that one. The console's path
+# is left exactly as it was.
+#
+# Cost: one more x11vnc inside the browser cgroup's MemoryMax -- 15 MB resident, measured on a
+# real box. Both mirrors show the same screen; neither can see anything the other cannot.
+openclaw_desktop_enabled: true
+browser_desktop_vnc_port: 5901
+# Plaintext, read by OpenClaw as the controlclaw user at observe time (desktop.host.passwordFile)
+# and handed to the control-UI client that already authenticated to the gateway.
+openclaw_desktop_password_file: /opt/controlclaw/keys/desktop_vnc_password
+# The same password in x11vnc's obfuscated -rfbauth format. Two files because the two programs
+# read two formats; generated together, once, and never rotated.
+browser_desktop_rfbauth_file: /opt/controlclaw/keys/desktop_vnc_rfbauth
+
 # What the browser cgroup is allowed. A browser's appetite is set by whatever page someone opens,
 # and it shares a 4 GB box with the agent, so it is capped rather than left to the OOM killer's
 # judgement — which in practice takes OpenClaw and leaves the browser looking fine. MemoryHigh

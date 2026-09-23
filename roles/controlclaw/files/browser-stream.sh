@@ -16,6 +16,9 @@ export XDG_CACHE_HOME="${HOME}/.cache"
 CDP_PORT="${CONTROLCLAW_BROWSER_CDP_PORT:-9222}"
 VNC_PORT="${CONTROLCLAW_BROWSER_VNC_PORT:-5900}"
 NOVNC_PORT="${CONTROLCLAW_BROWSER_NOVNC_PORT:-6080}"
+DESKTOP_VNC_PORT="${CONTROLCLAW_BROWSER_DESKTOP_VNC_PORT:-5901}"
+# Empty = no second mirror, which is how the desktop is turned off (openclaw_desktop_enabled).
+DESKTOP_RFBAUTH="${CONTROLCLAW_BROWSER_DESKTOP_RFBAUTH:-}"
 
 # One geometry for both Xvfb and the Chrome window, or the desktop gets a border of dead space.
 SCREEN_GEOMETRY="${CONTROLCLAW_BROWSER_GEOMETRY:-1280x800}"
@@ -146,6 +149,38 @@ fi
 x11vnc -display :1 -rfbport "${VNC_PORT}" -shared -forever -nopw -localhost &
 
 websockify --web /usr/share/novnc/ 127.0.0.1:"${NOVNC_PORT}" "localhost:${VNC_PORT}" &
+
+# The same screen a second time, for OpenClaw's Systems tab.
+#
+# OpenClaw's host desktop source attaches to a loopback VNC server and refuses an unauthenticated
+# one outright ("refusing unauthenticated VNC server on 127.0.0.1:<port>"), so it cannot use the
+# mirror above. Putting a password on that one instead would make noVNC prompt the customer in
+# the Browser tab, which is the view they press a button to get. Two x11vnc processes on one
+# display is the cheap way out: the console keeps the port it has always had, OpenClaw gets a
+# VncAuth one, and neither can break the other.
+#
+# -shared so two people can watch the Systems desktop at once. It says nothing about the console
+# mirror -- that is a different x11vnc with its own client list, and a viewer on this port could
+# never have displaced one on ${VNC_PORT}.
+#
+# THE LOOP IS THE POINT. This mirror is a convenience; Chrome and the console mirror are the
+# product. x11vnc exits immediately if its port is taken ("could not obtain listening port" --
+# seen for real) or if it dislikes the password file, and a bare `x11vnc &` here would then hand
+# `wait -n` an exit, take the whole unit down, and cost the customer every open tab on a ten
+# second loop. Wrapped in a subshell that never returns, this process can fail as often as it
+# likes without the browser noticing; the journal says so each time.
+if [ -n "${DESKTOP_RFBAUTH}" ] && [ -r "${DESKTOP_RFBAUTH}" ]; then
+  (
+    while :; do
+      x11vnc -display :1 -rfbport "${DESKTOP_VNC_PORT}" -shared -forever -localhost \
+        -rfbauth "${DESKTOP_RFBAUTH}" || true
+      echo "browser-stream: the desktop mirror on ${DESKTOP_VNC_PORT} exited; retrying in 30s" >&2
+      sleep 30
+    done
+  ) &
+elif [ -n "${DESKTOP_RFBAUTH}" ]; then
+  echo "browser-stream: ${DESKTOP_RFBAUTH} is missing or unreadable; OpenClaw's Systems tab will report no desktop" >&2
+fi
 
 # Wait for any process to exit
 wait -n
