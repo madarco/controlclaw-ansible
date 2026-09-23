@@ -39,6 +39,32 @@ openbox &
 # --disable-quic: on a secured box the nftables ruleset redirects TCP only. Chrome tries QUIC on
 # UDP/443 first, gets nothing back, and eats a timeout before falling back — once per navigation.
 #
+# The flags are also what a site's bot check reads first, so the list is chosen for that as much
+# as for behaviour. What is NOT here matters most: no --headless and no --enable-automation,
+# which is why navigator.webdriver is false and the user agent carries no "HeadlessChrome" —
+# those two are the whole of it, and nothing else in this list touches navigator.webdriver.
+#
+# --disable-blink-features=AutomationControlled is deliberately NOT here. It is the flag every
+# stealth guide reaches for, it changes nothing we need (webdriver is already false without it),
+# and Chrome puts a permanent yellow "You are using an unsupported command-line flag" bar across
+# the top of the window it is passed to — on the window the customer watches in the console.
+# Measured on a box: with the flag, the bar; without it, no bar and the same clean result on
+# bot.sannysoft.com.
+#
+# --enable-unsafe-swiftshader restores WebGL. Chrome stopped falling back to software GL on its
+# own, and a box with no GPU then answered every WebGL question with "no context" — a louder
+# signal than a software renderer is. It is not free: a WebGL-heavy page now rasterizes on the
+# CPU inside the unit's MemoryMax instead of failing cheaply, so a page that used to cost
+# nothing can now push the browser cgroup towards the wall.
+#
+# --lang pins the language list rather than letting it follow whatever locale the image boots
+# with. It does not make the box look local: en-US with a UTC clock on a German IP is its own
+# mismatch, and nothing here pretends otherwise.
+#
+# --hide-crash-restore-bubble: this unit is restarted whenever the role changes it, which Chrome
+# reads as a crash, and the customer's next look at the console would otherwise be a "Chrome
+# didn't shut down correctly / Restore pages?" panel over the page.
+#
 # THE SANDBOX IS ON. There is deliberately no --no-sandbox / --disable-setuid-sandbox here: this
 # browser parses whatever page an LLM decides to open, as the user that owns the gateway token,
 # the customer's saved logins and the cc-install-ca sudo rule, so a renderer bug must not be a
@@ -60,6 +86,9 @@ google-chrome-stable \
   --disable-crash-reporter \
   --metrics-recording-only \
   --disable-quic \
+  --enable-unsafe-swiftshader \
+  --lang=en-US \
+  --hide-crash-restore-bubble \
   about:blank &
 CHROME_PID=$!
 

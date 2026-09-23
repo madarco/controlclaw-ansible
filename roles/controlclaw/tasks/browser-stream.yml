@@ -113,6 +113,7 @@
     owner: root
     group: root
     mode: '0755'
+  register: browser_stream_script
 
 - name: Create browser-stream systemd service
   ansible.builtin.copy:
@@ -154,6 +155,7 @@
 
       [Install]
       WantedBy=multi-user.target
+  register: browser_stream_unit
 
 - name: Reload systemd daemon
   ansible.builtin.systemd:
@@ -165,15 +167,52 @@
     state: started
     enabled: true
 
+# `state: started` leaves an already-running browser alone, so without this a re-provision drops
+# a new script on the box and the old Chrome keeps running until something reboots it — and the
+# assertion below, which reads the RUNNING process, then fails against flags that were never
+# applied. Restarted here rather than from a handler because handlers run at the end of the play,
+# after that assertion.
+#
+# The trigger is the running command line, not only `changed`: `copy` reports changed exactly
+# once, so a run that writes a new script and is then interrupted before the restart (an
+# ansible-pull that times out, a control-plane retry) would leave every later run seeing an
+# unchanged file, skipping the restart, and failing the assertion forever. Reading what is
+# actually running is self-healing. It costs the customer their open tabs, so it fires only when
+# the script changed or the flags really are stale.
+# The pattern is anchored at the binary path on purpose. `pgrep -f` matches the WHOLE command
+# line of every process, and this task's own shell carries the pattern as an argument, so an
+# unanchored `google-chrome-stable --remote-debugging` matches the wrapper as happily as Chrome
+# — which on a box where Chrome has not come up yet reads as "a browser is running" and then
+# asserts against the wrapper's arguments. Chrome's cmdline starts with the binary; no shell's
+# does.
+- name: Read the running browser's flags before deciding on a restart
+  ansible.builtin.command:
+    cmd: pgrep -a -f "^/usr/bin/google-chrome-stable --remote-debugging"
+  register: browser_cmdline_now
+  changed_when: false
+  failed_when: false
+  when: not ci_test
+
+- name: Restart browser-stream when its script, its unit or the running flags are stale
+  ansible.builtin.systemd:
+    name: browser-stream
+    state: restarted
+    daemon_reload: true
+  when:
+    - not ci_test
+    - browser_stream_script is changed or browser_stream_unit is changed or
+      '--enable-unsafe-swiftshader' not in (browser_cmdline_now.stdout | default(''))
+
 # Provisioning-time proof, not a one-off check by whoever last touched this. browser-stream.sh
 # already refuses to start an unsandboxed browser; these two catch the ways the unit itself can
-# drift — someone re-adding --no-sandbox, or the memory cap being dropped from the template —
-# and they run on every box, on every re-provision.
+# drift — someone re-adding --no-sandbox, the memory cap being dropped from the template, or the
+# flags that keep this browser indistinguishable from a person's going missing — and they run on
+# every box, on every re-provision.
 - name: Read the running browser's command line and limits
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      printf 'CMDLINE=%s\n' "$(pgrep -a -f 'google-chrome-stable --remote-debugging' | head -1)"
+      printf 'CMDLINE=%s\n' "$(pgrep -a -f '^/usr/bin/google-chrome-stable --remote-debugging' | head -1)"
       printf 'MEMMAX=%s\n' "$(systemctl show browser-stream -p MemoryMax --value)"
       printf 'SANDBOXHELPER=%s\n' "$(pgrep -c -f '/opt/google/chrome/chrome-sandbox' || true)"
     executable: /bin/bash
@@ -181,18 +220,28 @@
   changed_when: false
   retries: 12
   delay: 5
-  until: "'CMDLINE=' in browser_runtime.stdout and browser_runtime.stdout is search('CMDLINE=.+')"
+  # Wait for the browser this role just (re)started, not merely for "a" browser: the restart
+  # above returns as soon as the unit's script is up, and Chrome appears a couple of seconds
+  # later. Without the flag in the condition the first reading lands in that gap and the
+  # assertion below fails against a box that was about to be fine.
+  until: >-
+    browser_runtime.stdout is search('CMDLINE=.+') and
+    '--enable-unsafe-swiftshader' in browser_runtime.stdout
   when: not ci_test
 
-- name: Fail when the browser is running unsandboxed or uncapped
+- name: Fail when the browser is running unsandboxed, uncapped or self-identifying
   ansible.builtin.assert:
     that:
       - "'--no-sandbox' not in browser_runtime.stdout"
       - "'--disable-setuid-sandbox' not in browser_runtime.stdout"
       - browser_runtime.stdout is not search('MEMMAX=infinity')
+      - "'--headless' not in browser_runtime.stdout"
+      - "'--enable-automation' not in browser_runtime.stdout"
+      - "'--enable-unsafe-swiftshader' in browser_runtime.stdout"
     fail_msg: >-
       browser-stream is not in the shape this role guarantees. Either Chrome is running with a
       sandbox flag turned off — it parses LLM-chosen content as the user that owns the gateway
-      token — or MemoryMax is unset and a heavy page can take OpenClaw down with it.
+      token — or MemoryMax is unset and a heavy page can take OpenClaw down with it, or the
+      window is one a site can tell is automated.
       Observed: {{ browser_runtime.stdout | default('(no reading)') }}
   when: not ci_test
