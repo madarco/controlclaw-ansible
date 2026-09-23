@@ -1,0 +1,48 @@
+[Unit]
+Description=ControlClaw residential exit relay
+Documentation=https://github.com/madarco/controlclaw/blob/main/packages/exit-relay/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/controlclaw/exit-relay.env
+ExecStart=/usr/bin/node /opt/controlclaw/exit-relay/index.js
+Restart=always
+RestartSec=2
+
+# A restart drops every open tunnel, so the relay is given time to ship what it has counted:
+# bytes that never reach the control plane are bytes nobody is charged for.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# The relay writes nothing: it reads its bundle, its env file and the certificate, and keeps
+# everything else in memory. So the whole filesystem is read-only to it (ProtectSystem=strict),
+# with a private /tmp it does not use either.
+#
+# Root, because the Let's Encrypt private key is 0600 root-owned and the renewal hook replaces it
+# on certbot's schedule. A dedicated user would mean a group on the key that certbot has to keep
+# setting; the other daemons on these boxes run this way too (mitmbox.yml, vm-agent.yml).
+DynamicUser=no
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+# One relay serves every organization, so a run of connections must not take the box down. The
+# per-org ceilings are the relay's own; this is the floor under them.
+LimitNOFILE=65536
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=controlclaw-exit-relay
+
+[Install]
+WantedBy=multi-user.target
