@@ -35,6 +35,30 @@
   loop:
     - { path: "{{ controlclaw_home }}/.openclaw", mode: '0755' }
     - { path: "{{ controlclaw_home }}/.openclaw/credentials", mode: '0700' }
+    - { path: "{{ controlclaw_home }}/.openclaw/skills", mode: '0755' }
+
+# Skills we ship with the box, one directory per skill with a SKILL.md in it.
+#
+# `~/.openclaw/skills` is OpenClaw's *managed* tier, and that is the point: the bundled tier lives
+# inside the npm package, so anything written there is gone the next time this role runs
+# `npm install -g openclaw@latest`. The managed tier survives the upgrade and outranks bundled on
+# a name collision, so a skill here is still the one the agent loads after OpenClaw ships one of
+# its own by the same name.
+#
+# The copy is not `delete: true`: a customer may have put their own skills in the same directory,
+# and the box is theirs. Ours are replaced on every run, which is what makes an edit to a SKILL.md
+# reach existing boxes through a re-provision.
+- name: Install the bundled OpenClaw skills
+  ansible.builtin.copy:
+    src: openclaw-skills/
+    dest: "{{ controlclaw_home }}/.openclaw/skills/"
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "0644"
+    directory_mode: "0755"
+  # The gateway caches the skill set per process and nothing here bumps the in-process snapshot
+  # version, so a SKILL.md dropped in under a running gateway is not read until it restarts.
+  notify: restart openclaw
 
 # `npm install -g openclaw@latest` costs ~48s even when the package is already current, because it
 # re-resolves and re-verifies 300+ packages. That made it the most expensive task on a box booted
