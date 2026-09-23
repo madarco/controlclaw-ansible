@@ -116,9 +116,19 @@ patchright_prefix: /usr/local/lib/controlclaw-patchright
 # plugin API floor — the same chore patchright_version carries.
 openclaw_web_search_provider: parallel-free
 openclaw_search_plugin_version: "2026.9.5"
+#
+# tavily and brave are the PAID providers an organisation can switch to from the console
+# (controlclaw apps/saas/docs/features/web-search.md). The key never reaches this box — the org
+# firewall holds it and pushes a placeholder plus `tools.web.search.provider` — but the plugin
+# behind the provider has to be here first, so both are installed on every agent box whether or
+# not the organisation has a key. An unconfigured plugin does nothing, and installing on demand
+# would make somebody's first search change wait on npm (and hang behind the proxy on a confined
+# box): `packages/vm-agent/src/search.ts` refuses the change rather than fetching anything.
 openclaw_search_plugins:
   - { id: parallel, package: "@openclaw/parallel-plugin" }
   - { id: duckduckgo, package: "@openclaw/duckduckgo-plugin" }
+  - { id: tavily, package: "@openclaw/tavily-plugin" }
+  - { id: brave, package: "@openclaw/brave-plugin" }
 
 # Swap (tasks/swap.yml). The stock box has none, which leaves the kernel no move under memory
 # pressure except to kill something. 0 disables.
