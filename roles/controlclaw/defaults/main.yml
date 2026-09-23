@@ -91,6 +91,25 @@ patchright_version: "1.63.0"
 # this moved. /usr/local/lib is where a locally installed library belongs anyway.
 patchright_prefix: /usr/local/lib/controlclaw-patchright
 
+# Web search (tasks/openclaw-search.yml). `web_search` needs a provider named in the config:
+# OpenClaw only auto-detects providers that already hold a credential, and none of the models
+# this platform ships carries one, so out of the box the tool answers "web_search is disabled or
+# no provider is available".
+#
+# parallel-free is Parallel's free Search MCP — no key, no account, one host
+# (search.parallel.ai:443). duckduckgo is installed alongside it but NOT selected: it is a
+# config switch away when Parallel is rate limiting, without needing npm on a confined box.
+#
+# The version is pinned rather than tracking @latest: both packages declare
+# `peerDependencies.openclaw: ">=2026.9.5"`, so a newer gateway is happy with this pin and two
+# boxes built an hour apart get the same plugin. Bump it when an OpenClaw release raises the
+# plugin API floor — the same chore patchright_version carries.
+openclaw_web_search_provider: parallel-free
+openclaw_search_plugin_version: "2026.9.5"
+openclaw_search_plugins:
+  - { id: parallel, package: "@openclaw/parallel-plugin" }
+  - { id: duckduckgo, package: "@openclaw/duckduckgo-plugin" }
+
 # Swap (tasks/swap.yml). The stock box has none, which leaves the kernel no move under memory
 # pressure except to kill something. 0 disables.
 swap_size_mb: 4096
