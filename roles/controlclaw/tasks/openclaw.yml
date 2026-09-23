@@ -119,24 +119,37 @@
     src: "{{ npm_global_root.stdout | trim }}/openclaw/package.json"
   register: openclaw_manifest
 
-# patchright publishes one build per Playwright release and only matches that release's API.
-# Stop here rather than aliasing a mismatched pair or silently leaving the stock Playwright in
-# place: the first is a browser that breaks in ways nobody will connect to this task, the
-# second is a box that quietly loses the property this whole file is here to give it.
-- name: Fail when patchright no longer matches OpenClaw's playwright-core
-  ansible.builtin.assert:
-    that:
-      - openclaw_playwright_version == patchright_version
-    fail_msg: >-
-      OpenClaw {{ openclaw_installed_version.stdout | default('?') | trim }} depends on
-      playwright-core {{ openclaw_playwright_version }}, but patchright_version is pinned to
-      {{ patchright_version }}. Set patchright_version to {{ openclaw_playwright_version }} in
-      roles/controlclaw/defaults/main.yml (check that patchright-core publishes it first) and
-      re-run. Until then the box would run the unpatched Playwright, which every bot check on
-      the internet recognises.
+# patchright publishes one build per Playwright release and only matches that release's API —
+# and it does not publish one for every release (1.58.0, 1.58.1 and 1.62.0 have no build). So
+# the pair can legitimately drift: `openclaw@latest` is unpinned, and the day OpenClaw moves
+# Playwright this box would otherwise be asked to alias two versions that are not the same API.
+#
+# This DEGRADES rather than failing the play. A hard stop here would take the whole box down —
+# no gateway unit, no Caddy, no vm-agent ready — over a fingerprinting nicety, and there would
+# not always be a one-line fix available. Instead the alias is skipped, the box keeps working
+# with stock Playwright, and the play says so loudly. Bump patchright_version in
+# roles/controlclaw/defaults/main.yml once patchright publishes the matching build.
+#
+# The declared spec is read defensively: an absent key (moved to optionalDependencies, bundled)
+# or a range (`^1.63.0`) both mean "do not alias" rather than a Jinja error mid-play.
+- name: Decide whether patchright matches OpenClaw's playwright-core
+  ansible.builtin.set_fact:
+    openclaw_playwright_version: "{{ openclaw_declared_playwright }}"
+    patchright_applies: "{{ openclaw_declared_playwright == patchright_version }}"
   vars:
-    openclaw_playwright_version: >-
-      {{ (openclaw_manifest.content | b64decode | from_json).dependencies['playwright-core'] }}
+    openclaw_declared_playwright: >-
+      {{ ((openclaw_manifest.content | b64decode | from_json).dependencies | default({}))['playwright-core'] | default('') | trim }}
+
+- name: Warn when the agent's browser will run unpatched Playwright
+  ansible.builtin.debug:
+    msg: >-
+      OpenClaw {{ (openclaw_manifest.content | b64decode | from_json).version | default('?') }}
+      declares playwright-core "{{ openclaw_playwright_version | default('(none)') }}", but
+      patchright_version is pinned to {{ patchright_version }}. NOT aliasing: this box's browser
+      will announce itself over CDP on every page it opens, and sites that fingerprint will see
+      it. Set patchright_version to the declared version in
+      roles/controlclaw/defaults/main.yml once patchright-core publishes that build.
+  when: not patchright_applies | bool
 
 - name: Create the patchright install prefix
   ansible.builtin.file:
@@ -145,6 +158,7 @@
     owner: root
     group: root
     mode: '0755'
+  when: patchright_applies | bool
 
 # A manifest rather than `npm install patchright-core@<version>`: the pin then lives in one
 # place on the box too, and `npm install` in this directory is a no-op once it matches.
@@ -160,6 +174,7 @@
         "private": true,
         "dependencies": { "patchright-core": "{{ patchright_version }}" }
       }
+  when: patchright_applies | bool
 
 - name: Read the installed patchright-core version
   ansible.builtin.command:
@@ -167,19 +182,21 @@
   register: patchright_installed
   changed_when: false
   failed_when: false
+  when: patchright_applies | bool
 
 - name: Install patchright-core
   ansible.builtin.command:
     cmd: npm install --no-audit --no-fund --omit=dev
     chdir: "{{ patchright_prefix }}"
   environment: "{{ controlclaw_node_env }}"
-  when: patchright_installed.stdout | trim != patchright_version
+  when: patchright_applies | bool and patchright_installed.stdout | default('') | trim != patchright_version
   changed_when: true
 
 - name: Look at OpenClaw's playwright-core directory
   ansible.builtin.stat:
     path: "{{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core"
   register: openclaw_playwright_dir
+  when: patchright_applies | bool
 
 # `file: state=link` refuses to replace a real directory, and a re-installed OpenClaw brings
 # the stock one back, so clear it first. Only when it is a directory: on every later run it is
@@ -188,7 +205,10 @@
   ansible.builtin.file:
     path: "{{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core"
     state: absent
-  when: openclaw_playwright_dir.stat.exists and not openclaw_playwright_dir.stat.islnk
+  when:
+    - patchright_applies | bool
+    - openclaw_playwright_dir.stat.exists | default(false)
+    - not openclaw_playwright_dir.stat.islnk | default(false)
 
 - name: Point OpenClaw's playwright-core at patchright-core
   ansible.builtin.file:
@@ -197,7 +217,7 @@
     state: link
     owner: root
     group: root
-  register: patchright_alias
+  when: patchright_applies | bool
   notify: restart openclaw
 
 # Proof, from OpenClaw's own module resolver rather than from the file listing: the alias is
@@ -208,15 +228,17 @@
       node -p "require('module').createRequire('{{ npm_global_root.stdout | trim }}/openclaw/dist/probe.mjs')('playwright-core/package.json').name"
   register: playwright_resolves_to
   changed_when: false
+  when: patchright_applies | bool
 
 - name: Fail when OpenClaw would still drive the browser with stock Playwright
   ansible.builtin.assert:
     that:
-      - playwright_resolves_to.stdout | trim == 'patchright-core'
+      - playwright_resolves_to.stdout | default('') | trim == 'patchright-core'
     fail_msg: >-
       OpenClaw resolves playwright-core to {{ playwright_resolves_to.stdout | trim }}, not
       patchright-core. The agent's Chrome would announce itself on the CDP wire on every page
       it opens. Check {{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core.
+  when: patchright_applies | bool
 
 - name: Check for an existing gateway token
   ansible.builtin.stat:
