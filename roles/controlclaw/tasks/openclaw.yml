@@ -275,6 +275,32 @@
   register: openclaw_token_b64
   no_log: true
 
+# OpenClaw's Systems tab shows a desktop for the gateway host when desktop.host.enabled is true,
+# and observing it means attaching to a loopback VNC server that asks for a password.
+# browser-stream.yml runs that server (a second x11vnc over the same display :1, on
+# browser_desktop_vnc_port), writes the password both programs need, and leaves
+# browser_desktop_ready saying whether the thing actually answers with VncAuth.
+#
+# All three have to hold, and the last one is why this is a fact rather than a flag. OpenClaw
+# advertises the host desktop on `enabled` alone, without probing anything -- so writing
+# enabled:true with no server behind it does not give the customer a desktop, it gives them a
+# Systems tab that offers one and then fails when they click it. "No desktop available" is the
+# better of those two.
+#
+# Written as enabled:false rather than left out, so a box that had a desktop and is
+# re-provisioned without one actually loses it instead of keeping a stale true.
+- name: Look for the desktop VNC password the gateway will read
+  ansible.builtin.stat:
+    path: "{{ openclaw_desktop_password_file }}"
+  register: openclaw_desktop_password
+
+- name: Decide whether this box advertises a desktop
+  ansible.builtin.set_fact:
+    openclaw_desktop_expected: >-
+      {{ (browser_stream_enabled | bool) and (openclaw_desktop_enabled | bool)
+         and openclaw_desktop_password.stat.exists
+         and (browser_desktop_ready | default(false) | bool) }}
+
 # Read the config file directly rather than shelling out to `openclaw config get`: each CLI call
 # pays Node's startup cost (~4s), and four of them made this the 5th most expensive task in the
 # whole provision. The file also carries the real token, whereas `config get` redacts it - so this
@@ -305,6 +331,10 @@
          openclaw_browser_current.defaultProfile | default('') == 'openclaw' and
          openclaw_browser_profile.cdpUrl | default('') == openclaw_cdp_url and
          openclaw_browser_profile.attachOnly | default(false) | bool and
+         (openclaw_desktop_current.enabled | default(false) | bool) == (openclaw_desktop_expected | bool) and
+         (not openclaw_desktop_expected | bool or (
+           openclaw_desktop_current.port | default(0) == browser_desktop_vnc_port | int and
+           openclaw_desktop_current.passwordFile | default('') == openclaw_desktop_password_file)) and
          (vm_hostname is not defined or (
            openclaw_gateway_current.publicOrigin | default('') == 'https://' ~ vm_hostname and
            openclaw_gateway_current.trustedProxies | default([]) == ['127.0.0.1'] and
@@ -322,6 +352,9 @@
     # happens to use. This does not.
     openclaw_browser_profile: >-
       {{ (openclaw_browser_current.profiles | default({})).openclaw | default({}) }}
+    openclaw_desktop_current: >-
+      {{ ((openclaw_config_raw.content | default('') | b64decode | from_json).desktop | default({})).host | default({})
+         if openclaw_config_raw.content is defined else {} }}
   no_log: true
 
 # `config patch` is a single validated write against OpenClaw's own schema - better than
@@ -346,16 +379,25 @@
 #   * no `headless` / `executablePath`: OpenClaw never launches anything here.
 #   * the profile name must match ^[a-z0-9-]+$.
 #
+# The desktop block is what puts this box on OpenClaw's Systems tab. `enabled` is the whole
+# switch -- `environments.list` reports `desktop: true` for the gateway host on that key alone,
+# without probing anything, which is why browser-stream.yml opens the RFB handshake itself and
+# leaves the answer in browser_desktop_ready. `managed` is deliberately absent: managed means OpenClaw starts its own
+# TigerVNC + XFCE on a fresh display, which would be a second, empty desktop with none of the
+# customer's browser on it. `port` and `passwordFile` point it at the mirror of display :1 that
+# browser-stream.sh already runs. Changing desktop.host needs a gateway restart, which the
+# handler below does.
+#
 # Both JSON fragments below start with a COMMA, and that is load-bearing. Ansible runs its own
 # literal_eval over a templated result, so a value that merely looks like a dict comes back as a
 # real dict and renders as Python — `{'enabled': True, …}` — which is not JSON and which
 # `config patch` rejects. A fragment starting with `,` can never be read that way. Found on a
 # real box (vnc-live-3, 2026-09-20), where the task failed under `no_log` and said nothing.
-- name: Configure the gateway (loopback, token auth, public origin) and the live browser
+- name: Configure the gateway (loopback, token auth, public origin), the live browser and the desktop
   ansible.builtin.shell:
     cmd: >-
       printf '%s'
-      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}{{ openclaw_origin_json }}}{{ openclaw_browser_json }}}'
+      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}{{ openclaw_origin_json }}}{{ openclaw_browser_json }}{{ openclaw_desktop_json }}}'
       | /usr/bin/openclaw config patch --stdin
   vars:
     openclaw_origin_json: >-
@@ -363,6 +405,9 @@
          if vm_hostname is defined else '' }}
     openclaw_browser_json: >-
       {{ ',"browser":{"enabled":true,"attachOnly":true,"defaultProfile":"openclaw","profiles":{"openclaw":{"cdpUrl":"' ~ openclaw_cdp_url ~ '","attachOnly":true}}}' }}
+    openclaw_desktop_json: >-
+      {{ (',"desktop":{"host":{"enabled":true,"port":' ~ browser_desktop_vnc_port | int ~ ',"passwordFile":"' ~ openclaw_desktop_password_file ~ '"}}')
+         if openclaw_desktop_expected | bool else ',"desktop":{"host":{"enabled":false}}' }}
   become: true
   become_user: "{{ controlclaw_user }}"
   environment:
@@ -390,6 +435,14 @@
         is mapping
       - (((openclaw_config_written.browser | default({})).profiles | default({})).openclaw | default({})).cdpUrl
         | default('') == openclaw_cdp_url
+      - ((openclaw_config_written.desktop | default({})).host | default({})).enabled | default(false) | bool
+        == openclaw_desktop_expected | bool
+      - not openclaw_desktop_expected | bool or
+        ((openclaw_config_written.desktop | default({})).host | default({})).port | default(0)
+        == browser_desktop_vnc_port | int
+      - not openclaw_desktop_expected | bool or
+        ((openclaw_config_written.desktop | default({})).host | default({})).passwordFile | default('')
+        == openclaw_desktop_password_file
     fail_msg: >-
       `openclaw config patch` ran but {{ controlclaw_home }}/.openclaw/openclaw.json does not hold
       what we asked for. The patch task is no_log (its command carries the gateway token), so read
@@ -421,6 +474,8 @@
 
       # DISPLAY is deliberately NOT set on this unit. Attaching over CDP never spawns a process,
       # and an X display in the environment only risks re-enabling OpenClaw's local-open path.
+      # The desktop source does not want it either: it reaches display :1 over a TCP RFB socket
+      # on loopback, not through X.
 
       [Service]
       Type=simple

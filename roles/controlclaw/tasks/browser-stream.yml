@@ -106,6 +106,75 @@
       (found {{ chrome_setuid.stat.mode | default('absent') }}). Chrome would run its renderers
       unsandboxed, as the user that owns the gateway token and the saved-login profile.
 
+# The password for the second VNC mirror, the one OpenClaw attaches to for its Systems tab.
+# Generated once and never rotated, like the gateway token: ansible-pull re-runs on every boot,
+# and a rotation would leave OpenClaw's config pointing at the old secret until the next patch.
+#
+# BOTH FILES IN ONE TASK, and that is not tidiness. x11vnc reads an obfuscated format and
+# OpenClaw reads plaintext, so the same 8 characters have to be written twice -- and two tasks
+# with two independent guards can each decide differently. Delete one of the pair (the obvious
+# thing to do when re-rolling) and a split pair re-rolls the plaintext while x11vnc keeps
+# serving the old password: the play stays green, the RFB probe below still sees VncAuth, and
+# the only symptom is a customer opening Systems and being told authentication failed.
+#
+# 8 characters because that is all the RFB password scheme carries -- x11vnc and every client
+# truncate to 8, so a longer secret would be a longer string and not a longer password.
+#
+# Written to .tmp and moved, so an interrupted run leaves no half-written file that the
+# existence check below would then accept forever.
+#
+# This file runs before vm-agent.yml and openclaw-egress.yml, both of which also create the keys
+# dir, so it creates its own.
+- name: Ensure the keys dir exists (browser-stream runs before the vm-agent tasks)
+  ansible.builtin.file:
+    path: /opt/controlclaw/keys
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '0750'
+  when: openclaw_desktop_enabled | bool
+
+- name: Look for both halves of the desktop VNC password
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ openclaw_desktop_password_file }}"
+    - "{{ browser_desktop_rfbauth_file }}"
+  register: desktop_vnc_files
+  when: openclaw_desktop_enabled | bool
+
+# Deliberately NOT no_log. The password never appears in the command string (it is a shell
+# variable) nor in the output, so no_log would hide nothing except the failure -- which is
+# exactly the trap openclaw.yml documents further down, where a broken task said only
+# "censored" and cost a whole box build.
+- name: Generate the desktop VNC password, in both the formats that read it
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      umask 077
+      pw="$(openssl rand -base64 6)"
+      printf '%s' "$pw" > {{ openclaw_desktop_password_file }}.tmp
+      x11vnc -storepasswd "$pw" {{ browser_desktop_rfbauth_file }}.tmp >/dev/null
+      mv {{ openclaw_desktop_password_file }}.tmp {{ openclaw_desktop_password_file }}
+      mv {{ browser_desktop_rfbauth_file }}.tmp {{ browser_desktop_rfbauth_file }}
+  when:
+    - openclaw_desktop_enabled | bool
+    - desktop_vnc_files.results | rejectattr('stat.exists') | list | length > 0 or
+      desktop_vnc_files.results | selectattr('stat.size', 'defined') | selectattr('stat.size', 'eq', 0) | list | length > 0
+  changed_when: true
+
+- name: Secure both halves of the desktop VNC password
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '0600'
+  loop:
+    - "{{ openclaw_desktop_password_file }}"
+    - "{{ browser_desktop_rfbauth_file }}"
+  when: openclaw_desktop_enabled | bool
+
 - name: Deploy browser-stream script
   ansible.builtin.copy:
     src: browser-stream.sh
@@ -141,6 +210,10 @@
       Environment=CONTROLCLAW_BROWSER_VNC_PORT={{ browser_vnc_port }}
       Environment=CONTROLCLAW_BROWSER_NOVNC_PORT={{ browser_novnc_port }}
       Environment=CONTROLCLAW_BROWSER_GEOMETRY={{ browser_screen_geometry }}
+      # The second, password-protected mirror of the same display, which OpenClaw attaches to
+      # for its Systems tab. An empty RFBAUTH is how the script is told not to start it.
+      Environment=CONTROLCLAW_BROWSER_DESKTOP_VNC_PORT={{ browser_desktop_vnc_port }}
+      Environment=CONTROLCLAW_BROWSER_DESKTOP_RFBAUTH={{ browser_desktop_rfbauth_file if openclaw_desktop_enabled | bool else '' }}
 
       # A browser is the one process here whose appetite is set by whatever page someone opens,
       # and it shares a 4 GB box with the agent. Left alone the kernel picks the victim on its
@@ -193,15 +266,98 @@
   failed_when: false
   when: not ci_test
 
-- name: Restart browser-stream when its script, its unit or the running flags are stale
+# One script, asked twice (before and after a restart), so it lives in a fact rather than being
+# spelled out twice. It mirrors OpenClaw's own reader: reply with the version the server
+# offered rather than assuming 3.8, read the 4-byte security word on RFB < 3.7 and the
+# 1-byte-count list otherwise, and report the FIRST type OpenClaw would recognise, because
+# `classifyRfbSecurity` returns on that one and judges the server by it.
+#
+# It waits inside the script rather than through `retries`/`until`. An ansible loop that runs
+# out of retries marks its task failed whatever `failed_when` says — the flag is evaluated
+# inside the loop and the exhaustion is stamped after it — so a task that reads "this cannot
+# fail" would have taken the whole provision down when the mirror was slow. Waiting here, the
+# task always exits 0 and the caller reads the answer.
+- name: Build the RFB probe
+  ansible.builtin.set_fact:
+    desktop_vnc_probe_script: |
+      python3 - <<'PY'
+      import socket, time
+      KNOWN = {1, 2, 30, 6, 16, 19, 22, 113}
+      DEADLINE = time.monotonic() + 60
+
+      def look():
+          sock = socket.create_connection(("127.0.0.1", {{ browser_desktop_vnc_port }}), 5)
+          try:
+              def read(count):
+                  buf = b""
+                  while len(buf) < count:
+                      chunk = sock.recv(count - len(buf))
+                      if not chunk:
+                          break
+                      buf += chunk
+                  return buf
+
+              banner = read(12)
+              if len(banner) < 12 or not banner.startswith(b"RFB 003."):
+                  return 0, "not-rfb"
+              minor = int(banner[8:11])
+              sock.sendall(b"RFB 003.008\n" if minor > 7 else b"RFB 003.007\n" if minor == 7 else b"RFB 003.003\n")
+              if minor < 7:
+                  word = int.from_bytes(read(4), "big")
+                  offered = [word] if word else []
+              else:
+                  count = read(1)
+                  offered = list(read(count[0])) if count else []
+              return next((k for k in offered if k in KNOWN), 0), ",".join(str(k) for k in offered) or "none"
+          finally:
+              sock.close()
+
+      while True:
+          try:
+              first, offered = look()
+          except OSError as err:
+              # A closed or silent port is an answer, not a crash. browser-stream starts this
+              # mirror last, after it has waited for Chrome's renderer, so a fresh box spends a
+              # few seconds here.
+              first, offered = 0, type(err).__name__
+          if first == 2 or time.monotonic() >= DEADLINE:
+              break
+          time.sleep(2)
+      print("VNCSEC=%d OFFERED=%s" % (first, offered))
+      PY
+  when:
+    - not ci_test
+    - openclaw_desktop_enabled | bool
+
+# The desktop mirror, asked the way OpenClaw asks. 2 is VncAuth, 1 is None (which OpenClaw
+# refuses outright), 0 is a server that is not there or has nothing to say.
+#
+# This runs BEFORE the restart decision, so a box that is already correct is not restarted and a
+# box whose mirror never came up is. Skipped when a restart is happening anyway, because then
+# the answer would be about a browser that is one task away from being killed.
+- name: Ask the desktop mirror which RFB security types it offers
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: "{{ desktop_vnc_probe_script }}"
+  register: desktop_vnc_first_look
+  changed_when: false
+  when:
+    - not ci_test
+    - openclaw_desktop_enabled | bool
+    - not (browser_stream_script is changed or browser_stream_unit is changed)
+
+- name: Restart browser-stream when its script, its unit, the running flags or the mirror are stale
   ansible.builtin.systemd:
     name: browser-stream
     state: restarted
     daemon_reload: true
+  register: browser_stream_restarted
   when:
     - not ci_test
     - browser_stream_script is changed or browser_stream_unit is changed or
-      '--enable-unsafe-swiftshader' not in (browser_cmdline_now.stdout | default(''))
+      '--enable-unsafe-swiftshader' not in (browser_cmdline_now.stdout | default('')) or
+      (openclaw_desktop_enabled | bool and
+       'VNCSEC=2 ' not in (desktop_vnc_first_look.stdout | default('VNCSEC=2 ')))
 
 # Provisioning-time proof, not a one-off check by whoever last touched this. browser-stream.sh
 # already refuses to start an unsandboxed browser; these two catch the ways the unit itself can
@@ -245,3 +401,45 @@
       window is one a site can tell is automated.
       Observed: {{ browser_runtime.stdout | default('(no reading)') }}
   when: not ci_test
+
+# Second look, only when something was restarted above: the first look either did not run or
+# ran against the browser that has just been replaced.
+- name: Ask the desktop mirror again after the restart
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: "{{ desktop_vnc_probe_script }}"
+  register: desktop_vnc_second_look
+  changed_when: false
+  when:
+    - not ci_test
+    - openclaw_desktop_enabled | bool
+    - browser_stream_restarted is changed
+
+- name: Record whether this box has a desktop to advertise
+  ansible.builtin.set_fact:
+    browser_desktop_ready: >-
+      {{ 'VNCSEC=2 ' in ((desktop_vnc_second_look.stdout | default(''))
+                         if desktop_vnc_second_look is not skipped
+                         else (desktop_vnc_first_look.stdout | default(''))) }}
+  when:
+    - not ci_test
+    - openclaw_desktop_enabled | bool
+
+# NOT an assert. A missing desktop mirror is a missing convenience, and browser-stream.yml runs
+# long before the vm-agent reports ready — failing here would mean the customer gets no box at
+# all because the Systems tab has no picture in it. So the play says so loudly and carries on,
+# and openclaw.yml writes desktop.host.enabled=false, which is the honest answer: the Systems
+# tab says "no desktop available" instead of advertising one that fails when it is opened.
+# (The sandbox and memory-cap asserts above stay hard. Those are the product.)
+- name: Warn when this box will report no desktop
+  ansible.builtin.debug:
+    msg: >-
+      127.0.0.1:{{ browser_desktop_vnc_port }} does not offer VncAuth
+      (read: {{ (desktop_vnc_second_look.stdout | default('') or desktop_vnc_first_look.stdout | default('')) | default('(no reading)', true) }}).
+      OpenClaw will be configured WITHOUT a desktop, and its Systems tab will say so. The port is
+      most likely taken by something else, or {{ browser_desktop_rfbauth_file }} is not one
+      x11vnc accepts — `journalctl -u browser-stream` has the reason.
+  when:
+    - not ci_test
+    - openclaw_desktop_enabled | bool
+    - not browser_desktop_ready | bool
