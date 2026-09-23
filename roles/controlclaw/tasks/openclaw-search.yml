@@ -1,0 +1,287 @@
+---
+# `web_search` on every agent box.
+#
+# Without this the tool answers "web_search is disabled or no provider is available" on every
+# model the platform ships. OpenClaw auto-detects a search provider only among the ones that
+# already hold a credential, and none of ours does: the included AI tokens are a custom
+# `models.providers.controlclaw` block pointed at the Vercel AI Gateway with the completions API,
+# and a customer's own OpenAI key is an auth profile with no provider block. Neither is a direct
+# OpenAI Responses model on the official base URL, which is the one case where OpenAI's hosted
+# search would step in on its own.
+#
+# parallel-free is Parallel's free Search MCP: no key, no account, one host. Key-free providers
+# never win auto-detection — OpenClaw deliberately will not send managed queries to one just
+# because nothing else is configured — so it has to be named in the config, which is what the
+# patch at the bottom does.
+#
+# duckduckgo is installed and left unselected: it is one config line away when Parallel is rate
+# limiting or down, and installing it now means that switch does not need npm on a confined box.
+#
+# Egress: parallel-free talks to search.parallel.ai:443 and duckduckgo to
+# html.duckduckgo.com:443 / duckduckgo.com:443. All three are ordinary HTTPS, so on a secured box
+# the mitm proxy intercepts them and the default-allow rule passes them; nothing has to be added
+# to the firewall. (Only non-HTTP TCP is dropped outright, and only a `tunnel` rule bypasses
+# inspection.) See docs/security-design.md, "Uninspected egress allowlist".
+#
+# NOTHING HERE FAILS THE PLAY. Search is a feature; the gateway, Caddy and the vm-agent are the
+# box. A box that provisions without search is worth more than a box that does not provision, so
+# every task below degrades and says so loudly, the way the patchright alias in openclaw.yml
+# does. The provisioning log is where an operator finds out.
+
+# Installed at PROVISIONING, not by the agent at runtime. A secured box reaches npm only through
+# the org firewall, and `openclaw plugins install` on first use is a failure the customer watches
+# happen. Pinned for the same reason patchright is: `openclaw@latest` is unpinned, and a plugin
+# that resolves to whatever npm has today is one more thing that can differ between two boxes
+# built an hour apart.
+#
+# The pin is safe to leave behind a newer gateway: both packages declare
+# `peerDependencies.openclaw: ">=2026.9.5"` and `openclaw.compat.pluginApi: ">=2026.9.5"`, so a
+# newer OpenClaw satisfies an older plugin. The chore is the other direction — an OpenClaw that
+# raises the plugin API floor needs this bumped.
+
+# One CLI call, not one per package: each `openclaw` invocation pays Node's startup cost (~4s),
+# and this file runs again on every re-provision.
+- name: Read the installed OpenClaw plugins
+  ansible.builtin.command:
+    cmd: /usr/bin/openclaw plugins list --json
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: openclaw_plugins_listed
+  changed_when: false
+  failed_when: false
+
+# `plugins list` is a cold inventory read, so an entry here means "installed on disk", which is
+# what we are deciding about.
+#
+# `openclaw_plugins_listed.stdout` is read straight off the registered result, never through an
+# intermediate `vars:` entry, and that is load-bearing rather than a style choice. Ansible runs
+# literal_eval over a templated result, so `{{ result.stdout }}` assigned to a variable comes back
+# as a real dict — and `from_json` then fails with "the JSON object must be str, bytes or
+# bytearray, not dict" and takes the whole play down. Found on a real box (2026-09-23), and it is
+# the same trap the comma comment in openclaw.yml is about.
+#
+# `is string` and the leading-brace check guard the rest: `openclaw` is installed from @latest, so
+# an update notice or deprecation banner ahead of the payload must not raise either. Anything
+# unparseable yields an empty listing, which means "install both" — an install that is already
+# current is cheap, and a skipped one is a box with no web search.
+- name: Work out which search plugins are missing or off the pin
+  ansible.builtin.set_fact:
+    openclaw_search_plugins_needed: >-
+      {{ openclaw_search_plugins | rejectattr('id', 'in', openclaw_search_pinned_ids) | list }}
+  vars:
+    openclaw_search_listing: >-
+      {{ (openclaw_plugins_listed.stdout | from_json)
+               if (openclaw_plugins_listed.rc | default(1) == 0
+                   and openclaw_plugins_listed.stdout is defined
+                   and openclaw_plugins_listed.stdout is string
+                   and (openclaw_plugins_listed.stdout | trim)[:1] == '{')
+               else {} }}
+    openclaw_search_pinned_ids: >-
+      {{ (openclaw_search_listing.plugins | default([], true) if openclaw_search_listing.plugins | default([], true) is sequence else [])
+         | selectattr('id', 'defined')
+         | selectattr('version', 'defined')
+         | selectattr('version', 'equalto', openclaw_search_plugin_version)
+         | map(attribute='id') | list }}
+
+# `npm:` rather than a bare spec: bare names resolve against the bundled/official catalog first,
+# and we want the published package at the pinned version and nothing else. Both are first-party
+# OpenClaw packages from the official catalog, so no capability review is required and neither
+# `--force` nor `--accept-capabilities` is needed.
+#
+# `controlclaw_node_env` carries NODE_EXTRA_CA_CERTS when the org mitm CA is on the box, and it
+# is not optional here. npm does not fail against an untrusted proxy, it HANGS on the TLS
+# handshake (real box, 2026-09-18), so a re-provision of a confined box without it would sit here
+# instead of installing anything. openclaw.yml refreshes the fact a few tasks above.
+#
+# With the gateway already running (a re-provision) the install applies live; on a first
+# provision the gateway has not been created yet and it applies at startup. Either way the
+# plugin is on disk before `openclaw gateway run` first starts.
+- name: Install the web-search plugins (pinned)
+  ansible.builtin.command:
+    cmd: "/usr/bin/openclaw plugins install npm:{{ item.package }}@{{ openclaw_search_plugin_version }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  loop: "{{ openclaw_search_plugins_needed }}"
+  loop_control:
+    label: "{{ item.package }}"
+  register: openclaw_search_install
+  # Per item, and not `true`. A run where npm is unreachable (registry down, an egress rule
+  # blocking registry.npmjs.org, a yanked version) fails every item, and reporting those as
+  # changed would fire `restart openclaw` and bounce the gateway under a customer for nothing —
+  # on every re-provision, because a failed install leaves the diff above saying "install both"
+  # again next time.
+  changed_when: openclaw_search_install.rc == 0
+  failed_when: false
+  notify: restart openclaw
+
+# End-state check, and the reason it is a warning rather than an assert is the note at the top of
+# this file. It also catches the quieter failure: if `plugins list` ever stops reporting `id` and
+# `version` the way the fact above reads them, or the packages stop being versioned in lockstep
+# with OpenClaw, the diff above would come back "install both" on every single run and
+# `notify: restart openclaw` would bounce the gateway under the customer on every re-provision.
+# That is the failure openclaw.yml's own config comparison was written to avoid, and it is silent
+# unless something looks for it.
+- name: Read the installed OpenClaw plugins again
+  ansible.builtin.command:
+    cmd: /usr/bin/openclaw plugins list --json
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: openclaw_plugins_after
+  changed_when: false
+  failed_when: false
+  when: openclaw_search_plugins_needed | length > 0
+
+- name: Read back which search plugins are at the pin
+  ansible.builtin.set_fact:
+    openclaw_search_after_ids: >-
+      {{ (openclaw_search_listing_after.plugins | default([], true) if openclaw_search_listing_after.plugins | default([], true) is sequence else [])
+         | selectattr('id', 'defined')
+         | selectattr('version', 'defined')
+         | selectattr('version', 'equalto', openclaw_search_plugin_version)
+         | map(attribute='id') | list }}
+  vars:
+    openclaw_search_listing_after: >-
+      {{ (openclaw_plugins_after.stdout | from_json)
+               if (openclaw_plugins_after.rc | default(1) == 0
+                   and openclaw_plugins_after.stdout is defined
+                   and openclaw_plugins_after.stdout is string
+                   and (openclaw_plugins_after.stdout | trim)[:1] == '{')
+               else {} }}
+  when: openclaw_search_plugins_needed | length > 0
+
+- name: Warn when a web-search plugin is not installed at the pin
+  ansible.builtin.debug:
+    msg: >-
+      Web search plugins are not at {{ openclaw_search_plugin_version }} after installing: this
+      box reports {{ openclaw_search_after_ids }} at the pin, expected
+      {{ openclaw_search_plugins | map(attribute='id') | list }}. `web_search` may answer "no
+      provider is available", and if the ids or versions have drifted, every re-provision will
+      reinstall both plugins and restart the gateway under the customer. Check
+      `openclaw plugins list --json` on the box against the pin in
+      roles/controlclaw/defaults/main.yml.
+  when:
+    - openclaw_search_plugins_needed | length > 0
+    - openclaw_search_plugins | map(attribute='id') | difference(openclaw_search_after_ids) | length > 0
+
+- name: Read the OpenClaw config before setting the search provider
+  ansible.builtin.slurp:
+    src: "{{ controlclaw_home }}/.openclaw/openclaw.json"
+  register: openclaw_search_config_raw
+  failed_when: false
+  no_log: true
+
+# Only when nobody has decided anything. `tools.web.search` is the customer's switch — the
+# Control UI writes it, `openclaw configure --section web` writes it, and an agent told to "use
+# duckduckgo instead" writes it. Re-asserting our default over that would undo it silently.
+#
+# Two things count as a decision, not one. A named `provider` is the obvious one. `enabled: false`
+# is the other: someone who turned web search OFF without naming a provider has decided just as
+# clearly, and writing a provider onto that box would turn it back on.
+#
+# `provider` uses `default('', true)` rather than `default('')`: the plain form only catches an
+# UNDEFINED key, and `None | length` raises. OpenClaw's own schema refuses a null provider, so a
+# config in that shape was hand-edited rather than written by the product, but a task that dies on
+# it reports "censored" instead of the real problem.
+#
+# `enabled` must NOT use that second argument, and this cost a box run to learn: `default(true,
+# true)` treats any falsy value as absent, so an explicit `enabled: false` came back as `true` and
+# the role happily re-enabled a box where someone had switched search off. `is sameas false` is
+# the precise test — absent and null both mean "nobody said", `false` means somebody did.
+#
+# Not no_log, unlike the slurp above (which carries the gateway token): these two facts are a
+# provider name and a boolean, and a task that fails under no_log says only "censored" — which is
+# how the comma bug in openclaw.yml survived a whole box build.
+# `ignore_errors` rather than a shape guard, and this is the second thing a box taught us. A
+# leading-brace check catches an empty file and an npm banner but NOT a half-written one: content
+# that starts `{"tools": {"web"` passes every cheap test and `from_json` still raises. Jinja has no
+# try/except, and a templating error inside set_fact ends the play — which `failed_when` does not
+# catch and `ignore_errors` does.
+#
+# So a config this task cannot read leaves both facts undefined, and every task below treats that
+# as "do not touch it". That is the right answer anyway: `openclaw config patch` refuses an
+# invalid config file, so writing onto one could only fail.
+- name: Read the web-search settings already on this box
+  ignore_errors: true
+  register: openclaw_search_read
+  ansible.builtin.set_fact:
+    openclaw_search_provider_current: "{{ openclaw_search_settings.provider | default('', true) }}"
+    openclaw_search_disabled: "{{ openclaw_search_settings.enabled is defined and openclaw_search_settings.enabled is sameas false }}"
+  vars:
+    openclaw_search_config: >-
+      {{ (openclaw_search_config_raw.content | b64decode | from_json)
+         if openclaw_search_config_raw.content is defined else {} }}
+    openclaw_search_settings: >-
+      {{ ((openclaw_search_config.tools | default({}, true)).web | default({}, true)).search | default({}, true) }}
+
+- name: Report the web-search choice already made on this box
+  ansible.builtin.debug:
+    msg: >-
+      Leaving tools.web.search alone: provider="{{ openclaw_search_provider_current }}",
+      enabled={{ not openclaw_search_disabled }}. The role only sets
+      {{ openclaw_web_search_provider }} when no provider is named and search is not switched off.
+  when:
+    - openclaw_search_provider_current is defined
+    - openclaw_search_provider_current | length > 0 or openclaw_search_disabled | bool
+
+# Only `provider` is written. `enabled` defaults to true in OpenClaw, so sending it would buy
+# nothing and would let this task re-enable a box where someone had switched search off.
+- name: Warn when the OpenClaw config could not be read
+  ansible.builtin.debug:
+    msg: >-
+      Could not read tools.web.search out of {{ controlclaw_home }}/.openclaw/openclaw.json
+      (missing, empty or not valid JSON). Leaving the web-search provider alone: a config
+      OpenClaw cannot parse is one `openclaw config patch` would refuse to write to anyway.
+      `web_search` on this box may answer "no provider is available".
+  when: openclaw_search_provider_current is not defined
+
+- name: Set parallel-free as the default web-search provider
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s'
+      '{"tools":{"web":{"search":{"provider":"{{ openclaw_web_search_provider }}"}}}}'
+      | /usr/bin/openclaw config patch --stdin
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  when:
+    - openclaw_search_provider_current is defined
+    - openclaw_search_provider_current | length == 0
+    - not openclaw_search_disabled | bool
+  register: openclaw_search_patch
+  changed_when: openclaw_search_patch.rc == 0
+  failed_when: false
+  notify: restart openclaw
+
+- name: Re-read the OpenClaw config after setting the search provider
+  ansible.builtin.slurp:
+    src: "{{ controlclaw_home }}/.openclaw/openclaw.json"
+  register: openclaw_search_config_after
+  when: openclaw_search_patch is not skipped
+  # Kept no_log (the file carries the gateway token) but made unfailable, so the pair does not
+  # contradict itself: an unreadable config here would otherwise end the play with "the output
+  # has been hidden" and no path. Unread instead means the warn below reports an empty provider,
+  # which says the same thing out loud.
+  failed_when: false
+  no_log: true
+
+- name: Warn when the search provider did not land
+  ansible.builtin.debug:
+    msg: >-
+      `openclaw config patch` ran but tools.web.search.provider is
+      "{{ openclaw_search_written }}", not {{ openclaw_web_search_provider }}
+      (rc={{ openclaw_search_patch.rc | default('?') }}:
+      {{ openclaw_search_patch.stderr | default('') | trim | truncate(200) }}).
+      Every agent on this box will answer "web_search is disabled or no provider is available".
+  vars:
+    openclaw_search_written: >-
+      {{ ((((openclaw_search_config_after.content | b64decode | from_json).tools
+             | default({}, true)).web | default({}, true)).search | default({}, true)).provider | default('', true)
+         if (openclaw_search_config_after.content is defined
+             and (openclaw_search_config_after.content | b64decode | trim)[:1] == '{')
+         else '' }}
+  when:
+    - openclaw_search_patch is not skipped
+    - openclaw_search_written != openclaw_web_search_provider

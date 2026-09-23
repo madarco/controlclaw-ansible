@@ -477,6 +477,11 @@
          if openclaw_config_after.content is defined else {} }}
   when: not openclaw_config_ok | bool
 
+# web_search: install the search plugins and name a provider. Before the unit is created, so a
+# first provision starts the gateway with both already in place rather than restarting it.
+- name: Include the web-search provider setup
+  ansible.builtin.include_tasks: openclaw-search.yml
+
 # Node does not read the OS trust store, so on a secured box every outbound TLS call from
 # OpenClaw would fail against the mitm proxy. NODE_EXTRA_CA_CERTS is not set here: the CA only
 # exists after the vm-agent verifies and installs it at runtime, and `cc-install-ca`
