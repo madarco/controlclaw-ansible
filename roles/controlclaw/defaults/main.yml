@@ -115,6 +115,27 @@ openclaw_search_plugins:
 swap_size_mb: 4096
 swap_file: /swapfile
 
+# Google Drive folders mounted into the agent's workspace (controlclaw docs/plans/drive-folders.md).
+#
+# rclone is pinned by version AND sha256, and installed from downloads.rclone.org rather than apt:
+# Ubuntu 24.04 ships a much older rclone than the flags here need, and an unpinned download is a
+# supply chain nobody reviewed. Bump the version and both checksums together, the way
+# connector_image_digest is bumped. `curl -sSL https://downloads.rclone.org/vX.Y.Z/SHA256SUMS`.
+rclone_version: "1.75.1"
+rclone_sha256_amd64: "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab"
+rclone_sha256_arm64: "03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9"
+
+# Per-mount rclone configs, env files and VFS caches. Deliberately NOT under the workspace: the
+# agent must not be able to rewrite the config of its own mounts, and the cache must not show up in
+# the file explorer or in a workspace backup.
+drive_state_dir: /opt/controlclaw/drive
+# Where the folders appear. Inside OpenClaw's workspace, because that is the directory the agent
+# works in and the one the console's Files page opens on.
+drive_mount_root: "{{ controlclaw_home }}/.openclaw/workspace/Drive"
+# First loopback port for a mount's rclone remote-control listener. One per mount, allocated in
+# order by cc-drive-apply; the vm-agent reads the allocation out of the state file it writes.
+drive_rc_base_port: 5700
+
 # Box role: "openclaw" (agent zone, default), "proxy" (blind L4 proxy in front of the agents)
 # or "mitm" (secret zone — egress proxy + secrets).
 box_role: openclaw

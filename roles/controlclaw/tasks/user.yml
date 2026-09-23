@@ -85,6 +85,12 @@
       # flips DNS to the mitm box). Coverage bound; the firewall is the enforcement boundary.
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-enable-egress
 
+      # Google Drive folders - fixed root script taking NO arguments, same property as
+      # cc-reprovision below: the agent gets to say "reconcile the mounts", never "mount this".
+      # What to mount is read from /opt/controlclaw/state/drive.json, which the agent writes only
+      # after verifying the org firewall's signature, in a directory the agent cannot write.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-drive-apply
+
       # Re-provisioning - fixed root script taking NO arguments. That is the whole security
       # property: this grant lets the agent trigger *the* update (what to pull is pinned in
       # /etc/controlclaw/update.conf, which the agent cannot write), never choose one. The run
