@@ -39,6 +39,16 @@ openbox &
 # --disable-quic: on a secured box the nftables ruleset redirects TCP only. Chrome tries QUIC on
 # UDP/443 first, gets nothing back, and eats a timeout before falling back — once per navigation.
 #
+# The flags are also what a site's bot check reads first, so the list is chosen for that as much
+# as for behaviour. What is NOT here matters most: no --headless, no --enable-automation and no
+# --disable-gpu, which is why navigator.webdriver is false and the user agent carries no
+# "HeadlessChrome". --disable-blink-features=AutomationControlled keeps it that way if a future
+# Chrome starts inferring automation from the open debugging port. --enable-unsafe-swiftshader
+# restores WebGL: Chrome stopped falling back to software GL on its own, and a box with no GPU
+# then answered every WebGL question with "no context", which is a louder signal than a software
+# renderer is. --lang pins the language list rather than letting it follow whatever locale the
+# image happens to boot with.
+#
 # THE SANDBOX IS ON. There is deliberately no --no-sandbox / --disable-setuid-sandbox here: this
 # browser parses whatever page an LLM decides to open, as the user that owns the gateway token,
 # the customer's saved logins and the cc-install-ca sudo rule, so a renderer bug must not be a
@@ -60,6 +70,9 @@ google-chrome-stable \
   --disable-crash-reporter \
   --metrics-recording-only \
   --disable-quic \
+  --disable-blink-features=AutomationControlled \
+  --enable-unsafe-swiftshader \
+  --lang=en-US \
   about:blank &
 CHROME_PID=$!
 

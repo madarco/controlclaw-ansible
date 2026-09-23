@@ -94,6 +94,130 @@
       - openclaw_bin.stat.exists
     fail_msg: "openclaw was installed but is not at /usr/bin/openclaw - check npm's global prefix."
 
+# Make the agent's browsing look like a person's browsing.
+#
+# OpenClaw attaches to the live Chrome with playwright-core (`chromium.connectOverCDP`), and
+# Playwright leaves fingerprints on the wire that a bot check reads: it turns the CDP Runtime
+# domain on for every page it touches and injects its own init scripts into the page's JS world.
+# patchright-core is the same Playwright release with those removed. It ships the same files,
+# the same entry points and the same `exports` map, so pointing OpenClaw's `playwright-core`
+# directory at it changes no OpenClaw code — the loader in the browser plugin is a plain
+# `require("playwright-core")` resolved at runtime from the global install.
+#
+# Measured on a real box rather than assumed: with playwright-core the attach sends
+# `Runtime.enable` three times; with patchright-core, never. The trade-off is that patchright
+# evaluates in an isolated world, so `openclaw browser evaluate` reads the DOM but not the
+# page's own JS globals.
+- name: Find the global node_modules directory
+  ansible.builtin.command:
+    cmd: npm root -g
+  register: npm_global_root
+  changed_when: false
+
+- name: Read the playwright-core version OpenClaw depends on
+  ansible.builtin.slurp:
+    src: "{{ npm_global_root.stdout | trim }}/openclaw/package.json"
+  register: openclaw_manifest
+
+# patchright publishes one build per Playwright release and only matches that release's API.
+# Stop here rather than aliasing a mismatched pair or silently leaving the stock Playwright in
+# place: the first is a browser that breaks in ways nobody will connect to this task, the
+# second is a box that quietly loses the property this whole file is here to give it.
+- name: Fail when patchright no longer matches OpenClaw's playwright-core
+  ansible.builtin.assert:
+    that:
+      - openclaw_playwright_version == patchright_version
+    fail_msg: >-
+      OpenClaw {{ openclaw_installed_version.stdout | default('?') | trim }} depends on
+      playwright-core {{ openclaw_playwright_version }}, but patchright_version is pinned to
+      {{ patchright_version }}. Set patchright_version to {{ openclaw_playwright_version }} in
+      roles/controlclaw/defaults/main.yml (check that patchright-core publishes it first) and
+      re-run. Until then the box would run the unpatched Playwright, which every bot check on
+      the internet recognises.
+  vars:
+    openclaw_playwright_version: >-
+      {{ (openclaw_manifest.content | b64decode | from_json).dependencies['playwright-core'] }}
+
+- name: Create the patchright install prefix
+  ansible.builtin.file:
+    path: "{{ patchright_prefix }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# A manifest rather than `npm install patchright-core@<version>`: the pin then lives in one
+# place on the box too, and `npm install` in this directory is a no-op once it matches.
+- name: Write the patchright manifest
+  ansible.builtin.copy:
+    dest: "{{ patchright_prefix }}/package.json"
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      {
+        "name": "controlclaw-patchright",
+        "private": true,
+        "dependencies": { "patchright-core": "{{ patchright_version }}" }
+      }
+
+- name: Read the installed patchright-core version
+  ansible.builtin.command:
+    cmd: node -p "require('{{ patchright_prefix }}/node_modules/patchright-core/package.json').version"
+  register: patchright_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install patchright-core
+  ansible.builtin.command:
+    cmd: npm install --no-audit --no-fund --omit=dev
+    chdir: "{{ patchright_prefix }}"
+  environment: "{{ controlclaw_node_env }}"
+  when: patchright_installed.stdout | trim != patchright_version
+  changed_when: true
+
+- name: Look at OpenClaw's playwright-core directory
+  ansible.builtin.stat:
+    path: "{{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core"
+  register: openclaw_playwright_dir
+
+# `file: state=link` refuses to replace a real directory, and a re-installed OpenClaw brings
+# the stock one back, so clear it first. Only when it is a directory: on every later run it is
+# already our symlink and this is a no-op.
+- name: Remove the stock playwright-core before aliasing it
+  ansible.builtin.file:
+    path: "{{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core"
+    state: absent
+  when: openclaw_playwright_dir.stat.exists and not openclaw_playwright_dir.stat.islnk
+
+- name: Point OpenClaw's playwright-core at patchright-core
+  ansible.builtin.file:
+    src: "{{ patchright_prefix }}/node_modules/patchright-core"
+    dest: "{{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core"
+    state: link
+    owner: root
+    group: root
+  register: patchright_alias
+  notify: restart openclaw
+
+# Proof, from OpenClaw's own module resolver rather than from the file listing: the alias is
+# only worth anything if `require("playwright-core")` inside the browser plugin lands on it.
+- name: Check what OpenClaw resolves playwright-core to
+  ansible.builtin.command:
+    cmd: >-
+      node -p "require('module').createRequire('{{ npm_global_root.stdout | trim }}/openclaw/dist/probe.mjs')('playwright-core/package.json').name"
+  register: playwright_resolves_to
+  changed_when: false
+
+- name: Fail when OpenClaw would still drive the browser with stock Playwright
+  ansible.builtin.assert:
+    that:
+      - playwright_resolves_to.stdout | trim == 'patchright-core'
+    fail_msg: >-
+      OpenClaw resolves playwright-core to {{ playwright_resolves_to.stdout | trim }}, not
+      patchright-core. The agent's Chrome would announce itself on the CDP wire on every page
+      it opens. Check {{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core.
+
 - name: Check for an existing gateway token
   ansible.builtin.stat:
     path: /opt/controlclaw/keys/openclaw_gateway_token
