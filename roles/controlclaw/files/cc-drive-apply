@@ -22,10 +22,16 @@ STRANDED="$DRIVE_DIR/stranded"
 RC_BASE_PORT=5700
 USER_NAME=controlclaw
 MOUNT_ROOT="/home/$USER_NAME/.openclaw/workspace/Drive"
-# How long to let a mount finish uploading what it has not written back yet, before it is stopped.
-# The vm-agent drains the queue over the rc API first and reports what was left; this is the floor
-# under that, for the case where the agent never got the chance.
-DRAIN_TIMEOUT=60
+# How long to let mounts finish uploading what they have not written back yet, before they are
+# stopped. A budget for the WHOLE run, not per mount: eight departing folders at a minute each is
+# eight minutes of a reconcile the console is waiting on, and the second folder's writes are not
+# more urgent than the first's.
+#
+# This is the only drain there is. The vm-agent used to do its own before calling this, which was
+# both duplicated and impossible: it answers the firewall, and the firewall stops waiting after 25
+# seconds. Draining belongs where the mount is stopped.
+DRAIN_BUDGET=60
+DRAIN_DEADLINE=$(( $(date +%s) + DRAIN_BUDGET ))
 
 log() { logger -t cc-drive-apply "$*"; echo "cc-drive-apply: $*" >&2; }
 
@@ -33,6 +39,36 @@ log() { logger -t cc-drive-apply "$*"; echo "cc-drive-apply: $*" >&2; }
 # answers "not a mount" for every live mount when this script runs as root, which it always does.
 # findmnt reads /proc/self/mountinfo and never touches the filesystem.
 is_mounted() { findmnt -rno TARGET -- "$1" >/dev/null 2>&1; }
+
+# What each folder still had queued when it was stopped: `name<TAB>count` lines, reported in the
+# state file so the console can say so instead of the writes going quietly.
+UNSAVED=()
+
+# Wait for one mount's write-back queue to empty, within what is left of the run's budget. Records
+# the last count it saw if it gives up — including when rclone stops answering mid-drain, because a
+# mount that died with three files queued has three unsaved files, not none.
+drain_mount() {
+  local name="$1" port="$2" queued last=0
+  [ -n "$port" ] || return 0
+  while :; do
+    queued="$(curl -s -m 2 -X POST "http://127.0.0.1:$port/vfs/stats" |
+      python3 -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; print(d["uploadsQueued"] + d["uploadsInProgress"])' 2>/dev/null)"
+    if [ -z "$queued" ]; then
+      # Not answering. If it had something queued a moment ago, that is what was lost.
+      [ "$last" -gt 0 ] && UNSAVED+=("$name"$'\t'"$last")
+      return 0
+    fi
+    [ "$queued" = "0" ] && return 0
+    last="$queued"
+    if [ "$(date +%s)" -ge "$DRAIN_DEADLINE" ]; then
+      log "WARNING: $name is being stopped with $queued upload(s) unfinished"
+      UNSAVED+=("$name"$'\t'"$queued")
+      return 0
+    fi
+    log "$name still has $queued upload(s) to finish"
+    sleep 1
+  done
+}
 
 # Set as soon as the desired set is parsed, so a `die` before that still writes a usable state file.
 CONNECTED=0 PLACEHOLDER="" SCOPE="" EXPORT="" CACHE_MAX="" CACHE_MIN_FREE=""
@@ -48,11 +84,18 @@ write_state() {
   local pairs=()
   local j
   for j in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do pairs+=("${WANTED_NAMES[$j]}"$'\t'"${WANTED_SLUGS[$j]}"); done
+  # `--` separates the mount pairs from the unsaved pairs; both are name<TAB>value.
   python3 - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
-    ${pairs+"${pairs[@]}"} <<'PY'
+    ${pairs+"${pairs[@]}"} -- ${UNSAVED+"${UNSAVED[@]}"} <<'PY'
 import json, os, subprocess, sys
 
-state, status, detail, mount_root, drive_dir, base_port, connected, *pairs = sys.argv[1:]
+state, status, detail, mount_root, drive_dir, base_port, connected, *rest = sys.argv[1:]
+split = rest.index("--") if "--" in rest else len(rest)
+pairs, unsaved_args = rest[:split], rest[split + 1 :]
+unsaved = []
+for u in unsaved_args:
+    name, _, count = u.partition("\t")
+    unsaved.append({"name": name, "files": int(count or 0)})
 
 def unit_state(esc):
     r = subprocess.run(["systemctl", "is-active", f"cc-drive@{esc}.service"], capture_output=True, text=True)
@@ -92,7 +135,7 @@ for i, pair in enumerate(pairs):
         "cacheDir": os.path.join(drive_dir, "cache", esc),
     })
 
-out = {"status": status, "detail": detail, "connected": connected == "1", "mounts": mounts,
+out = {"status": status, "detail": detail, "connected": connected == "1", "unsaved": unsaved, "mounts": mounts,
        "at": subprocess.run(["date", "-u", "+%FT%TZ"], capture_output=True, text=True).stdout.strip()}
 tmp = state + ".tmp"
 with open(tmp, "w") as fh:
@@ -142,7 +185,9 @@ for m in d.get("mounts") or []:
     name = m.get("name") or ""
     folder = m.get("folderId") or ""
     mode = m.get("mode") or "ro"
-    if not NAME_RE.fullmatch(name):
+    # The trailing-space check is separate for the same reason it is on the other two layers: the
+    # character class allows one, and a directory whose name ends in a space is a lasting nuisance.
+    if not NAME_RE.fullmatch(name) or name.endswith(" "):
         sys.exit(f"refusing the folder name {name!r}: it cannot be a directory name")
     if not ID_RE.fullmatch(folder):
         sys.exit(f"refusing the folder id {folder!r}")
@@ -225,18 +270,7 @@ for esc in ${RUNNING+"${RUNNING[@]}"}; do
 
   # Give whatever has not been written back to Drive a chance to finish. Reading the port out of
   # the env file rather than recomputing it: the allocation belongs to whoever wrote that file.
-  port="$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
-  if [ -n "$port" ]; then
-    for _ in $(seq "$DRAIN_TIMEOUT"); do
-      queued="$(curl -s -m 2 -X POST "http://127.0.0.1:$port/vfs/stats" |
-        python3 -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; print(d["uploadsQueued"] + d["uploadsInProgress"])' 2>/dev/null)"
-      [ -z "$queued" ] && break          # the mount is not answering; nothing to wait for
-      [ "$queued" = "0" ] && break
-      log "$name still has $queued upload(s) to finish"
-      sleep 1
-    done
-    [ -n "${queued:-}" ] && [ "${queued:-0}" != "0" ] && log "WARNING: $name was stopped with $queued upload(s) unfinished"
-  fi
+  drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
 
   systemctl disable --now "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
   is_mounted "$MOUNT_ROOT/$name" && umount -l "$MOUNT_ROOT/$name" 2>/dev/null
@@ -298,6 +332,19 @@ root_folder_id = $folder
 token = {"access_token":"unused","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}
 EOF
   mv -f "$DRIVE_DIR/$esc.conf.tmp" "$DRIVE_DIR/$esc.conf"
+
+  # A folder that keeps its slug but changes mode is restarted below, not taken down, so the
+  # teardown loop never drained it. Going from read-write to read-only is the case that matters:
+  # rclone will not upload through a --read-only mount, so anything still queued would be stranded
+  # in the cache with no way out. Repointing at a different Drive folder is already a takedown,
+  # because the slug carries a hash of the folder id.
+  if [ -f "$DRIVE_DIR/$esc.env" ]; then
+    was_ro="$(sed -n 's/^CC_DRIVE_READONLY=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+    if [ "$mode" = "ro" ] && [ -z "$was_ro" ]; then
+      log "$name is becoming read-only; letting it finish what it has queued first"
+      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+    fi
+  fi
 
   install -o root -g "$USER_NAME" -m 0640 /dev/null "$DRIVE_DIR/$esc.env.tmp"
   {

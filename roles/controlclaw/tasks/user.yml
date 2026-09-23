@@ -89,7 +89,11 @@
       # cc-reprovision below: the agent gets to say "reconcile the mounts", never "mount this".
       # What to mount is read from /opt/controlclaw/state/drive.json, which the agent writes only
       # after verifying the org firewall's signature, in a directory the agent cannot write.
+      # Detached with systemd-run, like cc-reprovision: bringing up to eight FUSE mounts outlasts
+      # the 25s the firewall waits for a push, and the unit name is also the mutex — systemd
+      # refuses a second run while one is in flight.
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-drive-apply
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemd-run --unit=cc-drive-apply --collect /usr/local/bin/cc-drive-apply
 
       # Re-provisioning - fixed root script taking NO arguments. That is the whole security
       # property: this grant lets the agent trigger *the* update (what to pull is pinned in
