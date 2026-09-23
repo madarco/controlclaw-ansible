@@ -63,6 +63,12 @@
     - box_role == 'openclaw'
     - mitm_box_private_ip | default('') | length > 0
 
+# Before the vm-agent: the agent may be handed a mount set the moment it comes up (the firewall
+# re-pushes on /ready), and `sudo cc-drive-apply` has to exist by then. Inert until that push.
+- name: Include Google Drive folder support (rclone, the mount units, cc-drive-apply)
+  ansible.builtin.include_tasks: rclone.yml
+  when: box_role == 'openclaw'
+
 - name: Include VM agent tasks (OpenClaw box)
   ansible.builtin.include_tasks: vm-agent.yml
   when: vm_id is defined and box_role == 'openclaw'

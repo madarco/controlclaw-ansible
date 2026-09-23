@@ -1,0 +1,419 @@
+#!/bin/bash
+# Reconcile this box's Google Drive mounts against the set the org firewall pushed.
+#
+# Takes NO arguments, on purpose, exactly like cc-reprovision: the caller — the vm-agent, over a
+# request signed by the org firewall with purpose "drive" — gets to say "apply", never "apply this".
+# What to mount is read from DESIRED below, which the vm-agent writes only after verifying that
+# signature, and which the agent user cannot write (root:controlclaw 0750 directory).
+#
+# The desired state is the WHOLE mount set for this box, so this script is a reconciler and not a
+# command: anything mounted that is not in the set is taken down. That is what makes a removal, a
+# rename and a box that missed an earlier push all the same operation.
+#
+# Nothing here is a secret. The placeholder in each env file is a random string the firewall
+# generated; the real Google token lives on the firewall and is swapped in by the proxy on
+# www.googleapis.com. `grep -r` over this whole tree finds no credential.
+set -uo pipefail
+
+DESIRED=/opt/controlclaw/state/drive.json
+STATE=/opt/controlclaw/state/drive-mounts.json
+DRIVE_DIR=/opt/controlclaw/drive
+STRANDED="$DRIVE_DIR/stranded"
+RC_BASE_PORT=5700
+USER_NAME=controlclaw
+MOUNT_ROOT="/home/$USER_NAME/.openclaw/workspace/Drive"
+# How long to let mounts finish uploading what they have not written back yet, before they are
+# stopped. A budget for the WHOLE run, not per mount: eight departing folders at a minute each is
+# eight minutes of a reconcile the console is waiting on, and the second folder's writes are not
+# more urgent than the first's.
+#
+# This is the only drain there is. The vm-agent used to do its own before calling this, which was
+# both duplicated and impossible: it answers the firewall, and the firewall stops waiting after 25
+# seconds. Draining belongs where the mount is stopped.
+DRAIN_BUDGET=60
+DRAIN_DEADLINE=$(( $(date +%s) + DRAIN_BUDGET ))
+
+log() { logger -t cc-drive-apply "$*"; echo "cc-drive-apply: $*" >&2; }
+
+# `mountpoint -q` stats the path, and a FUSE mount without allow_other refuses even root — so it
+# answers "not a mount" for every live mount when this script runs as root, which it always does.
+# findmnt reads /proc/self/mountinfo and never touches the filesystem.
+is_mounted() { findmnt -rno TARGET -- "$1" >/dev/null 2>&1; }
+
+# What each folder still had queued when it was stopped: `name<TAB>count` lines, reported in the
+# state file so the console can say so instead of the writes going quietly.
+UNSAVED=()
+
+# Wait for one mount's write-back queue to empty, within what is left of the run's budget. Records
+# the last count it saw if it gives up — including when rclone stops answering mid-drain, because a
+# mount that died with three files queued has three unsaved files, not none.
+drain_mount() {
+  local name="$1" port="$2" queued last=0
+  [ -n "$port" ] || return 0
+  while :; do
+    queued="$(curl -s -m 2 -X POST "http://127.0.0.1:$port/vfs/stats" |
+      python3 -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; print(d["uploadsQueued"] + d["uploadsInProgress"])' 2>/dev/null)"
+    if [ -z "$queued" ]; then
+      # Not answering. If it had something queued a moment ago, that is what was lost.
+      [ "$last" -gt 0 ] && UNSAVED+=("$name"$'\t'"$last")
+      return 0
+    fi
+    [ "$queued" = "0" ] && return 0
+    last="$queued"
+    if [ "$(date +%s)" -ge "$DRAIN_DEADLINE" ]; then
+      log "WARNING: $name is being stopped with $queued upload(s) unfinished"
+      UNSAVED+=("$name"$'\t'"$queued")
+      return 0
+    fi
+    log "$name still has $queued upload(s) to finish"
+    sleep 1
+  done
+}
+
+# Set as soon as the desired set is parsed, so a `die` before that still writes a usable state file.
+CONNECTED=0 PLACEHOLDER="" SCOPE="" EXPORT="" CACHE_MAX="" CACHE_MIN_FREE=""
+WANTED_NAMES=() WANTED_IDS=() WANTED_MODES=() WANTED_SLUGS=()
+
+# The state file is what the vm-agent reads for its heartbeat: which mounts exist, which rc port
+# each answers on, and whether it is up. No secret in it. Defined here rather than next to its
+# happy-path call because `die` uses it, and bash only knows functions it has already read.
+write_state() {
+  local status="$1" detail="${2:-}"
+  # `name\tslug` pairs, so this does not have to re-derive the slug and cannot disagree with the
+  # loop above about what a mount is called.
+  local pairs=()
+  local j
+  for j in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do pairs+=("${WANTED_NAMES[$j]}"$'\t'"${WANTED_SLUGS[$j]}"); done
+  # `--` separates the mount pairs from the unsaved pairs; both are name<TAB>value.
+  python3 - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
+    ${pairs+"${pairs[@]}"} -- ${UNSAVED+"${UNSAVED[@]}"} <<'PY'
+import json, os, subprocess, sys
+
+state, status, detail, mount_root, drive_dir, base_port, connected, *rest = sys.argv[1:]
+split = rest.index("--") if "--" in rest else len(rest)
+pairs, unsaved_args = rest[:split], rest[split + 1 :]
+unsaved = []
+for u in unsaved_args:
+    name, _, count = u.partition("\t")
+    unsaved.append({"name": name, "files": int(count or 0)})
+
+def unit_state(esc):
+    r = subprocess.run(["systemctl", "is-active", f"cc-drive@{esc}.service"], capture_output=True, text=True)
+    return r.stdout.strip() or "unknown"
+
+def mounted_paths():
+    """Live mount targets, read from the kernel.
+
+    NOT os.path.ismount: it stats the path, and a FUSE mount without allow_other refuses even
+    root, so it answers False for every healthy mount when this runs as root — which it always
+    does. That would have had the console reporting every working folder as unmounted.
+    mountinfo escapes the characters that would break its own field split.
+    """
+    unescape = lambda p: p.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")
+    out = set()
+    with open("/proc/self/mountinfo") as fh:
+        for line in fh:
+            parts = line.split(" ")
+            if len(parts) > 4:
+                out.add(unescape(parts[4]))
+    return out
+
+LIVE = mounted_paths()
+
+mounts = []
+for i, pair in enumerate(pairs):
+    name, esc = pair.split("\t", 1)
+    path = os.path.join(mount_root, name)
+    mounts.append({
+        "name": name,
+        "slug": esc,
+        "path": path,
+        "unit": f"cc-drive@{esc}.service",
+        "rcPort": int(base_port) + i,
+        "active": unit_state(esc),
+        "mounted": path in LIVE,
+        "cacheDir": os.path.join(drive_dir, "cache", esc),
+    })
+
+out = {"status": status, "detail": detail, "connected": connected == "1", "unsaved": unsaved, "mounts": mounts,
+       "at": subprocess.run(["date", "-u", "+%FT%TZ"], capture_output=True, text=True).stdout.strip()}
+tmp = state + ".tmp"
+with open(tmp, "w") as fh:
+    json.dump(out, fh, indent=2)
+os.replace(tmp, state)
+PY
+  chmod 0644 "$STATE" 2>/dev/null
+}
+
+die() { log "FAILED: $1"; write_state "failed" "$1"; exit 1; }
+
+[ -r "$DESIRED" ] || die "no $DESIRED to apply"
+
+# --- read the desired set -------------------------------------------------------------------
+# One python pass, because bash and JSON is how you get a folder name into a path by accident.
+# Every name is re-validated HERE against the same rule the firewall and the control plane use:
+# this script is what turns a name into a path, so it does not take anyone's word for it.
+PARSED="$(mktemp)"
+PARSE_ERR="$(mktemp)"
+trap 'rm -f "$PARSED" "$PARSE_ERR"' EXIT
+python3 - "$DESIRED" >"$PARSED" 2>"$PARSE_ERR" <<'PY'
+import hashlib, json, re, sys
+
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$")
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+
+with open(sys.argv[1]) as fh:
+    d = json.load(fh)
+
+placeholder = d.get("placeholder") or ""
+scope = d.get("scope") or "https://www.googleapis.com/auth/drive"
+connected = bool(d.get("connected"))
+defaults = d.get("defaults") or {}
+export = defaults.get("exportFormats") or "docx,xlsx,pdf"
+cache_max = defaults.get("vfsCacheMaxSize") or "2G"
+cache_min_free = defaults.get("vfsCacheMinFreeSpace") or "4G"
+
+if not re.fullmatch(r"CC-DRIVE-[0-9a-f]{8,64}", placeholder):
+    sys.exit("the placeholder is not the shape the firewall generates")
+for value, label in ((export, "export formats"), (cache_max, "cache size"), (cache_min_free, "free space")):
+    if not re.fullmatch(r"[A-Za-z0-9,.]{1,64}", value):
+        sys.exit(f"the {label} setting has characters that cannot go on a command line")
+
+seen = set()
+out = []
+for m in d.get("mounts") or []:
+    name = m.get("name") or ""
+    folder = m.get("folderId") or ""
+    mode = m.get("mode") or "ro"
+    # The trailing-space check is separate for the same reason it is on the other two layers: the
+    # character class allows one, and a directory whose name ends in a space is a lasting nuisance.
+    if not NAME_RE.fullmatch(name) or name.endswith(" "):
+        sys.exit(f"refusing the folder name {name!r}: it cannot be a directory name")
+    if not ID_RE.fullmatch(folder):
+        sys.exit(f"refusing the folder id {folder!r}")
+    if mode not in ("ro", "rw"):
+        sys.exit(f"refusing the mode {mode!r}")
+    if name.lower() in seen:
+        sys.exit(f"two folders are both named {name!r}; they would be one directory")
+    seen.add(name.lower())
+    out.append((name, folder, mode))
+
+# The unit instance, the rclone remote and every file on disk are named by a SLUG, never by the
+# folder name. systemd does not just interpolate `%i` — it C-unescapes the result, so a name
+# containing a space, a hyphen or a leading dot (systemd-escape turns those into \x20, \x2d, \x2e)
+# produces a unit whose EnvironmentFile path no longer matches the file on disk. Measured on a real
+# box: "Team Docs" mounted nothing and systemd said only "No such file or directory".
+#
+# So the slug is `[A-Za-z0-9_]` only, which systemd-escape leaves alone, plus 8 hex of the folder id
+# so two names that sanitise the same way stay two mounts. The folder name survives in exactly one
+# place: CC_DRIVE_MOUNTPOINT, which is quoted wherever it is used.
+def slug_for(name, folder_id):
+    base = re.sub(r"_+", "_", re.sub(r"[^A-Za-z0-9_]", "_", name)).strip("_") or "folder"
+    return f"{base[:40]}_{hashlib.sha256(folder_id.encode()).hexdigest()[:8]}"
+
+# Tab-separated, because a name may contain a space but never a tab.
+print(f"CONNECTED\t{1 if connected else 0}")
+print(f"PLACEHOLDER\t{placeholder}")
+print(f"SCOPE\t{scope}")
+print(f"EXPORT\t{export}")
+print(f"CACHE_MAX\t{cache_max}")
+print(f"CACHE_MIN_FREE\t{cache_min_free}")
+slugs = set()
+for name, folder, mode in out:
+    slug = slug_for(name, folder)
+    if slug in slugs:
+        sys.exit(f"two folders both resolve to the unit name {slug!r}")
+    slugs.add(slug)
+    print(f"MOUNT\t{name}\t{folder}\t{mode}\t{slug}")
+PY
+# `sys.exit("message")` above exits 1 with the message on stderr, which is what the console shows.
+if [ $? -ne 0 ]; then
+  die "$(tail -1 "$PARSE_ERR" | sed 's/^[A-Za-z.]*Error: //')"
+fi
+
+readarray -t DESIRED_LINES < "$PARSED"
+for line in ${DESIRED_LINES+"${DESIRED_LINES[@]}"}; do
+  IFS=$'\t' read -r key a b c d <<<"$line"
+  case "$key" in
+    CONNECTED) CONNECTED="$a" ;;
+    PLACEHOLDER) PLACEHOLDER="$a" ;;
+    SCOPE) SCOPE="$a" ;;
+    EXPORT) EXPORT="$a" ;;
+    CACHE_MAX) CACHE_MAX="$a" ;;
+    CACHE_MIN_FREE) CACHE_MIN_FREE="$a" ;;
+    MOUNT) WANTED_NAMES+=("$a"); WANTED_IDS+=("$b"); WANTED_MODES+=("$c"); WANTED_SLUGS+=("$d") ;;
+  esac
+done
+
+# --- what is running now --------------------------------------------------------------------
+# By unit, not by what is in DRIVE_DIR: a config left behind by a crash is not a mount, and a mount
+# whose config was deleted still has to be taken down.
+readarray -t RUNNING < <(systemctl list-units --all --plain --no-legend 'cc-drive@*.service' 2>/dev/null |
+  awk '{print $1}' | sed -e 's/^cc-drive@//' -e 's/\.service$//' | grep . || true)
+
+is_wanted() {
+  local slug="$1" s
+  for s in ${WANTED_SLUGS+"${WANTED_SLUGS[@]}"}; do
+    [ "$s" = "$slug" ] && return 0
+  done
+  return 1
+}
+
+# --- take down what is no longer wanted -----------------------------------------------------
+for esc in ${RUNNING+"${RUNNING[@]}"}; do
+  is_wanted "$esc" && continue
+  # The display name is not recoverable from the slug, so take it from the env file the last apply
+  # wrote. Only for the log line; everything that matters is keyed by the slug.
+  name="$(sed -n 's|^CC_DRIVE_MOUNTPOINT=.*/||p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+  name="${name:-$esc}"
+  log "taking down $name: it is not in the mount set any more"
+
+  # Give whatever has not been written back to Drive a chance to finish. Reading the port out of
+  # the env file rather than recomputing it: the allocation belongs to whoever wrote that file.
+  drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+
+  systemctl disable --now "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
+  is_mounted "$MOUNT_ROOT/$name" && umount -l "$MOUNT_ROOT/$name" 2>/dev/null
+  rm -f "$DRIVE_DIR/$esc.env" "$DRIVE_DIR/$esc.conf"
+  rm -rf -- "$DRIVE_DIR/cache/$esc"
+  # Only if it is empty: a non-empty directory here is the agent's own writes, and losing those
+  # silently while removing a folder somebody unshared is not a trade anyone agreed to.
+  rmdir -- "$MOUNT_ROOT/$name" 2>/dev/null || log "$MOUNT_ROOT/$name is not empty; left in place"
+done
+
+# --- sweep anything on disk that is not in the set ------------------------------------------
+# The loop above only reaches mounts systemd still knows about. A config whose unit was already
+# forgotten — an apply that died half way, or a box carrying files from an older layout — would
+# otherwise sit there forever, and its cache would keep holding disk. Reconciling means the disk
+# too, not only the units.
+for f in "$DRIVE_DIR"/*.conf "$DRIVE_DIR"/*.env; do
+  [ -e "$f" ] || continue
+  base="$(basename "$f")"
+  is_wanted "${base%.*}" && continue
+  log "removing $base: no mount in the set is called that"
+  rm -f -- "$f"
+done
+for d in "$DRIVE_DIR"/cache/*; do
+  [ -d "$d" ] || continue
+  is_wanted "$(basename "$d")" && continue
+  log "removing the cache of $(basename "$d"): it is not in the set"
+  rm -rf -- "$d"
+done
+
+# --- write the config for everything wanted -------------------------------------------------
+i=0
+for idx in "${!WANTED_NAMES[@]}"; do
+  name="${WANTED_NAMES[$idx]}"
+  folder="${WANTED_IDS[$idx]}"
+  mode="${WANTED_MODES[$idx]}"
+  esc="${WANTED_SLUGS[$idx]}"
+  port=$((RC_BASE_PORT + i))
+  i=$((i + 1))
+
+  # The rclone config. No client id, no client secret, no refresh token: the access token is the
+  # literal string "unused" and the far-future expiry is what stops rclone ever calling the token
+  # endpoint. `root_folder_id` also keeps it from looking up the drive root, so the backend is
+  # constructed without a single network call — which is why a mount comes up at boot before the
+  # vm-agent has turned egress on, and then simply retries.
+  # The heredoc is deliberately UNQUOTED so $esc, $SCOPE and $folder expand. That also makes
+  # backticks and $(...) inside it command substitution, including in the comments — no backticks.
+  install -o root -g "$USER_NAME" -m 0640 /dev/null "$DRIVE_DIR/$esc.conf.tmp"
+  cat > "$DRIVE_DIR/$esc.conf.tmp" <<EOF
+# Written by cc-drive-apply. Holds no credential: see the comment at the top of that script.
+[$esc]
+type = drive
+# Never used: the OAuth flow this would belong to does not run, because --header authenticates
+# instead. It is set only because an empty client_id makes rclone log a warning about its shared
+# client_id being retired in 2026, which is a red herring on a box that never signs in. The
+# .invalid TLD is reserved, so this cannot be mistaken for a real Google client.
+client_id = unused.controlclaw.invalid
+scope = $SCOPE
+root_folder_id = $folder
+token = {"access_token":"unused","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}
+EOF
+  mv -f "$DRIVE_DIR/$esc.conf.tmp" "$DRIVE_DIR/$esc.conf"
+
+  # A folder that keeps its slug but changes mode is restarted below, not taken down, so the
+  # teardown loop never drained it. Going from read-write to read-only is the case that matters:
+  # rclone will not upload through a --read-only mount, so anything still queued would be stranded
+  # in the cache with no way out. Repointing at a different Drive folder is already a takedown,
+  # because the slug carries a hash of the folder id.
+  if [ -f "$DRIVE_DIR/$esc.env" ]; then
+    was_ro="$(sed -n 's/^CC_DRIVE_READONLY=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+    if [ "$mode" = "ro" ] && [ -z "$was_ro" ]; then
+      log "$name is becoming read-only; letting it finish what it has queued first"
+      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+    fi
+  fi
+
+  install -o root -g "$USER_NAME" -m 0640 /dev/null "$DRIVE_DIR/$esc.env.tmp"
+  {
+    echo "# Written by cc-drive-apply. CC_DRIVE_PLACEHOLDER is not a secret: the org proxy swaps it"
+    echo "# for the real Google token, which never reaches this box."
+    echo "CC_DRIVE_REMOTE=$esc"
+    echo "CC_DRIVE_MOUNTPOINT=$MOUNT_ROOT/$name"
+    echo "CC_DRIVE_CONFIG=$DRIVE_DIR/$esc.conf"
+    echo "CC_DRIVE_CACHE_DIR=$DRIVE_DIR/cache/$esc"
+    echo "CC_DRIVE_PLACEHOLDER=$PLACEHOLDER"
+    echo "CC_DRIVE_EXPORT_FORMATS=$EXPORT"
+    echo "CC_DRIVE_CACHE_MAX_SIZE=$CACHE_MAX"
+    echo "CC_DRIVE_CACHE_MIN_FREE=$CACHE_MIN_FREE"
+    echo "CC_DRIVE_RC_PORT=$port"
+    # Unquoted and possibly empty on purpose: systemd word-splits a bare $VAR and drops it when
+    # empty, which is how one unit serves both modes without a second template. `printf` and not
+    # `echo --`: echo prints the `--`, and rclone reads that as "the positionals start here", which
+    # turned --read-only into a third path argument and refused the mount (caught on a real box).
+    echo "CC_DRIVE_READONLY=$([ "$mode" = "ro" ] && printf '%s' '--read-only')"
+  } > "$DRIVE_DIR/$esc.env.tmp"
+  mv -f "$DRIVE_DIR/$esc.env.tmp" "$DRIVE_DIR/$esc.env"
+
+  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$DRIVE_DIR/cache/$esc"
+
+  # The mountpoint has to be writable by the agent or fusermount3 refuses it, which means the agent
+  # can write into it while nothing is mounted. Anything found there is moved out of the way rather
+  # than mounted over: shadowed files look deleted and come back on an unmount, which is worse than
+  # either losing them or keeping them somewhere obvious.
+  # Only when nothing is mounted there: chown and chmod on the root of a live FUSE mount are
+  # refused by the kernel, so `install -d` over one prints an error and changes nothing.
+  if is_mounted "$MOUNT_ROOT/$name"; then
+    : # already mounted, and a mounted directory is rclone's to own
+  else
+    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0755 "$MOUNT_ROOT/$name"
+  fi
+  if ! is_mounted "$MOUNT_ROOT/$name" && [ -n "$(ls -A -- "$MOUNT_ROOT/$name" 2>/dev/null)" ]; then
+    aside="$STRANDED/$esc-$(date -u +%Y%m%dT%H%M%SZ)"
+    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$aside"
+    mv -- "$MOUNT_ROOT/$name"/* "$MOUNT_ROOT/$name"/.[!.]* "$aside"/ 2>/dev/null
+    log "WARNING: $name had files in it before mounting; moved to $aside"
+  fi
+done
+
+# --- start or stop, depending on whether the org has a working connection --------------------
+# `connected: false` means the firewall holds no usable Google token (never connected, or the grant
+# was revoked). Starting the mounts then would collect 401s and fill the journal, and an empty
+# directory the agent can see is a clearer signal than a mount that errors on every read.
+started=() stopped=()
+for idx in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do
+  name="${WANTED_NAMES[$idx]}"
+  esc="${WANTED_SLUGS[$idx]}"
+  if [ "$CONNECTED" = "1" ]; then
+    systemctl enable "cc-drive@$esc.service" >/dev/null 2>&1
+    # `reload-or-restart` rather than `start`: a config that just changed has to be picked up, and
+    # restarting a mount that was already correct costs a second of I/O errors.
+    if systemctl reload-or-restart "cc-drive@$esc.service" >/dev/null 2>&1; then
+      started+=("$name")
+    else
+      log "cc-drive@$esc failed to start; see journalctl -u cc-drive@$esc"
+    fi
+  else
+    systemctl disable --now "cc-drive@$esc.service" >/dev/null 2>&1
+    stopped+=("$name")
+  fi
+done
+
+[ "$CONNECTED" = "1" ] || log "the organization has no working Google connection; ${#stopped[@]} folder(s) left unmounted"
+
+# --- report ---------------------------------------------------------------------------------
+
+write_state "applied" ""
+log "applied: ${#WANTED_NAMES[@]} folder(s) wanted, ${#started[@]} started, ${#stopped[@]} left unmounted"

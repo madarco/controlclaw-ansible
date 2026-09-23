@@ -1,0 +1,203 @@
+---
+# Google Drive folders in the agent's workspace (controlclaw docs/plans/drive-folders.md).
+#
+# What this file installs is inert: a pinned rclone, an empty mount root, a templated unit and one
+# root script. Nothing mounts until the org firewall pushes a mount set to the vm-agent, which
+# verifies the firewall's signature and then runs `sudo cc-drive-apply`.
+#
+# **No Google credential ever lands here.** rclone's config holds a folder id and an access token
+# that is the literal string "unused"; what authenticates is `--header "Authorization: Bearer
+# <placeholder>"`, which the org proxy swaps for the real token on www.googleapis.com. Verified
+# against rclone 1.75.1: `--header` overrides the token its own OAuth transport would have set, and
+# a far-future `expiry` in the config stops it contacting the token endpoint at all.
+#
+# Two things the egress wiring gives us for free (openclaw-egress.yml): rclone is a static Go
+# binary that reads /etc/ssl/certs, so the org CA already covers its TLS, and the nftables REDIRECT
+# already routes it through the proxy. There is nothing Drive-specific on the egress path.
+
+- name: Drive folders | Install fuse3
+  ansible.builtin.apt:
+    name: fuse3
+    state: present
+    update_cache: true
+  when: not ci_test
+
+# Asserted rather than assumed: a mount is the whole feature, and "fusermount3 is missing" is a
+# much better failure here than an rclone unit that crash-loops on a box nobody is watching.
+# rclone runs mount units with a fallback PATH of /bin:/usr/bin and looks for fusermount3 there.
+- name: Drive folders | Check the FUSE pieces are present
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: drive_fuse_bits
+  loop:
+    - /usr/bin/fusermount3
+    - /dev/fuse
+  when: not ci_test
+
+- name: Drive folders | Assert FUSE is usable on this box
+  ansible.builtin.assert:
+    that: drive_fuse_bits.results | map(attribute='stat.exists') | select | list | length == 2
+    fail_msg: >-
+      /usr/bin/fusermount3 or /dev/fuse is missing, so no Drive folder can be mounted. fuse3 is
+      installed above; a missing /dev/fuse means the kernel module is not loaded on this host.
+  when: not ci_test
+
+- name: Drive folders | Look for an rclone already at the pinned version
+  ansible.builtin.command: /usr/local/bin/rclone version
+  register: drive_rclone_have
+  changed_when: false
+  failed_when: false
+
+- name: Drive folders | Download the pinned rclone
+  ansible.builtin.get_url:
+    url: "https://downloads.rclone.org/v{{ rclone_version }}/rclone-v{{ rclone_version }}-linux-{{ drive_arch }}.zip"
+    dest: "/tmp/rclone-v{{ rclone_version }}-linux-{{ drive_arch }}.zip"
+    # Version in the URL, checksum on the file: neither a moved release nor a replaced artifact
+    # gets installed silently.
+    checksum: "sha256:{{ rclone_sha256_amd64 if drive_arch == 'amd64' else rclone_sha256_arm64 }}"
+    mode: '0644'
+  vars:
+    drive_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+  when: "'v' + rclone_version not in (drive_rclone_have.stdout | default(''))"
+
+- name: Drive folders | Unpack rclone
+  ansible.builtin.unarchive:
+    src: "/tmp/rclone-v{{ rclone_version }}-linux-{{ drive_arch }}.zip"
+    dest: /tmp
+    remote_src: true
+    creates: "/tmp/rclone-v{{ rclone_version }}-linux-{{ drive_arch }}/rclone"
+  vars:
+    drive_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+  when: "'v' + rclone_version not in (drive_rclone_have.stdout | default(''))"
+
+- name: Drive folders | Install rclone
+  ansible.builtin.copy:
+    src: "/tmp/rclone-v{{ rclone_version }}-linux-{{ drive_arch }}/rclone"
+    dest: /usr/local/bin/rclone
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+  vars:
+    drive_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+  when: "'v' + rclone_version not in (drive_rclone_have.stdout | default(''))"
+
+# 0750 root:controlclaw — the agent may traverse to read nothing in particular, and may not write.
+# A mount's config names the folder the agent is allowed to see; letting the agent rewrite it would
+# let a compromised box point a mount at the rest of the Drive the token can reach.
+- name: Drive folders | Create the mount config and cache directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ controlclaw_user }}"
+    mode: '0750'
+  loop:
+    - "{{ drive_state_dir }}"
+    - "{{ drive_state_dir }}/cache"
+    # Where cc-drive-apply puts anything it found sitting in a mountpoint before mounting over it.
+    - "{{ drive_state_dir }}/stranded"
+
+# Owned by the agent: fusermount3 refuses a mountpoint its caller cannot write, so a root-owned
+# mount root would mean no mount at all. The hazard that leaves — the agent writing into an
+# unmounted directory and having those writes shadowed by a later mount — is handled in
+# cc-drive-apply, which moves anything it finds into `stranded/` rather than mounting over it.
+- name: Drive folders | Create the mount root inside the workspace
+  ansible.builtin.file:
+    path: "{{ drive_mount_root }}"
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '0755'
+
+# One target so the mounts can be ordered against OpenClaw as a group, started and stopped as a
+# group, and enumerated without parsing unit names.
+- name: Drive folders | Create the cc-drive target
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-drive.target
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw Google Drive mounts
+      # A Drive outage must never keep the agent down, so nothing here is Requires=.
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd
+
+# Everything variable comes from the per-mount env file, which cc-drive-apply writes from the mount
+# set the firewall pushed. That keeps the cache caps and the export formats a firewall decision
+# rather than an Ansible one — the control plane can change them without a re-provision — while the
+# parts that bound what a mount can do (the config path, the cache path, the mountpoint, the
+# placeholder) stay spelled out here where they can be read.
+#
+# `%i` is the systemd-escaped folder name, so the config and env files are named by the escaped
+# form; the real mountpoint, which may contain spaces, comes out of the env file.
+#
+# Type=notify is supported by `rclone mount`: the unit reaches "started" only once the mountpoint
+# is set up, which is what makes openclaw.service's After= mean anything.
+- name: Drive folders | Create the templated mount unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-drive@.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw Drive mount (%i)
+      Documentation=https://rclone.org/commands/rclone_mount/
+      After=network-online.target
+      Wants=network-online.target
+      PartOf=cc-drive.target
+      # At boot a mount can start before the vm-agent has turned egress on, so the first calls
+      # fail. rclone keeps the mount up and retries, and this stops systemd giving up on a box that
+      # takes a while. A [Unit] key: systemd ignores it under [Service] and says so in the journal.
+      StartLimitIntervalSec=0
+
+      [Service]
+      Type=notify
+      User={{ controlclaw_user }}
+      Group={{ controlclaw_user }}
+      EnvironmentFile={{ drive_state_dir }}/%i.env
+      ExecStart=/usr/local/bin/rclone mount "${CC_DRIVE_REMOTE}:" "${CC_DRIVE_MOUNTPOINT}" \
+        --config "${CC_DRIVE_CONFIG}" \
+        --cache-dir "${CC_DRIVE_CACHE_DIR}" \
+        --header "Authorization: Bearer ${CC_DRIVE_PLACEHOLDER}" \
+        --vfs-cache-mode full \
+        --vfs-cache-max-size "${CC_DRIVE_CACHE_MAX_SIZE}" \
+        --vfs-cache-min-free-space "${CC_DRIVE_CACHE_MIN_FREE}" \
+        --vfs-write-back 5s \
+        --dir-cache-time 5m \
+        --poll-interval 1m \
+        --drive-export-formats "${CC_DRIVE_EXPORT_FORMATS}" \
+        --rc --rc-addr "127.0.0.1:${CC_DRIVE_RC_PORT}" --rc-no-auth \
+        --umask 022 \
+        --log-level INFO \
+        $CC_DRIVE_READONLY
+      # rclone unmounts itself on SIGTERM; this is for the case where it did not get that far.
+      ExecStop=-/usr/bin/fusermount3 -uz "${CC_DRIVE_MOUNTPOINT}"
+      Restart=always
+      RestartSec=10
+      StandardOutput=journal
+      StandardError=journal
+      SyslogIdentifier=cc-drive
+      # NOT NoNewPrivileges=true, unlike openclaw.service. An unprivileged FUSE mount goes through
+      # the setuid `fusermount3`, and NoNewPrivileges blocks exactly that: the unit starts, rclone
+      # authenticates, and then dies with "fusermount3: mount failed: Operation not permitted"
+      # (measured on a real box). The alternative is running rclone as root, which is a much larger
+      # blast radius for a process that parses whatever is in the customer's Drive, so this keeps
+      # the unprivileged user and gives up the flag.
+
+      [Install]
+      WantedBy=cc-drive.target
+  notify: reload systemd
+
+- name: Drive folders | Deploy cc-drive-apply (root-owned, no arguments)
+  ansible.builtin.copy:
+    src: cc-drive-apply
+    dest: /usr/local/bin/cc-drive-apply
+    owner: root
+    group: root
+    mode: '0755'
