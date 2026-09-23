@@ -27519,16 +27519,16 @@ var require_libsodium = __commonJS({
             if (endPtr - idx > 16 && heapOrArray.buffer && UTF8Decoder) {
               return UTF8Decoder.decode(heapOrArray.subarray(idx, endPtr));
             }
-            var str6 = "";
+            var str7 = "";
             while (idx < endPtr) {
               var u0 = heapOrArray[idx++];
               if (!(u0 & 128)) {
-                str6 += String.fromCharCode(u0);
+                str7 += String.fromCharCode(u0);
                 continue;
               }
               var u1 = heapOrArray[idx++] & 63;
               if ((u0 & 224) == 192) {
-                str6 += String.fromCharCode((u0 & 31) << 6 | u1);
+                str7 += String.fromCharCode((u0 & 31) << 6 | u1);
                 continue;
               }
               var u2 = heapOrArray[idx++] & 63;
@@ -27538,13 +27538,13 @@ var require_libsodium = __commonJS({
                 u0 = (u0 & 7) << 18 | u1 << 12 | u2 << 6 | heapOrArray[idx++] & 63;
               }
               if (u0 < 65536) {
-                str6 += String.fromCharCode(u0);
+                str7 += String.fromCharCode(u0);
               } else {
                 var ch = u0 - 65536;
-                str6 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
+                str7 += String.fromCharCode(55296 | ch >> 10, 56320 | ch & 1023);
               }
             }
-            return str6;
+            return str7;
           };
           var UTF8ToString = (ptr, maxBytesToRead, ignoreNul) => ptr ? UTF8ArrayToString(HEAPU8, ptr, maxBytesToRead, ignoreNul) : "";
           var ___assert_fail = (condition, filename, line, func) => abort(`Assertion failed: ${UTF8ToString(condition)}, at: ` + [filename ? UTF8ToString(filename) : "unknown filename", line, func ? UTF8ToString(func) : "unknown function"]);
@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7d09769" : "unknown",
-  builtAt: true ? "2026-09-23T23:23:56+01:00" : "unknown"
+  commit: true ? "cbf8efa" : "unknown",
+  builtAt: true ? "2026-09-24T00:34:29+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -33282,6 +33282,219 @@ async function handleLlm(req, res, url2, service) {
   }
 }
 
+// src/search.ts
+var CLI_TIMEOUT_MS3 = 3e4;
+function str4(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+var SearchService = class _SearchService {
+  constructor(opts) {
+    this.opts = opts;
+    this.exec = opts.execImpl ?? defaultExec;
+    this.log = opts.log ?? ((line) => console.log(line));
+  }
+  exec;
+  log;
+  gateway() {
+    const c = this.opts.client;
+    if (!c || !c.connected) throw new Error("OpenClaw is not running on this box");
+    return c;
+  }
+  bin() {
+    return this.opts.openclawBin ?? "/usr/bin/openclaw";
+  }
+  async config() {
+    const snapshot = await this.gateway().call("config.get", {}, 1e4);
+    const hash = str4(snapshot.hash);
+    if (!hash) throw new Error("OpenClaw returned no config hash");
+    const config = snapshot.parsed ?? snapshot.config ?? {};
+    return { hash, config: config && typeof config === "object" ? config : {} };
+  }
+  async patchConfig(patch, baseHash) {
+    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash }, 2e4);
+  }
+  /**
+   * Plugin ids this box HAS, from `openclaw plugins list --json`. Empty when it cannot say.
+   *
+   * A plugin that is installed but currently disabled counts: enabling it is exactly what `apply`
+   * does a few lines below, so treating it as missing would tell the customer to re-provision a box
+   * that already has everything it needs (and re-provisioning does not clear a disabled flag).
+   * A plugin whose load failed does not count — that one really cannot serve a search.
+   */
+  async installedPlugins() {
+    try {
+      const { stdout } = await this.exec(this.bin(), ["plugins", "list", "--json"], CLI_TIMEOUT_MS3);
+      const start = stdout.indexOf("{");
+      if (start < 0) return /* @__PURE__ */ new Set();
+      const parsed = JSON.parse(stdout.slice(start));
+      const ids = (parsed.plugins ?? []).filter((p) => p.status !== "error").map((p) => str4(p.id));
+      return new Set(ids.filter((id) => !!id));
+    } catch (err) {
+      this.log(`[search] could not list plugins: ${execFailureLine(err)}`);
+      return /* @__PURE__ */ new Set();
+    }
+  }
+  /** The entries of `plugins.entries`, defensively (OpenClaw writes to this file itself). */
+  static entriesOf(config) {
+    const plugins = config.plugins;
+    const entries = plugins?.entries;
+    return entries && typeof entries === "object" ? entries : {};
+  }
+  static providerOf(config) {
+    const tools = config.tools;
+    return str4(tools?.web?.search?.provider);
+  }
+  /** Make OpenClaw match the desired state. One config write, and a restart only when one is needed. */
+  async apply(input) {
+    this.gateway();
+    const { hash, config } = await this.config();
+    const entries = _SearchService.entriesOf(config);
+    const current = _SearchService.providerOf(config);
+    const applied = [];
+    const entryPatch = {};
+    const ours = new Set(input.remove.map((r) => r.id));
+    let cleared = 0;
+    for (const id of ours) {
+      if (id === input.search?.plugin.id) continue;
+      if (!(id in entries)) continue;
+      entryPatch[id] = null;
+      cleared++;
+      applied.push(`remove:${id}`);
+    }
+    let provider = current;
+    let needsRestart = cleared > 0;
+    if (input.search) {
+      const s = input.search;
+      const installed = await this.installedPlugins();
+      if (!installed.has(s.plugin.id)) {
+        throw new Error(
+          `This box does not have the ${s.plugin.id} search plugin. It is installed at provisioning (${s.plugin.package}); re-provision the box, or update it from its Settings page, and try again.`
+        );
+      }
+      const before = entries[s.plugin.id];
+      if (!before || before.enabled !== true) needsRestart = true;
+      entryPatch[s.plugin.id] = { enabled: true, config: { webSearch: { apiKey: s.apiKey, baseUrl: s.baseUrl, ...s.config ?? {} } } };
+      provider = s.provider;
+      applied.push(s.plugin.id);
+    } else {
+      provider = current && ours.has(current) ? input.defaultProvider : current;
+    }
+    const patch = {};
+    if (Object.keys(entryPatch).length) patch.plugins = { entries: entryPatch };
+    if (provider !== current) patch.tools = { web: { search: { provider } } };
+    if (!Object.keys(patch).length) {
+      this.log("[search] nothing to change");
+      return { ok: true, applied: [], provider: current };
+    }
+    try {
+      await this.patchConfig(patch, hash);
+    } catch (err) {
+      const retryable = !input.search && provider !== null && /provider is not available/i.test(err.message);
+      if (!retryable) throw err;
+      this.log(`[search] ${provider} is not available on this box; unsetting the provider instead`);
+      await this.patchConfig({ ...patch, tools: { web: { search: { provider: null } } } }, (await this.config()).hash);
+      provider = null;
+    }
+    if (patch.tools) applied.push("provider");
+    if (needsRestart && this.opts.restartService) {
+      const r = this.opts.restartService();
+      this.log(r.ok ? "[search] restarted OpenClaw so it loads the search plugin" : `[search] restart failed: ${r.error ?? "unknown"}`);
+      if (r.ok) applied.push("restart");
+    }
+    this.log(`[search] applied ${applied.join(", ")} (provider ${provider ?? "none"})`);
+    return { ok: true, applied, provider };
+  }
+  /** What the box has right now. No secrets: the key it holds is a placeholder anyway. */
+  async status() {
+    const { config } = await this.config();
+    const provider = _SearchService.providerOf(config);
+    return { provider, plugins: [...await this.installedPlugins()].sort() };
+  }
+};
+
+// src/routes/search.ts
+var ID_RE = /^[a-z0-9][a-z0-9_-]{0,40}$/i;
+var PROVIDER_RE2 = /^[a-z0-9][a-z0-9_-]{0,60}$/i;
+var CONFIG_KEYS_MAX = 10;
+function fail3(res, err) {
+  const message = err instanceof Error ? err.message : String(err);
+  const status = /not running|not connected/i.test(message) ? 503 : 500;
+  sendJson(res, status, { ok: false, error: message });
+}
+function parseDesired(raw) {
+  if (raw === null || raw === void 0) return null;
+  const s = raw;
+  if (typeof s.provider !== "string" || !PROVIDER_RE2.test(s.provider)) return "search.provider is invalid";
+  const plugin = s.plugin;
+  if (!plugin || typeof plugin.id !== "string" || !ID_RE.test(plugin.id)) return "search.plugin.id is invalid";
+  if (typeof plugin.package !== "string" || plugin.package.length > 120) return "search.plugin.package is invalid";
+  if (typeof s.baseUrl !== "string" || !/^https:\/\/[a-z0-9.-]+(\/[\w./-]*)?$/i.test(s.baseUrl)) return "search.baseUrl must be an https URL";
+  if (typeof s.apiKey !== "string" || !s.apiKey) return "search.apiKey required";
+  let config;
+  if (s.config !== void 0 && s.config !== null) {
+    if (typeof s.config !== "object") return "search.config must be an object";
+    const entries = Object.entries(s.config);
+    if (entries.length > CONFIG_KEYS_MAX) return "search.config has too many keys";
+    config = {};
+    for (const [k, v] of entries) {
+      if (!ID_RE.test(k) || typeof v !== "string" || v.length > 200) return "search.config values must be short strings";
+      config[k] = v;
+    }
+  }
+  return { provider: s.provider, plugin: { id: plugin.id, package: plugin.package }, baseUrl: s.baseUrl, apiKey: s.apiKey, ...config ? { config } : {} };
+}
+function parseApply2(body) {
+  const search2 = parseDesired(body.search);
+  if (typeof search2 === "string") return search2;
+  const defaultProvider = body.defaultProvider;
+  if (defaultProvider !== null && defaultProvider !== void 0 && (typeof defaultProvider !== "string" || !PROVIDER_RE2.test(defaultProvider))) {
+    return "defaultProvider is invalid";
+  }
+  const remove = [];
+  for (const raw of Array.isArray(body.remove) ? body.remove : []) {
+    if (typeof raw?.id !== "string" || !ID_RE.test(raw.id)) return "remove[].id is invalid";
+    remove.push({ id: raw.id });
+  }
+  if (search2 && !remove.some((r) => r.id === search2.plugin.id)) remove.push({ id: search2.plugin.id });
+  return { search: search2, defaultProvider: typeof defaultProvider === "string" ? defaultProvider : null, remove };
+}
+async function handleSearch(req, res, url2, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "search") : await verifyMitmRequest(req, "search") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "web search changes must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  if (!service) {
+    sendJson(res, 503, { ok: false, error: "OpenClaw is not running on this box" });
+    return;
+  }
+  try {
+    if (url2.pathname === "/search/status" && req.method === "GET") {
+      sendJson(res, 200, await service.status());
+      return;
+    }
+    if (!write) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+    const body = await readJsonBody(req);
+    if (!body) {
+      sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
+      return;
+    }
+    if (url2.pathname === "/search/apply") {
+      const input = parseApply2(body);
+      if (typeof input === "string") return sendJson(res, 400, { ok: false, error: input });
+      sendJson(res, 200, await service.apply(input));
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    fail3(res, err);
+  }
+}
+
 // src/connectors.ts
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync11, renameSync as renameSync2, unlinkSync, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname3 } from "path";
@@ -33478,9 +33691,9 @@ function removeFile(path) {
 
 // src/routes/connectors.ts
 var SERVICE_RE = /^[a-z0-9][a-z0-9_]{0,60}$/;
-var ID_RE = /^[A-Za-z0-9:._-]{1,128}$/;
+var ID_RE2 = /^[A-Za-z0-9:._-]{1,128}$/;
 var MAX_CONNECTIONS = 100;
-function parseApply2(body) {
+function parseApply3(body) {
   if (body.remove === true) return { remove: true };
   const gateway = body.gateway;
   if (!gateway || typeof gateway.url !== "string" || typeof gateway.token !== "string" || !gateway.token) return "gateway.url and gateway.token are required";
@@ -33495,9 +33708,9 @@ function parseApply2(body) {
   if (raw.length > MAX_CONNECTIONS) return `at most ${MAX_CONNECTIONS} connections`;
   const connections = [];
   for (const c of raw) {
-    if (typeof c.id !== "string" || !ID_RE.test(c.id)) return "connections[].id is invalid";
+    if (typeof c.id !== "string" || !ID_RE2.test(c.id)) return "connections[].id is invalid";
     if (typeof c.service !== "string" || !SERVICE_RE.test(c.service)) return "connections[].service is invalid";
-    if (typeof c.alias !== "string" || !ID_RE.test(c.alias)) return "connections[].alias is invalid";
+    if (typeof c.alias !== "string" || !ID_RE2.test(c.alias)) return "connections[].alias is invalid";
     connections.push({
       id: c.id,
       service: c.service,
@@ -33530,7 +33743,7 @@ async function handleConnectors(req, res, url2, service) {
         sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
         return;
       }
-      const input = parseApply2(body);
+      const input = parseApply3(body);
       if (typeof input === "string") {
         sendJson(res, 400, { ok: false, error: input });
         return;
@@ -33562,7 +33775,7 @@ var DRIVE_SCOPES = /* @__PURE__ */ new Set([
   "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/drive.metadata.readonly"
 ]);
-function parseApply3(body) {
+function parseApply4(body) {
   const placeholder = typeof body.placeholder === "string" ? body.placeholder : "";
   if (!PLACEHOLDER_RE.test(placeholder)) return "placeholder is not the shape the firewall generates";
   const scope = typeof body.scope === "string" ? body.scope : "";
@@ -33770,7 +33983,7 @@ async function handleDrive(req, res, url2, service) {
         sendJson(res, 400, { error: "invalid JSON body" });
         return;
       }
-      const input = parseApply3(body);
+      const input = parseApply4(body);
       if (typeof input === "string") {
         sendJson(res, 400, { error: input });
         return;
@@ -34693,12 +34906,12 @@ var KINDS2 = /* @__PURE__ */ new Set(["workspace", "state"]);
 var B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 var ID = /^[A-Za-z0-9_-]{1,64}$/;
 var HEX64 = /^[0-9a-f]{64}$/;
-function str4(body, key) {
+function str5(body, key) {
   const v = body[key];
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 function url(body, key) {
-  const v = str4(body, key);
+  const v = str5(body, key);
   if (!v || v.length > 4096) return null;
   try {
     return new URL(v).protocol === "https:" ? v : null;
@@ -34707,11 +34920,11 @@ function url(body, key) {
   }
 }
 function common(body) {
-  const orgId = str4(body, "orgId");
-  const vmId = str4(body, "vmId");
-  const backupId = str4(body, "backupId");
-  const kind = str4(body, "kind");
-  const dataKey = str4(body, "dataKey");
+  const orgId = str5(body, "orgId");
+  const vmId = str5(body, "vmId");
+  const backupId = str5(body, "backupId");
+  const kind = str5(body, "kind");
+  const dataKey = str5(body, "dataKey");
   if (!orgId || orgId.length > 64) return "orgId is required";
   if (!vmId || !ID.test(vmId)) return "vmId is required";
   if (!backupId || !ID.test(backupId)) return "backupId is required";
@@ -34731,8 +34944,8 @@ function parseRestore(body) {
   if (typeof c === "string") return c;
   const downloadUrl = url(body, "downloadUrl");
   if (!downloadUrl) return "downloadUrl must be an https URL";
-  const header2 = str4(body, "header");
-  const hash = str4(body, "manifestHash");
+  const header2 = str5(body, "header");
+  const hash = str5(body, "manifestHash");
   if (!header2 || header2.length !== 32 || !B64.test(header2)) return "header is required";
   if (!hash || !HEX64.test(hash)) return "manifestHash is required";
   return { ...c, downloadUrl, header: header2, manifestHash: hash };
@@ -35490,16 +35703,16 @@ async function dispatch(req, res, url2, service, cors, session) {
   if (JSON_OPS.has(path) && req.method === "POST") {
     const body = await readJsonBody(req, 8192);
     if (!body) throw new FilesError(400, "bad_body", "That request was not understood.");
-    const str6 = (v) => typeof v === "string" ? v : "";
+    const str7 = (v) => typeof v === "string" ? v : "";
     if (path === "/files/mkdir") {
-      sendJson(res, 200, await service.mkdir(str6(body.path)), cors);
+      sendJson(res, 200, await service.mkdir(str7(body.path)), cors);
       return;
     }
     if (path === "/files/rename") {
-      sendJson(res, 200, await service.rename(str6(body.from), str6(body.to)), cors);
+      sendJson(res, 200, await service.rename(str7(body.from), str7(body.to)), cors);
       return;
     }
-    sendJson(res, 200, await service.delete(str6(body.path), body.recursive === true || body.recursive === 1), cors);
+    sendJson(res, 200, await service.delete(str7(body.path), body.recursive === true || body.recursive === 1), cors);
     return;
   }
   sendJson(res, 404, { error: "Not found", code: "not_found" }, cors);
@@ -35772,24 +35985,24 @@ var SshLoginWatcher = class {
 
 // src/tailscale.ts
 var UP_TIMEOUT_MS = 12e4;
-var CLI_TIMEOUT_MS3 = 2e4;
+var CLI_TIMEOUT_MS4 = 2e4;
 var JOIN_SETTLE_TRIES = 10;
 var JOIN_SETTLE_DELAY_MS = 1500;
 var sleep5 = (ms) => new Promise((r) => setTimeout(r, ms));
 var HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
-function str5(v) {
+function str6(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 function trimDot(name) {
   return name ? name.replace(/\.$/, "") : null;
 }
 function health(v) {
-  return Array.isArray(v) ? v.map(str5).find((l) => !!l) ?? null : str5(v);
+  return Array.isArray(v) ? v.map(str6).find((l) => !!l) ?? null : str6(v);
 }
 function pickIp(ips) {
   if (!Array.isArray(ips)) return null;
   const v4 = ips.find((i) => typeof i === "string" && /^\d+\.\d+\.\d+\.\d+$/.test(i));
-  return typeof v4 === "string" ? v4 : str5(ips[0]) ?? null;
+  return typeof v4 === "string" ? v4 : str6(ips[0]) ?? null;
 }
 var TailscaleService = class {
   constructor(opts = {}) {
@@ -35825,7 +36038,7 @@ var TailscaleService = class {
   /** Leave the tailnet. Needs no key, which is why the console can offer it unconditionally. */
   async logout() {
     try {
-      await this.exec("sudo", [this.helper(), "logout"], CLI_TIMEOUT_MS3);
+      await this.exec("sudo", [this.helper(), "logout"], CLI_TIMEOUT_MS4);
     } catch (err) {
       throw new Error(`Tailscale could not leave the network: ${execFailureLine(err)}`);
     }
@@ -35840,7 +36053,7 @@ var TailscaleService = class {
   async status() {
     let raw;
     try {
-      raw = (await this.exec("sudo", [this.helper(), "status"], CLI_TIMEOUT_MS3)).stdout;
+      raw = (await this.exec("sudo", [this.helper(), "status"], CLI_TIMEOUT_MS4)).stdout;
     } catch (err) {
       return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message: execFailureLine(err) };
     }
@@ -35851,8 +36064,8 @@ var TailscaleService = class {
       return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message: "Tailscale did not report a status this box could read." };
     }
     const self2 = parsed.Self ?? {};
-    const backendState = str5(parsed.BackendState);
-    const name = trimDot(str5(self2.DNSName)) ?? str5(self2.HostName);
+    const backendState = str6(parsed.BackendState);
+    const name = trimDot(str6(self2.DNSName)) ?? str6(self2.HostName);
     const ip = pickIp(self2.TailscaleIPs);
     const ssh2 = Array.isArray(self2.sshHostKeys) && self2.sshHostKeys.length > 0;
     if (backendState === "Running" && ip) return { state: "joined", name, ip, ssh: ssh2, backendState, message: null };
@@ -35872,7 +36085,7 @@ var TailscaleService = class {
 
 // src/routes/tailscale.ts
 var AUTH_KEY_RE = /^tskey-auth-[A-Za-z0-9]+-[A-Za-z0-9]+$/;
-function parseApply4(body) {
+function parseApply5(body) {
   if (typeof body.authKey !== "string" || !AUTH_KEY_RE.test(body.authKey)) return "authKey must be a Tailscale auth key";
   if (typeof body.hostname !== "string" || !body.hostname) return "hostname required";
   return { authKey: body.authKey, ssh: body.ssh === true, hostname: body.hostname };
@@ -35903,7 +36116,7 @@ async function handleTailscale(req, res, url2, service) {
         sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
         return;
       }
-      const input = parseApply4(body);
+      const input = parseApply5(body);
       if (typeof input === "string") {
         sendJson(res, 400, { ok: false, error: input });
         return;
@@ -36005,6 +36218,7 @@ function startGatewayBridge() {
 }
 var channels = null;
 var llm = null;
+var search = null;
 var connectors = null;
 var drive = null;
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
@@ -36064,6 +36278,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/llm/")) {
     await handleLlm(req, res, url2, llm);
+    return;
+  }
+  if (url2.pathname.startsWith("/search/")) {
+    await handleSearch(req, res, url2, search);
     return;
   }
   if (url2.pathname.startsWith("/connectors/")) {
@@ -36144,6 +36362,7 @@ server.listen(PORT, BIND, () => {
     mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt`
   });
   llm = new LlmService({ client, restartService: () => runAction("restart") });
+  search = new SearchService({ client, restartService: () => runAction("restart") });
   const home = process.env.HOME ?? "/home/controlclaw";
   connectors = new ConnectorsService({
     client,
