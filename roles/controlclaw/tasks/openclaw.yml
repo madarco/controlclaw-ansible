@@ -222,12 +222,18 @@
 
 # Proof, from OpenClaw's own module resolver rather than from the file listing: the alias is
 # only worth anything if `require("playwright-core")` inside the browser plugin lands on it.
+# Run as the user the gateway runs as, not as root — a package root can be perfectly correct and
+# still be unreadable to the only process that has to read it, which is how a bad prefix took
+# the browser tool out on a real box while every root-side check passed.
 - name: Check what OpenClaw resolves playwright-core to
   ansible.builtin.command:
     cmd: >-
       node -p "require('module').createRequire('{{ npm_global_root.stdout | trim }}/openclaw/dist/probe.mjs')('playwright-core/package.json').name"
+  become: true
+  become_user: "{{ controlclaw_user }}"
   register: playwright_resolves_to
   changed_when: false
+  failed_when: false
   when: patchright_applies | bool
 
 - name: Fail when OpenClaw would still drive the browser with stock Playwright
@@ -235,9 +241,12 @@
     that:
       - playwright_resolves_to.stdout | default('') | trim == 'patchright-core'
     fail_msg: >-
-      OpenClaw resolves playwright-core to {{ playwright_resolves_to.stdout | trim }}, not
-      patchright-core. The agent's Chrome would announce itself on the CDP wire on every page
-      it opens. Check {{ npm_global_root.stdout | trim }}/openclaw/node_modules/playwright-core.
+      As {{ controlclaw_user }}, OpenClaw resolves playwright-core to
+      "{{ playwright_resolves_to.stdout | default('') | trim }}"
+      ({{ playwright_resolves_to.stderr | default('') | trim | truncate(200) }}), not
+      patchright-core. Either the alias did not land — the agent's Chrome would announce itself
+      on the CDP wire on every page it opens — or the gateway user cannot read
+      {{ patchright_prefix }}, which takes the browser tool out altogether.
   when: patchright_applies | bool
 
 - name: Check for an existing gateway token

@@ -179,9 +179,15 @@
 # unchanged file, skipping the restart, and failing the assertion forever. Reading what is
 # actually running is self-healing. It costs the customer their open tabs, so it fires only when
 # the script changed or the flags really are stale.
+# The pattern is anchored at the binary path on purpose. `pgrep -f` matches the WHOLE command
+# line of every process, and this task's own shell carries the pattern as an argument, so an
+# unanchored `google-chrome-stable --remote-debugging` matches the wrapper as happily as Chrome
+# — which on a box where Chrome has not come up yet reads as "a browser is running" and then
+# asserts against the wrapper's arguments. Chrome's cmdline starts with the binary; no shell's
+# does.
 - name: Read the running browser's flags before deciding on a restart
   ansible.builtin.command:
-    cmd: pgrep -a -f "google-chrome-stable --remote-debugging"
+    cmd: pgrep -a -f "^/usr/bin/google-chrome-stable --remote-debugging"
   register: browser_cmdline_now
   changed_when: false
   failed_when: false
@@ -195,7 +201,7 @@
   when:
     - not ci_test
     - browser_stream_script is changed or browser_stream_unit is changed or
-      '--disable-blink-features=AutomationControlled' not in (browser_cmdline_now.stdout | default(''))
+      '--enable-unsafe-swiftshader' not in (browser_cmdline_now.stdout | default(''))
 
 # Provisioning-time proof, not a one-off check by whoever last touched this. browser-stream.sh
 # already refuses to start an unsandboxed browser; these two catch the ways the unit itself can
@@ -206,7 +212,7 @@
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      printf 'CMDLINE=%s\n' "$(pgrep -a -f 'google-chrome-stable --remote-debugging' | head -1)"
+      printf 'CMDLINE=%s\n' "$(pgrep -a -f '^/usr/bin/google-chrome-stable --remote-debugging' | head -1)"
       printf 'MEMMAX=%s\n' "$(systemctl show browser-stream -p MemoryMax --value)"
       printf 'SANDBOXHELPER=%s\n' "$(pgrep -c -f '/opt/google/chrome/chrome-sandbox' || true)"
     executable: /bin/bash
@@ -214,7 +220,13 @@
   changed_when: false
   retries: 12
   delay: 5
-  until: "'CMDLINE=' in browser_runtime.stdout and browser_runtime.stdout is search('CMDLINE=.+')"
+  # Wait for the browser this role just (re)started, not merely for "a" browser: the restart
+  # above returns as soon as the unit's script is up, and Chrome appears a couple of seconds
+  # later. Without the flag in the condition the first reading lands in that gap and the
+  # assertion below fails against a box that was about to be fine.
+  until: >-
+    browser_runtime.stdout is search('CMDLINE=.+') and
+    '--enable-unsafe-swiftshader' in browser_runtime.stdout
   when: not ci_test
 
 - name: Fail when the browser is running unsandboxed, uncapped or self-identifying
@@ -225,7 +237,7 @@
       - browser_runtime.stdout is not search('MEMMAX=infinity')
       - "'--headless' not in browser_runtime.stdout"
       - "'--enable-automation' not in browser_runtime.stdout"
-      - "'--disable-blink-features=AutomationControlled' in browser_runtime.stdout"
+      - "'--enable-unsafe-swiftshader' in browser_runtime.stdout"
     fail_msg: >-
       browser-stream is not in the shape this role guarantees. Either Chrome is running with a
       sandbox flag turned off — it parses LLM-chosen content as the user that owns the gateway
