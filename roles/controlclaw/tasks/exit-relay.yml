@@ -71,6 +71,25 @@
 # `creates` makes this once-per-host. Renewal is certbot's own systemd timer, which the deploy
 # hook below turns into a relay restart — Node reads the certificate at listen time and would
 # otherwise serve the expired one until something else restarted it.
+# The Hetzner firewall opens 80 and the CONNECT port, but UFW on the box defaults to deny and the
+# base role only allows SSH. Without these two rules certbot's standalone challenge on :80 times
+# out ("likely firewall problem") and nothing ever reaches the relay.
+- name: Allow the ACME challenge port in UFW
+  community.general.ufw:
+    rule: allow
+    port: '80'
+    proto: tcp
+    comment: 'ControlClaw exit relay (ACME HTTP-01)'
+  when: not ci_test
+
+- name: Allow the relay CONNECT port in UFW
+  community.general.ufw:
+    rule: allow
+    port: "{{ exit_relay_port }}"
+    proto: tcp
+    comment: 'ControlClaw exit relay (CONNECT, token-checked)'
+  when: not ci_test
+
 - name: Obtain the Let's Encrypt certificate
   ansible.builtin.command:
     cmd: >-
