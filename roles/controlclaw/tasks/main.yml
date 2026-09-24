@@ -3,6 +3,7 @@
 #   openclaw (default) - agent box: docker, node, vm-agent, OpenClaw gateway, Caddy in front
 #   proxy              - the blind L4 proxy in front of every agent box (HAProxy)
 #   mitm               - per-org egress proxy / secret zone
+#   exit-relay         - the shared residential exit relay in front of Apify
 # system tools, the service user and the firewall apply to every role.
 
 # Node does not read the OS trust store. Once the box is confined to the org mitm proxy, every
@@ -33,7 +34,7 @@
 
 - name: Include Docker installation tasks
   ansible.builtin.include_tasks: docker-linux.yml
-  when: not ci_test and box_role != 'proxy'
+  when: not ci_test and box_role not in ['proxy', 'exit-relay']
 
 - name: Include firewall configuration tasks
   ansible.builtin.include_tasks: firewall-linux.yml
@@ -62,6 +63,12 @@
   when:
     - box_role == 'openclaw'
     - mitm_box_private_ip | default('') | length > 0
+
+# Before the vm-agent: the agent may be handed a mount set the moment it comes up (the firewall
+# re-pushes on /ready), and `sudo cc-drive-apply` has to exist by then. Inert until that push.
+- name: Include Google Drive folder support (rclone, the mount units, cc-drive-apply)
+  ansible.builtin.include_tasks: rclone.yml
+  when: box_role == 'openclaw'
 
 - name: Include VM agent tasks (OpenClaw box)
   ansible.builtin.include_tasks: vm-agent.yml
@@ -130,6 +137,12 @@
 - name: Include mitm box tasks (secret zone)
   ansible.builtin.include_tasks: mitmbox.yml
   when: box_role == 'mitm'
+
+# The shared residential exit relay. No agent, no Docker, no customer data on it: one Node daemon
+# and a certificate. See apps/saas/docs/features/residential-exit.md in the controlclaw repo.
+- name: Include exit relay tasks (residential exit)
+  ansible.builtin.include_tasks: exit-relay.yml
+  when: box_role == 'exit-relay'
 
 # Last on purpose: what release this box runs, written only once everything above succeeded.
 - name: Record the installed release

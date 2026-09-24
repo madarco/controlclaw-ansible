@@ -498,8 +498,11 @@
     content: |
       [Unit]
       Description=OpenClaw AI Gateway
-      After=network-online.target docker.service browser-stream.service
-      Wants=network-online.target browser-stream.service
+      After=network-online.target docker.service browser-stream.service cc-drive.target
+      Wants=network-online.target browser-stream.service cc-drive.target
+      # cc-drive.target is the Google Drive folders (tasks/rclone.yml). Wants, never Requires: the
+      # mounts are Type=notify so After= genuinely waits for the folders to be there before the
+      # agent looks, but a Drive outage must not be able to keep the agent down.
 
       # DISPLAY is deliberately NOT set on this unit. Attaching over CDP never spawns a process,
       # and an X display in the environment only risks re-enabling OpenClaw's local-open path.

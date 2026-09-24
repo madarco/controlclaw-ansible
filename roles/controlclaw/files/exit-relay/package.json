@@ -1,0 +1,23 @@
+{
+  "name": "@controlclaw/exit-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx src/index.ts",
+    "test": "tsx src/tokens.test.ts && tsx src/metering.test.ts && tsx src/relay.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "//exports": "The relay is run, not imported. This subpath exists so the control plane's e2e test can check that a token it mints verifies with the REAL relay code rather than a copy of the HMAC.",
+  "exports": {
+    ".": "./dist/index.js",
+    "./tokens": "./src/tokens.ts"
+  }
+}

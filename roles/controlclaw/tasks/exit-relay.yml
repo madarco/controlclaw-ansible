@@ -1,0 +1,110 @@
+---
+# The ControlClaw residential exit relay (box_role=exit-relay).
+#
+# One Node daemon (packages/exit-relay, staged here as a single bundled file by
+# scripts/deploy-exit-relay.sh) that answers CONNECT from customer firewall boxes and chains each
+# flow to Apify Proxy's residential pool on ControlClaw's own account. Design and what it is
+# allowed to see: apps/saas/docs/features/residential-exit.md.
+#
+# The hop from a firewall to this box carries a per-organization token in its
+# `Proxy-Authorization`, so it is TLS: certbot holds a Let's Encrypt certificate for
+# exit_relay_host and the relay reads the PEM files directly. The relay REFUSES to bind a public
+# address without them, so a certificate that failed to issue is a service that does not come up,
+# not a token on the wire in the clear.
+
+- name: Assert the exit relay knows who it is
+  ansible.builtin.assert:
+    that:
+      - exit_relay_host | default('') | length > 0
+      - exit_relay_upstream_pass | default('') | length > 0
+      - exit_relay_token_secret | default('') | length > 0
+      - exit_relay_metering_secret | default('') | length > 0
+      - exit_relay_control_plane | default('') | length > 0
+    fail_msg: >-
+      box_role=exit-relay needs exit_relay_host, exit_relay_upstream_pass, exit_relay_token_secret,
+      exit_relay_metering_secret and exit_relay_control_plane. Refusing rather than building a
+      relay that cannot verify a token or report a byte.
+
+- name: Install certbot
+  ansible.builtin.apt:
+    name: certbot
+    state: present
+    update_cache: true
+  when: not ci_test
+
+- name: Create the ControlClaw directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+  loop:
+    - /etc/controlclaw
+    - /opt/controlclaw
+    - /opt/controlclaw/exit-relay
+
+- name: Install the exit relay bundle
+  ansible.builtin.copy:
+    src: exit-relay/dist/index.js
+    dest: /opt/controlclaw/exit-relay/index.js
+    owner: root
+    group: root
+    mode: '0755'
+  notify: restart controlclaw-exit-relay
+
+# 0600 and root-owned: it holds ControlClaw's Apify password and both shared secrets. The unit
+# reads it as an EnvironmentFile, so nothing of it is visible in `ps` or in the journal.
+- name: Write the exit relay environment
+  ansible.builtin.template:
+    src: exit-relay.env.j2
+    dest: /etc/controlclaw/exit-relay.env
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  notify: restart controlclaw-exit-relay
+
+# Issued BEFORE the unit starts: without the PEM files the relay refuses to bind, so a first run
+# that started it first would just crash-loop until the certificate appeared.
+#
+# `creates` makes this once-per-host. Renewal is certbot's own systemd timer, which the deploy
+# hook below turns into a relay restart — Node reads the certificate at listen time and would
+# otherwise serve the expired one until something else restarted it.
+- name: Obtain the Let's Encrypt certificate
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --standalone --non-interactive --agree-tos
+      --email {{ exit_relay_acme_email }} -d {{ exit_relay_host }}
+    creates: "/etc/letsencrypt/live/{{ exit_relay_host }}/fullchain.pem"
+  when: not ci_test
+
+- name: Restart the relay when the certificate is renewed
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/restart-exit-relay.sh
+    content: |
+      #!/bin/sh
+      # Node reads the certificate once, at listen time. Without this the box would go on
+      # presenting the expired one after every renewal.
+      systemctl restart controlclaw-exit-relay
+    owner: root
+    group: root
+    mode: '0755'
+  when: not ci_test
+
+- name: Write the exit relay unit
+  ansible.builtin.template:
+    src: controlclaw-exit-relay.service.j2
+    dest: /etc/systemd/system/controlclaw-exit-relay.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart controlclaw-exit-relay
+
+- name: Enable and start the exit relay
+  ansible.builtin.systemd:
+    name: controlclaw-exit-relay
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ci_test

@@ -4,6 +4,16 @@
 # CI testing mode - skips tasks that require systemd, Docker-in-Docker, or kernel access
 ci_test: false
 
+# Residential exit relay (box_role=exit-relay). The secrets have NO defaults on purpose: the role
+# asserts them and refuses rather than building a relay that cannot verify a token or report a
+# byte. Terraform passes them all (controlclaw repo, infra/exit-relay.tf).
+exit_relay_port: 8443
+exit_relay_acme_email: "ops@controlclaw.com"
+exit_relay_upstream_host: "proxy.apify.com"
+exit_relay_upstream_port: 8000
+exit_relay_upstream_groups: "RESIDENTIAL"
+exit_relay_id: "relay-1"
+
 # Tailscale settings
 tailscale_enabled: false
 tailscale_authkey: ""
@@ -106,14 +116,45 @@ patchright_prefix: /usr/local/lib/controlclaw-patchright
 # plugin API floor — the same chore patchright_version carries.
 openclaw_web_search_provider: parallel-free
 openclaw_search_plugin_version: "2026.9.5"
+#
+# tavily and brave are the PAID providers an organisation can switch to from the console
+# (controlclaw apps/saas/docs/features/web-search.md). The key never reaches this box — the org
+# firewall holds it and pushes a placeholder plus `tools.web.search.provider` — but the plugin
+# behind the provider has to be here first, so both are installed on every agent box whether or
+# not the organisation has a key. An unconfigured plugin does nothing, and installing on demand
+# would make somebody's first search change wait on npm (and hang behind the proxy on a confined
+# box): `packages/vm-agent/src/search.ts` refuses the change rather than fetching anything.
 openclaw_search_plugins:
   - { id: parallel, package: "@openclaw/parallel-plugin" }
   - { id: duckduckgo, package: "@openclaw/duckduckgo-plugin" }
+  - { id: tavily, package: "@openclaw/tavily-plugin" }
+  - { id: brave, package: "@openclaw/brave-plugin" }
 
 # Swap (tasks/swap.yml). The stock box has none, which leaves the kernel no move under memory
 # pressure except to kill something. 0 disables.
 swap_size_mb: 4096
 swap_file: /swapfile
+
+# Google Drive folders mounted into the agent's workspace (controlclaw docs/plans/drive-folders.md).
+#
+# rclone is pinned by version AND sha256, and installed from downloads.rclone.org rather than apt:
+# Ubuntu 24.04 ships a much older rclone than the flags here need, and an unpinned download is a
+# supply chain nobody reviewed. Bump the version and both checksums together, the way
+# connector_image_digest is bumped. `curl -sSL https://downloads.rclone.org/vX.Y.Z/SHA256SUMS`.
+rclone_version: "1.75.1"
+rclone_sha256_amd64: "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab"
+rclone_sha256_arm64: "03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9"
+
+# Per-mount rclone configs, env files and VFS caches. Deliberately NOT under the workspace: the
+# agent must not be able to rewrite the config of its own mounts, and the cache must not show up in
+# the file explorer or in a workspace backup.
+drive_state_dir: /opt/controlclaw/drive
+# Where the folders appear. Inside OpenClaw's workspace, because that is the directory the agent
+# works in and the one the console's Files page opens on.
+drive_mount_root: "{{ controlclaw_home }}/.openclaw/workspace/Drive"
+# First loopback port for a mount's rclone remote-control listener. One per mount, allocated in
+# order by cc-drive-apply; the vm-agent reads the allocation out of the state file it writes.
+drive_rc_base_port: 5700
 
 # Box role: "openclaw" (agent zone, default), "proxy" (blind L4 proxy in front of the agents)
 # or "mitm" (secret zone — egress proxy + secrets).
