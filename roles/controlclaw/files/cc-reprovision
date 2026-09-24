@@ -62,7 +62,17 @@ say resolving
 # An empty branch means cloud-init passed no -C and cloned the repo's default. Keep it empty
 # rather than guessing "main": GitHub's commits API uses the repo's default when `sha` is omitted,
 # so the box resolves commits on the branch it actually booted from.
-if [ "${ALLOW_UNVERIFIED:-false}" = "true" ]; then
+# A box built from somewhere that is not GitHub — a dev pair pulling a branch a developer's own
+# machine is serving over a tunnel — has no commits API to ask, so the 24h rule cannot be applied
+# to it at all. Say so and track the branch, rather than dying on a slug that was never going to
+# parse. This is only ever reached on a box that was already built from a non-production repo,
+# which is what makes it a dev box in the first place.
+case "$ANSIBLE_REPO" in
+  https://github.com/*) FROM_GITHUB=true ;;
+  *) FROM_GITHUB=false ;;
+esac
+
+if [ "${ALLOW_UNVERIFIED:-false}" = "true" ] || [ "$FROM_GITHUB" = "false" ]; then
   REF="${ANSIBLE_BRANCH:-HEAD}"
   say resolving "unverified mode: tracking $REF"
 else
@@ -153,8 +163,14 @@ say installing "fetching collections"
 ansible-galaxy collection install community.docker community.general ansible.posix \
   >> "$LOG" 2>&1 || say installing "collections already present"
 
+# --full for anything but the production repo, matching what cloud-init did on the first boot:
+# ansible-pull shallow-clones by default, and a branch served as plain files over a tunnel speaks
+# git's dumb HTTP, which refuses `--depth 1` outright.
+FULL=""
+[ "$ANSIBLE_REPO" = "https://github.com/madarco/controlclaw-ansible.git" ] || FULL="--full"
+
 say running "ansible-pull ${REF:0:12}"
-ansible-pull -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
+ansible-pull $FULL -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
 rc=$?
 
 if [ "$rc" -eq 0 ]; then

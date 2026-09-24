@@ -1,0 +1,46 @@
+---
+# What this box's Ansible was actually pulled from, recorded from the checkout's own git origin.
+#
+# The firewall reads this one file to decide whether it may hand a confirmation code back to the
+# control plane instead of to a person (a DEV-SECURED pair: a real pair, built from a branch of the
+# public test repo so a box can try unmerged agent code on real hardware; see the SaaS repo's
+# docs/security-design.md). A box built from the production repo never gets that route, and there is
+# no variable, env var or command that changes it — which is the point.
+#
+# It deliberately does NOT read `ansible_repo_url`. That value is sent by the CONTROL PLANE at
+# provisioning, and the control plane is the party the whole design refuses to trust: it could send
+# the test repo while cloud-init cloned the production one, and a gate reading it would open on a
+# genuinely production-built firewall. `git remote get-url origin` in the ansible-pull checkout is
+# what cloud-init's `-U` actually cloned, written by git before any variable is read.
+#
+# Root-owned and 0444: the controlclaw user (which runs the agent) can read it and cannot write it.
+
+- name: Create the config dir
+  ansible.builtin.file:
+    path: /etc/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Read the git origin of the checkout this play is running from
+  ansible.builtin.command:
+    cmd: git -C {{ playbook_dir | quote }} remote get-url origin
+  register: cc_ansible_origin
+  changed_when: false
+  failed_when: false
+
+# A checkout with no origin (a hand-copied playbook, a CI run) writes nothing rather than an empty
+# value: the firewall treats a missing file and an empty value the same way, and not writing is the
+# honest answer to "we could not tell".
+- name: Record what this box was built from
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/provenance
+    owner: root
+    group: root
+    mode: '0444'
+    content: |
+      # Written by Ansible from the git origin of the checkout it ran out of.
+      # Read by the mitm-agent; see packages/mitm-agent/src/provenance.ts in the SaaS repo.
+      ANSIBLE_ORIGIN={{ cc_ansible_origin.stdout | trim }}
+  when: cc_ansible_origin.rc == 0 and cc_ansible_origin.stdout | trim | length > 0

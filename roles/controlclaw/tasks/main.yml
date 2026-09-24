@@ -22,6 +22,11 @@
   ansible.builtin.set_fact:
     controlclaw_node_env: "{{ {'NODE_EXTRA_CA_CERTS': mitm_ca_path} if mitm_ca_installed.stat.exists else {} }}"
 
+# First, and on every role: the firewall's dev-consent gate reads the file this writes, and a box
+# that failed halfway through provisioning should still be able to say what it was built from.
+- name: Record where this box's Ansible came from
+  ansible.builtin.include_tasks: provenance.yml
+
 - name: Include system tools installation tasks
   ansible.builtin.include_tasks: system-tools.yml
 
