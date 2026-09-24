@@ -27,6 +27,15 @@ function loadConfig(env = process.env) {
   if (!cert && !isLoopback(host) && env.EXIT_RELAY_ALLOW_PLAINTEXT !== "1") {
     throw new Error(`refusing to listen on ${host} without TLS: set EXIT_RELAY_TLS_CERT/_KEY, or EXIT_RELAY_ALLOW_PLAINTEXT=1 if something else terminates TLS`);
   }
+  const controlPlaneTimeoutMs = num(env, "EXIT_RELAY_CONTROL_PLANE_TIMEOUT_MS", 1e4);
+  const upstreamConnectTimeoutMs = num(env, "EXIT_RELAY_UPSTREAM_TIMEOUT_MS", 15e3);
+  const slack = 5e3;
+  const answerDeadlineMs = num(env, "EXIT_RELAY_ANSWER_DEADLINE_MS", controlPlaneTimeoutMs + upstreamConnectTimeoutMs + slack);
+  if (answerDeadlineMs <= controlPlaneTimeoutMs + upstreamConnectTimeoutMs) {
+    throw new Error(
+      `EXIT_RELAY_ANSWER_DEADLINE_MS must be more than EXIT_RELAY_CONTROL_PLANE_TIMEOUT_MS + EXIT_RELAY_UPSTREAM_TIMEOUT_MS (${controlPlaneTimeoutMs} + ${upstreamConnectTimeoutMs}), or it fires on connections that were about to work`
+    );
+  }
   return {
     host,
     port: num(env, "EXIT_RELAY_PORT", 8443),
@@ -47,7 +56,10 @@ function loadConfig(env = process.env) {
     maxConnectionsPerOrg: num(env, "EXIT_RELAY_MAX_CONNS_PER_ORG", 64),
     maxConnectionsTotal: num(env, "EXIT_RELAY_MAX_CONNS_TOTAL", 2e3),
     maxConnectsPerMinutePerOrg: num(env, "EXIT_RELAY_MAX_CONNECTS_PER_MIN", 600),
-    idleTimeoutMs: num(env, "EXIT_RELAY_IDLE_TIMEOUT_MS", 12e4)
+    idleTimeoutMs: num(env, "EXIT_RELAY_IDLE_TIMEOUT_MS", 12e4),
+    controlPlaneTimeoutMs,
+    upstreamConnectTimeoutMs,
+    answerDeadlineMs
   };
 }
 
@@ -68,6 +80,7 @@ var Ledger = class {
       secret: options.secret,
       relayId: options.relayId,
       balanceTtlMs: options.balanceTtlMs,
+      requestTimeoutMs: options.requestTimeoutMs ?? 1e4,
       maxPendingReports: options.maxPendingReports ?? 5e3,
       fetchImpl: options.fetchImpl ?? fetch,
       now: options.now ?? Date.now
@@ -124,7 +137,7 @@ var Ledger = class {
     if (cached !== null) return cached;
     const existing = this.inflightRefresh.get(organizationId);
     if (existing) return await existing;
-    const request = this.flush([organizationId]).then(() => this.cachedRemaining(organizationId));
+    const request = this.send([], [organizationId]).then(() => this.cachedRemaining(organizationId));
     this.inflightRefresh.set(organizationId, request);
     try {
       return await request;
@@ -174,7 +187,8 @@ var Ledger = class {
       response = await this.opts.fetchImpl(`${this.opts.url}/api/exit-relay/usage`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${this.opts.secret}` },
-        body: JSON.stringify({ relay: this.opts.relayId, reports, refresh })
+        body: JSON.stringify({ relay: this.opts.relayId, reports, refresh }),
+        signal: AbortSignal.timeout(this.opts.requestTimeoutMs)
       });
     } catch (error) {
       this.keep(reports);
@@ -389,6 +403,8 @@ function sessionFromUsername(username) {
 }
 
 // src/relay.ts
+var DEFAULT_ANSWER_DEADLINE_MS = 2e4;
+var BASIC_REALM = 'Proxy-Authenticate: Basic realm="controlclaw-exit"';
 function looksLikeTls(head) {
   return head.length >= 3 && head[0] === 22 && head[1] === 3;
 }
@@ -434,64 +450,84 @@ var ExitRelay = class {
   };
   async serve(request, clientSocket, head) {
     clientSocket.on("error", () => clientSocket.destroy());
-    const target = parseAuthority(request.url ?? "");
-    if (!target) return refuse(clientSocket, 400, "Bad CONNECT target");
-    if (target.port === 80) {
-      return refuse(clientSocket, 403, "This exit carries TLS only, not plain HTTP");
-    }
-    const credentials = parseProxyAuthorization(request.headers["proxy-authorization"]);
-    const payload = credentials ? verifyToken(this.deps.tokenSecret, credentials.password) : null;
-    if (!payload) {
-      return refuse(clientSocket, 407, "Proxy authentication required", ['Proxy-Authenticate: Basic realm="controlclaw-exit"']);
-    }
-    const organizationId = payload.o;
-    const tokenId = payload.i;
-    if (this.deps.ledger.isRevoked(organizationId, tokenId)) {
-      return refuse(clientSocket, 407, "This exit token has been replaced", ['Proxy-Authenticate: Basic realm="controlclaw-exit"']);
-    }
-    const admitted = this.deps.limiter.admit(organizationId);
-    if (!admitted.ok) {
-      const status = admitted.reason === "total_connections" ? 503 : 429;
-      return refuse(clientSocket, status, admitted.reason === "connect_rate" ? "Too many connections a minute" : "Too many connections open");
-    }
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
-      this.deps.limiter.release(organizationId);
-    };
-    clientSocket.once("close", release);
-    const remaining = await this.deps.ledger.remaining(organizationId);
-    if (remaining === null) {
-      return refuse(clientSocket, 503, "This exit cannot check your balance right now");
-    }
-    if (remaining <= 0) {
-      return refuse(clientSocket, 402, "Your residential exit balance is used up");
-    }
-    let upstreamSocket;
-    let upstreamHead;
-    try {
-      const opened = await this.dial(target, {
-        host: this.deps.upstream.host,
-        port: this.deps.upstream.port,
-        groups: this.deps.upstream.groups,
-        password: this.deps.upstream.password,
-        session: sessionFromUsername(credentials?.username ?? "")
+    let answered = false;
+    const deny = (status, text, reason, extra = {}) => {
+      if (answered) return;
+      answered = true;
+      console.warn("[exit-relay] refused", {
+        status,
+        reason,
+        ...extra.organizationId ? { organizationId: extra.organizationId } : {},
+        ...extra.detail ? { detail: extra.detail } : {}
       });
-      upstreamSocket = opened.socket;
-      upstreamHead = opened.head;
-    } catch (error) {
-      const message = error instanceof UpstreamError ? error.message : "the residential exit is unavailable";
-      console.error("[exit-relay] upstream refused", { organizationId, message });
-      return refuse(clientSocket, 502, message);
+      refuse(clientSocket, status, text, extra.headers ?? []);
+    };
+    const deadline = setTimeout(() => deny(503, "This exit is not answering right now", "answer_deadline"), this.deps.answerDeadlineMs ?? DEFAULT_ANSWER_DEADLINE_MS);
+    deadline.unref();
+    try {
+      const target = parseAuthority(request.url ?? "");
+      if (!target) return deny(400, "Bad CONNECT target", "bad_target");
+      if (target.port === 80) {
+        return deny(403, "This exit carries TLS only, not plain HTTP", "plain_http");
+      }
+      const credentials = parseProxyAuthorization(request.headers["proxy-authorization"]);
+      const payload = credentials ? verifyToken(this.deps.tokenSecret, credentials.password) : null;
+      if (!payload) {
+        return deny(407, "Proxy authentication required", credentials ? "bad_token" : "no_token", { headers: [BASIC_REALM] });
+      }
+      const organizationId = payload.o;
+      const tokenId = payload.i;
+      if (this.deps.ledger.isRevoked(organizationId, tokenId)) {
+        return deny(407, "This exit token has been replaced", "revoked_token", { organizationId, headers: [BASIC_REALM] });
+      }
+      const admitted = this.deps.limiter.admit(organizationId);
+      if (!admitted.ok) {
+        const status = admitted.reason === "total_connections" ? 503 : 429;
+        return deny(status, admitted.reason === "connect_rate" ? "Too many connections a minute" : "Too many connections open", admitted.reason, { organizationId });
+      }
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        this.deps.limiter.release(organizationId);
+      };
+      clientSocket.once("close", release);
+      const remaining = await this.deps.ledger.remaining(organizationId);
+      if (answered) return;
+      if (remaining === null) {
+        return deny(503, "This exit cannot check your balance right now", "no_balance", { organizationId });
+      }
+      if (remaining <= 0) {
+        return deny(402, "Your residential exit balance is used up", "balance_empty", { organizationId });
+      }
+      let upstreamSocket;
+      let upstreamHead;
+      try {
+        const opened = await this.dial(target, {
+          host: this.deps.upstream.host,
+          port: this.deps.upstream.port,
+          groups: this.deps.upstream.groups,
+          password: this.deps.upstream.password,
+          session: sessionFromUsername(credentials?.username ?? ""),
+          connectTimeoutMs: this.deps.upstream.connectTimeoutMs
+        });
+        upstreamSocket = opened.socket;
+        upstreamHead = opened.head;
+      } catch (error) {
+        const message = error instanceof UpstreamError ? error.message : "the residential exit is unavailable";
+        return deny(502, message, "upstream_refused", { organizationId, detail: message });
+      }
+      if (answered || clientSocket.destroyed) {
+        upstreamSocket.destroy();
+        return;
+      }
+      answered = true;
+      this.deps.ledger.countConnection(organizationId, tokenId);
+      clientSocket.write("HTTP/1.1 200 Connection established\r\n\r\n");
+      this.pipe({ clientSocket, upstreamSocket, head, upstreamHead, organizationId, tokenId, release });
+    } finally {
+      clearTimeout(deadline);
     }
-    if (clientSocket.destroyed) {
-      upstreamSocket.destroy();
-      return;
-    }
-    this.deps.ledger.countConnection(organizationId, tokenId);
-    clientSocket.write("HTTP/1.1 200 Connection established\r\n\r\n");
-    this.pipe({ clientSocket, upstreamSocket, head, upstreamHead, organizationId, tokenId, release });
   }
   pipe(args) {
     const { clientSocket, upstreamSocket, organizationId, tokenId } = args;
@@ -555,8 +591,8 @@ var ExitRelay = class {
 // src/index.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e3642c1" : "unknown",
-  at: true ? "2026-09-24T00:14:57+01:00" : "unknown"
+  commit: true ? "687cd3c" : "unknown",
+  at: true ? "2026-09-24T10:58:09+01:00" : "unknown"
 };
 function main() {
   const config = loadConfig();
@@ -564,15 +600,23 @@ function main() {
     url: config.controlPlaneUrl,
     secret: config.meteringSecret,
     relayId: config.relayId,
-    balanceTtlMs: config.balanceTtlMs
+    balanceTtlMs: config.balanceTtlMs,
+    requestTimeoutMs: config.controlPlaneTimeoutMs
   });
   const limiter = new Limiter(config.maxConnectionsPerOrg, config.maxConnectionsTotal, config.maxConnectsPerMinutePerOrg);
   const relay = new ExitRelay({
     ledger,
     limiter,
     tokenSecret: config.tokenSecret,
-    upstream: { host: config.upstreamHost, port: config.upstreamPort, groups: config.upstreamGroups, password: config.upstreamPassword },
-    idleTimeoutMs: config.idleTimeoutMs
+    upstream: {
+      host: config.upstreamHost,
+      port: config.upstreamPort,
+      groups: config.upstreamGroups,
+      password: config.upstreamPassword,
+      connectTimeoutMs: config.upstreamConnectTimeoutMs
+    },
+    idleTimeoutMs: config.idleTimeoutMs,
+    answerDeadlineMs: config.answerDeadlineMs
   });
   const server = config.tlsCertPath && config.tlsKeyPath ? createHttpsServer({ cert: readFileSync(config.tlsCertPath), key: readFileSync(config.tlsKeyPath) }) : createHttpServer();
   server.on("connect", relay.handleConnect);
