@@ -160,6 +160,13 @@ drive_rc_base_port: 5700
 # or "mitm" (secret zone — egress proxy + secrets).
 box_role: openclaw
 
+# Which roles get Docker. Derived once here rather than spelled out per task: the install and the
+# UFW/daemon.json wiring that goes with it have to agree about it, and when they did not, a relay
+# box wrote /etc/docker/daemon.json, notified the restart handler and the play ended
+# `Could not find the requested service docker: host` — after the relay itself was already up, so
+# the failure looked like a relay problem and was not one.
+controlclaw_uses_docker: "{{ box_role not in ['proxy', 'exit-relay'] }}"
+
 # Open TCP 22 in UFW. Mirrors the Hetzner firewall flag (agent_ssh_debug in Terraform), which
 # is the real gate; this keeps the box consistent if the Hetzner firewall is ever detached.
 ssh_debug: true

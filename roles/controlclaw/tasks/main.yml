@@ -34,7 +34,7 @@
 
 - name: Include Docker installation tasks
   ansible.builtin.include_tasks: docker-linux.yml
-  when: not ci_test and box_role not in ['proxy', 'exit-relay']
+  when: not ci_test and controlclaw_uses_docker | bool
 
 - name: Include firewall configuration tasks
   ansible.builtin.include_tasks: firewall-linux.yml
