@@ -33787,6 +33787,88 @@ var FirewallControl = class {
   }
 };
 
+// src/agent-client.ts
+import { readFileSync as readFileSync5 } from "fs";
+var AGENT_PATH_PREFIX = "/__cc/agent";
+var TIMEOUT_MS = 25e3;
+var BACKUP_TIMEOUT_MS = 60 * 6e4;
+var APPROVE_TIMEOUT_MS = 7e4;
+function isAgentTimeout(err) {
+  return err instanceof Error && err.timedOut === true;
+}
+var AgentTimeoutError = class extends Error {
+  timedOut = true;
+  constructor(message2 = "The agent did not answer in time.") {
+    super(message2);
+    this.name = "AgentTimeoutError";
+  }
+};
+function timeoutFor(path, opts) {
+  if (path.startsWith("/backup/")) return opts.backupTimeoutMs;
+  if (path === "/channels/pairings/approve") return opts.approveTimeoutMs;
+  return opts.timeoutMs;
+}
+function purposeForPath(path) {
+  if (path.startsWith("/llm/")) return "llm";
+  if (path.startsWith("/search/")) return "search";
+  if (path.startsWith("/connectors/")) return "connectors";
+  if (path === "/update" || path.startsWith("/update/")) return "update";
+  if (path.startsWith("/backup/")) return "backup";
+  if (path.startsWith("/ssh/")) return "ssh";
+  if (path.startsWith("/tailscale/")) return "tailscale";
+  if (path.startsWith("/drive/")) return "drive";
+  return "channels";
+}
+function makeAgentTokenSigner(keysDir, boxId) {
+  const read = (name25) => readFileSync5(`${keysDir}/${name25}`, "utf-8").trim();
+  return async (agentVmId, purpose = "channels") => {
+    const key = await importPKCS8(read("vm_private_key.pem"), "EdDSA");
+    return new SignJWT({ vmId: agentVmId, purpose, iss: boxId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
+  };
+}
+function makeAgentClient(opts) {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
+  const backupTimeoutMs = opts.backupTimeoutMs ?? BACKUP_TIMEOUT_MS;
+  const approveTimeoutMs = opts.approveTimeoutMs ?? APPROVE_TIMEOUT_MS;
+  async function request(agent, method, path, body) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutFor(path, { timeoutMs, backupTimeoutMs, approveTimeoutMs }));
+    try {
+      const res = await fetchImpl(`https://${agent.hostname}${AGENT_PATH_PREFIX}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${await opts.sign(agent.vmId, purposeForPath(path))}`,
+          ...body ? { "content-type": "application/json" } : {}
+        },
+        body: body ? JSON.stringify(body) : void 0,
+        signal: controller.signal
+      });
+      const text2 = await res.text();
+      let parsed = {};
+      try {
+        parsed = text2 ? JSON.parse(text2) : {};
+      } catch {
+        parsed = {};
+      }
+      if (!res.ok) {
+        const detail = typeof parsed.error === "string" ? parsed.error : text2.slice(0, 200);
+        throw new Error(res.status === 503 ? "The agent is not running. Start it and try again." : `agent ${res.status}: ${detail}`);
+      }
+      return parsed;
+    } catch (err) {
+      if (err.name === "AbortError") throw new AgentTimeoutError();
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return {
+    post: (agent, path, body) => request(agent, "POST", path, body),
+    get: (agent, path) => request(agent, "GET", path)
+  };
+}
+
 // src/consent-codes.ts
 import { createHash, randomInt, timingSafeEqual } from "crypto";
 var CODE_TTL_MS = 10 * 6e4;
@@ -33876,7 +33958,7 @@ var ConsentCodes = class {
 
 // src/enc-file.ts
 import { createCipheriv as createCipheriv2, createDecipheriv as createDecipheriv2, randomBytes as randomBytes2 } from "crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync5, renameSync, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync4 } from "fs";
 import { dirname as dirname2 } from "path";
 var NONCE_BYTES2 = 12;
 var TAG_BYTES2 = 16;
@@ -33900,7 +33982,7 @@ function decryptJson(raw, boxKeyB64, aad10) {
 }
 function loadEncryptedJson(path, boxKeyB64, aad10) {
   if (!existsSync4(path)) return null;
-  return decryptJson(readFileSync5(path, "utf8"), boxKeyB64, aad10);
+  return decryptJson(readFileSync6(path, "utf8"), boxKeyB64, aad10);
 }
 function saveEncryptedJson(path, value, boxKeyB64, aad10) {
   mkdirSync3(dirname2(path), { recursive: true });
@@ -33955,6 +34037,8 @@ function saveChannelStore(path, store, boxKeyB64, ids2) {
 // src/channels.ts
 var SCOPE = "org";
 var NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
+var PENDING_APPROVAL_TTL_MS = 15 * 6e4;
+var RECONCILE_INTERVAL_MS = 6e4;
 function named(type, label) {
   return label ? `${NAMES[type]} ${label}` : NAMES[type];
 }
@@ -34022,6 +34106,16 @@ function parseProposal(payload) {
     ...secret ? { secret: { botToken: str(secret.botToken) ?? void 0, appToken: str(secret.appToken) ?? void 0 } } : {}
   };
 }
+function parseApproved(payload) {
+  const raw = Array.isArray(payload.approved) ? payload.approved : [];
+  const out = [];
+  for (const a of raw) {
+    const senderId = str(a.senderId);
+    if (!isType(a.type) || !senderId) continue;
+    out.push({ type: a.type, senderId, code: str(a.code), at: str(a.at) ?? (/* @__PURE__ */ new Date(0)).toISOString() });
+  }
+  return out;
+}
 var ChannelsFirewall = class {
   constructor(opts) {
     this.opts = opts;
@@ -34035,6 +34129,10 @@ var ChannelsFirewall = class {
   codes;
   log;
   now;
+  /** Late approvals found by the reconcile, drained onto the next heartbeat. */
+  reports = [];
+  /** Reconcile passes run one after another; see `reconcile`. */
+  reconciling = Promise.resolve();
   /**
    * Every assigned connection someone is approved on, as code routes: the LLM firewall sends its
    * codes through the same people, since an org-level change has no single agent of its own.
@@ -34052,6 +34150,26 @@ var ChannelsFirewall = class {
       out.push({ target, senders: c.approvedSenders, agentName: this.store.agents[c.assignedVmId]?.name ?? c.assignedVmId });
     }
     return out;
+  }
+  /**
+   * Late approvals, as results the control plane recognizes without a command behind them
+   * (`channels.reconciled:<connectionId>`, the shape `llm.refresh:` uses). Drained by
+   * `FirewallControl.extraResults` on the next beat.
+   */
+  drainReports() {
+    const out = this.reports;
+    this.reports = [];
+    return out;
+  }
+  /**
+   * Periodic reconcile. Asks only the agents that could be missing something — a connection with
+   * nobody approved on it, or one with an approve we never got the answer to — so a settled
+   * organization costs no requests at all.
+   */
+  async tick() {
+    if (this.reconcileTargets().size === 0) return;
+    const recorded = await this.reconcile();
+    this.report(recorded);
   }
   handlers() {
     return {
@@ -34112,6 +34230,102 @@ var ChannelsFirewall = class {
     if (!c) throw new Error("This connection is not on the firewall. Set it up again.");
     return c;
   }
+  // ---- reconciling approvals ----
+  /**
+   * Agents worth asking, and the connections on each. A connection with somebody approved and
+   * nothing outstanding is left alone: the box would only confirm what we already have.
+   */
+  reconcileTargets() {
+    const out = /* @__PURE__ */ new Map();
+    const cutoff = this.now() - PENDING_APPROVAL_TTL_MS;
+    for (const [id, c] of Object.entries(this.store.connections)) {
+      if (!c.assignedVmId) continue;
+      const outstanding = (c.pendingApprovals ?? []).some((a) => Date.parse(a.at) > cutoff);
+      if (c.approvedSenders.length > 0 && !outstanding) continue;
+      out.set(c.assignedVmId, [...out.get(c.assignedVmId) ?? [], id]);
+    }
+    return out;
+  }
+  /**
+   * Read the boxes' own approved lists and merge them in. The box is the authority here: it ran
+   * the CLI, and it records a sender only once OpenClaw accepted it — so this can only ever add
+   * somebody who is genuinely approved on the agent, never invent one.
+   *
+   * Passes are serialised rather than shared: the timer, a `channels.push` and an approve that
+   * timed out can all want one at the same moment, and each caller has to learn what ITS pass
+   * found. Sharing one promise would hand a caller somebody else's answer — and, since both
+   * callers then report it, the same late approval twice. Merging is idempotent, so the second
+   * pass simply finds nothing new.
+   */
+  async reconcile(onlyVmId) {
+    const run = this.reconciling.then(
+      () => this.reconcileOnce(onlyVmId),
+      () => this.reconcileOnce(onlyVmId)
+    );
+    this.reconciling = run.catch(() => void 0);
+    return run;
+  }
+  async reconcileOnce(onlyVmId) {
+    const targets = this.reconcileTargets();
+    const out = [];
+    let changed = false;
+    for (const [vmId, connectionIds] of targets) {
+      if (onlyVmId && vmId !== onlyVmId) continue;
+      let approved;
+      try {
+        approved = parseApproved(await this.opts.agent.get(this.target(vmId), "/channels/approved"));
+      } catch (err) {
+        this.log(`[channels] could not read ${vmId} to reconcile approvals: ${err.message}`);
+        continue;
+      }
+      for (const id of connectionIds) {
+        const c = this.store.connections[id];
+        if (!c || c.assignedVmId !== vmId) continue;
+        const added = [];
+        for (const a of approved) {
+          if (a.type !== c.type) continue;
+          if (c.approvedSenders.some((s) => s.id === a.senderId)) continue;
+          const pending = (c.pendingApprovals ?? []).find((pa) => a.code !== null && pa.code === a.code || pa.senderId === a.senderId);
+          added.push({ type: c.type, id: a.senderId, label: pending?.label ?? null, at: a.at });
+        }
+        const kept = (c.pendingApprovals ?? []).filter(
+          (pa) => !approved.some((a) => a.type === c.type && (a.code !== null && a.code === pa.code || a.senderId === pa.senderId)) && Date.parse(pa.at) > this.now() - PENDING_APPROVAL_TTL_MS
+        );
+        if (added.length === 0 && kept.length === (c.pendingApprovals ?? []).length) continue;
+        c.approvedSenders.push(...added);
+        if (kept.length) c.pendingApprovals = kept;
+        else delete c.pendingApprovals;
+        changed = true;
+        if (added.length) {
+          out.push({ connectionId: id, vmId, type: c.type, senders: added });
+          this.log(`[channels] ${added.length} approved sender(s) on ${c.type} ${id} came from the agent's own record`);
+        }
+      }
+    }
+    if (changed) this.save();
+    return out;
+  }
+  report(recorded) {
+    for (const r of recorded) {
+      this.reports.push({
+        command_id: `channels.reconciled:${r.connectionId}`,
+        ok: true,
+        status: "applied",
+        message: "",
+        data: {
+          connectionId: r.connectionId,
+          vmId: r.vmId,
+          type: r.type,
+          senders: r.senders.map((s) => ({ id: s.id, label: s.label }))
+        }
+      });
+    }
+  }
+  notePendingApproval(c, pairing, at) {
+    const pending = { senderId: pairing.senderId, label: pairing.label, code: pairing.code, at };
+    const kept = (c.pendingApprovals ?? []).filter((pa) => pa.code !== pending.code);
+    c.pendingApprovals = [...kept, pending];
+  }
   // ---- commands ----
   async propose(payload) {
     const p = parseProposal(payload);
@@ -34122,7 +34336,7 @@ var ChannelsFirewall = class {
     if (routes.length === 0) {
       this.codes.drop(SCOPE);
       const applied = await this.apply(p);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+      return this.outcome({ ...data, ...applied, tofu: true });
     }
     const sent = await this.codes.send(SCOPE, p, "your organization's channels", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
@@ -34142,7 +34356,22 @@ var ChannelsFirewall = class {
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return this.outcome({ ...data, ...applied, summary: summarize(v.proposal), sentVia: v.sentVia, tofu: false });
+  }
+  /**
+   * What `apply` did, as a command result. Everything settles as applied except an approval the
+   * agent never answered: that is `unconfirmed`, which the console shows as still in progress and
+   * the reconcile finishes on its own. Calling it failed would be a lie — and the person would
+   * retry a code the box has already consumed.
+   */
+  outcome(data) {
+    if (data.unconfirmed !== true) return { ok: true, status: "applied", data };
+    return {
+      ok: true,
+      status: "unconfirmed",
+      message: "The agent has not confirmed this yet. If it approved them, it will show here within a minute.",
+      data
+    };
   }
   async cancel(payload) {
     const changeId = str(payload.changeId);
@@ -34169,6 +34398,7 @@ var ChannelsFirewall = class {
     }
     const name25 = this.store.agents[vmId]?.name ?? vmId;
     this.log(`[channels] re-applied ${applied.length} connection(s) on ${name25}${failed.length ? `, ${failed.length} failed` : ""}`);
+    this.report(await this.reconcile(vmId));
     return {
       ok: failed.length === 0,
       status: failed.length ? "failed" : "applied",
@@ -34224,6 +34454,7 @@ var ChannelsFirewall = class {
           hint: p.hint,
           label: p.label,
           approvedSenders: existing?.approvedSenders ?? [],
+          ...existing?.pendingApprovals?.length ? { pendingApprovals: existing.pendingApprovals } : {},
           assignedVmId: p.agent?.vmId ?? null,
           updatedAt: stamp
         };
@@ -34283,13 +34514,30 @@ var ChannelsFirewall = class {
       case "approve_pairing": {
         if (!p.pairing) throw new Error("no pairing in the proposal");
         const c = this.connection(p.connectionId);
-        if (!c.assignedVmId) throw new Error("This connection is not on an agent, so nobody can be approved on it.");
-        const r = await this.opts.agent.post(this.target(c.assignedVmId), "/channels/pairings/approve", { type: c.type, code: p.pairing.code });
+        const vmId = c.assignedVmId;
+        if (!vmId) throw new Error("This connection is not on an agent, so nobody can be approved on it.");
+        let r;
+        try {
+          r = await this.opts.agent.post(this.target(vmId), "/channels/pairings/approve", { type: c.type, code: p.pairing.code });
+        } catch (err) {
+          if (!isAgentTimeout(err)) throw err;
+          this.notePendingApproval(c, p.pairing, stamp);
+          this.save();
+          this.log(`[channels] ${c.type} approve on ${vmId} did not answer in time; asking the agent what it recorded`);
+          const recorded = await this.reconcile(vmId);
+          this.report(recorded.filter((rec) => rec.connectionId !== p.connectionId));
+          const landed = recorded.find((rec) => rec.connectionId === p.connectionId)?.senders.find((sndr) => sndr.id === p.pairing.senderId);
+          if (landed) return { approvedSender: `${landed.type}:${landed.label ?? landed.id}`, vmId, reconciled: true };
+          return { unconfirmed: true, vmId, senderId: p.pairing.senderId };
+        }
         const id = str(r.senderId) ?? p.pairing.senderId;
         const sender = { type: c.type, id, label: p.pairing.label, at: stamp };
         if (!c.approvedSenders.some((s) => s.id === sender.id)) c.approvedSenders.push(sender);
+        const kept = (c.pendingApprovals ?? []).filter((pa) => pa.code !== p.pairing.code && pa.senderId !== sender.id);
+        if (kept.length) c.pendingApprovals = kept;
+        else delete c.pendingApprovals;
         this.save();
-        return { approvedSender: `${sender.type}:${sender.label ?? sender.id}`, vmId: c.assignedVmId };
+        return { approvedSender: `${sender.type}:${sender.label ?? sender.id}`, vmId, ...r.alreadyApproved === true ? { alreadyApproved: true } : {} };
       }
       case "whatsapp_login": {
         if (!p.agent) throw new Error("no agent in the proposal");
@@ -34305,6 +34553,7 @@ var ChannelsFirewall = class {
           hint: null,
           label: p.label ?? existing?.label ?? null,
           approvedSenders: existing?.approvedSenders ?? [],
+          ...existing?.pendingApprovals?.length ? { pendingApprovals: existing.pendingApprovals } : {},
           assignedVmId: p.agent.vmId,
           updatedAt: stamp
         };
@@ -34346,7 +34595,7 @@ function saveDriveStore(path, store, boxKeyB64, ids2) {
 }
 
 // src/drive-tokens.ts
-var TIMEOUT_MS = 3e4;
+var TIMEOUT_MS2 = 3e4;
 var ASSERTION_TTL_SEC = 3600;
 var FATAL_OAUTH_ERRORS = /* @__PURE__ */ new Set(["invalid_grant", "invalid_client", "unauthorized_client", "invalid_scope", "access_denied"]);
 function isPermanentRefusal(status, body) {
@@ -34362,7 +34611,7 @@ function reasonOf(body, status) {
 }
 async function postForm(fetchImpl, url2, form) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS2);
   try {
     const res = await fetchImpl(url2, {
       method: "POST",
@@ -35813,7 +36062,7 @@ import { connect as tcpConnect } from "net";
 import { connect as tlsConnect } from "tls";
 var CHECK_SESSION = "__check";
 var DEFAULT_URL = "https://api.ipify.org/";
-var TIMEOUT_MS2 = 15e3;
+var TIMEOUT_MS3 = 15e3;
 function fail(socket, message2) {
   socket?.destroy();
   return { ok: false, exitIp: null, latencyMs: 0, error: message2.slice(0, 200) };
@@ -35874,22 +36123,22 @@ Proxy-Connection: keep-alive\r
 \r
 `
   );
-  const head = await readUntil(socket, (b) => b.includes("\r\n\r\n"), TIMEOUT_MS2);
+  const head = await readUntil(socket, (b) => b.includes("\r\n\r\n"), TIMEOUT_MS3);
   const status = head.subarray(0, head.indexOf("\r\n")).toString();
   if (!/^HTTP\/1\.[01] 2\d\d/.test(status)) throw new Error(`the exit refused the tunnel: ${status}`);
 }
 async function socks5Connect(socket, host, port, user, password) {
   socket.write(Buffer.from([5, 1, 2]));
-  const greeting = await readUntil(socket, (b) => b.length >= 2, TIMEOUT_MS2);
+  const greeting = await readUntil(socket, (b) => b.length >= 2, TIMEOUT_MS3);
   if (greeting[0] !== 5 || greeting[1] !== 2) throw new Error("the exit refused username/password auth");
   const u = Buffer.from(user, "utf8");
   const p = Buffer.from(password, "utf8");
   socket.write(Buffer.concat([Buffer.from([1, u.length]), u, Buffer.from([p.length]), p]));
-  const authReply = await readUntil(socket, (b) => b.length >= 2, TIMEOUT_MS2);
+  const authReply = await readUntil(socket, (b) => b.length >= 2, TIMEOUT_MS3);
   if (authReply[1] !== 0) throw new Error("the exit rejected the credential");
   const name25 = Buffer.from(host, "utf8");
   socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, name25.length]), name25, portBytes(port)]));
-  const reply = await readUntil(socket, socks5ReplyComplete, TIMEOUT_MS2);
+  const reply = await readUntil(socket, socks5ReplyComplete, TIMEOUT_MS3);
   if (reply[1] !== 0) throw new Error(`the exit refused the connection (reply ${reply[1]})`);
 }
 function socks5ReplyComplete(b) {
@@ -35919,7 +36168,7 @@ async function checkExit(upstream, render, opts = {}) {
   const host = url2.hostname;
   const port = Number(url2.port || 443);
   const session = opts.session === void 0 ? CHECK_SESSION : opts.session;
-  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS2;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS3;
   const user = render(upstream.usernameTemplate, upstream.username, "", session);
   const password = render(upstream.passwordTemplate, "", upstream.password, session);
   let socket = null;
@@ -36953,7 +37202,7 @@ function messageOf(err) {
 }
 
 // src/connector-runs.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync6, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync7, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname3 } from "path";
 var DEFAULT_BATCH = 50;
 function toRunRecord(run, vmId) {
@@ -37027,7 +37276,7 @@ var ConnectorRunShipper = class {
 function readState(path) {
   if (!existsSync5(path)) return { since: null };
   try {
-    const parsed = JSON.parse(readFileSync6(path, "utf8"));
+    const parsed = JSON.parse(readFileSync7(path, "utf8"));
     return { since: typeof parsed.since === "string" ? parsed.since : null };
   } catch {
     return { since: null };
@@ -38229,7 +38478,7 @@ var BackupFirewall = class {
 };
 
 // src/self-restore.ts
-import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync5, readFileSync as readFileSync7, readdirSync, renameSync as renameSync3, rmSync, statSync, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync5, readFileSync as readFileSync8, readdirSync, renameSync as renameSync3, rmSync, statSync, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname4, join } from "path";
 var ENC_PURPOSES = {
   "channels.enc": "channels",
@@ -38343,7 +38592,7 @@ var SelfRestore = class {
     const allowed = new Set(this.allowed());
     if (!allowed.has(certPath) || !allowed.has(keyPath)) return;
     if (staged.some((f) => f.path === certPath) && staged.some((f) => f.path === keyPath)) return;
-    const pem = readFileSync7(combined.staged, "utf8");
+    const pem = readFileSync8(combined.staged, "utf8");
     const key = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----\n?/.exec(pem)?.[0];
     const cert = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\n?/.exec(pem)?.[0];
     if (!key || !cert) {
@@ -38375,7 +38624,7 @@ var SelfRestore = class {
     const rollback = staged.map((file2) => {
       const stat2 = existsSync6(file2.path) ? statSync(file2.path) : null;
       const isFile = stat2?.isFile() === true;
-      return { path: file2.path, before: isFile ? readFileSync7(file2.path) : null, mode: isFile ? stat2.mode & 4095 : file2.mode };
+      return { path: file2.path, before: isFile ? readFileSync8(file2.path) : null, mode: isFile ? stat2.mode & 4095 : file2.mode };
     });
     try {
       this.opts.stopProxy?.();
@@ -38417,7 +38666,7 @@ var SelfRestore = class {
    * by it, so by the time a store is written the key that opens it is already in place.
    */
   rebind(file2, sourceBoxId) {
-    const bytes = readFileSync7(file2.staged);
+    const bytes = readFileSync8(file2.staged);
     const purpose = ENC_PURPOSES[basename(file2.path)];
     if (!purpose || sourceBoxId === this.opts.ids.boxId) return bytes;
     const boxKey = this.restoredBoxKey();
@@ -38433,7 +38682,7 @@ var SelfRestore = class {
   restoredBoxKey() {
     const path = this.allowed().find((p) => basename(p) === "box_key");
     if (!path || !existsSync6(path)) throw new Error("The restored box key is not in place, so the stores cannot be re-sealed.");
-    return readFileSync7(path, "utf8").trim();
+    return readFileSync8(path, "utf8").trim();
   }
   /**
    * The backup-key fingerprint this firewall now has: the old one. Read back from the file that was
@@ -38444,7 +38693,7 @@ var SelfRestore = class {
     if (!store) return null;
     try {
       const { orgId, boxId } = this.opts.ids;
-      const loaded2 = decryptJson(readFileSync7(store.path, "utf8"), this.restoredBoxKey(), `${orgId}:${boxId}:backup`);
+      const loaded2 = decryptJson(readFileSync8(store.path, "utf8"), this.restoredBoxKey(), `${orgId}:${boxId}:backup`);
       return loaded2.keypair?.publicKey ? await fingerprint(loaded2.keypair.publicKey) : null;
     } catch (error48) {
       this.log(`[backup] restored, but this box's own backup key could not be read back: ${error48.message}`);
@@ -38475,7 +38724,7 @@ var SelfRestore = class {
 };
 
 // src/self-update.ts
-import { readFileSync as readFileSync8 } from "fs";
+import { readFileSync as readFileSync9 } from "fs";
 import { spawn } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -38517,7 +38766,7 @@ var SelfUpdateService = class {
   conf() {
     let raw;
     try {
-      raw = readFileSync8(this.confPath, "utf8");
+      raw = readFileSync9(this.confPath, "utf8");
     } catch {
       return null;
     }
@@ -38553,7 +38802,7 @@ var SelfUpdateService = class {
   readState() {
     let raw;
     try {
-      raw = readFileSync8(this.statePath, "utf8");
+      raw = readFileSync9(this.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -38825,7 +39074,7 @@ var SshFirewall = class {
 // src/ssh-local.ts
 import { createHash as createHash2 } from "crypto";
 import { execFile } from "child_process";
-import { mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync9, rmSync as rmSync2, writeFileSync as writeFileSync7 } from "fs";
+import { mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync10, rmSync as rmSync2, writeFileSync as writeFileSync7 } from "fs";
 import { tmpdir } from "os";
 import { dirname as dirname5, join as join2 } from "path";
 var MIN_SECONDS = 5 * 60;
@@ -38881,8 +39130,8 @@ var SshLocal = class {
     let privateKey;
     try {
       await this.run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", `${MARK}-${input.grantId}`, "-f", path], KEYGEN_TIMEOUT_MS);
-      publicKey = readFileSync9(`${path}.pub`, "utf8").trim();
-      privateKey = readFileSync9(path, "utf8");
+      publicKey = readFileSync10(`${path}.pub`, "utf8").trim();
+      privateKey = readFileSync10(path, "utf8");
     } finally {
       rmSync2(dir, { recursive: true, force: true });
     }
@@ -38910,7 +39159,7 @@ var SshLocal = class {
     const path = this.opts.authorizedKeysPath;
     let current = "";
     try {
-      current = readFileSync9(path, "utf8");
+      current = readFileSync10(path, "utf8");
     } catch {
       current = "";
     }
@@ -38923,7 +39172,7 @@ ${publicKey}
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync9(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync10(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -39022,71 +39271,6 @@ var SshLoginWatcher = class {
     return records.length;
   }
 };
-
-// src/agent-client.ts
-import { readFileSync as readFileSync10 } from "fs";
-var AGENT_PATH_PREFIX = "/__cc/agent";
-var TIMEOUT_MS3 = 25e3;
-var BACKUP_TIMEOUT_MS = 60 * 6e4;
-function purposeForPath(path) {
-  if (path.startsWith("/llm/")) return "llm";
-  if (path.startsWith("/search/")) return "search";
-  if (path.startsWith("/connectors/")) return "connectors";
-  if (path === "/update" || path.startsWith("/update/")) return "update";
-  if (path.startsWith("/backup/")) return "backup";
-  if (path.startsWith("/ssh/")) return "ssh";
-  if (path.startsWith("/tailscale/")) return "tailscale";
-  if (path.startsWith("/drive/")) return "drive";
-  return "channels";
-}
-function makeAgentTokenSigner(keysDir, boxId) {
-  const read = (name25) => readFileSync10(`${keysDir}/${name25}`, "utf-8").trim();
-  return async (agentVmId, purpose = "channels") => {
-    const key = await importPKCS8(read("vm_private_key.pem"), "EdDSA");
-    return new SignJWT({ vmId: agentVmId, purpose, iss: boxId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
-  };
-}
-function makeAgentClient(opts) {
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS3;
-  const backupTimeoutMs = opts.backupTimeoutMs ?? BACKUP_TIMEOUT_MS;
-  async function request(agent, method, path, body) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), path.startsWith("/backup/") ? backupTimeoutMs : timeoutMs);
-    try {
-      const res = await fetchImpl(`https://${agent.hostname}${AGENT_PATH_PREFIX}${path}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${await opts.sign(agent.vmId, purposeForPath(path))}`,
-          ...body ? { "content-type": "application/json" } : {}
-        },
-        body: body ? JSON.stringify(body) : void 0,
-        signal: controller.signal
-      });
-      const text2 = await res.text();
-      let parsed = {};
-      try {
-        parsed = text2 ? JSON.parse(text2) : {};
-      } catch {
-        parsed = {};
-      }
-      if (!res.ok) {
-        const detail = typeof parsed.error === "string" ? parsed.error : text2.slice(0, 200);
-        throw new Error(res.status === 503 ? "The agent is not running. Start it and try again." : `agent ${res.status}: ${detail}`);
-      }
-      return parsed;
-    } catch (err) {
-      if (err.name === "AbortError") throw new Error("The agent did not answer in time.");
-      throw err;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  return {
-    post: (agent, path, body) => request(agent, "POST", path, body),
-    get: (agent, path) => request(agent, "GET", path)
-  };
-}
 
 // src/sync.ts
 import { writeFileSync as writeFileSync8, mkdirSync as mkdirSync7, renameSync as renameSync4 } from "fs";
@@ -99454,8 +99638,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "cbf8efa" : "unknown",
-  builtAt: true ? "2026-09-24T00:34:29+01:00" : "unknown"
+  commit: true ? "e69f2c4" : "unknown",
+  builtAt: true ? "2026-09-24T10:48:31+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -100062,7 +100246,13 @@ async function main() {
             return { ok: true, status: "done", message: `Scanned ${r.agents} agent(s), ${r.findings} finding(s).`, data: r };
           }
         },
-        extraResults: () => [...llm?.drainReports() ?? [], ...drive?.drainReports() ?? [], ...backups?.drainReports() ?? [], ...exitFirewall?.drainReports() ?? []],
+        extraResults: () => [
+          ...channels?.drainReports() ?? [],
+          ...llm?.drainReports() ?? [],
+          ...drive?.drainReports() ?? [],
+          ...backups?.drainReports() ?? [],
+          ...exitFirewall?.drainReports() ?? []
+        ],
         // What this firewall can do and how a run of it is going. The beat is the only way either
         // reaches the console: nothing can call in to this box.
         //
@@ -100105,6 +100295,11 @@ async function main() {
       void Promise.race([publishCa(), new Promise((r) => setTimeout(r, CA_PUBLISH_WAIT_MS).unref())]).then(() => control.tick()).catch((e) => console.error("[firewall] tick:", e.message));
     } else {
       void publishCa();
+    }
+    if (channels) {
+      const ch = channels;
+      setInterval(() => void ch.tick().catch((e) => console.error("[channels] reconcile:", e.message)), RECONCILE_INTERVAL_MS);
+      void ch.tick().catch((e) => console.error("[channels] reconcile:", e.message));
     }
     if (llm) {
       const l = llm;

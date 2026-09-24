@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "cbf8efa" : "unknown",
-  builtAt: true ? "2026-09-24T00:34:29+01:00" : "unknown"
+  commit: true ? "e69f2c4" : "unknown",
+  builtAt: true ? "2026-09-24T10:48:31+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -32437,7 +32437,8 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync5, readFileSync as readFileSync10 } from "fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname3 } from "path";
 import { randomUUID } from "crypto";
 
 // src/exec.ts
@@ -32469,13 +32470,18 @@ var PLUGIN_BY_CHANNEL = {
   slack: "@openclaw/slack",
   whatsapp: "@openclaw/whatsapp"
 };
-var APPROVE_TIMEOUT_MS = 3e4;
+var APPROVE_TIMEOUT_MS = 45e3;
 var LIST_TIMEOUT_MS = 2e4;
+var LIST_ATTEMPTS = 3;
+var LIST_RETRY_MS = [400, 1200];
+var APPROVED_CAP = 200;
+var APPROVE_LOOKUP_TIMEOUT_MS = 8e3;
 var PLUGIN_INSTALL_TIMEOUT_MS = 10 * 6e4;
 var PLUGIN_INSTALL_MAX_BUFFER = 8 * 1024 * 1024;
 var GATEWAY_READY_TIMEOUT_MS = 9e4;
 var GATEWAY_POLL_MS = 500;
 var PAIRINGS_CACHE_MS = 4e3;
+var PAIRINGS_ERROR_CACHE_MS = 1500;
 var WA_QR_TIMEOUT_MS = 12e4;
 var WA_QR_STALE_MS = 15e4;
 var WA_INSTALL_STALE_MS = 15 * 6e4;
@@ -32493,6 +32499,33 @@ function toPairing(type, r) {
   const meta = r.meta ?? {};
   const label = str2(meta.name) ?? str2(meta.displayName) ?? str2(meta.username) ?? str2(meta.title) ?? str2(r.label) ?? null;
   return { type, code, senderId, label, createdAt: str2(r.createdAt) };
+}
+function looksBusy(message) {
+  return /\b(EBUSY|EAGAIN|ECONNREFUSED|SQLITE_BUSY)\b|database is locked|gateway (is )?(not running|unavailable|starting|restarting)|connection refused|socket hang up/i.test(
+    message
+  );
+}
+function readChannelState(path) {
+  if (!path || !existsSync5(path)) return { version: 1, seededAt: null, approved: [] };
+  try {
+    const parsed = JSON.parse(readFileSync10(path, "utf8"));
+    const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
+    return {
+      version: 1,
+      seededAt: typeof parsed.seededAt === "string" ? parsed.seededAt : null,
+      approved: approved.filter(
+        (a) => !!a && typeof a.senderId === "string" && (typeof a.code === "string" || a.code === null) && CHANNEL_TYPES.includes(a.type)
+      )
+    };
+  } catch {
+    return { version: 1, seededAt: null, approved: [] };
+  }
+}
+function writeChannelState(path, state) {
+  mkdirSync3(dirname3(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync5(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync2(tmp, path);
 }
 function channelBlock(input) {
   if ("remove" in input) return null;
@@ -32516,11 +32549,14 @@ var ChannelsService = class {
     this.exec = opts.execImpl ?? defaultExec;
     this.log = opts.log ?? ((line) => console.log(line));
     this.now = opts.now ?? Date.now;
+    this.state = readChannelState(opts.statePath);
   }
   exec;
   log;
   now;
   pairingsCache = null;
+  /** Who this box has approved, as it saw it. Loaded once; written on every approval. */
+  state;
   /** Per-channel plugin-install progress, surfaced through `status()`. In memory only. */
   setup = /* @__PURE__ */ new Map();
   /** Single-flight per channel, so a repeated apply or a `channels.push` fan-out installs once. */
@@ -32534,6 +32570,88 @@ var ChannelsService = class {
     at: 0,
     personal: false
   };
+  /**
+   * Everyone this box has approved. The firewall reads this back to repair its own list, so it
+   * must not depend on the gateway or on the pairing listing — both of which fail exactly when a
+   * box is busy, which is when this matters. The one gateway call here is the seed, and it is
+   * best-effort and at most once.
+   */
+  async approved() {
+    await this.seed();
+    return this.state.approved;
+  }
+  recordApproved(type, senderId, code) {
+    const at = new Date(this.now()).toISOString();
+    const kept = this.state.approved.filter((a) => !(a.type === type && a.senderId === senderId));
+    kept.push({ type, senderId, code, at });
+    this.state = { ...this.state, approved: kept.slice(-APPROVED_CAP) };
+    this.persist();
+  }
+  /**
+   * Forget this box's approvals for a channel. Called when the channel is taken off the box, so a
+   * different connection put here later does not inherit the people the old one had approved —
+   * they were approved on a different bot.
+   */
+  forgetApproved(type) {
+    if (!this.state.approved.some((a) => a.type === type)) {
+      if (!this.state.seededAt) {
+        this.state = { ...this.state, seededAt: new Date(this.now()).toISOString() };
+        this.persist();
+      }
+      return;
+    }
+    this.state = {
+      ...this.state,
+      seededAt: this.state.seededAt ?? new Date(this.now()).toISOString(),
+      approved: this.state.approved.filter((a) => a.type !== type)
+    };
+    this.persist();
+    this.log(`[channels] forgot the approved ${type} senders: the channel was removed from this box`);
+  }
+  persist() {
+    if (!this.opts.statePath) return;
+    try {
+      writeChannelState(this.opts.statePath, this.state);
+    } catch (err) {
+      this.log(`[channels] could not write the channel state: ${err.message}`);
+    }
+  }
+  /**
+   * Boxes that approved somebody before this agent kept a record of it. OpenClaw writes the FIRST
+   * sender approved on a box into `commands.ownerAllowFrom` as `<channel>:<id>`
+   * (`bootstrapCommandOwnerFromPairing`, and only while that key is empty), so on such a box that
+   * one entry is the box's own evidence of an approval it made. Reading it back is what repairs a
+   * firewall whose approval was lost before any of this existed.
+   *
+   * Once, ever: `seededAt` is stamped whether or not anything was found, so a channel removed
+   * later cannot come back through a key OpenClaw never clears.
+   */
+  async seed() {
+    if (this.state.seededAt) return;
+    let config;
+    try {
+      config = await this.config();
+    } catch (err) {
+      this.log(`[channels] could not read the config to seed approved senders: ${err.message}`);
+      return;
+    }
+    const owners = config.commands?.ownerAllowFrom;
+    const channels2 = config.channels ?? {};
+    const found = [];
+    for (const raw of Array.isArray(owners) ? owners : []) {
+      const [type, ...rest] = String(raw).split(":");
+      const senderId = rest.join(":");
+      if (!senderId || !CHANNEL_TYPES.includes(type ?? "") || !bool(channels2[type]?.enabled)) continue;
+      found.push({ type, senderId, code: null, at: new Date(this.now()).toISOString() });
+    }
+    this.state = {
+      version: 1,
+      seededAt: new Date(this.now()).toISOString(),
+      approved: [...this.state.approved, ...found.filter((f) => !this.state.approved.some((a) => a.type === f.type && a.senderId === f.senderId))].slice(-APPROVED_CAP)
+    };
+    this.persist();
+    if (found.length) this.log(`[channels] ${found.length} approved sender(s) read out of this agent's own config`);
+  }
   gateway() {
     const c = this.opts.client;
     if (!c || !c.connected) throw new Error("OpenClaw is not running on this box");
@@ -32547,30 +32665,62 @@ var ChannelsService = class {
    * (the SQLite store), plus whatever an older gateway left in the pairing files.
    */
   async pairings(types) {
+    return (await this.pairingsRead(types)).pairings;
+  }
+  /**
+   * The listing plus why it is short, when it is. The error matters: an empty list and a listing
+   * that could not be taken look the same to the console, and the console says "No pending
+   * requests" for both — which is how a person ends up waiting for a request that is right there.
+   */
+  async pairingsRead(types) {
     const key = [...types].sort().join(",");
     const cached = this.pairingsCache;
-    if (cached && cached.key === key && this.now() - cached.at < PAIRINGS_CACHE_MS) return cached.value;
-    const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
+    const fresh = this.opts.pairingsCacheMs ?? PAIRINGS_CACHE_MS;
+    const ttl = cached?.error ? Math.min(PAIRINGS_ERROR_CACHE_MS, fresh) : fresh;
+    if (cached && cached.key === key && this.now() - cached.at < ttl) return { pairings: cached.value, error: cached.error };
+    const failures = [];
     const fromCli = await Promise.all(
       types.map(async (type) => {
-        try {
-          const { stdout } = await this.exec(bin, ["pairing", "list", type, "--json"], LIST_TIMEOUT_MS);
-          const start = stdout.indexOf("{");
-          const parsed = JSON.parse(stdout.slice(start));
-          const requests = Array.isArray(parsed) ? parsed : parsed.requests ?? [];
-          return requests.map((r) => toPairing(type, r)).filter((p) => p !== null);
-        } catch (err) {
-          this.log(`[channels] pairing list ${type} failed: ${(err.message ?? "").split("\n")[0]}`);
-          return [];
-        }
+        const r = await this.listPairings(type);
+        if (r.error) failures.push(r.error);
+        return r.pairings;
       })
     );
     const out = fromCli.flat();
     for (const legacy of this.pairingsFromFiles()) {
       if (!out.some((p) => p.type === legacy.type && p.senderId === legacy.senderId)) out.push(legacy);
     }
-    this.pairingsCache = { at: this.now(), key, value: out };
-    return out;
+    const error = failures.find((f) => !f.busy) ?? failures[0] ?? null;
+    this.pairingsCache = { at: this.now(), key, value: out, error };
+    return { pairings: out, error };
+  }
+  /**
+   * One channel's pending requests, retried: right after a `config.patch` the gateway is
+   * restarting and the CLI simply exits non-zero for a second or two. Reported on production as
+   * repeated "Command failed" from `pairing list telegram --json` minutes after a token apply,
+   * with the same command working again afterwards.
+   */
+  async listPairings(type) {
+    const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
+    let last = "";
+    for (let attempt = 0; attempt < LIST_ATTEMPTS; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, LIST_RETRY_MS[attempt - 1] ?? 1e3));
+      try {
+        const { stdout } = await this.exec(bin, ["pairing", "list", type, "--json"], LIST_TIMEOUT_MS);
+        const start = stdout.indexOf("{");
+        const parsed = JSON.parse(stdout.slice(start));
+        const requests = Array.isArray(parsed) ? parsed : parsed.requests ?? [];
+        return { pairings: requests.map((r) => toPairing(type, r)).filter((p) => p !== null), error: null };
+      } catch (err) {
+        last = execFailureLine(err);
+      }
+    }
+    const busy = !this.opts.client?.connected || looksBusy(last);
+    this.log(`[channels] pairing list ${type} failed after ${LIST_ATTEMPTS} tries: ${last}`);
+    return {
+      pairings: [],
+      error: busy ? { busy: true, message: `The agent is busy right now, so who is waiting on ${type} could not be read.` } : { busy: false, message: `The agent could not list who is waiting on ${type}: ${last}` }
+    };
   }
   /** Older gateways (before 2026.9) kept pending requests in `<channel>-pairing.json`. */
   pairingsFromFiles() {
@@ -32620,7 +32770,8 @@ var ChannelsService = class {
     }
     const wa = this.whatsappLogin();
     const configured = Object.keys(channels2).filter((t) => channels2[t]?.configured);
-    return { channels: channels2, pairings: await this.pairings(configured), whatsappLogin: wa.state === "idle" ? null : { state: wa.state } };
+    const read = await this.pairingsRead(configured);
+    return { channels: channels2, pairings: read.pairings, pairingsError: read.error, whatsappLogin: wa.state === "idle" ? null : { state: wa.state } };
   }
   /**
    * `config.get` for the hash, then `config.patch` with one channel block (or its removal).
@@ -32637,6 +32788,7 @@ var ChannelsService = class {
     await this.patchConfig(patch);
     const what = block ? `applied ${input.type}` : `removed ${input.type}`;
     this.log(`[channels] ${what}`);
+    if (!block) this.forgetApproved(input.type);
     if (block) void this.ensurePlugin(input.type);
     return { ok: true, message: what };
   }
@@ -32825,9 +32977,30 @@ var ChannelsService = class {
     this.log(`[channels] sent a message on ${input.type}`);
     return { ok: true };
   }
-  /** `openclaw pairing approve <channel> <code>`; OpenClaw has no RPC for this. */
+  /**
+   * `openclaw pairing approve <channel> <code>`.
+   *
+   * Since 2026.9 OpenClaw also has `channels.pairing.approve` over the gateway, which would skip
+   * a whole Node process (most of the 28 s this route is budgeted for). It is not a drop-in: it is
+   * keyed by `requestId`, and its `channels.pairing.list` does not return the pairing code the
+   * console shows people, so both listings would be needed. Worth doing, on a real box.
+   *
+   * Idempotent on the code. The firewall may ask twice — its first call timed out, or it restarted
+   * mid-change — and by then OpenClaw has dropped the request, so the CLI answers "No pending
+   * pairing", which is also what a made-up code gets. The state file tells the two apart: a code
+   * this box already approved is answered from the record, with `alreadyApproved` so the caller
+   * knows nothing ran.
+   *
+   * The sender is recorded BEFORE this returns, so a caller that never sees the answer can still
+   * read it back from `/channels/status`.
+   */
   async approvePairing(input) {
-    const before = (await this.pairings([input.type])).find((p) => p.type === input.type && p.code === input.code);
+    const known = this.state.approved.find((a) => a.type === input.type && a.code === input.code);
+    if (known) {
+      this.log(`[channels] ${input.type} sender ${known.senderId} was already approved with this code`);
+      return { ok: true, senderId: known.senderId, alreadyApproved: true };
+    }
+    const before = (this.pairingsCache?.value ?? []).find((p) => p.type === input.type && p.code === input.code) ?? await this.lookupPairing(input.type, input.code);
     const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
     let approvedId = null;
     try {
@@ -32840,8 +33013,19 @@ var ChannelsService = class {
     }
     this.pairingsCache = null;
     const senderId = before?.senderId ?? approvedId;
+    if (senderId) this.recordApproved(input.type, senderId, input.code);
     this.log(`[channels] approved ${input.type} sender ${senderId ?? "?"}`);
     return { ok: true, senderId };
+  }
+  /** One listing, short and optional: it only tells us whose code this is. */
+  async lookupPairing(type, code) {
+    try {
+      const { stdout } = await this.exec(this.bin(), ["pairing", "list", type, "--json"], APPROVE_LOOKUP_TIMEOUT_MS);
+      const parsed = JSON.parse(stdout.slice(stdout.indexOf("{")));
+      return (parsed.requests ?? []).map((r) => toPairing(type, r)).find((p) => p !== null && p.code === code);
+    } catch {
+      return void 0;
+    }
   }
   whatsappLogin() {
     const l = this.waLogin;
@@ -32928,7 +33112,8 @@ function fail(res, err) {
 }
 async function handleChannels(req, res, pathname, service) {
   const write = req.method === "POST";
-  const auth = write ? await verifyMitmRequest(req) : await verifyMitmRequest(req) ?? await verifyRequest(req);
+  const mitm = await verifyMitmRequest(req);
+  const auth = write ? mitm : mitm ?? await verifyRequest(req);
   if (!auth) {
     sendJson(res, 401, { error: write ? "channel changes must come from the org firewall" : "Unauthorized" });
     return;
@@ -32940,6 +33125,11 @@ async function handleChannels(req, res, pathname, service) {
   try {
     if (pathname === "/channels/status" && req.method === "GET") {
       sendJson(res, 200, await service.status());
+      return;
+    }
+    if (pathname === "/channels/approved" && req.method === "GET") {
+      if (!mitm) return sendJson(res, 403, { error: "who this agent has approved is the org firewall's to read" });
+      sendJson(res, 200, { approved: await service.approved() });
       return;
     }
     if (pathname === "/channels/whatsapp/login" && req.method === "GET") {
@@ -33496,8 +33686,8 @@ async function handleSearch(req, res, url2, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync11, renameSync as renameSync2, unlinkSync, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname3 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, unlinkSync, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname4 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
 var RELAYED = [/^\/mcp$/, /^\/mcp\/tools$/, /^\/v1\/health$/, /^\/v1\/apps(\/|$)/, /^\/v1\/actions(\/|$)/, /^\/v1\/proxy\//];
@@ -33662,10 +33852,10 @@ function readState(path) {
   }
 }
 function writeState(path, state) {
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname4(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync5(tmp, JSON.stringify(state), { mode: 384 });
-  renameSync2(tmp, path);
+  writeFileSync6(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync3(tmp, path);
 }
 function cliEnvContents(relayUrl, token) {
   return [
@@ -33677,10 +33867,10 @@ function cliEnvContents(relayUrl, token) {
   ].join("\n");
 }
 function writeCliEnv(path, relayUrl, token) {
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname4(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync5(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
-  renameSync2(tmp, path);
+  writeFileSync6(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
+  renameSync3(tmp, path);
 }
 function removeFile(path) {
   try {
@@ -33759,8 +33949,8 @@ async function handleConnectors(req, res, url2, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync12, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname4 } from "path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname5 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
 var MAX_MOUNTS = 8;
@@ -33807,10 +33997,10 @@ function parseApply4(body) {
   return { placeholder, scope, connected: body.connected === true, defaults, mounts };
 }
 function writeAtomic(path, body, mode) {
-  mkdirSync4(dirname4(path), { recursive: true });
+  mkdirSync5(dirname5(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync6(tmp, body, { mode });
-  renameSync3(tmp, path);
+  writeFileSync7(tmp, body, { mode });
+  renameSync4(tmp, path);
 }
 var DriveService = class {
   constructor(opts) {
@@ -34125,7 +34315,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname as dirname5, join as join5 } from "path";
+import { dirname as dirname6, join as join5 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -34631,7 +34821,7 @@ var BackupService = class {
         takenAt: manifest.takenAt
       };
     } finally {
-      if (spool) await rm(dirname5(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (spool) await rm(dirname6(spool), { recursive: true, force: true }).catch(() => void 0);
       this.busy = null;
     }
   }
@@ -34715,7 +34905,7 @@ var BackupService = class {
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
             continue;
           }
-          await mkdir(dirname5(abs), { recursive: true, mode: 448 });
+          await mkdir(dirname6(abs), { recursive: true, mode: 448 });
           if (e.type === "link") {
             await symlink(e.target ?? "", abs).catch(() => void 0);
             continue;
@@ -34851,7 +35041,7 @@ async function swapDirectory(opts) {
       );
       if (!exists2) continue;
       await rm(to, { recursive: true, force: true });
-      await mkdir(dirname5(to), { recursive: true, mode: 448 });
+      await mkdir(dirname6(to), { recursive: true, mode: 448 });
       await rename(from, to);
       moved.push({ from, to });
     }
@@ -35008,7 +35198,7 @@ async function handleBackup(req, res, url2, service) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID2 } from "crypto";
-import { basename, dirname as dirname6, join as join6, resolve, sep } from "path";
+import { basename, dirname as dirname7, join as join6, resolve, sep } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -35159,7 +35349,7 @@ async function realpathLenient(path) {
       const real = await realpath(cursor);
       return missing.length ? join6(real, ...missing.reverse()) : real;
     } catch {
-      const parent = dirname6(cursor);
+      const parent = dirname7(cursor);
       if (parent === cursor) return resolve(path);
       missing.push(basename(cursor));
       cursor = parent;
@@ -35260,7 +35450,7 @@ var FilesService = class {
     }
     const name = basename(normalized);
     if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
-    const parentRel = dirname6(normalized) === "." ? "" : dirname6(normalized);
+    const parentRel = dirname7(normalized) === "." ? "" : dirname7(normalized);
     const parent = await this.resolveExisting(parentRel);
     const st = await stat2(parent.abs).catch(() => null);
     if (!st?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
@@ -35731,9 +35921,9 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync5, mkdtempSync, readFileSync as readFileSync14, rmSync, writeFileSync as writeFileSync7 } from "fs";
+import { mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync14, rmSync, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname7, join as join7 } from "path";
+import { dirname as dirname8, join as join7 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -35842,8 +36032,8 @@ var SshAccessService = class {
     if (publicKey) next += `# ${markerFor(grantId)} until ${endsAt}
 ${publicKey}
 `;
-    mkdirSync5(dirname7(path), { recursive: true, mode: 448 });
-    writeFileSync7(path, next, { mode: 384 });
+    mkdirSync6(dirname8(path), { recursive: true, mode: 448 });
+    writeFileSync8(path, next, { mode: 384 });
   }
   readState() {
     try {
@@ -35860,8 +36050,8 @@ ${publicKey}
     }
   }
   writeState(state) {
-    mkdirSync5(dirname7(this.opts.statePath), { recursive: true });
-    writeFileSync7(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    mkdirSync6(dirname8(this.opts.statePath), { recursive: true });
+    writeFileSync8(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -36358,6 +36548,7 @@ server.listen(PORT, BIND, () => {
   channels = new ChannelsService({
     client,
     credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`,
+    statePath: `${STATE_DIR}/channels.json`,
     restartService: () => runAction("restart"),
     mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt`
   });
