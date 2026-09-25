@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "unknown" : "unknown",
-  builtAt: true ? "2026-09-25T06:59:23.412Z" : "unknown"
+  commit: true ? "791d3c6" : "unknown",
+  builtAt: true ? "2026-09-25T16:07:24+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -34102,11 +34102,15 @@ function parseApply4(body) {
   const d = body.defaults ?? {};
   const defaults = {
     exportFormats: typeof d.exportFormats === "string" ? d.exportFormats : "docx,xlsx,pdf",
+    // Default true: a Google-native file reads as 0 bytes through the mount (measured 2026-09-24),
+    // and an older firewall that does not send the flag should still hide them rather than serve
+    // empty files an agent would treat as the document.
+    skipGdocs: d.skipGdocs !== false,
     vfsCacheMaxSize: typeof d.vfsCacheMaxSize === "string" ? d.vfsCacheMaxSize : "2G",
     vfsCacheMinFreeSpace: typeof d.vfsCacheMinFreeSpace === "string" ? d.vfsCacheMinFreeSpace : "4G"
   };
   for (const [key, value] of Object.entries(defaults)) {
-    if (!SETTING_RE.test(value)) return `defaults.${key} has characters that cannot go on a command line`;
+    if (typeof value === "string" && !SETTING_RE.test(value)) return `defaults.${key} has characters that cannot go on a command line`;
   }
   if (!Array.isArray(body.mounts)) return "mounts must be an array";
   const raw = body.mounts;
@@ -34236,6 +34240,29 @@ var DriveService = class {
     }
   }
   /**
+   * How many queued writes have already been refused and are waiting to be tried again.
+   *
+   * Keyed off "has been attempted and is not attempting now", not off `tries > 1`: rclone counts an
+   * attempt as it starts, so an item whose first upload was refused sits in its backoff at
+   * `tries === 1` — and the backoff starts in seconds and doubles, so for the whole first window a
+   * folder nothing can be written to would still have read as merely busy.
+   */
+  async failing(port) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), RC_TIMEOUT_MS);
+    try {
+      const res = await this.fetchImpl(`http://127.0.0.1:${port}/vfs/queue`, { method: "POST", signal: controller.signal });
+      if (!res.ok) return null;
+      const body = await res.json();
+      if (!Array.isArray(body.queue)) return null;
+      return body.queue.filter((q) => typeof q.tries === "number" && q.tries >= 1 && q.uploading !== true).length;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  /**
    * What the heartbeat carries. Every mount is reported even when its rclone is not answering:
    * "mounted, but I cannot ask it anything" is the state a customer most needs to see, and
    * dropping the row would read as "this folder is gone".
@@ -34247,6 +34274,7 @@ var DriveService = class {
     const mounts = await Promise.all(
       state.mounts.map(async (m) => {
         const stats = m.mounted ? await this.stats(m.rcPort) : null;
+        const failing = m.mounted && stats && stats.uploadsQueued > 0 ? await this.failing(m.rcPort) : stats ? 0 : null;
         return {
           name: m.name,
           mode: modes.get(m.name) ?? null,
@@ -34254,6 +34282,7 @@ var DriveService = class {
           active: m.active,
           cacheBytes: stats?.bytesUsed ?? null,
           queuedUploads: stats?.uploadsQueued ?? null,
+          failingUploads: failing,
           erroredFiles: stats?.erroredFiles ?? null,
           outOfSpace: stats?.outOfSpace ?? null,
           // Only silent when the organisation has no Google connection: then every folder is

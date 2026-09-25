@@ -31255,7 +31255,7 @@ var require_dist = __commonJS({
 // src/index.ts
 import { createServer as createServer3 } from "http";
 import { execSync as execSync2 } from "child_process";
-import { readFileSync as readFileSync18, writeFileSync as writeFileSync12 } from "fs";
+import { readFileSync as readFileSync19, writeFileSync as writeFileSync12 } from "fs";
 
 // ../secret-store/dist/index.js
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
@@ -33873,6 +33873,12 @@ function makeAgentClient(opts) {
 import { createHash, randomInt, timingSafeEqual } from "crypto";
 var CODE_TTL_MS = 10 * 6e4;
 var CODE_ATTEMPTS = 5;
+var DEV_SENDER_TYPE = "dev";
+var DEV_SENDER = Object.freeze({
+  type: DEV_SENDER_TYPE,
+  id: DEV_SENDER_TYPE,
+  label: "the control plane (dev build)"
+});
 function codeMessage(agentName, summary, code) {
   const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
   return `ControlClaw: confirm this change to ${agentName}?
@@ -33905,6 +33911,15 @@ var ConsentCodes = class {
     let lastError = "";
     for (const route of routes) {
       for (const sender of route.senders) {
+        if (sender === DEV_SENDER) {
+          this.log(`[codes] dev build: ${summary} \u2014 the code goes to the control plane, not to a person`);
+          sentVia = `${DEV_SENDER_TYPE}:${code}`;
+          break;
+        }
+        if (sender.type === DEV_SENDER_TYPE) {
+          this.log("[codes] ignoring a sender that claims the dev type but is not the dev route");
+          continue;
+        }
         try {
           await this.opts.agent.post(route.target, "/channels/send", { type: sender.type, to: sender.id, text: text2 });
           sentVia = `${sender.type}:${sender.label ?? sender.id}`;
@@ -34037,6 +34052,7 @@ function saveChannelStore(path, store, boxKeyB64, ids2) {
 // src/channels.ts
 var SCOPE = "org";
 var NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
+var DEV_TARGET = { vmId: "dev", hostname: "dev" };
 var PENDING_APPROVAL_TTL_MS = 15 * 6e4;
 var RECONCILE_INTERVAL_MS = 6e4;
 function named(type, label) {
@@ -34148,6 +34164,9 @@ var ChannelsFirewall = class {
         continue;
       }
       out.push({ target, senders: c.approvedSenders, agentName: this.store.agents[c.assignedVmId]?.name ?? c.assignedVmId });
+    }
+    if (this.opts.devConsent?.()) {
+      out.push({ target: DEV_TARGET, senders: [DEV_SENDER], agentName: "this firewall" });
     }
     return out;
   }
@@ -34603,6 +34622,34 @@ function isPermanentRefusal(status, body) {
   const code = typeof body.error === "string" ? body.error : "";
   return FATAL_OAUTH_ERRORS.has(code);
 }
+var FATAL_DRIVE_REASONS = /* @__PURE__ */ new Set([
+  "accessNotConfigured",
+  "forbidden",
+  "insufficientFilePermissions",
+  "insufficientPermissions",
+  "authError",
+  "unauthorized",
+  "domainPolicy"
+]);
+var TRANSIENT_DRIVE_REASONS = /* @__PURE__ */ new Set([
+  "rateLimitExceeded",
+  "userRateLimitExceeded",
+  "dailyLimitExceeded",
+  "quotaExceeded",
+  "backendError",
+  "RESOURCE_EXHAUSTED",
+  "UNAVAILABLE"
+]);
+function isPermanentDriveRefusal(status, body) {
+  if (status === 401) return true;
+  if (status !== 403) return false;
+  const e = body.error;
+  const reason = e?.errors?.[0]?.reason ?? "";
+  const grpc = e?.status ?? "";
+  if (TRANSIENT_DRIVE_REASONS.has(reason) || TRANSIENT_DRIVE_REASONS.has(grpc)) return false;
+  if (FATAL_DRIVE_REASONS.has(reason) || grpc === "PERMISSION_DENIED") return true;
+  return /has not been used in project|is disabled|has not been enabled/i.test(e?.message ?? "");
+}
 function str2(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
@@ -34685,6 +34732,67 @@ var OAuthTokenSource = class {
     };
   }
 };
+async function probeDrive(token, fetchImpl = fetch) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS2);
+  try {
+    const res = await fetchImpl("https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id)", {
+      headers: { authorization: `Bearer ${token}` },
+      signal: controller.signal
+    });
+    if (res.ok) return { ok: true };
+    const body = await res.json().catch(() => ({}));
+    const message2 = body.error?.message ?? `Drive answered ${res.status}`;
+    return { ok: false, permanent: isPermanentDriveRefusal(res.status, body), reason: ensureSentence(message2.split(" If you enabled")[0].trim()) };
+  } catch (err) {
+    return { ok: false, permanent: false, reason: err.name === "AbortError" ? "Google did not answer in time." : err.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function probeFolderWrite(token, folderId, fetchImpl = fetch) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS2);
+  try {
+    const boundary = "cc-write-check";
+    const metadata = JSON.stringify({ name: ".controlclaw-write-check", parents: [folderId] });
+    const res = await fetchImpl("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": `multipart/related; boundary=${boundary}` },
+      body: `--${boundary}\r
+Content-Type: application/json; charset=UTF-8\r
+\r
+${metadata}\r
+--${boundary}\r
+Content-Type: text/plain\r
+\r
+x\r
+--${boundary}--`,
+      signal: controller.signal
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message2 = body.error?.message ?? `Drive refused the write with ${res.status}.`;
+      return { ok: false, reason: ensureSentence(message2.split(" Leverage shared drives")[0].trim()) };
+    }
+    if (!body.id) {
+      return { ok: false, reason: `Drive answered ${res.status} without creating the file.` };
+    }
+    void fetchImpl(`https://www.googleapis.com/drive/v3/files/${body.id}?supportsAllDrives=true`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS2)
+    }).catch(() => void 0);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err.name === "AbortError" ? "Google did not answer in time." : err.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function ensureSentence(text2) {
+  return /[.!?]$/.test(text2) ? text2 : `${text2}.`;
+}
 function tokenSourceFor(account, fetchImpl = fetch) {
   return account.kind === "service_account" ? new ServiceAccountTokenSource(fetchImpl) : new OAuthTokenSource(fetchImpl);
 }
@@ -34692,6 +34800,7 @@ function tokenSourceFor(account, fetchImpl = fetch) {
 // src/drive.ts
 var DRIVE_REFRESH_AHEAD_MS = 15 * 6e4;
 var SCOPE2 = "org";
+var DRIVE_SKIP_GDOCS = true;
 var DRIVE_EXPORT_FORMATS = "docx,xlsx,pdf";
 var DRIVE_VFS_CACHE_MAX_SIZE = "2G";
 var DRIVE_VFS_CACHE_MIN_FREE_SPACE = "4G";
@@ -35008,6 +35117,7 @@ var DriveFirewall = class {
       connected: !!account?.access && !account.failed,
       defaults: {
         exportFormats: DRIVE_EXPORT_FORMATS,
+        skipGdocs: DRIVE_SKIP_GDOCS,
         vfsCacheMaxSize: DRIVE_VFS_CACHE_MAX_SIZE,
         vfsCacheMinFreeSpace: DRIVE_VFS_CACHE_MIN_FREE_SPACE
       },
@@ -35048,6 +35158,9 @@ var DriveFirewall = class {
         };
         const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
         if (!minted.ok) throw new Error(`Google refused this connection: ${minted.reason}`);
+        const reachable = await probeDrive(minted.token, this.fetchImpl);
+        if (!reachable.ok && reachable.permanent) throw new Error(`The key works, but Drive does not answer for it: ${reachable.reason}`);
+        if (!reachable.ok) this.log(`[drive] Drive did not answer the check (${reachable.reason}); storing the connection anyway`);
         account.access = { token: minted.token, expires: minted.expires };
         if (minted.secret) account.secret = minted.secret;
         if (minted.accountLabel !== void 0 && minted.accountLabel !== null) account.accountLabel = minted.accountLabel;
@@ -35074,6 +35187,7 @@ var DriveFirewall = class {
         if (!p.folder) throw new Error("the proposal is missing the folder");
         const account = this.theAccount();
         if (!account) throw new Error("Connect a Google account before adding folders.");
+        await this.assertWritable(p.folder, account.account);
         const before = this.agentsOf(p.folder.id);
         const kept = this.store.folders[p.folder.id]?.agents ?? [];
         for (const a of p.agents) this.agentOf(a);
@@ -35091,6 +35205,10 @@ var DriveFirewall = class {
         if (!p.folder) throw new Error("the proposal is missing the folder");
         const f = this.store.folders[p.folder.id];
         if (!f) throw new Error("That folder is not set up on the firewall. Add it again.");
+        if (p.folder.mode === "rw" && f.mode !== "rw") {
+          const account = this.theAccount();
+          if (account) await this.assertWritable(p.folder, account.account);
+        }
         const before = [...f.agents];
         f.name = p.folder.name;
         f.mode = p.folder.mode;
@@ -35123,6 +35241,30 @@ var DriveFirewall = class {
         f.updatedAt = new Date(this.now()).toISOString();
         return this.finish(p, before);
       }
+    }
+  }
+  /**
+   * Refuse a read-write folder the identity cannot actually write to, with Google's own reason.
+   * Editor permission is not enough — see `probeFolderWrite`. Read-only folders are not probed:
+   * nothing about them can fail this way, and the probe would create a file to prove it.
+   */
+  async assertWritable(folder, account) {
+    if (folder.mode !== "rw") return;
+    if (account.failed) throw new Error("This Google connection is not working. Connect the account again, then add the folder.");
+    let token = account.access && account.access.expires - this.now() > 6e4 ? account.access.token : null;
+    if (!token) {
+      const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
+      if (!minted.ok) throw new Error(`Google would not give this connection a token: ${minted.reason}`);
+      const id = Object.entries(this.store.accounts).find(([, a]) => a === account)?.[0];
+      if (id) this.record(id, account, minted);
+      else account.access = { token: minted.token, expires: minted.expires };
+      token = minted.token;
+    }
+    const can = await probeFolderWrite(token, folder.folderId, this.fetchImpl);
+    if (!can.ok) {
+      throw new Error(
+        `${folder.name} cannot be mounted read-write. ${can.reason} A service account has no storage of its own, so it can only write to a folder on a shared drive, or with domain-wide delegation. Mount it read-only instead.`
+      );
     }
   }
   agentsOf(folderRowId) {
@@ -99889,8 +100031,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "unknown" : "unknown",
-  builtAt: true ? "2026-09-25T06:59:24.813Z" : "unknown"
+  commit: true ? "791d3c6" : "unknown",
+  builtAt: true ? "2026-09-25T16:07:24+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -99960,7 +100102,32 @@ async function reportReady() {
   console.error(`[ready] gave up after ${maxAttempts} attempts`);
 }
 
+// src/provenance.ts
+import { readFileSync as readFileSync18 } from "fs";
+var PROVENANCE_PATH = "/etc/controlclaw/provenance";
+var DEV_CONSENT_REPOS = ["https://github.com/madarco/controlclaw-ansible-test.git"];
+function sameRepo(a, b) {
+  const norm = (u) => u.trim().toLowerCase().replace(/^(?:[^@/]+@)?([^:/]+):(?!\/)/, "$1/").replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/^[^@/]+@/, "").replace(/\.git$/, "").replace(/\/+$/, "");
+  return norm(a) === norm(b);
+}
+function ansibleOrigin(path = PROVENANCE_PATH) {
+  let text2;
+  try {
+    text2 = readFileSync18(path, "utf-8");
+  } catch {
+    return null;
+  }
+  const line = text2.split("\n").find((l) => l.startsWith("ANSIBLE_ORIGIN="));
+  const value = line?.slice("ANSIBLE_ORIGIN=".length).trim();
+  return value ? value : null;
+}
+function devConsentAllowed(path = PROVENANCE_PATH) {
+  const origin = ansibleOrigin(path);
+  return !!origin && DEV_CONSENT_REPOS.some((repo) => sameRepo(origin, repo));
+}
+
 // src/index.ts
+var DEV_CONSENT = devConsentAllowed();
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 var BOX_KEY_PATH = process.env.BOX_KEY_PATH ?? `${KEYS_DIR2}/box_key`;
@@ -100131,6 +100298,11 @@ async function main() {
     process.exit(0);
   }
   if (!STORE_URL) die("STORE_URL is required");
+  if (DEV_CONSENT) {
+    console.warn(
+      `[mitm-agent] DEV BUILD (ansible origin ${ansibleOrigin()}) \u2014 a confirmation code with no approved sender to reach is handed back to the control plane instead`
+    );
+  }
   ensureVmKeypair(KEYS_DIR2);
   await registerPublicKey(KEYS_DIR2);
   let boxKey;
@@ -100148,7 +100320,8 @@ async function main() {
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
         identities: () => identities,
         placeholderSwap: CHANNELS_PLACEHOLDER_SWAP,
-        onCredentialsChanged: () => runSync(boxKey)
+        onCredentialsChanged: () => runSync(boxKey),
+        devConsent: () => DEV_CONSENT
       });
       const cs = channels.summary();
       console.log(`[mitm-agent] channel store loaded (${cs.length} connection(s), ${cs.filter((c) => c.assignedVmId).length} assigned, placeholder swap ${CHANNELS_PLACEHOLDER_SWAP ? "on" : "off"})`);
@@ -100323,7 +100496,7 @@ async function main() {
     process.exit(0);
   }
   try {
-    setSaasPublicKey(readFileSync18(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+    setSaasPublicKey(readFileSync19(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
   } catch (err) {
     die(`failed to load SaaS public key: ${err.message}`);
   }
@@ -100427,7 +100600,7 @@ async function main() {
     const publishCa = async () => {
       if (!CA_CERT_PATH || !CA_URL || !getToken) return;
       try {
-        const caCert = readFileSync18(CA_CERT_PATH, "utf8");
+        const caCert = readFileSync19(CA_CERT_PATH, "utf8");
         const caSig = signDetached(KEYS_DIR2, caCert);
         const res = await fetch(CA_URL, {
           method: "POST",
