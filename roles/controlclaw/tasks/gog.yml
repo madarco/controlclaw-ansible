@@ -109,14 +109,6 @@
 # installed, stopped, and holding no configuration at all.
 # ---------------------------------------------------------------------------
 
-- name: Gmail push | The directory the watcher's environment file lives in
-  ansible.builtin.file:
-    path: /etc/controlclaw
-    state: directory
-    owner: root
-    group: "{{ controlclaw_user }}"
-    mode: '0750'
-
 - name: Gmail push | The watcher unit
   ansible.builtin.copy:
     dest: /etc/systemd/system/cc-gmail-watch.service
