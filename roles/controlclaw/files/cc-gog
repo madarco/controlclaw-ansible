@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# `gog` on a ControlClaw agent box (controlclaw docs/plans/google-account.md §4.2).
+#
+# The organisation's Google account lives on its firewall. What this box holds is a placeholder,
+# written by the vm-agent into CC_GOG_ENV when the firewall pushed a grant, and swapped for a real
+# access token by the org proxy on *.googleapis.com. This wrapper's whole job is to read that file
+# and get out of the way.
+#
+# A wrapper rather than an `EnvironmentFile=` on openclaw.service, which is what the plan first
+# proposed: systemd reads an EnvironmentFile once, at unit start, so a grant or a revoke would not
+# reach a running gateway until it was restarted — killing live sessions, and leaving a window where
+# a revoked agent still had the old string in its environment. Sourcing per invocation costs nothing
+# and removes both.
+#
+# Nothing here is a secret. A missing file is not an error either: `gog` then finds no account and
+# says so, which is the correct answer for a box that was never given the organisation's account.
+set -eu
+
+CC_GOG_ENV="${CC_GOG_ENV:-/opt/controlclaw/state/gog.env}"
+
+if [ -r "$CC_GOG_ENV" ]; then
+  # `set -a` exports everything the file assigns, which is what a child process needs. The file is
+  # written by the vm-agent with every value single-quoted, and every value it writes has already
+  # been checked against a pattern with no quotes, backslashes or newlines in it.
+  set -a
+  # shellcheck disable=SC1090 # the path is a variable by design; see the comment above
+  . "$CC_GOG_ENV"
+  set +a
+fi
+
+# exec, not a call: `gog` keeps this process's stdin, stdout, stderr, signals and exit code, so a
+# pipeline or a Ctrl-C behaves exactly as it would without the wrapper.
+exec /usr/local/lib/controlclaw/gog "$@"

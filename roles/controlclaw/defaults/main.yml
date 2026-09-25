@@ -178,6 +178,33 @@ rclone_version: "1.75.1"
 rclone_sha256_amd64: "982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab"
 rclone_sha256_arm64: "03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9"
 
+# The organisation's own Google account, spent by `gog` on this box (controlclaw
+# docs/plans/google-account.md). What is installed here is inert: a pinned binary, a wrapper and an
+# empty directory. Nothing works until the org firewall pushes a placeholder to the vm-agent, which
+# verifies the firewall's signature and writes the environment file the wrapper reads.
+#
+# **No Google credential ever lands here.** `GOG_ACCESS_TOKEN` holds a placeholder the firewall
+# generated; the org proxy swaps it for a real access token on *.googleapis.com, for this box only.
+# There is no keyring, no credentials.json and nothing in GOG_HOME — with a direct token `gog`
+# short-circuits before it looks for any of them.
+#
+# Pinned by version AND sha256, from the GitHub release rather than `go install` or a script: an
+# unpinned download is a supply chain nobody reviewed. Bump the version and both checksums together,
+# the way rclone_version is bumped. `curl -sSL
+# https://github.com/openclaw/gogcli/releases/download/v<X.Y.Z>/checksums.txt`.
+gog_version: "0.41.0"
+gog_sha256_amd64: "bfdb7e67c904098a34a54eb2ae2b1874c41eda7defd7182e5f2c89a2c2ba44c3"
+gog_sha256_arm64: "a226c1f439f16e946d8d5b73b49da8e65875978adb65d6bc23e7e225e799e966"
+# The real binary. /usr/local/bin/gog is a wrapper in front of it (files/cc-gog), so `gog` on PATH
+# picks up a changed placeholder on the very next command with nothing restarted.
+gog_real_bin: /usr/local/lib/controlclaw/gog
+# gog's config, data, state and cache. Deliberately NOT under the agent's home: a cache that turned
+# up in the workspace would show in the console's Files page and in a workspace backup.
+gog_home: /opt/controlclaw/gog
+# Where the vm-agent writes the environment file the wrapper sources. Inside the agent's own state
+# directory, which it already owns, so applying a grant needs no root.
+gog_env_file: /opt/controlclaw/state/gog.env
+
 # Per-mount rclone configs, env files and VFS caches. Deliberately NOT under the workspace: the
 # agent must not be able to rewrite the config of its own mounts, and the cache must not show up in
 # the file explorer or in a workspace backup.

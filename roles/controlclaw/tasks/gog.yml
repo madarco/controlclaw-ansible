@@ -1,0 +1,96 @@
+---
+# The organisation's own Google account on an agent box (controlclaw docs/plans/google-account.md).
+#
+# Everything here is inert. A pinned `gog`, a wrapper in front of it, and an empty state directory.
+# Nothing authenticates until the org firewall pushes a placeholder to the vm-agent
+# (`POST /google/apply`, verified against the firewall's pinned key with purpose `google`), which
+# writes `{{ gog_env_file }}`.
+#
+# **No Google credential ever lands here**: no refresh token, no client secret, no key file, nothing
+# in GOG_HOME. `GOG_ACCESS_TOKEN` is a placeholder the firewall generated, and the org proxy swaps it
+# for a real access token on *.googleapis.com for this box's traffic only. A compromised box holds a
+# string that is worth nothing off this box and off that domain.
+#
+# Two things the egress wiring gives us for free (openclaw-egress.yml): `gog` is a static Go binary
+# that reads the system trust store, so the org CA already covers its TLS — no NODE_EXTRA_CA_CERTS
+# equivalent to set — and `http.ProxyFromEnvironment` plus the nftables REDIRECT already route it
+# through the proxy. There is nothing Google-specific on the egress path.
+
+- name: Google account | Look for a gog already at the pinned version
+  ansible.builtin.command: "{{ gog_real_bin }} --version"
+  register: gog_have
+  changed_when: false
+  failed_when: false
+
+- name: Google account | Create the directory the real binary lives in
+  ansible.builtin.file:
+    path: "{{ gog_real_bin | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Google account | Download the pinned gog
+  ansible.builtin.get_url:
+    url: "https://github.com/openclaw/gogcli/releases/download/v{{ gog_version }}/gogcli_{{ gog_version }}_linux_{{ gog_arch }}.tar.gz"
+    dest: "/tmp/gogcli_{{ gog_version }}_linux_{{ gog_arch }}.tar.gz"
+    # Version in the URL, checksum on the file: neither a moved release nor a replaced artifact gets
+    # installed silently.
+    checksum: "sha256:{{ gog_sha256_amd64 if gog_arch == 'amd64' else gog_sha256_arm64 }}"
+    mode: '0644'
+  vars:
+    gog_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+  when: "gog_version not in (gog_have.stdout | default(''))"
+
+- name: Google account | Unpack gog
+  ansible.builtin.unarchive:
+    src: "/tmp/gogcli_{{ gog_version }}_linux_{{ gog_arch }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: "/tmp/gog-{{ gog_version }}/gog"
+    extra_opts:
+      - "--one-top-level=gog-{{ gog_version }}"
+  vars:
+    gog_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+  when: "gog_version not in (gog_have.stdout | default(''))"
+
+- name: Google account | Install gog
+  ansible.builtin.copy:
+    src: "/tmp/gog-{{ gog_version }}/gog"
+    dest: "{{ gog_real_bin }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+  when: "gog_version not in (gog_have.stdout | default(''))"
+
+# On PATH, in front of the real binary. It sources the environment file on every invocation, so a
+# grant or a revoke takes effect on the next command with nothing restarted — see the file's header
+# for why that is not a systemd EnvironmentFile.
+- name: Google account | Install the gog wrapper on PATH
+  ansible.builtin.copy:
+    src: cc-gog
+    dest: /usr/local/bin/gog
+    owner: root
+    group: root
+    mode: '0755'
+
+# 0750 root:controlclaw. The agent reads and traverses; it does not write. Nothing secret is in here
+# — with a direct token gog stores no credential at all — but a config the agent can rewrite is a
+# config a compromised box could point somewhere else.
+- name: Google account | Create GOG_HOME outside the agent's own home
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ controlclaw_user }}"
+    mode: '0750'
+  loop:
+    - "{{ gog_home }}"
+    - "{{ gog_home }}/cache"
+
+- name: Google account | Check gog runs and reports its version
+  ansible.builtin.command: /usr/local/bin/gog --version
+  register: gog_installed
+  changed_when: false
+  failed_when: gog_version not in gog_installed.stdout

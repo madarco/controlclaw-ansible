@@ -75,6 +75,13 @@
   ansible.builtin.include_tasks: rclone.yml
   when: box_role == 'openclaw'
 
+# Before the vm-agent, for the same reason rclone is: the firewall may push this box a Google grant
+# the moment it comes up (it re-pushes on /ready), and `gog` plus its wrapper have to exist by then.
+# Inert until that push — there is no credential here and nothing runs.
+- name: Include the org Google account support (pinned gog + the wrapper it reads)
+  ansible.builtin.include_tasks: gog.yml
+  when: box_role == 'openclaw'
+
 - name: Include VM agent tasks (OpenClaw box)
   ansible.builtin.include_tasks: vm-agent.yml
   when: vm_id is defined and box_role == 'openclaw'
