@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "791d3c6" : "unknown",
-  builtAt: true ? "2026-09-25T16:07:24+01:00" : "unknown"
+  commit: true ? "31ad498" : "unknown",
+  builtAt: true ? "2026-09-25T17:20:03+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -36478,6 +36478,94 @@ async function handleTailscale(req, res, url2, service) {
   }
 }
 
+// src/routes/hooks.ts
+import { request as httpRequest2 } from "http";
+var HOOK_TARGET_PORT_MIN = 8700;
+var HOOK_TARGET_PORT_MAX = 8799;
+var HOOK_DELIVER_TIMEOUT_MS = 3e3;
+var MAX_ENVELOPE_BYTES = Math.ceil(1024 * 1024 * 4 / 3) + 64 * 1024;
+var MAX_REPLY_BYTES = 8 * 1024;
+function hookPortAllowed(port) {
+  return typeof port === "number" && Number.isInteger(port) && port >= HOOK_TARGET_PORT_MIN && port <= HOOK_TARGET_PORT_MAX;
+}
+function parse(body) {
+  const port = body.port;
+  if (!hookPortAllowed(port)) return `port must be between ${HOOK_TARGET_PORT_MIN} and ${HOOK_TARGET_PORT_MAX}`;
+  const path = typeof body.path === "string" && body.path.startsWith("/") ? body.path : null;
+  if (!path) return "path must start with /";
+  const method = typeof body.method === "string" ? body.method.toUpperCase() : "POST";
+  if (method !== "POST" && method !== "PUT") return "method must be POST or PUT";
+  if (typeof body.bodyB64 !== "string") return "bodyB64 required";
+  let decoded;
+  try {
+    decoded = Buffer.from(body.bodyB64, "base64");
+  } catch {
+    return "bodyB64 must be base64";
+  }
+  const headers = {};
+  const raw = body.headers ?? {};
+  for (const [name, value] of Object.entries(raw)) {
+    const lower = name.toLowerCase();
+    if (lower === "content-length" || lower === "host" || lower === "connection" || lower === "transfer-encoding") continue;
+    if (typeof value === "string") headers[lower] = value;
+  }
+  return { port, path, method, headers, body: decoded };
+}
+function replay(d) {
+  return new Promise((resolve2, reject) => {
+    const req = httpRequest2(
+      {
+        host: "127.0.0.1",
+        port: d.port,
+        path: d.path,
+        method: d.method,
+        headers: { ...d.headers, "content-length": String(d.body.byteLength) },
+        timeout: HOOK_DELIVER_TIMEOUT_MS
+      },
+      (res) => {
+        let read = 0;
+        res.on("data", (chunk) => {
+          read += chunk.length;
+          if (read > MAX_REPLY_BYTES) res.destroy();
+        });
+        res.on("end", () => resolve2({ status: res.statusCode ?? 502 }));
+        res.on("close", () => resolve2({ status: res.statusCode ?? 502 }));
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("the listener did not answer in time")));
+    req.on("error", (error) => reject(error));
+    req.end(d.body);
+  });
+}
+async function handleHooks(req, res, url2) {
+  if (url2.pathname !== "/hooks/deliver" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  const auth = await verifyMitmRequest(req, "hooks");
+  if (!auth) {
+    sendJson(res, 401, { error: "a webhook delivery must come from the org firewall" });
+    return;
+  }
+  const body = await readJsonBody(req, MAX_ENVELOPE_BYTES);
+  if (!body) {
+    sendJson(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+  const parsed = parse(body);
+  if (typeof parsed === "string") {
+    sendJson(res, 400, { error: parsed });
+    return;
+  }
+  try {
+    const { status } = await replay(parsed);
+    sendJson(res, 200, { status });
+  } catch (error) {
+    console.error(`[hooks] delivery to 127.0.0.1:${parsed.port} failed: ${error.message}`);
+    sendJson(res, 502, { error: "the listener on this box did not take that delivery" });
+  }
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -36654,6 +36742,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/tailscale/")) {
     await handleTailscale(req, res, url2, tailscale);
+    return;
+  }
+  if (url2.pathname.startsWith("/hooks/")) {
+    await handleHooks(req, res, url2);
     return;
   }
   if (url2.pathname.startsWith("/files/")) {

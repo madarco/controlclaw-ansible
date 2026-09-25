@@ -32369,6 +32369,32 @@ var JWTInvalid = class extends JOSEError {
   static code = "ERR_JWT_INVALID";
   code = "ERR_JWT_INVALID";
 };
+var JWKSInvalid = class extends JOSEError {
+  static code = "ERR_JWKS_INVALID";
+  code = "ERR_JWKS_INVALID";
+};
+var JWKSNoMatchingKey = class extends JOSEError {
+  static code = "ERR_JWKS_NO_MATCHING_KEY";
+  code = "ERR_JWKS_NO_MATCHING_KEY";
+  constructor(message2 = "no applicable key found in the JSON Web Key Set", options) {
+    super(message2, options);
+  }
+};
+var JWKSMultipleMatchingKeys = class extends JOSEError {
+  [Symbol.asyncIterator];
+  static code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
+  code = "ERR_JWKS_MULTIPLE_MATCHING_KEYS";
+  constructor(message2 = "multiple matching keys found in the JSON Web Key Set", options) {
+    super(message2, options);
+  }
+};
+var JWKSTimeout = class extends JOSEError {
+  static code = "ERR_JWKS_TIMEOUT";
+  code = "ERR_JWKS_TIMEOUT";
+  constructor(message2 = "request timed out", options) {
+    super(message2, options);
+  }
+};
 var JWSSignatureVerificationFailed = class extends JOSEError {
   static code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
   code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
@@ -32967,6 +32993,40 @@ async function importPKCS8(pkcs8, alg, options) {
     throw new TypeError('"pkcs8" must be PKCS#8 formatted string');
   }
   return fromPKCS8(pkcs8, alg, options);
+}
+async function importJWK(jwk, alg, options) {
+  if (!isObject(jwk)) {
+    throw new TypeError("JWK must be an object");
+  }
+  let ext;
+  alg ??= jwk.alg;
+  ext ??= options?.extractable ?? jwk.ext;
+  switch (jwk.kty) {
+    case "oct":
+      if (typeof jwk.k !== "string" || !jwk.k) {
+        throw new TypeError('missing "k" (Key Value) Parameter value');
+      }
+      return decode(jwk.k);
+    case "RSA":
+      if ("oth" in jwk && jwk.oth !== void 0) {
+        throw new JOSENotSupported('RSA JWK "oth" (Other Primes Info) Parameter value is not supported');
+      }
+      return jwkToKey({ ...jwk, alg, ext });
+    case "AKP": {
+      if (typeof jwk.alg !== "string" || !jwk.alg) {
+        throw new TypeError('missing "alg" (Algorithm) Parameter value');
+      }
+      if (alg !== void 0 && alg !== jwk.alg) {
+        throw new TypeError("JWK alg and alg option value mismatch");
+      }
+      return jwkToKey({ ...jwk, ext });
+    }
+    case "EC":
+    case "OKP":
+      return jwkToKey({ ...jwk, alg, ext });
+    default:
+      throw new JOSENotSupported('Unsupported "kty" (Key Type) Parameter value');
+  }
 }
 
 // ../../node_modules/.pnpm/jose@6.2.2/node_modules/jose/dist/webapi/lib/validate_crit.js
@@ -33631,6 +33691,284 @@ var SignJWT = class {
   }
 };
 
+// ../../node_modules/.pnpm/jose@6.2.2/node_modules/jose/dist/webapi/jwks/local.js
+function getKtyFromAlg(alg) {
+  switch (typeof alg === "string" && alg.slice(0, 2)) {
+    case "RS":
+    case "PS":
+      return "RSA";
+    case "ES":
+      return "EC";
+    case "Ed":
+      return "OKP";
+    case "ML":
+      return "AKP";
+    default:
+      throw new JOSENotSupported('Unsupported "alg" value for a JSON Web Key Set');
+  }
+}
+function isJWKSLike(jwks) {
+  return jwks && typeof jwks === "object" && Array.isArray(jwks.keys) && jwks.keys.every(isJWKLike);
+}
+function isJWKLike(key) {
+  return isObject(key);
+}
+var LocalJWKSet = class {
+  #jwks;
+  #cached = /* @__PURE__ */ new WeakMap();
+  constructor(jwks) {
+    if (!isJWKSLike(jwks)) {
+      throw new JWKSInvalid("JSON Web Key Set malformed");
+    }
+    this.#jwks = structuredClone(jwks);
+  }
+  jwks() {
+    return this.#jwks;
+  }
+  async getKey(protectedHeader, token) {
+    const { alg, kid } = { ...protectedHeader, ...token?.header };
+    const kty = getKtyFromAlg(alg);
+    const candidates = this.#jwks.keys.filter((jwk2) => {
+      let candidate = kty === jwk2.kty;
+      if (candidate && typeof kid === "string") {
+        candidate = kid === jwk2.kid;
+      }
+      if (candidate && (typeof jwk2.alg === "string" || kty === "AKP")) {
+        candidate = alg === jwk2.alg;
+      }
+      if (candidate && typeof jwk2.use === "string") {
+        candidate = jwk2.use === "sig";
+      }
+      if (candidate && Array.isArray(jwk2.key_ops)) {
+        candidate = jwk2.key_ops.includes("verify");
+      }
+      if (candidate) {
+        switch (alg) {
+          case "ES256":
+            candidate = jwk2.crv === "P-256";
+            break;
+          case "ES384":
+            candidate = jwk2.crv === "P-384";
+            break;
+          case "ES512":
+            candidate = jwk2.crv === "P-521";
+            break;
+          case "Ed25519":
+          case "EdDSA":
+            candidate = jwk2.crv === "Ed25519";
+            break;
+        }
+      }
+      return candidate;
+    });
+    const { 0: jwk, length } = candidates;
+    if (length === 0) {
+      throw new JWKSNoMatchingKey();
+    }
+    if (length !== 1) {
+      const error48 = new JWKSMultipleMatchingKeys();
+      const _cached = this.#cached;
+      error48[Symbol.asyncIterator] = async function* () {
+        for (const jwk2 of candidates) {
+          try {
+            yield await importWithAlgCache(_cached, jwk2, alg);
+          } catch {
+          }
+        }
+      };
+      throw error48;
+    }
+    return importWithAlgCache(this.#cached, jwk, alg);
+  }
+};
+async function importWithAlgCache(cache2, jwk, alg) {
+  const cached2 = cache2.get(jwk) || cache2.set(jwk, {}).get(jwk);
+  if (cached2[alg] === void 0) {
+    const key = await importJWK({ ...jwk, ext: true }, alg);
+    if (key instanceof Uint8Array || key.type !== "public") {
+      throw new JWKSInvalid("JSON Web Key Set members must be public keys");
+    }
+    cached2[alg] = key;
+  }
+  return cached2[alg];
+}
+function createLocalJWKSet(jwks) {
+  const set2 = new LocalJWKSet(jwks);
+  const localJWKSet = async (protectedHeader, token) => set2.getKey(protectedHeader, token);
+  Object.defineProperties(localJWKSet, {
+    jwks: {
+      value: () => structuredClone(set2.jwks()),
+      enumerable: false,
+      configurable: false,
+      writable: false
+    }
+  });
+  return localJWKSet;
+}
+
+// ../../node_modules/.pnpm/jose@6.2.2/node_modules/jose/dist/webapi/jwks/remote.js
+function isCloudflareWorkers() {
+  return typeof WebSocketPair !== "undefined" || typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers" || typeof EdgeRuntime !== "undefined" && EdgeRuntime === "vercel";
+}
+var USER_AGENT;
+if (typeof navigator === "undefined" || !navigator.userAgent?.startsWith?.("Mozilla/5.0 ")) {
+  const NAME = "jose";
+  const VERSION7 = "v6.2.2";
+  USER_AGENT = `${NAME}/${VERSION7}`;
+}
+var customFetch = /* @__PURE__ */ Symbol();
+async function fetchJwks(url2, headers, signal, fetchImpl = fetch) {
+  const response = await fetchImpl(url2, {
+    method: "GET",
+    signal,
+    redirect: "manual",
+    headers
+  }).catch((err) => {
+    if (err.name === "TimeoutError") {
+      throw new JWKSTimeout();
+    }
+    throw err;
+  });
+  if (response.status !== 200) {
+    throw new JOSEError("Expected 200 OK from the JSON Web Key Set HTTP response");
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new JOSEError("Failed to parse the JSON Web Key Set HTTP response as JSON");
+  }
+}
+var jwksCache = /* @__PURE__ */ Symbol();
+function isFreshJwksCache(input, cacheMaxAge) {
+  if (typeof input !== "object" || input === null) {
+    return false;
+  }
+  if (!("uat" in input) || typeof input.uat !== "number" || Date.now() - input.uat >= cacheMaxAge) {
+    return false;
+  }
+  if (!("jwks" in input) || !isObject(input.jwks) || !Array.isArray(input.jwks.keys) || !Array.prototype.every.call(input.jwks.keys, isObject)) {
+    return false;
+  }
+  return true;
+}
+var RemoteJWKSet = class {
+  #url;
+  #timeoutDuration;
+  #cooldownDuration;
+  #cacheMaxAge;
+  #jwksTimestamp;
+  #pendingFetch;
+  #headers;
+  #customFetch;
+  #local;
+  #cache;
+  constructor(url2, options) {
+    if (!(url2 instanceof URL)) {
+      throw new TypeError("url must be an instance of URL");
+    }
+    this.#url = new URL(url2.href);
+    this.#timeoutDuration = typeof options?.timeoutDuration === "number" ? options?.timeoutDuration : 5e3;
+    this.#cooldownDuration = typeof options?.cooldownDuration === "number" ? options?.cooldownDuration : 3e4;
+    this.#cacheMaxAge = typeof options?.cacheMaxAge === "number" ? options?.cacheMaxAge : 6e5;
+    this.#headers = new Headers(options?.headers);
+    if (USER_AGENT && !this.#headers.has("User-Agent")) {
+      this.#headers.set("User-Agent", USER_AGENT);
+    }
+    if (!this.#headers.has("accept")) {
+      this.#headers.set("accept", "application/json");
+      this.#headers.append("accept", "application/jwk-set+json");
+    }
+    this.#customFetch = options?.[customFetch];
+    if (options?.[jwksCache] !== void 0) {
+      this.#cache = options?.[jwksCache];
+      if (isFreshJwksCache(options?.[jwksCache], this.#cacheMaxAge)) {
+        this.#jwksTimestamp = this.#cache.uat;
+        this.#local = createLocalJWKSet(this.#cache.jwks);
+      }
+    }
+  }
+  pendingFetch() {
+    return !!this.#pendingFetch;
+  }
+  coolingDown() {
+    return typeof this.#jwksTimestamp === "number" ? Date.now() < this.#jwksTimestamp + this.#cooldownDuration : false;
+  }
+  fresh() {
+    return typeof this.#jwksTimestamp === "number" ? Date.now() < this.#jwksTimestamp + this.#cacheMaxAge : false;
+  }
+  jwks() {
+    return this.#local?.jwks();
+  }
+  async getKey(protectedHeader, token) {
+    if (!this.#local || !this.fresh()) {
+      await this.reload();
+    }
+    try {
+      return await this.#local(protectedHeader, token);
+    } catch (err) {
+      if (err instanceof JWKSNoMatchingKey) {
+        if (this.coolingDown() === false) {
+          await this.reload();
+          return this.#local(protectedHeader, token);
+        }
+      }
+      throw err;
+    }
+  }
+  async reload() {
+    if (this.#pendingFetch && isCloudflareWorkers()) {
+      this.#pendingFetch = void 0;
+    }
+    this.#pendingFetch ||= fetchJwks(this.#url.href, this.#headers, AbortSignal.timeout(this.#timeoutDuration), this.#customFetch).then((json3) => {
+      this.#local = createLocalJWKSet(json3);
+      if (this.#cache) {
+        this.#cache.uat = Date.now();
+        this.#cache.jwks = json3;
+      }
+      this.#jwksTimestamp = Date.now();
+      this.#pendingFetch = void 0;
+    }).catch((err) => {
+      this.#pendingFetch = void 0;
+      throw err;
+    });
+    await this.#pendingFetch;
+  }
+};
+function createRemoteJWKSet(url2, options) {
+  const set2 = new RemoteJWKSet(url2, options);
+  const remoteJWKSet = async (protectedHeader, token) => set2.getKey(protectedHeader, token);
+  Object.defineProperties(remoteJWKSet, {
+    coolingDown: {
+      get: () => set2.coolingDown(),
+      enumerable: true,
+      configurable: false
+    },
+    fresh: {
+      get: () => set2.fresh(),
+      enumerable: true,
+      configurable: false
+    },
+    reload: {
+      value: () => set2.reload(),
+      enumerable: true,
+      configurable: false,
+      writable: false
+    },
+    reloading: {
+      get: () => set2.pendingFetch(),
+      enumerable: true,
+      configurable: false
+    },
+    jwks: {
+      value: () => set2.jwks(),
+      enumerable: true,
+      configurable: false,
+      writable: false
+    }
+  });
+  return remoteJWKSet;
+}
+
 // src/box-token.ts
 function makeBoxTokenSigner(keysDir) {
   const read = (name25) => readFileSync4(`${keysDir}/${name25}`, "utf-8").trim();
@@ -33817,6 +34155,7 @@ function purposeForPath(path) {
   if (path.startsWith("/ssh/")) return "ssh";
   if (path.startsWith("/tailscale/")) return "tailscale";
   if (path.startsWith("/drive/")) return "drive";
+  if (path.startsWith("/hooks/")) return "hooks";
   return "channels";
 }
 function makeAgentTokenSigner(keysDir, boxId) {
@@ -39572,6 +39911,440 @@ var SshLoginWatcher = class {
     return records.length;
   }
 };
+
+// src/ingress.ts
+import { createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "crypto";
+import { appendFileSync } from "fs";
+var INGRESS_PATH_PREFIX = "/hook/";
+var INGRESS_DEFAULT_BODY_BYTES = 256 * 1024;
+var INGRESS_MAX_BODY_BYTES = 1024 * 1024;
+var INGRESS_DEFAULT_PER_MINUTE = 60;
+var INGRESS_MAX_PER_MINUTE = 180;
+var INGRESS_ORG_PER_MINUTE = 180;
+var INGRESS_IN_FLIGHT_PER_VM = 4;
+var INGRESS_IN_FLIGHT_ORG = 16;
+var INGRESS_FORWARD_TIMEOUT_MS = 8e3;
+var INGRESS_UNVERIFIED_PER_MINUTE = 20;
+var INGRESS_UNVERIFIED_LOCKOUT_MS = 15 * 6e4;
+var OIDC_DISCOVERY_TIMEOUT_MS = 5e3;
+var FORWARD_HEADER_ALLOWLIST = ["content-type", "authorization"];
+var FORWARD_HEADER_PREFIXES = ["x-goog-", "x-hub-signature", "x-github-", "x-slack-"];
+var INGRESS_TARGET_PORT_MIN = 8700;
+var INGRESS_TARGET_PORT_MAX = 8799;
+function clamp(value, low, high) {
+  return Math.min(Math.max(value, low), high);
+}
+function targetPortAllowed(port) {
+  return Number.isInteger(port) && port >= INGRESS_TARGET_PORT_MIN && port <= INGRESS_TARGET_PORT_MAX;
+}
+function ownsIngressPath(path) {
+  return path.startsWith(INGRESS_PATH_PREFIX);
+}
+function sameSecret(a, b) {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.length !== right.length) {
+    timingSafeEqual2(left, left);
+    return false;
+  }
+  return timingSafeEqual2(left, right);
+}
+function headerValue(req, name25) {
+  const raw = req.headers[name25.toLowerCase()];
+  if (Array.isArray(raw)) return raw[0] ?? "";
+  return typeof raw === "string" ? raw : "";
+}
+var IngressRoutes = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? console.log;
+  }
+  now;
+  log;
+  /** Per registration: the deliveries that passed their checks. */
+  delivered = /* @__PURE__ */ new Map();
+  /** Org-wide, across registrations. */
+  orgDelivered = [];
+  /** Unverified attempts, counted apart from the above. */
+  unverified = [];
+  unverifiedLockedUntil = 0;
+  inFlightOrg = 0;
+  inFlightByVm = /* @__PURE__ */ new Map();
+  jwksCache = /* @__PURE__ */ new Map();
+  /**
+   * One delivery.
+   *
+   * The order is the part most likely to be got wrong later, and it was got wrong once already.
+   *
+   * An HMAC is computed over the whole body, so the body must be read before the delivery can be
+   * verified. That looks like it forces a choice between buffering a megabyte for any stranger who
+   * learns a URL, and letting a stranger's junk spend the real sender's rate limit. It does not:
+   * what bounds memory is the **in-flight cap**, taken before the read, and what the rate limiter
+   * sees is the **verdict**, because it runs after the checks.
+   *
+   * So: slot, read, verify, then charge. A refusal charges the unverified budget and a pass
+   * charges the delivered one, and the unverified lockout is consulted only on the refusal path.
+   * That is what makes "a verified delivery is never rate-limited by somebody else's noise" true
+   * rather than merely intended. `recovery.ts` is shaped the same way for the same reason, and
+   * `ingress.test.ts` fails if any of it is reordered.
+   */
+  async handle(req, res, path) {
+    const started = this.now();
+    const deliveryId = `wh_${started.toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const refuse = (status, verdict, reason, reg2, bytes = 0, close = false) => {
+      if (!res.headersSent) {
+        res.writeHead(status, close ? { "content-length": "0", connection: "close" } : { "content-length": "0" });
+        res.end(close ? () => req.socket?.destroy() : void 0);
+      }
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg2?.id ?? "",
+        hook_name: reg2?.name ?? "",
+        verdict,
+        reason,
+        target_vm_id: reg2?.target.vmId,
+        bytes,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    };
+    if (req.method !== "POST") {
+      res.writeHead(405, { "content-length": "0" });
+      res.end();
+      return;
+    }
+    const id = path.slice(INGRESS_PATH_PREFIX.length);
+    const reg = this.opts.registrations().find((r) => r.id === id && r.enabled);
+    if (!reg) {
+      this.countUnverified();
+      return refuse(404, "unknown_hook", "no registration with that id", void 0);
+    }
+    if (reg.verify.length === 0) {
+      return refuse(503, "needs_setup", "this webhook has no checks on this firewall yet", reg);
+    }
+    if (!this.takeSlot(reg.target.vmId)) {
+      return refuse(503, "agent_unreachable", "too many deliveries in flight for that agent", reg);
+    }
+    try {
+      const cap = Math.min(reg.maxBodyBytes || INGRESS_DEFAULT_BODY_BYTES, INGRESS_MAX_BODY_BYTES);
+      let body;
+      try {
+        body = await readBody(req, cap);
+      } catch (error48) {
+        if (error48.tooLarge) {
+          this.countUnverified();
+          return refuse(413, "too_large", "body over the cap", reg, 0, true);
+        }
+        return refuse(400, "refused", "the sender stopped before the body arrived", reg);
+      }
+      for (const rule of reg.verify) {
+        const verdict = await this.check(rule, req, body);
+        if (verdict.ok) continue;
+        this.countUnverified();
+        if (this.unverifiedLockedUntil > this.now()) {
+          return refuse(429, "rate_limited", "too many refused deliveries", reg, body.byteLength);
+        }
+        return refuse(401, "refused", verdict.reason, reg, body.byteLength);
+      }
+      this.clearUnverified();
+      if (!this.chargeDelivered(reg)) {
+        return refuse(429, "rate_limited", "over this webhook's rate", reg, body.byteLength);
+      }
+      return await this.forward(reg, req, res, body, deliveryId, started);
+    } finally {
+      this.releaseSlot(reg.target.vmId);
+    }
+  }
+  async forward(reg, req, res, body, deliveryId, started) {
+    const refuse = (status, verdict, reason) => {
+      if (!res.headersSent) {
+        res.writeHead(status, { "content-length": "0" });
+        res.end();
+      }
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg.id,
+        hook_name: reg.name,
+        verdict,
+        reason,
+        target_vm_id: reg.target.vmId,
+        bytes: body.byteLength,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    };
+    try {
+      const { status } = await this.opts.deliver(reg, {
+        method: "POST",
+        headers: forwardHeaders(req),
+        bodyB64: body.toString("base64")
+      });
+      const out = status >= 200 && status < 300 ? 204 : status >= 500 ? 503 : status;
+      res.writeHead(out, { "content-length": "0" });
+      res.end();
+      const ok = status >= 200 && status < 300;
+      const verdict = ok ? "delivered" : status >= 500 ? "agent_unreachable" : "listener_refused";
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg.id,
+        hook_name: reg.name,
+        verdict,
+        ...ok ? {} : { reason: `the listener on the agent answered ${status}` },
+        target_vm_id: reg.target.vmId,
+        forward_status: status,
+        bytes: body.byteLength,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    } catch (error48) {
+      refuse(503, "agent_unreachable", error48.message);
+    }
+  }
+  // ---- checks ----
+  async check(rule, req, body) {
+    if (rule.kind === "hmac") {
+      const sent = headerValue(req, rule.header);
+      if (!sent) return { ok: false, reason: `no ${rule.header} header` };
+      let signed = body;
+      if (rule.timestampHeader) {
+        const raw = headerValue(req, rule.timestampHeader);
+        const ts = Number(raw);
+        if (!raw || !Number.isFinite(ts)) return { ok: false, reason: `no ${rule.timestampHeader} header` };
+        const ageS = Math.abs(this.now() / 1e3 - ts);
+        if (ageS > (rule.maxAgeS ?? 300)) return { ok: false, reason: "the delivery was too old to accept" };
+        const format = rule.signedFormat ?? "{ts}.{body}";
+        signed = Buffer.from(format.replace("{ts}", String(raw)).replace("{body}", body.toString("utf8")), "utf8");
+      }
+      const mac3 = createHmac2(rule.algo, rule.secret).update(signed).digest(rule.encoding);
+      const want = `${rule.prefix ?? ""}${mac3}`;
+      return sameSecret(sent, want) ? { ok: true } : { ok: false, reason: "the signature did not match" };
+    }
+    const auth = headerValue(req, "authorization");
+    if (!auth.startsWith("Bearer ")) return { ok: false, reason: "no bearer token" };
+    try {
+      const jwks = this.opts.jwks?.(rule.issuer) ?? await this.jwksFor(rule.issuer);
+      const { payload } = await jwtVerify(auth.slice(7), jwks, {
+        issuer: rule.issuer,
+        // Exact, and required. Left to be rebuilt from forwarded headers it would be one proxy
+        // hop away from silently accepting a token minted for somebody else.
+        audience: rule.audience
+      });
+      if (rule.subjectEmail) {
+        const email3 = typeof payload.email === "string" ? payload.email : "";
+        if (email3 !== rule.subjectEmail) return { ok: false, reason: "the token came from a different service account" };
+      }
+      return { ok: true };
+    } catch (error48) {
+      const claim = error48.claim;
+      if (claim === "aud") return { ok: false, reason: "the token was for a different audience" };
+      if (claim === "iss") return { ok: false, reason: "the token came from a different issuer" };
+      if (error48.code === "ERR_JWT_EXPIRED") return { ok: false, reason: "the token had expired" };
+      return { ok: false, reason: "the token did not verify" };
+    }
+  }
+  /**
+   * The issuer's signing keys, found the way OIDC says to find them: fetch
+   * `/.well-known/openid-configuration` and use the `jwks_uri` it names.
+   *
+   * An earlier version guessed at `<issuer>/.well-known/openid-configuration/jwks` instead. That
+   * is not a path anybody serves. For `https://accounts.google.com` the discovery document points
+   * at `https://www.googleapis.com/oauth2/v3/certs`, on a different host entirely, so every OIDC
+   * delivery would have failed with "the token did not verify" and the first consumer of this
+   * feature is Gmail push. Discovery is one request, cached for the life of the process, and it is
+   * the only thing that makes this generic across issuers rather than Google-shaped.
+   */
+  async jwksFor(issuer) {
+    const hit = this.jwksCache.get(issuer);
+    if (hit) return hit;
+    const discovery = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+    const res = await fetch(discovery, { signal: AbortSignal.timeout(OIDC_DISCOVERY_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`discovery for ${issuer} answered ${res.status}`);
+    const doc = await res.json();
+    if (typeof doc.jwks_uri !== "string" || !doc.jwks_uri) throw new Error(`discovery for ${issuer} names no jwks_uri`);
+    if (typeof doc.issuer === "string" && doc.issuer.replace(/\/$/, "") !== issuer.replace(/\/$/, "")) {
+      throw new Error(`discovery for ${issuer} claims to be ${doc.issuer}`);
+    }
+    const made = createRemoteJWKSet(new URL(doc.jwks_uri));
+    this.jwksCache.set(issuer, made);
+    return made;
+  }
+  // ---- budgets ----
+  /**
+   * One delivery that did not verify. Called only on the refusal path, so nothing a real sender
+   * does ever touches this counter.
+   */
+  countUnverified() {
+    const cutoff = this.now() - 6e4;
+    this.unverified = this.unverified.filter((t) => t > cutoff);
+    this.unverified.push(this.now());
+    if (this.unverified.length < INGRESS_UNVERIFIED_PER_MINUTE) return;
+    this.unverifiedLockedUntil = this.now() + INGRESS_UNVERIFIED_LOCKOUT_MS;
+    this.unverified = [];
+    this.log(`[ingress] ${INGRESS_UNVERIFIED_PER_MINUTE} refused deliveries in a minute; refusing unverified callers for ${INGRESS_UNVERIFIED_LOCKOUT_MS / 6e4} minutes`);
+  }
+  /**
+   * A delivery passed its checks, so whoever sent it holds the secret: the run of bad attempts is
+   * forgotten and the lockout lifts. This is the half that makes the two budgets worth having.
+   */
+  clearUnverified() {
+    this.unverified = [];
+    this.unverifiedLockedUntil = 0;
+  }
+  chargeDelivered(reg) {
+    const cutoff = this.now() - 6e4;
+    const per = Math.min(reg.perMinute || INGRESS_DEFAULT_PER_MINUTE, INGRESS_MAX_PER_MINUTE);
+    const mine = (this.delivered.get(reg.id) ?? []).filter((t) => t > cutoff);
+    this.orgDelivered = this.orgDelivered.filter((t) => t > cutoff);
+    if (mine.length >= per || this.orgDelivered.length >= INGRESS_ORG_PER_MINUTE) {
+      this.delivered.set(reg.id, mine);
+      return false;
+    }
+    mine.push(this.now());
+    this.orgDelivered.push(this.now());
+    this.delivered.set(reg.id, mine);
+    return true;
+  }
+  takeSlot(vmId) {
+    const mine = this.inFlightByVm.get(vmId) ?? 0;
+    if (mine >= INGRESS_IN_FLIGHT_PER_VM || this.inFlightOrg >= INGRESS_IN_FLIGHT_ORG) return false;
+    this.inFlightByVm.set(vmId, mine + 1);
+    this.inFlightOrg++;
+    return true;
+  }
+  releaseSlot(vmId) {
+    this.inFlightByVm.set(vmId, Math.max(0, (this.inFlightByVm.get(vmId) ?? 1) - 1));
+    this.inFlightOrg = Math.max(0, this.inFlightOrg - 1);
+  }
+  // ---- Activity ----
+  /**
+   * Metadata only. Never the body, never a header value, never the token. A webhook body is
+   * exactly the kind of thing that must not end up in our database: someone's email, someone's
+   * ticket. The same rule the egress log and the AI review already follow.
+   */
+  record(rec) {
+    this.log(`[ingress] ${rec.verdict} ${rec.hook_name || rec.hook_id || "(unknown)"}${rec.reason ? `: ${rec.reason}` : ""}`);
+    if (!this.opts.logPath) return;
+    try {
+      appendFileSync(this.opts.logPath, `${JSON.stringify(rec)}
+`);
+    } catch (error48) {
+      this.log(`[ingress] could not record that delivery: ${error48.message}`);
+    }
+  }
+};
+var BodyTooLarge = class extends Error {
+  tooLarge = true;
+  constructor() {
+    super("body over the cap");
+    this.name = "BodyTooLarge";
+  }
+};
+function readBody(req, cap) {
+  return new Promise((resolve2, reject) => {
+    const declared = Number(req.headers["content-length"] ?? NaN);
+    if (Number.isFinite(declared) && declared > cap) {
+      req.pause();
+      reject(new BodyTooLarge());
+      return;
+    }
+    const chunks = [];
+    let total = 0;
+    let stopped = false;
+    req.on("data", (chunk) => {
+      if (stopped) return;
+      total += chunk.length;
+      if (total > cap) {
+        stopped = true;
+        req.pause();
+        reject(new BodyTooLarge());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!stopped) resolve2(Buffer.concat(chunks));
+    });
+    req.on("error", (error48) => {
+      if (!stopped) reject(error48);
+    });
+  });
+}
+function forwardHeaders(req) {
+  const out = {};
+  for (const [name25, raw] of Object.entries(req.headers)) {
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value !== "string") continue;
+    const lower = name25.toLowerCase();
+    if (FORWARD_HEADER_ALLOWLIST.includes(lower) || FORWARD_HEADER_PREFIXES.some((p) => lower.startsWith(p))) {
+      out[lower] = value;
+    }
+  }
+  return out;
+}
+function parseRegistrations(json3) {
+  if (!Array.isArray(json3)) return [];
+  const out = [];
+  for (const raw of json3) {
+    const r = raw;
+    const target = r.target ?? {};
+    const port = Number(target.port);
+    if (typeof r.id !== "string" || !r.id) continue;
+    if (typeof target.vmId !== "string" || typeof target.hostname !== "string") continue;
+    if (!targetPortAllowed(port)) continue;
+    out.push({
+      id: r.id,
+      name: typeof r.name === "string" ? r.name : r.id,
+      target: {
+        vmId: target.vmId,
+        hostname: target.hostname,
+        port,
+        path: typeof target.path === "string" && target.path.startsWith("/") ? target.path : "/"
+      },
+      verify: parseVerify(r.verify),
+      // Clamped at both ends. Without a lower bound a negative value passes straight through
+      // `Math.min` and every delivery, including a zero-byte one, is refused 413 forever.
+      maxBodyBytes: clamp(Number(r.maxBodyBytes) || INGRESS_DEFAULT_BODY_BYTES, 1, INGRESS_MAX_BODY_BYTES),
+      perMinute: clamp(Number(r.perMinute) || INGRESS_DEFAULT_PER_MINUTE, 1, INGRESS_MAX_PER_MINUTE),
+      enabled: r.enabled !== false
+    });
+  }
+  return out;
+}
+function parseVerify(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const entry of raw) {
+    const v = entry;
+    if (v.kind === "hmac" && typeof v.secret === "string" && typeof v.header === "string") {
+      out.push({
+        kind: "hmac",
+        header: v.header,
+        algo: v.algo === "sha1" ? "sha1" : "sha256",
+        encoding: v.encoding === "base64" ? "base64" : "hex",
+        prefix: typeof v.prefix === "string" ? v.prefix : void 0,
+        secret: v.secret,
+        timestampHeader: typeof v.timestampHeader === "string" ? v.timestampHeader : void 0,
+        signedFormat: typeof v.signedFormat === "string" ? v.signedFormat : void 0,
+        maxAgeS: Number.isFinite(Number(v.maxAgeS)) && Number(v.maxAgeS) > 0 ? Number(v.maxAgeS) : void 0
+      });
+    } else if (v.kind === "oidc" && typeof v.issuer === "string" && typeof v.audience === "string" && v.audience) {
+      out.push({
+        kind: "oidc",
+        issuer: v.issuer,
+        audience: v.audience,
+        subjectEmail: typeof v.subjectEmail === "string" ? v.subjectEmail : void 0
+      });
+    }
+  }
+  return out;
+}
 
 // src/sync.ts
 import { writeFileSync as writeFileSync8, mkdirSync as mkdirSync7, renameSync as renameSync4 } from "fs";
@@ -55530,15 +56303,15 @@ function sanitizeRequestHeaders(input) {
 }
 var MAX_DOWNLOAD_REDIRECTS = 10;
 var REDIRECT_STATUS_CODES = /* @__PURE__ */ new Set([301, 302, 303, 307, 308]);
-async function getValidatedFetch(customFetch) {
-  return customFetch == null || customFetch === globalThis.fetch ? await getDefaultDownloadFetch() : customFetch;
+async function getValidatedFetch(customFetch2) {
+  return customFetch2 == null || customFetch2 === globalThis.fetch ? await getDefaultDownloadFetch() : customFetch2;
 }
 async function fetchWithValidatedRedirects({
   url: url2,
   headers,
   abortSignal,
   maxRedirects = MAX_DOWNLOAD_REDIRECTS,
-  fetch: customFetch,
+  fetch: customFetch2,
   trustedOrigin
 }) {
   var _a34;
@@ -55556,7 +56329,7 @@ async function fetchWithValidatedRedirects({
     if (!isTrustedHop) {
       validateDownloadUrl(currentUrl);
     }
-    const fetch2 = isTrustedHop && customFetch != null ? customFetch : isTrustedHop ? globalThis.fetch : await getValidatedFetch(customFetch);
+    const fetch2 = isTrustedHop && customFetch2 != null ? customFetch2 : isTrustedHop ? globalThis.fetch : await getValidatedFetch(customFetch2);
     const response = await fetch2(currentUrl, perHopInit("manual"));
     if (response.type === "opaqueredirect") {
       if (!isBrowserRuntime()) {
@@ -100031,8 +100804,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "791d3c6" : "unknown",
-  builtAt: true ? "2026-09-25T16:07:24+01:00" : "unknown"
+  commit: true ? "31ad498" : "unknown",
+  builtAt: true ? "2026-09-25T17:20:03+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -100168,6 +100941,9 @@ var DRIVE_TOKEN_POLL_MS = parseInt(process.env.DRIVE_TOKEN_POLL_MS ?? "60000", 1
 var CONNECTOR_URL = process.env.CONNECTOR_URL ?? "";
 var CONNECTOR_ADMIN_TOKEN = process.env.CONNECTOR_ADMIN_TOKEN ?? "";
 var CONNECTOR_STORE_PATH = process.env.CONNECTOR_STORE_PATH ?? "/opt/controlclaw/state/connectors.enc";
+var INGRESS_PORT = parseInt(process.env.INGRESS_PORT ?? "8790", 10);
+var INGRESS_BIND = process.env.INGRESS_BIND ?? "127.0.0.1";
+var WEBHOOKS_PATH = process.env.WEBHOOKS_PATH ?? "/opt/controlclaw/state/webhooks.json";
 var CONNECTOR_GATE_PORT = parseInt(process.env.CONNECTOR_GATE_PORT ?? "3900", 10);
 var CONNECTOR_GATE_BIND = process.env.CONNECTOR_GATE_BIND ?? process.env.PRIVATE_IP ?? "";
 var CONNECTOR_RUNS_STATE_PATH = process.env.CONNECTOR_RUNS_STATE_PATH ?? "/opt/controlclaw/state/connector-runs.json";
@@ -100767,7 +101543,52 @@ async function main() {
         console.log("[mitm-agent] connector run shipper enabled");
       }
     }
+    startIngress();
     void reportReady();
+  });
+}
+function startIngress() {
+  const read = () => {
+    try {
+      return parseRegistrations(JSON.parse(readFileSync19(WEBHOOKS_PATH, "utf-8")));
+    } catch (error48) {
+      if (error48.code !== "ENOENT") {
+        console.error(`[ingress] could not read ${WEBHOOKS_PATH}: ${error48.message}`);
+      }
+      return [];
+    }
+  };
+  const agent = makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), timeoutMs: INGRESS_FORWARD_TIMEOUT_MS });
+  const ingress = new IngressRoutes({
+    registrations: read,
+    logPath: TRAFFIC_LOG_PATH || void 0,
+    deliver: async (reg, delivery) => {
+      const out = await agent.post(
+        { vmId: reg.target.vmId, hostname: reg.target.hostname },
+        "/hooks/deliver",
+        { port: reg.target.port, path: reg.target.path, method: delivery.method, headers: delivery.headers, bodyB64: delivery.bodyB64 }
+      );
+      return { status: typeof out.status === "number" ? out.status : 502 };
+    }
+  });
+  const server = createServer3((req, res) => {
+    const url2 = new URL(req.url ?? "/", `http://localhost:${INGRESS_PORT}`);
+    if (!ownsIngressPath(url2.pathname)) {
+      res.writeHead(404, { "content-length": "0" });
+      res.end();
+      return;
+    }
+    void ingress.handle(req, res, url2.pathname).catch((error48) => {
+      console.error("[ingress]", error48.message);
+      if (!res.headersSent) {
+        res.writeHead(500, { "content-length": "0" });
+        res.end();
+      }
+    });
+  });
+  server.on("error", (error48) => console.error("[ingress] listener:", error48.message));
+  server.listen(INGRESS_PORT, INGRESS_BIND, () => {
+    console.log(`[mitm-agent] webhook ingress on ${INGRESS_BIND}:${INGRESS_PORT} (registrations: ${WEBHOOKS_PATH})`);
   });
 }
 void main();
