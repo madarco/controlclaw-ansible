@@ -389,6 +389,14 @@
       # a file on the state volume until the sealed store and the webhook.* command family land.
       Environment=INGRESS_PORT={{ ingress_port }}
       Environment=INGRESS_BIND=127.0.0.1
+      # The control plane's half of a webhook registration: ids, enabled, name and limits, never a
+      # target and never a check. Without this the firewall never pulls the list, so enabling,
+      # disabling and revoking a webhook all silently do nothing.
+      Environment=WEBHOOKS_URL={{ controlclaw_url }}/api/vm-agent/webhooks
+      # The registrations themselves, sealed under the box key. The phase-1 plain file below is
+      # still read when this is absent, so a box provisioned before the store existed keeps working
+      # until it is re-provisioned.
+      Environment=WEBHOOK_STORE_PATH=/opt/controlclaw/state/webhooks.enc
       Environment=WEBHOOKS_PATH=/opt/controlclaw/state/webhooks.json
       ExecStart=/usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
       Restart=always
