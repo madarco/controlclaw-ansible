@@ -22,7 +22,10 @@ Implements the security-critical core of the two-box architecture
   5. Included AI tokens (apps/saas/docs/features/included-ai-tokens.md): a credential with
      `allowed_models` is the plan's AI Gateway key. It is only swapped into requests for one of
      those models (plus the model list); anything else is answered here and never reaches the
-     gateway. A "budget used up" answer from the gateway is rewritten into plain words.
+     gateway. A 402 from the gateway is rewritten into plain words and classified on the traffic
+     record (`included`): `used_up` is the organisation's own budget, `no_credit` is ControlClaw's
+     gateway account with nothing left, and `ok` is a call that went through. The agent reports
+     the last two to the control plane, which is how the console knows to pause and to un-pause.
   6. Residential exit (apps/saas/docs/features/residential-exit.md): a rule may carry
      `exit: "residential"`, which sends that destination out through the org's own upstream
      residential proxy instead of this box's address. Such a flow is RELAYED, not inspected — the
@@ -547,18 +550,57 @@ def _residential_ready() -> tuple[dict[str, Any] | None, str | None]:
     return up, None
 
 
-def render_template(template: str, username: str, password: str, session: str | None) -> str:
+COUNTRY_RE = re.compile(r"^[A-Z]{2}$")
+_PLACEHOLDER_RE = re.compile(r"\{(username|password|session|country|country_lc)\}")
+
+
+def normalize_country(value: Any) -> str | None:
+    """ISO 3166-1 alpha-2, uppercase, or None. The one shape every part of the feature agrees on."""
+    clean = value.strip().upper() if isinstance(value, str) else ""
+    return clean if COUNTRY_RE.match(clean) else None
+
+
+def render_template(template: str, username: str = "", password: str = "",
+                    session: str | None = None, country: str | None = None) -> str:
     """Render a provider's username/password template.
 
     Providers put the knobs in different fields — Oxylabs and Bright Data in the username, IPRoyal
-    in the password — so the shape is data, never code. `{username}`, `{password}` and `{session}`
-    substitute; `[...]` is a segment kept only when there IS a session, which is how one template
-    serves both the sticky and the rotating case (`{username}[-session-{session}]`).
+    in the password — so the shape is data, never code. `{username}`, `{password}`, `{session}`,
+    `{country}` (uppercase) and `{country_lc}` (lowercase) substitute.
+
+    A `[...]` segment is kept only when EVERY placeholder inside it has a value, and dropped whole
+    otherwise. That is what lets one template serve sticky and rotating sessions and a chosen and
+    an unchosen country at once (`customer-{username}[-cc-{country}][-sessid-{session}]` renders
+    all four combinations) instead of a dangling `-cc-` the provider refuses the credential for. A
+    segment with no placeholder in it keeps its old meaning and follows the session.
+
+    `mitm-agent/src/exit.ts:renderTemplate` is the same function in TypeScript and the two MUST
+    agree: the box authenticates the reachability check with it and this authenticates the
+    customer's traffic with it.
     """
-    out = re.sub(r"\[([^\[\]]*)\]", (lambda m: m.group(1)) if session else (lambda m: ""), template or "")
-    return (out.replace("{username}", username or "")
-               .replace("{password}", password or "")
-               .replace("{session}", session or ""))
+    values = {
+        "username": username or "",
+        "password": password or "",
+        "session": session or "",
+        "country": (country or "").upper(),
+        "country_lc": (country or "").lower(),
+    }
+
+    def fill(m: "re.Match[str]") -> str:
+        return values[m.group(1)]
+
+    def segment(m: "re.Match[str]") -> str:
+        inner = m.group(1)
+        names = _PLACEHOLDER_RE.findall(inner)
+        # A segment with nothing to fill keeps the rule it had before countries existed: it
+        # follows the session. A hand-written `{username}[-sticky]` must not start appearing on
+        # rotating connections it was never on.
+        if not names:
+            return inner if values["session"] else ""
+        return inner if all(values[n] for n in names) else ""
+
+    out = re.sub(r"\[([^\[\]]*)\]", segment, template or "")
+    return _PLACEHOLDER_RE.sub(fill, out)
 
 
 def session_for(vm_id: str | None) -> str | None:
@@ -575,10 +617,74 @@ def session_for(vm_id: str | None) -> str | None:
     return hmac.new(salt.encode("utf-8"), vm_id.encode("utf-8"), hashlib.sha256).hexdigest()[:12]
 
 
-def upstream_credentials(up: dict[str, Any], vm_id: str | None) -> tuple[str, str]:
+def _templates_take_country(up: dict[str, Any]) -> bool:
+    """Whether this provider's templates have anywhere to put a country at all."""
+    both = f"{up.get('username_template') or ''} {up.get('password_template') or ''}"
+    return "{country}" in both or "{country_lc}" in both
+
+
+def country_refusal(up: dict[str, Any], country: str | None) -> str | None:
+    """Why this country cannot be asked of this upstream, or None if it can.
+
+    A country the credential has nowhere to carry is the dangerous case: the rendered credential
+    is byte-for-byte the one with no country, so the flow leaves from wherever the provider felt
+    like and every part of the console reads as though the choice was honoured. Failing closed is
+    the only outcome that does not lie.
+    """
+    if country and not _templates_take_country(up):
+        return f"this exit's credential has no country field, so it cannot come out in {country}"
+    return None
+
+
+def exit_country_for(rule: dict[str, Any] | None) -> str | None:
+    """Which country this flow should come out in: the rule's own choice, else the org default.
+
+    A rule carries `exit_country` only when someone set one on it; anything else falls back to
+    `exit.json`'s `country`, which is itself allowed to be absent ("wherever the provider puts
+    us"). A malformed value on either is read as "no country" rather than passed on: a provider
+    handed junk here refuses the whole credential, which would take a working exit down over a
+    typo in a setting.
+    """
+    if rule:
+        own = normalize_country(rule.get("exit_country"))
+        if own:
+            return own
+    return normalize_country(exit_config().get("country"))
+
+
+# `http_connect_upstream` fires from a flow mitmproxy fabricates for the CONNECT
+# (`_upstream_proxy.HttpUpstreamProxy.start_handshake`), so nothing the real flow holds reaches it
+# — and it must not re-derive the country from the connection alone. The two paths choose their
+# rule differently: the TLS relay uses `residential_rule` (connection-level) and the plaintext
+# path uses `match_rule` (path-aware), and a path-scoped rule that outranks the residential one
+# makes them disagree. Re-deriving would then render the credential with the ORG default and send
+# the flow out of a country nobody asked for, silently — the exact failure `country_refusal`
+# exists to prevent. So the decision is tagged on the client connection, which is the one object
+# both the decision and the hook can see, and the destination is carried with it so a tag can
+# never be read for a request it was not made for.
+def tag_exit_country(client, host: str, port: int | None, country: str | None) -> None:
+    try:
+        client.cc_exit_country = (host, int(port or 0), country)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def tagged_exit_country(client, host: str, port: int | None) -> tuple[bool, str | None]:
+    """(was this destination tagged, the country tagged for it)."""
+    tag = getattr(client, "cc_exit_country", None)
+    if not isinstance(tag, tuple) or len(tag) != 3:
+        return False, None
+    if tag[0] != host or tag[1] != int(port or 0):
+        return False, None
+    return True, tag[2]
+
+
+def upstream_credentials(up: dict[str, Any], vm_id: str | None, country: str | None = None) -> tuple[str, str]:
     session = session_for(vm_id)
-    user = render_template(str(up.get("username_template") or "{username}"), str(up.get("username") or ""), "", session)
-    pw = render_template(str(up.get("password_template") or "{password}"), "", str(up.get("password") or ""), session)
+    user = render_template(str(up.get("username_template") or "{username}"),
+                           username=str(up.get("username") or ""), session=session, country=country)
+    pw = render_template(str(up.get("password_template") or "{password}"),
+                         password=str(up.get("password") or ""), session=session, country=country)
     return user, pw
 
 
@@ -611,6 +717,9 @@ INCLUDED_BLOCK_STATUS = 400
 INCLUDED_HINT = "Pick one of your plan's models, or add your own provider key in ControlClaw under Model providers."
 INCLUDED_EXHAUSTED = ("Your plan's included AI tokens are used up for this month. They reset on the 1st; "
                       "until then, add your own provider key in ControlClaw under Model providers.")
+INCLUDED_NO_CREDIT = ("Included AI is paused: the AI provider refused this call over billing on ControlClaw's "
+                      "side, not yours. ControlClaw has been told. Your own provider keys still work; see "
+                      "Model providers in ControlClaw for where this stands.")
 
 
 def _placeholder_in_request(flow: http.HTTPFlow, cred: dict[str, Any]) -> bool:
@@ -666,20 +775,43 @@ def _error_body(message: str, code: str) -> str:
     return json.dumps({"error": {"message": message, "type": "invalid_request_error", "code": code}})
 
 
-def reword_exhausted(flow: http.HTTPFlow) -> bool:
-    """The gateway's 402 for an exhausted key budget names our key id and a dollar amount; the
-    agent passes the message on to a person, so say what happened and what to do instead."""
+def classify_included_402(flow: http.HTTPFlow) -> str | None:
+    """Which kind of billing refusal the gateway answered an included-tokens request with.
+
+    `used_up`   the organisation's own key budget is spent — what the plan's allowance running out
+                looks like, and the organisation's own business.
+    `no_credit` anything else: the gateway refusing over billing for a reason that is not this
+                key's budget, which in practice is our AI Gateway team running out of credit and
+                every organisation on the included tokens going down at once.
+
+    Generous on purpose. The refusal seen in production carried no type the gateway documents, so
+    reading only a known list would have missed it again; being told about a 402 we can check
+    against the balance in one call beats another silent outage. What follows from that is that
+    the wording above must not tell the reader anything about their own allowance — only the
+    console, which knows both numbers, says whose problem it is.
+    """
     if not flow.metadata.get("cc_included") or not flow.response or flow.response.status_code != 402:
-        return False
+        return None
     try:
         kind = (json.loads(flow.response.get_text(strict=False) or "{}").get("error") or {}).get("type")
     except (ValueError, AttributeError):
         kind = None
-    if kind not in ("quota_for_entity_exceeded", "insufficient_funds"):
-        return False
-    flow.response.set_text(_error_body(INCLUDED_EXHAUSTED, "included_tokens_used_up"))
+    return "used_up" if kind == "quota_for_entity_exceeded" else "no_credit"
+
+
+def reword_402(flow: http.HTTPFlow) -> str | None:
+    """Rewrite the gateway's billing refusal into something a person can act on, and say which kind
+    it was. The gateway's own message names our key id and a dollar amount and the agent passes it
+    straight on to a person, so neither kind is ever forwarded as-is."""
+    kind = classify_included_402(flow)
+    if not kind:
+        return None
+    if kind == "used_up":
+        flow.response.set_text(_error_body(INCLUDED_EXHAUSTED, "included_tokens_used_up"))
+    else:
+        flow.response.set_text(_error_body(INCLUDED_NO_CREDIT, "included_ai_no_credit"))
     flow.response.headers["content-type"] = "application/json"
-    return True
+    return kind
 
 
 # ----- swap -----------------------------------------------------------------
@@ -986,11 +1118,13 @@ def encode_host(host: str) -> bytes | None:
 def _exit_record(ctx, rule: dict[str, Any] | None, host: str, port: int | None,
                  vm_id: str | None, error: str) -> dict[str, Any]:
     """The one record a refused residential connection leaves behind."""
+    country = exit_country_for(rule)
     return {
         "flow_id": "res_" + hashlib.sha256(f"{time.time()}{host}{port}".encode()).hexdigest()[:24],
         "ts": time.time(), "tenant": TENANT, "vm_id": vm_id,
         "host": host, "port": port, "effect": "residential",
         "rule": (rule or {}).get("name"), "exit": "residential", "error": error[:200],
+        **({"exit_country": country} if country else {}),
     }
 
 
@@ -1016,7 +1150,12 @@ def _residential_stack(ctx, host: str, port: int, rule: dict[str, Any], vm_id: s
         # relay over that socket instead of the tunnel. The firewall's unit sets `lazy`; if it did
         # not, say so plainly instead of quietly exiting from the wrong address.
         return None, "this firewall's proxy is running with connection_strategy=eager"
-    user, pw = upstream_credentials(up, vm_id)
+    country = exit_country_for(rule)
+    refused = country_refusal(up, country)
+    if refused:
+        return None, refused
+    tag_exit_country(ctx.client, host, port, country)
+    user, pw = upstream_credentials(up, vm_id, country)
     session = session_for(vm_id)
     scheme = str(up.get("scheme"))
     ctx.server.address = (host, int(port))
@@ -1030,7 +1169,7 @@ def _residential_stack(ctx, host: str, port: int, rule: dict[str, Any], vm_id: s
     relay = _proxy_layers.TCPLayer(ctx)  # ignore=False: a real TCPFlow, so we get bytes and hooks
     relay.flow.metadata["cc_exit"] = {
         "rule": rule.get("name") or rule.get("match_domain"),
-        "host": host, "port": int(port), "vm_id": vm_id,
+        "host": host, "port": int(port), "vm_id": vm_id, "country": country,
         "session": session, "in": 0, "out": 0, "billed_in": 0, "billed_out": 0, "seq": 0,
     }
     stack /= relay
@@ -1259,6 +1398,10 @@ def _residential_record(flow, meta: dict[str, Any], interim: bool = False) -> di
         "host": meta.get("host") or "", "port": meta.get("port"),
         "effect": "residential", "rule": meta.get("rule"), "exit": "residential",
         "bytes_in": moved_in, "bytes_out": moved_out,
+        # On every record, not only on a refusal: "which country did this come out in" is a
+        # question about the flows that WORKED, and the console cannot answer it from a rule
+        # (a rule's country can change after the fact).
+        **({"exit_country": meta["country"]} if meta.get("country") else {}),
     }
     start = getattr(getattr(flow, "client_conn", None), "timestamp_start", None)
     if start and not interim:
@@ -1280,7 +1423,14 @@ def http_connect_upstream(flow: http.HTTPFlow) -> None:
             log.warning(f"[mitm] upstream CONNECT without a usable exit: {why}")
             return
         vm_id = vm_id_for_ip(_peer_ip(flow.client_conn.peername))
-        user, pw = upstream_credentials(up, vm_id)
+        host = flow.request.host or ""
+        # The country the path that built this stack actually decided on (see `tag_exit_country`).
+        # The fallback is for a stack nothing tagged, which can only be a mitmproxy path we do not
+        # own; the connection-level answer is right for every rule that has no `match_path`.
+        tagged, country = tagged_exit_country(flow.client_conn, host, flow.request.port)
+        if not tagged:
+            country = exit_country_for(residential_rule(host, flow.request.port, vm_id))
+        user, pw = upstream_credentials(up, vm_id, country)
         if user or pw:
             token = base64.b64encode(f"{user}:{pw}".encode("utf-8")).decode("ascii")
             flow.request.headers["Proxy-Authorization"] = f"Basic {token}"
@@ -1300,6 +1450,9 @@ def _residential_http_record(flow: http.HTTPFlow) -> dict[str, Any]:
     rec.pop("method", None)
     rec.pop("path", None)
     rec.update({"port": flow.request.port, "exit": "residential"})
+    _, country = tagged_exit_country(flow.client_conn, flow.request.host or "", flow.request.port)
+    if country:
+        rec["exit_country"] = country
     return rec
 
 
@@ -1347,6 +1500,12 @@ async def request(flow: http.HTTPFlow) -> None:
         if encode_host(host) is None:
             _refuse_residential_http(flow, host, f"{host[:60]!r} cannot be put in a CONNECT request")
             return
+        http_country = exit_country_for(rule)
+        refused = country_refusal(up, http_country)
+        if refused:
+            _refuse_residential_http(flow, host, refused)
+            return
+        tag_exit_country(flow.client_conn, host, flow.request.port, http_country)
         # A FRESH Server, not `flow.server_conn.via = ...`. `Context.fork()` hands every stream on
         # one client connection the SAME Server object, so setting `via` on it is not per-request:
         # the next request on that connection — to any host, residential or not — would inherit
@@ -1484,10 +1643,13 @@ def response(flow: http.HTTPFlow) -> None:
         return
     if flow.metadata.get("cc_effect") not in (None, "allow"):
         return
-    if reword_exhausted(flow):
-        rec_extra = {"included": "used_up"}
-    else:
-        rec_extra = {}
+    # `included` on the record is what the console turns into a plain reason, and what the agent
+    # reads off the traffic log to tell the control plane about our gateway. `ok` matters as much
+    # as the refusals: one call getting through is what says the outage is over.
+    kind = reword_402(flow)
+    if not kind and flow.metadata.get("cc_included") and flow.response.status_code < 400:
+        kind = "ok"
+    rec_extra = {"included": kind} if kind else {}
     rec = _allow_record(flow)
     rec.update(rec_extra)
     rec["status"] = flow.response.status_code

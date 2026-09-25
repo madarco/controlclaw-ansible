@@ -35269,6 +35269,11 @@ function parseProviderBlock(raw) {
   const models = b.models.filter((m) => str4(m?.id)).map((m) => ({ id: String(m.id), name: str4(m.name) ?? String(m.id) }));
   return models.length ? { baseUrl: String(b.baseUrl), api: String(b.api), models } : null;
 }
+function parseMemorySearch(raw) {
+  const m = raw;
+  if (!m || !str4(m.provider) || !str4(m.model) || !str4(m.baseUrl)) return null;
+  return { provider: String(m.provider), model: String(m.model), baseUrl: String(m.baseUrl), dreaming: m.dreaming === true };
+}
 function parseModelList(raw) {
   if (!Array.isArray(raw)) return null;
   const list = raw.filter((m) => typeof m === "string" && m.length > 0);
@@ -35298,6 +35303,7 @@ function parseProposal3(payload) {
     oauth: oauth && str4(oauth.tokenEndpoint) && str4(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId), ...str4(oauth.clientSecret) ? { clientSecret: String(oauth.clientSecret) } : {} } : null,
     providerBlock: parseProviderBlock(payload.providerBlock),
     allowedModels: parseModelList(payload.allowedModels),
+    memory: parseMemorySearch(payload.memory),
     replaces: str4(payload.replaces),
     agents: agents.filter((a) => str4(a.vmId) && str4(a.model)).map((a) => ({ vmId: String(a.vmId), name: str4(a.name) ?? String(a.vmId), hostname: str4(a.hostname), model: String(a.model), role: a.role === "secondary" ? "secondary" : "primary" })),
     secret: parseSecret2(payload.secret)
@@ -35445,7 +35451,9 @@ var LlmFirewall = class {
     if (!agent || agent.bindings.length === 0) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
     if (str4(payload.hostname)) agent.hostname = String(payload.hostname);
     if (str4(payload.name)) agent.name = String(payload.name);
+    const refreshed = this.refreshCredential(payload.refresh);
     this.save();
+    if (refreshed) await this.opts.onCredentialsChanged?.();
     const failed = await this.pushAgents([vmId], []);
     this.log(`[llm] re-applied ${agent.bindings.length} provider(s) on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
     return {
@@ -35456,6 +35464,60 @@ var LlmFirewall = class {
     };
   }
   // ---- applying ----
+  /**
+   * Put the catalog data a push carries onto the credential it names. Returns whether anything
+   * changed, because the model allow-list is also what the proxy enforces.
+   *
+   * The allow-list is the reason this exists at all: the memory descriptor is useless without an
+   * allow-list that covers its embedding model, since the proxy would answer every embedding
+   * request itself and OpenClaw would report memory search as unavailable rather than falling
+   * back to keyword ranking.
+   */
+  refreshCredential(raw) {
+    const r = raw;
+    const credentialId = r ? str4(r.credentialId) : null;
+    if (!credentialId) return false;
+    const cred = this.store.credentials[credentialId];
+    if (!cred) return false;
+    const before = JSON.stringify([cred.memory ?? null, cred.allowedModels ?? null]);
+    const allowed = parseModelList(r.allowedModels);
+    if (allowed && cred.allowedModels) cred.allowedModels = allowed;
+    const memory = parseMemorySearch(r.memory);
+    if (memory && cred.allowedModels && !cred.allowedModels.includes(memory.model)) {
+      this.log(`[llm] ignoring a memory descriptor for ${cred.provider}: ${memory.model} is not on this key's allow-list`);
+      delete cred.memory;
+    } else if (memory) cred.memory = memory;
+    else delete cred.memory;
+    return before !== JSON.stringify([cred.memory ?? null, cred.allowedModels ?? null]);
+  }
+  /**
+   * Memory search for one agent box: the first bound credential that can pay for embeddings, with
+   * its placeholder as the key.
+   *
+   * Three answers, not two. A descriptor writes it. `null` takes ours back off, and is sent only
+   * when this firewall has a record of writing one — otherwise the box's own `memory.search`,
+   * which somebody may have set by hand, is none of our business and the key is left out
+   * entirely. What was pushed is remembered on the agent so the next push knows which it is.
+   */
+  memoryFor(vmId, bindings) {
+    for (const b of bindings) {
+      const c = this.store.credentials[b.credentialId];
+      if (c?.memory) return { memory: { ...c.memory, apiKey: c.placeholder } };
+    }
+    return this.store.agents[vmId]?.memory ? { memory: null } : {};
+  }
+  /**
+   * Record what a box actually took, once the POST has come back. Recording it while building the
+   * body would mean a push that never landed still counted: the clear would be forgotten and the
+   * box would keep a `memory.search` block nothing was going to take off it again.
+   */
+  rememberPushed(vmId, body) {
+    const agent = this.store.agents[vmId];
+    if (!agent || !("memory" in body)) return;
+    const memory = parseMemorySearch(body.memory);
+    if (memory) agent.memory = memory;
+    else delete agent.memory;
+  }
   /** The whole desired state of one agent box. */
   applyBody(vmId, remove) {
     const agent = this.store.agents[vmId];
@@ -35471,17 +35533,20 @@ var LlmFirewall = class {
     }));
     const primary = bindings.find((b) => b.role === "primary") ?? bindings[0];
     const fallback = bindings.find((b) => b !== primary && b.role === "secondary");
-    return { model: { primary: primary?.model ?? null, fallbacks: fallback ? [fallback.model] : [] }, credentials, remove };
+    return { model: { primary: primary?.model ?? null, fallbacks: fallback ? [fallback.model] : [] }, credentials, remove, ...this.memoryFor(vmId, bindings) };
   }
   async pushAgents(vmIds, remove) {
     const failed = [];
     for (const vmId of vmIds) {
+      const body = this.applyBody(vmId, remove);
       try {
-        await this.opts.agent.post(this.target(vmId), "/llm/apply", this.applyBody(vmId, remove));
+        await this.opts.agent.post(this.target(vmId), "/llm/apply", body);
+        this.rememberPushed(vmId, body);
       } catch (err) {
         failed.push({ vmId, error: err.message });
       }
     }
+    this.save();
     return failed;
   }
   /**
@@ -35528,6 +35593,7 @@ var LlmFirewall = class {
           ...p.oauth ? { oauth: p.oauth } : {},
           ...p.providerBlock ? { providerBlock: p.providerBlock } : {},
           ...p.allowedModels ? { allowedModels: p.allowedModels } : {},
+          ...p.memory ? { memory: p.memory } : {},
           secret: p.secret,
           failed: null,
           updatedAt: new Date(this.now()).toISOString()
@@ -36061,11 +36127,11 @@ import { createHmac, randomBytes as randomBytes4 } from "crypto";
 import { connect as tcpConnect } from "net";
 import { connect as tlsConnect } from "tls";
 var CHECK_SESSION = "__check";
-var DEFAULT_URL = "https://api.ipify.org/";
+var DEFAULT_URL = "https://ipinfo.io/json";
 var TIMEOUT_MS3 = 15e3;
 function fail(socket, message2) {
   socket?.destroy();
-  return { ok: false, exitIp: null, latencyMs: 0, error: message2.slice(0, 200) };
+  return { ok: false, exitIp: null, exitCountry: null, latencyMs: 0, error: message2.slice(0, 200) };
 }
 function readUntil(socket, done, timeoutMs, endsOk = false) {
   return new Promise((resolve2, reject) => {
@@ -36162,6 +36228,11 @@ function portBytes(port) {
   b.writeUInt16BE(port);
   return b;
 }
+function parseEcho(body) {
+  const ip = /"ip"\s*:\s*"([0-9a-fA-F.:]{7,45})"/.exec(body)?.[1] ?? body.split("\n").map((l) => l.trim()).find((l) => /^[0-9a-fA-F.:]{7,45}$/.test(l)) ?? null;
+  const country = /"country"\s*:\s*"([A-Za-z]{2})"/.exec(body)?.[1]?.toUpperCase() ?? null;
+  return { ip, country };
+}
 async function checkExit(upstream, render, opts = {}) {
   const started = Date.now();
   const url2 = new URL(opts.url || process.env.MITM_EXIT_CHECK_URL || DEFAULT_URL);
@@ -36169,8 +36240,9 @@ async function checkExit(upstream, render, opts = {}) {
   const port = Number(url2.port || 443);
   const session = opts.session === void 0 ? CHECK_SESSION : opts.session;
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS3;
-  const user = render(upstream.usernameTemplate, upstream.username, "", session);
-  const password = render(upstream.passwordTemplate, "", upstream.password, session);
+  const country = opts.country ?? null;
+  const user = render(upstream.usernameTemplate, { username: upstream.username, session, country });
+  const password = render(upstream.passwordTemplate, { password: upstream.password, session, country });
   let socket = null;
   try {
     socket = await dial(upstream.host, upstream.port, timeoutMs);
@@ -36190,9 +36262,22 @@ Connection: close\r
 `);
     const raw = await readUntil(tls, responseComplete, timeoutMs, true);
     tls.destroy();
+    const head = raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("latin1");
+    const echoStatus = Number(/^HTTP\/1\.[01]\s+(\d{3})/.exec(head)?.[1]);
+    if (!Number.isFinite(echoStatus) || echoStatus < 200 || echoStatus > 299) {
+      return {
+        ok: true,
+        exitIp: null,
+        exitCountry: null,
+        latencyMs: Date.now() - started,
+        // Recorded, not blamed on the credential. The card shows it next to "Reachable" so the
+        // missing address is explained rather than just absent.
+        error: `the tunnel opened, but ${host} answered ${Number.isFinite(echoStatus) ? echoStatus : "nothing readable"}, so the address could not be read`
+      };
+    }
     const body = raw.subarray(raw.indexOf("\r\n\r\n") + 4).toString("utf8").trim();
-    const ip = body.split("\n").map((l) => l.trim()).find((l) => /^[0-9a-fA-F.:]{7,45}$/.test(l)) ?? null;
-    return { ok: true, exitIp: ip, latencyMs: Date.now() - started, error: null };
+    const { ip, country: country2 } = parseEcho(body);
+    return { ok: true, exitIp: ip, exitCountry: country2, latencyMs: Date.now() - started, error: null };
   } catch (err) {
     return fail(socket, err.message || "the exit could not be reached");
   } finally {
@@ -36214,6 +36299,7 @@ function emptyExitStore(now2 = Date.now()) {
     sticky: false,
     stickySalt: "",
     capBytes: null,
+    country: null,
     usage: { month: monthKey(now2), bytesIn: 0, bytesOut: 0 },
     lastCheck: null,
     updatedAt: new Date(now2).toISOString()
@@ -36244,11 +36330,43 @@ function isKind5(v) {
 function isScheme(v) {
   return v === "http" || v === "https" || v === "socks5";
 }
-function renderTemplate(template, username, password, session) {
-  const out = (template || "").replace(/\[([^[\]]*)\]/g, (_m, inner) => session ? inner : "");
-  return out.replaceAll("{username}", username || "").replaceAll("{password}", password || "").replaceAll("{session}", session || "");
+function templatesOf(v) {
+  if (!v || typeof v !== "object") return null;
+  const t = v;
+  const u = str7(t.usernameTemplate);
+  const p = str7(t.passwordTemplate);
+  return u && p ? { usernameTemplate: u, passwordTemplate: p } : null;
 }
-function summarize6(p) {
+function normalizeCountry(v) {
+  const clean = typeof v === "string" ? v.trim().toUpperCase() : "";
+  return /^[A-Z]{2}$/.test(clean) ? clean : null;
+}
+var PLACEHOLDERS = /\{(username|password|session|country|country_lc)\}/g;
+function placeholderValue(name25, v) {
+  switch (name25) {
+    case "username":
+      return v.username || "";
+    case "password":
+      return v.password || "";
+    case "session":
+      return v.session || "";
+    case "country":
+      return (v.country || "").toUpperCase();
+    case "country_lc":
+      return (v.country || "").toLowerCase();
+    default:
+      return "";
+  }
+}
+function renderTemplate(template, values) {
+  const out = (template || "").replace(/\[([^[\]]*)\]/g, (_m, inner) => {
+    const names = [...inner.matchAll(PLACEHOLDERS)].map((m) => m[1]);
+    if (names.length === 0) return values.session ? inner : "";
+    return names.every((n) => placeholderValue(n, values) !== "") ? inner : "";
+  });
+  return out.replace(PLACEHOLDERS, (_m, name25) => placeholderValue(name25, values));
+}
+function summarize6(p, current) {
   const who = p.usernameHint ? ` (${p.usernameHint})` : "";
   switch (p.kind) {
     case "add":
@@ -36258,6 +36376,9 @@ function summarize6(p) {
     case "remove":
       return "Stop sending any traffic out through a residential exit";
     case "settings":
+      if (p.country !== void 0 && (p.country ?? null) !== (current?.country ?? null)) {
+        return p.country ? `Have your residential traffic come out in ${p.country}` : "Stop asking for a particular country on your residential traffic";
+      }
       return p.sticky ? "Give each agent its own residential IP" : "Stop giving each agent its own residential IP";
   }
 }
@@ -36286,6 +36407,14 @@ function parseProposal6(payload) {
     // Only `null` removes it. (Over the wire only the absent form can occur, but the two must not
     // diverge: the difference between "leave it" and "remove it" is a customer's invoice.)
     capBytes: payload.capBytes === void 0 ? void 0 : num(payload.capBytes),
+    // Same tri-state as the cap. A malformed code is read as "any country" rather than passed on:
+    // a provider given junk here refuses the whole credential, which would take the credential's
+    // own traffic down with a typo in a setting.
+    country: payload.country === void 0 ? void 0 : normalizeCountry(payload.country),
+    // Nested under its own key, never read off the top-level `usernameTemplate` an add/replace
+    // already carries: a settings change must move the credential's shape only when it is ABOUT
+    // that, not because the two happen to share a field name.
+    ...templatesOf(payload.templates) ? { templates: templatesOf(payload.templates) } : {},
     ...str7(payload.username) ? { username: String(payload.username) } : {},
     ...str7(payload.password) ? { password: String(payload.password) } : {}
   };
@@ -36345,7 +36474,9 @@ var ExitFirewall = class {
       sticky: this.store.sticky,
       sticky_salt: this.store.stickySalt,
       cap_bytes: this.store.capBytes,
-      used_bytes: this.usedThisMonth()
+      used_bytes: this.usedThisMonth(),
+      // The org default. A rule's own `exit_country` wins over it; the proxy resolves that.
+      country: this.store.country
     };
   }
   /** What rides the heartbeat. No secret, and no field the control plane could mistake for policy. */
@@ -36358,10 +36489,12 @@ var ExitFirewall = class {
       sticky: this.store.sticky,
       hint: u?.usernameHint ?? null,
       cap_bytes: this.store.capBytes,
+      country: this.store.country,
       last_check: this.store.lastCheck ? {
         at: Math.round(this.store.lastCheck.at / 1e3),
         ok: this.store.lastCheck.ok,
         exit_ip: this.store.lastCheck.exitIp,
+        exit_country: this.store.lastCheck.exitCountry,
         error: this.store.lastCheck.error
       } : null,
       usage: { month: this.store.usage.month, bytes_in: this.store.usage.bytesIn, bytes_out: this.store.usage.bytesOut }
@@ -36420,22 +36553,32 @@ var ExitFirewall = class {
     if (this.now() - this.lastCheckStartedAt < CHECK_INTERVAL_MS) return;
     await this.runCheck();
   }
+  /** Run the reachability check now, whatever the schedule says. */
+  async forceCheck() {
+    this.lastCheckStartedAt = 0;
+    return this.runCheck();
+  }
   async runCheck() {
     const upstream = this.store.upstream;
     if (!upstream || this.checking) return null;
     this.checking = true;
     this.lastCheckStartedAt = this.now();
     try {
-      const result = await this.check(upstream, renderTemplate, { session: this.store.sticky ? CHECK_SESSION : null });
+      const result = await this.check(upstream, renderTemplate, {
+        session: this.store.sticky ? CHECK_SESSION : null,
+        // The org default, so what the card reports as the exit IP is the country most rules get.
+        country: this.store.country
+      });
       const before = this.store.lastCheck;
-      this.store.lastCheck = { at: this.now(), ok: result.ok, exitIp: result.exitIp, error: result.error };
+      this.store.lastCheck = { at: this.now(), ok: result.ok, exitIp: result.exitIp, exitCountry: result.exitCountry, error: result.error };
       this.save();
-      if (!before || before.ok !== result.ok || before.exitIp !== result.exitIp) {
-        this.log(`[exit] ${result.ok ? `reachable, exiting from ${result.exitIp ?? "an unknown address"}` : `unreachable: ${result.error}`}`);
+      if (!before || before.ok !== result.ok || before.exitIp !== result.exitIp || before.exitCountry !== result.exitCountry) {
+        const where = `${result.exitIp ?? "an unknown address"}${result.exitCountry ? ` in ${result.exitCountry}` : ""}`;
+        this.log(`[exit] ${result.ok ? `reachable, exiting from ${where}` : `unreachable: ${result.error}`}`);
       }
       return result;
     } catch (err) {
-      this.store.lastCheck = { at: this.now(), ok: false, exitIp: null, error: err.message.slice(0, 200) };
+      this.store.lastCheck = { at: this.now(), ok: false, exitIp: null, exitCountry: null, error: err.message.slice(0, 200) };
       this.save();
       return null;
     } finally {
@@ -36449,14 +36592,13 @@ var ExitFirewall = class {
   // ---- commands ----
   async runCheckCommand() {
     if (!this.store.upstream) return { ok: false, status: "failed", message: "No residential exit is set up." };
-    this.lastCheckStartedAt = 0;
-    const result = await this.runCheck();
+    const result = await this.forceCheck();
     if (!result) return { ok: false, status: "failed", message: "The check could not run." };
     return {
       ok: result.ok,
       status: result.ok ? "applied" : "failed",
       message: result.error ?? "",
-      data: { exitIp: result.exitIp, latencyMs: result.latencyMs }
+      data: { exitIp: result.exitIp, exitCountry: result.exitCountry, latencyMs: result.latencyMs }
     };
   }
   async apply(p) {
@@ -36472,10 +36614,23 @@ var ExitFirewall = class {
     if (p.kind === "settings") {
       this.store.sticky = p.sticky;
       if (p.capBytes !== void 0) this.store.capBytes = p.capBytes;
+      const countryMoved = p.country !== void 0 && p.country !== this.store.country;
+      if (p.country !== void 0) this.store.country = p.country;
+      const templatesMoved = !!p.templates && !!this.store.upstream && (this.store.upstream.usernameTemplate !== p.templates.usernameTemplate || this.store.upstream.passwordTemplate !== p.templates.passwordTemplate);
+      if (templatesMoved && this.store.upstream && p.templates) {
+        this.store.upstream.usernameTemplate = p.templates.usernameTemplate;
+        this.store.upstream.passwordTemplate = p.templates.passwordTemplate;
+      }
       this.save();
       await this.opts.onExitChanged?.();
-      this.log(`[exit] sticky ${p.sticky ? "on" : "off"}, cap ${p.capBytes ?? "none"}`);
-      return { configured: !!this.store.upstream, sticky: p.sticky };
+      this.log(`[exit] sticky ${p.sticky ? "on" : "off"}, cap ${p.capBytes ?? "none"}, country ${this.store.country ?? "any"}${templatesMoved ? ", credential shape updated" : ""}`);
+      const result2 = countryMoved || templatesMoved ? await this.forceCheck() : null;
+      return {
+        configured: !!this.store.upstream,
+        sticky: p.sticky,
+        country: this.store.country,
+        ...result2 ? { reachable: result2.ok, exitIp: result2.exitIp, exitCountry: result2.exitCountry, ...result2.ok ? {} : { checkError: result2.error } } : {}
+      };
     }
     const previous = this.store.upstream;
     const username = p.username ?? previous?.username ?? "";
@@ -36494,25 +36649,28 @@ var ExitFirewall = class {
     };
     this.store.upstream = upstream;
     this.store.sticky = p.sticky;
+    if (p.country !== void 0) this.store.country = p.country;
     if (p.capBytes !== void 0) this.store.capBytes = p.capBytes;
     else if (!previous) this.store.capBytes = DEFAULT_CAP_BYTES;
     this.store.stickySalt = randomBytes4(32).toString("hex");
     this.store.lastCheck = null;
     this.save();
     await this.opts.onExitChanged?.();
-    this.log(`[exit] ${p.kind === "add" ? "connected" : "replaced"} ${p.providerName} (${p.scheme}://${p.host}:${p.port}, sticky ${p.sticky ? "on" : "off"})`);
+    this.log(`[exit] ${p.kind === "add" ? "connected" : "replaced"} ${p.providerName} (${p.scheme}://${p.host}:${p.port}, sticky ${p.sticky ? "on" : "off"}, country ${this.store.country ?? "any"})`);
     const result = await this.runCheck();
     return {
       configured: true,
       sticky: p.sticky,
+      country: this.store.country,
       reachable: result?.ok ?? false,
       exitIp: result?.exitIp ?? null,
+      exitCountry: result?.exitCountry ?? null,
       ...result && !result.ok ? { checkError: result.error } : {}
     };
   }
   async propose(payload) {
     const p = parseProposal6(payload);
-    const summary = summarize6(p);
+    const summary = summarize6(p, { country: this.store.country });
     const data = { changeId: p.changeId, summary };
     if (!this.opts.channelsReady()) {
       return { ok: false, status: "failed", data, message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly." };
@@ -36536,8 +36694,9 @@ var ExitFirewall = class {
     const v = this.codes.verify(SCOPE5, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
+    const summary = summarize6(v.proposal, { country: this.store.country });
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize6(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary, sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str7(payload.changeId);
@@ -39611,6 +39770,98 @@ var ActivityShipper = class {
       console.error(`[activity] ship failed (${err.message}); retry in ${this.backoffMs / 1e3}s`);
       return null;
     }
+  }
+};
+
+// src/included-credit.ts
+var REPORT_INTERVAL_MS = 5 * 6e4;
+var IncludedCreditWatch = class {
+  seen = 0;
+  firstAt = null;
+  lastAt = null;
+  reportedAt = 0;
+  /** A refusal report went out and has not been followed by a recovery one. */
+  outstanding = false;
+  /** A call got through after that report: say so on the next beat. */
+  recovered = false;
+  now;
+  log;
+  constructor(opts = {}) {
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? ((l) => console.log(l));
+  }
+  /**
+   * Walk one shipped batch in the order the proxy wrote it, counting refusals and watching for a
+   * call that got through. A success wipes the refusals still waiting to be reported: they are
+   * already out of date, and reporting them would pause a console that should not be paused.
+   */
+  note(records) {
+    for (const r of records) {
+      if (typeof r !== "object" || r === null) continue;
+      const mark = r.included;
+      if (mark === "no_credit") {
+        this.recovered = false;
+        const ts = r.ts;
+        const at = typeof ts === "number" && Number.isFinite(ts) ? ts * 1e3 : this.now();
+        if (this.firstAt === null || at < this.firstAt) this.firstAt = at;
+        if (this.lastAt === null || at > this.lastAt) this.lastAt = at;
+        this.seen++;
+        if (this.seen === 1) this.log("[included] the AI gateway refused a call for lack of credit on our account");
+        continue;
+      }
+      if (mark !== "ok") continue;
+      this.seen = 0;
+      this.firstAt = null;
+      this.lastAt = null;
+      if (this.outstanding && !this.recovered) {
+        this.recovered = true;
+        this.log("[included] the AI gateway is answering again");
+      }
+    }
+  }
+  /**
+   * The line for this beat, or nothing. Rate-limited rather than drained: a firewall whose agents
+   * keep retrying must not turn one outage into a report every five seconds, and the count is
+   * what says how bad it is, so it is only cleared once a report actually goes out.
+   */
+  drainReports() {
+    const now2 = this.now();
+    if (this.recovered) {
+      this.recovered = false;
+      this.outstanding = false;
+      this.reportedAt = now2;
+      return [
+        {
+          command_id: `included.recovered:${Math.floor(now2 / 1e3)}`,
+          ok: true,
+          status: "gateway_recovered",
+          message: "The AI Gateway is answering included-tokens calls again.",
+          data: {}
+        }
+      ];
+    }
+    if (this.seen === 0 || now2 - this.reportedAt < REPORT_INTERVAL_MS) return [];
+    const seen = this.seen;
+    const firstAt = this.firstAt;
+    const lastAt = this.lastAt;
+    this.reportedAt = now2;
+    this.outstanding = true;
+    this.seen = 0;
+    this.firstAt = null;
+    this.lastAt = null;
+    return [
+      {
+        command_id: `included.no-credit:${Math.floor(now2 / 1e3)}`,
+        ok: false,
+        status: "gateway_no_credit",
+        message: `The AI Gateway refused ${seen} included-tokens call(s) for lack of credit on ControlClaw's account.`,
+        data: {
+          seen,
+          ...firstAt ? { firstAt: new Date(firstAt).toISOString() } : {},
+          ...lastAt ? { lastAt: new Date(lastAt).toISOString() } : {}
+        }
+      }
+    ];
   }
 };
 
@@ -99638,8 +99889,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e69f2c4" : "unknown",
-  builtAt: true ? "2026-09-24T10:48:31+01:00" : "unknown"
+  commit: true ? "unknown" : "unknown",
+  builtAt: true ? "2026-09-25T06:59:24.813Z" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -99787,6 +100038,7 @@ var drive = null;
 var search = null;
 var tailscale = null;
 var exitFirewall = null;
+var includedCredit = new IncludedCreditWatch();
 var connectors = null;
 var updates = null;
 var backups = null;
@@ -99863,7 +100115,10 @@ function makeShipper() {
     getToken,
     // The residential exit's byte count comes off the same records, so nothing tails the traffic
     // log twice. It is also what the monthly cap is checked against, by way of `exit.json`.
-    onShipped: (records) => exitFirewall?.noteTraffic(records)
+    onShipped: (records) => {
+      exitFirewall?.noteTraffic(records);
+      includedCredit.note(records);
+    }
   });
 }
 async function main() {
@@ -100251,7 +100506,8 @@ async function main() {
           ...llm?.drainReports() ?? [],
           ...drive?.drainReports() ?? [],
           ...backups?.drainReports() ?? [],
-          ...exitFirewall?.drainReports() ?? []
+          ...exitFirewall?.drainReports() ?? [],
+          ...includedCredit.drainReports()
         ],
         // What this firewall can do and how a run of it is going. The beat is the only way either
         // reaches the console: nothing can call in to this box.

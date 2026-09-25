@@ -297,12 +297,12 @@ var UpstreamError = class extends Error {
     this.status = status;
   }
 };
-function upstreamUsername(groups, session) {
-  return session ? `groups-${groups},session-${session}` : `groups-${groups}`;
+function upstreamUsername(groups, session, country) {
+  return [`groups-${groups}`, country ? `country-${country.toUpperCase()}` : null, session ? `session-${session}` : null].filter(Boolean).join(",");
 }
 function connectRequest(target, options) {
   const authority = `${target.host}:${target.port}`;
-  const auth = Buffer.from(`${upstreamUsername(options.groups, options.session)}:${options.password}`, "utf8").toString("base64");
+  const auth = Buffer.from(`${upstreamUsername(options.groups, options.session, options.country)}:${options.password}`, "utf8").toString("base64");
   return [`CONNECT ${authority} HTTP/1.1`, `Host: ${authority}`, `Proxy-Authorization: Basic ${auth}`, "Proxy-Connection: keep-alive", "", ""].join("\r\n");
 }
 function openUpstream(target, options) {
@@ -341,7 +341,13 @@ function openUpstream(target, options) {
       const statusLine = buffer.subarray(0, buffer.indexOf("\r\n") < 0 ? end : buffer.indexOf("\r\n")).toString("latin1");
       const status = Number(/^HTTP\/1\.[01]\s+(\d{3})/.exec(statusLine)?.[1]);
       if (!Number.isFinite(status) || status < 200 || status > 299) {
-        fail(new UpstreamError(`the residential exit answered ${Number.isFinite(status) ? status : "an unreadable status"}`, Number.isFinite(status) ? status : null));
+        const where = options.country ? ` asking for an address in ${options.country}` : "";
+        fail(
+          new UpstreamError(
+            `the residential exit answered ${Number.isFinite(status) ? status : "an unreadable status"}${where}`,
+            Number.isFinite(status) ? status : null
+          )
+        );
         return;
       }
       settled = true;
@@ -400,6 +406,16 @@ function sessionFromUsername(username) {
     if (m) return m[1];
   }
   return null;
+}
+function countryFromUsername(username) {
+  for (const part of username.split(",")) {
+    const raw = part.trim();
+    if (!raw.toLowerCase().startsWith("country-")) continue;
+    const value = raw.slice("country-".length);
+    if (/^[A-Za-z]{2}$/.test(value)) return { country: value.toUpperCase(), malformed: null };
+    return { country: null, malformed: value.slice(0, 16) };
+  }
+  return { country: null, malformed: null };
 }
 
 // src/relay.ts
@@ -500,6 +516,13 @@ var ExitRelay = class {
       if (remaining <= 0) {
         return deny(402, "Your residential exit balance is used up", "balance_empty", { organizationId });
       }
+      const requested = countryFromUsername(credentials?.username ?? "");
+      if (requested.malformed !== null) {
+        return deny(400, "That exit country is not a two-letter country code", "bad_country", {
+          organizationId,
+          detail: requested.malformed
+        });
+      }
       let upstreamSocket;
       let upstreamHead;
       try {
@@ -509,6 +532,7 @@ var ExitRelay = class {
           groups: this.deps.upstream.groups,
           password: this.deps.upstream.password,
           session: sessionFromUsername(credentials?.username ?? ""),
+          country: requested.country,
           connectTimeoutMs: this.deps.upstream.connectTimeoutMs
         });
         upstreamSocket = opened.socket;
@@ -591,8 +615,8 @@ var ExitRelay = class {
 // src/index.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "687cd3c" : "unknown",
-  at: true ? "2026-09-24T10:58:09+01:00" : "unknown"
+  commit: true ? "unknown" : "unknown",
+  at: true ? "2026-09-25T06:59:26.110Z" : "unknown"
 };
 function main() {
   const config = loadConfig();

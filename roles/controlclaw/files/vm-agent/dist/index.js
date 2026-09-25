@@ -30510,7 +30510,7 @@ var require_libsodium_wrappers = __commonJS({
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID3 } from "crypto";
-import { readFileSync as readFileSync15 } from "fs";
+import { readFileSync as readFileSync16 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e69f2c4" : "unknown",
-  builtAt: true ? "2026-09-24T10:48:31+01:00" : "unknown"
+  commit: true ? "unknown" : "unknown",
+  builtAt: true ? "2026-09-25T06:59:23.412Z" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -33189,11 +33189,51 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname4 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
+var REINDEX_TIMEOUT_MS = 15 * 6e4;
+var MEMORY_CORE_PLUGIN = "memory-core";
 var RETIRED_CODEX_PROVIDER_ID = "openai-codex";
 function str3(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+function memoryPatch(want, have) {
+  if (want === void 0) return null;
+  if (!want) {
+    if (!have.provider && !have.model && !have.baseUrl && !have.apiKey && have.dreaming) return null;
+    return {
+      patch: { memory: { search: { provider: null, model: null, remote: null } }, plugins: { entries: { [MEMORY_CORE_PLUGIN]: { config: { dreaming: { enabled: null } } } } } },
+      reindex: !!have.provider || !!have.model
+    };
+  }
+  if (have.provider === want.provider && have.model === want.model && have.baseUrl === want.baseUrl && have.apiKey === want.apiKey && have.dreaming === want.dreaming) return null;
+  return {
+    patch: {
+      memory: { search: { provider: want.provider, model: want.model, remote: { baseUrl: want.baseUrl, apiKey: want.apiKey } } },
+      plugins: { entries: { [MEMORY_CORE_PLUGIN]: { config: { dreaming: { enabled: want.dreaming } } } } }
+    },
+    // Only the embedding identity: OpenClaw ties an index to the adapter and the model, not to the
+    // key or the endpoint, so a rotated placeholder is written without touching the vectors.
+    reindex: have.provider !== want.provider || have.model !== want.model
+  };
+}
+function readMemory(config) {
+  const search2 = config.memory?.search;
+  const remote = search2?.remote;
+  const entries = config.plugins?.entries;
+  const dreaming = entries?.[MEMORY_CORE_PLUGIN]?.config?.dreaming?.enabled;
+  return { provider: str3(search2?.provider), model: str3(search2?.model), baseUrl: str3(remote?.baseUrl), apiKey: str3(remote?.apiKey), dreaming: dreaming !== false };
+}
+function readReindexFailure(path) {
+  if (!path || !existsSync6(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync11(path, "utf8"));
+    return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
+  } catch {
+    return null;
+  }
 }
 var LlmService = class {
   constructor(opts) {
@@ -33201,11 +33241,17 @@ var LlmService = class {
     this.exec = opts.execImpl ?? defaultExec;
     this.log = opts.log ?? ((line) => console.log(line));
     this.now = opts.now ?? Date.now;
+    this.reindexFailed = readReindexFailure(opts.statePath);
+    if (this.reindexFailed) this.log(`[llm] the memory index was left unbuilt: ${this.reindexFailed}`);
   }
   exec;
   log;
   now;
   modelsCache = /* @__PURE__ */ new Map();
+  /** The last index rebuild's failure, reported on `/llm/status` until one succeeds. */
+  reindexFailed = null;
+  /** A rebuild in flight; a second `--force` over the same index would fight the first. */
+  reindexing = false;
   gateway() {
     const c = this.opts.client;
     if (!c || !c.connected) throw new Error("OpenClaw is not running on this box");
@@ -33267,9 +33313,16 @@ var LlmService = class {
     const patch = {};
     if (Object.keys(providerPatch).length) patch.models = { providers: providerPatch };
     patch.agents = { defaults: { model: input.model.primary ? { primary: input.model.primary, fallbacks: input.model.fallbacks } : null } };
+    const memory = memoryPatch(input.memory, readMemory(config));
+    if (memory) Object.assign(patch, memory.patch);
+    let reindex = false;
     try {
       await this.patchConfig(patch, hash);
       applied.push("model");
+      if (memory) {
+        applied.push("memory");
+        reindex = memory.reindex;
+      }
     } catch (err) {
       failed.push({ what: "model", error: err.message });
     }
@@ -33279,6 +33332,7 @@ var LlmService = class {
       const restarted = await this.restartIfAuthStale(input.credentials.map((c) => c.profileId));
       if (restarted) applied.push("restart");
     }
+    if (reindex || this.reindexFailed && input.memory) this.reindexMemory();
     this.log(`[llm] applied ${applied.join(", ") || "nothing"}${failed.length ? `; failed ${failed.map((f) => f.what).join(", ")}` : ""}`);
     if (failed.length) {
       const err = new Error(failed.map((f) => `${f.what}: ${f.error}`).join("; "));
@@ -33286,6 +33340,58 @@ var LlmService = class {
       throw err;
     }
     return { ok: true, applied, failed };
+  }
+  /**
+   * Rebuild the memory index in the background. It walks the whole corpus and embeds it, which
+   * takes minutes on a long history, so `/llm/apply` does not wait for it: what a person sees is
+   * the model change, and recall catches up on its own.
+   *
+   * One at a time. A rebuild runs for up to fifteen minutes and the control plane pushes again
+   * whenever it sees a box that is not settled yet, so without this two `--force` runs would be
+   * walking the same SQLite index at once.
+   *
+   * The CA has to be passed in. On a secured box every embedding call goes through the org proxy,
+   * which presents the firewall's own certificate; `openclaw.service` and `profile.d` carry
+   * `NODE_EXTRA_CA_CERTS` but the vm-agent's unit does not, so a rebuild started from here would
+   * fail the handshake — or hang on it — and leave vector search paused for good.
+   *
+   * A failure leaves `memory.search` written and the index paused, which `/llm/status` cannot
+   * otherwise tell from a healthy one — so the failure is remembered and reported there, and the
+   * next `/llm/apply` for this box retries it. The flag is cleared only once a run succeeds:
+   * clearing it on the way in would report a healthy index while the vectors were still being
+   * built, and the control plane would stop asking.
+   */
+  reindexMemory() {
+    if (this.reindexing) {
+      this.log("[llm] memory index rebuild already running; not starting another");
+      return;
+    }
+    this.reindexing = true;
+    this.writeReindexFailure("the memory index rebuild did not finish");
+    const ca = this.opts.mitmCaPath;
+    const env2 = ca && existsSync6(ca) ? { NODE_EXTRA_CA_CERTS: ca } : void 0;
+    void this.exec(this.bin(), ["memory", "index", "--force"], REINDEX_TIMEOUT_MS, void 0, { env: env2 }).then(() => {
+      this.writeReindexFailure(null);
+      this.log("[llm] memory index rebuilt for the new embedding provider");
+    }).catch((err) => {
+      this.writeReindexFailure(execFailureLine(err));
+      this.log(`[llm] memory index rebuild failed: ${this.reindexFailed}`);
+    }).finally(() => {
+      this.reindexing = false;
+    });
+  }
+  writeReindexFailure(error) {
+    this.reindexFailed = error;
+    const path = this.opts.statePath;
+    if (!path) return;
+    try {
+      mkdirSync4(dirname4(path), { recursive: true });
+      const tmp = `${path}.tmp`;
+      writeFileSync6(tmp, JSON.stringify({ version: 1, error }), { mode: 384 });
+      renameSync3(tmp, path);
+    } catch (err) {
+      this.log(`[llm] could not record the memory index state: ${err.message}`);
+    }
   }
   /**
    * True when the gateway already reports every auth profile we just wrote. Otherwise restart it
@@ -33317,6 +33423,7 @@ var LlmService = class {
   /** What the box has right now, from the config and `models.authStatus`. No secrets. */
   async status() {
     const { config } = await this.config();
+    const configured = readMemory(config);
     const agents = config.agents;
     const model = agents?.defaults?.model;
     const providers = /* @__PURE__ */ new Set();
@@ -33347,7 +33454,17 @@ var LlmService = class {
       },
       providers: [...providers].sort(),
       profiles,
-      auth: authStatus
+      auth: authStatus,
+      // Only what the control plane compares. The endpoint and the placeholder are read for the
+      // apply's own comparison and stay on the box; nothing downstream needs them.
+      // A rebuild in flight is not a healthy index yet, and reporting it as one would tell the
+      // control plane to stop watching. It reads as an error until the run lands.
+      memory: {
+        provider: configured.provider,
+        model: configured.model,
+        dreaming: configured.dreaming,
+        indexError: this.reindexing ? "the memory index is being rebuilt" : this.reindexFailed
+      }
     };
   }
   /** The models OpenClaw knows for a provider (`models.list`, full catalog), as `provider/model` refs. */
@@ -33392,6 +33509,16 @@ function parseProviderBlock(raw) {
   }
   return { baseUrl: b.baseUrl, api: b.api, models };
 }
+function parseMemory(raw) {
+  if (raw === void 0) return void 0;
+  if (raw === null) return null;
+  const m = raw;
+  if (typeof m.provider !== "string" || !PROVIDER_RE.test(m.provider)) return "memory.provider is invalid";
+  if (typeof m.model !== "string" || !/^[A-Za-z0-9._:/-]{1,120}$/.test(m.model)) return "memory.model is invalid";
+  if (typeof m.baseUrl !== "string" || !/^https:\/\/[a-z0-9.-]+(\/[\w./-]*)?$/i.test(m.baseUrl)) return "memory.baseUrl must be an https URL";
+  if (typeof m.apiKey !== "string" || !m.apiKey) return "memory.apiKey required";
+  return { provider: m.provider, model: m.model, baseUrl: m.baseUrl, apiKey: m.apiKey, dreaming: m.dreaming === true };
+}
 function parseApply(body) {
   const model = body.model ?? {};
   const primary = typeof model.primary === "string" && model.primary ? model.primary : null;
@@ -33427,7 +33554,9 @@ function parseApply(body) {
       ...raw.providerBlock === true ? { providerBlock: true } : {}
     });
   }
-  return { model: { primary, fallbacks }, credentials, remove };
+  const memory = parseMemory(body.memory);
+  if (typeof memory === "string") return memory;
+  return { model: { primary, fallbacks }, credentials, remove, ...memory !== void 0 ? { memory } : {} };
 }
 async function handleLlm(req, res, url2, service) {
   const write = req.method === "POST";
@@ -33686,8 +33815,8 @@ async function handleSearch(req, res, url2, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, unlinkSync, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname4 } from "path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, unlinkSync, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname5 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
 var RELAYED = [/^\/mcp$/, /^\/mcp\/tools$/, /^\/v1\/health$/, /^\/v1\/apps(\/|$)/, /^\/v1\/actions(\/|$)/, /^\/v1\/proxy\//];
@@ -33839,9 +33968,9 @@ var ConnectorsService = class {
   }
 };
 function readState(path) {
-  if (!existsSync6(path)) return { gateway: null, connections: [], updatedAt: "" };
+  if (!existsSync7(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
-    const parsed = JSON.parse(readFileSync11(path, "utf8"));
+    const parsed = JSON.parse(readFileSync12(path, "utf8"));
     return {
       gateway: parsed.gateway && typeof parsed.gateway.url === "string" && typeof parsed.gateway.token === "string" ? parsed.gateway : null,
       connections: Array.isArray(parsed.connections) ? parsed.connections : [],
@@ -33852,10 +33981,10 @@ function readState(path) {
   }
 }
 function writeState(path, state) {
-  mkdirSync4(dirname4(path), { recursive: true });
+  mkdirSync5(dirname5(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync6(tmp, JSON.stringify(state), { mode: 384 });
-  renameSync3(tmp, path);
+  writeFileSync7(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync4(tmp, path);
 }
 function cliEnvContents(relayUrl, token) {
   return [
@@ -33867,14 +33996,14 @@ function cliEnvContents(relayUrl, token) {
   ].join("\n");
 }
 function writeCliEnv(path, relayUrl, token) {
-  mkdirSync4(dirname4(path), { recursive: true });
+  mkdirSync5(dirname5(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync6(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
-  renameSync3(tmp, path);
+  writeFileSync7(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
+  renameSync4(tmp, path);
 }
 function removeFile(path) {
   try {
-    if (existsSync6(path)) unlinkSync(path);
+    if (existsSync7(path)) unlinkSync(path);
   } catch {
   }
 }
@@ -33949,8 +34078,8 @@ async function handleConnectors(req, res, url2, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname5 } from "path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
+import { dirname as dirname6 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
 var MAX_MOUNTS = 8;
@@ -33997,10 +34126,10 @@ function parseApply4(body) {
   return { placeholder, scope, connected: body.connected === true, defaults, mounts };
 }
 function writeAtomic(path, body, mode) {
-  mkdirSync5(dirname5(path), { recursive: true });
+  mkdirSync6(dirname6(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync7(tmp, body, { mode });
-  renameSync4(tmp, path);
+  writeFileSync8(tmp, body, { mode });
+  renameSync5(tmp, path);
 }
 var DriveService = class {
   constructor(opts) {
@@ -34022,7 +34151,7 @@ var DriveService = class {
   modes() {
     const out = /* @__PURE__ */ new Map();
     try {
-      const desired = JSON.parse(readFileSync12(this.opts.desiredPath, "utf8"));
+      const desired = JSON.parse(readFileSync13(this.opts.desiredPath, "utf8"));
       for (const m of desired.mounts ?? []) if (m?.name) out.set(m.name, m.mode);
     } catch {
     }
@@ -34036,7 +34165,7 @@ var DriveService = class {
    */
   readState() {
     try {
-      const raw = JSON.parse(readFileSync12(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync13(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object" || !Array.isArray(raw.mounts)) return null;
       const mounts = raw.mounts.filter((m) => !!m && typeof m.name === "string" && typeof m.rcPort === "number");
       return {
@@ -34077,7 +34206,7 @@ var DriveService = class {
   /** The desired file as written, so a failed launch can put it back byte for byte. */
   readDesiredRaw() {
     try {
-      return readFileSync12(this.opts.desiredPath, "utf8");
+      return readFileSync13(this.opts.desiredPath, "utf8");
     } catch {
       return null;
     }
@@ -34150,7 +34279,7 @@ var DriveService = class {
   }
   /** Whether this box has Drive support installed at all (an older box does not). */
   supported() {
-    return existsSync7(this.applyScript);
+    return existsSync8(this.applyScript);
   }
 };
 
@@ -34197,7 +34326,7 @@ async function handleDrive(req, res, url2, service) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync13 } from "fs";
+import { readFileSync as readFileSync14 } from "fs";
 import { spawn as spawn2 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -34229,7 +34358,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync13(path, "utf8");
+      raw = readFileSync14(path, "utf8");
     } catch {
       return null;
     }
@@ -34243,7 +34372,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync13(this.opts.statePath, "utf8");
+      raw = readFileSync14(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -34315,7 +34444,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname as dirname6, join as join5 } from "path";
+import { dirname as dirname7, join as join5 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -34821,7 +34950,7 @@ var BackupService = class {
         takenAt: manifest.takenAt
       };
     } finally {
-      if (spool) await rm(dirname6(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (spool) await rm(dirname7(spool), { recursive: true, force: true }).catch(() => void 0);
       this.busy = null;
     }
   }
@@ -34905,7 +35034,7 @@ var BackupService = class {
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
             continue;
           }
-          await mkdir(dirname6(abs), { recursive: true, mode: 448 });
+          await mkdir(dirname7(abs), { recursive: true, mode: 448 });
           if (e.type === "link") {
             await symlink(e.target ?? "", abs).catch(() => void 0);
             continue;
@@ -35041,7 +35170,7 @@ async function swapDirectory(opts) {
       );
       if (!exists2) continue;
       await rm(to, { recursive: true, force: true });
-      await mkdir(dirname6(to), { recursive: true, mode: 448 });
+      await mkdir(dirname7(to), { recursive: true, mode: 448 });
       await rename(from, to);
       moved.push({ from, to });
     }
@@ -35198,7 +35327,7 @@ async function handleBackup(req, res, url2, service) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID2 } from "crypto";
-import { basename, dirname as dirname7, join as join6, resolve, sep } from "path";
+import { basename, dirname as dirname8, join as join6, resolve, sep } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -35349,7 +35478,7 @@ async function realpathLenient(path) {
       const real = await realpath(cursor);
       return missing.length ? join6(real, ...missing.reverse()) : real;
     } catch {
-      const parent = dirname7(cursor);
+      const parent = dirname8(cursor);
       if (parent === cursor) return resolve(path);
       missing.push(basename(cursor));
       cursor = parent;
@@ -35450,7 +35579,7 @@ var FilesService = class {
     }
     const name = basename(normalized);
     if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
-    const parentRel = dirname7(normalized) === "." ? "" : dirname7(normalized);
+    const parentRel = dirname8(normalized) === "." ? "" : dirname8(normalized);
     const parent = await this.resolveExisting(parentRel);
     const st = await stat2(parent.abs).catch(() => null);
     if (!st?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
@@ -35921,9 +36050,9 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync14, rmSync, writeFileSync as writeFileSync8 } from "fs";
+import { mkdirSync as mkdirSync7, mkdtempSync, readFileSync as readFileSync15, rmSync, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname8, join as join7 } from "path";
+import { dirname as dirname9, join as join7 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -36012,8 +36141,8 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync14(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync14(path, "utf8")
+        publicKey: readFileSync15(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync15(path, "utf8")
       };
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -36024,7 +36153,7 @@ var SshAccessService = class {
     const path = this.opts.authorizedKeysPath;
     let current = "";
     try {
-      current = readFileSync14(path, "utf8");
+      current = readFileSync15(path, "utf8");
     } catch {
       current = "";
     }
@@ -36032,12 +36161,12 @@ var SshAccessService = class {
     if (publicKey) next += `# ${markerFor(grantId)} until ${endsAt}
 ${publicKey}
 `;
-    mkdirSync6(dirname8(path), { recursive: true, mode: 448 });
-    writeFileSync8(path, next, { mode: 384 });
+    mkdirSync7(dirname9(path), { recursive: true, mode: 448 });
+    writeFileSync9(path, next, { mode: 384 });
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync14(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync15(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -36050,8 +36179,8 @@ ${publicKey}
     }
   }
   writeState(state) {
-    mkdirSync6(dirname8(this.opts.statePath), { recursive: true });
-    writeFileSync8(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    mkdirSync7(dirname9(this.opts.statePath), { recursive: true });
+    writeFileSync9(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -36332,7 +36461,7 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 try {
-  const saasPublicKey2 = readFileSync15(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync16(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -36340,7 +36469,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync15(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync16(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -36552,7 +36681,7 @@ server.listen(PORT, BIND, () => {
     restartService: () => runAction("restart"),
     mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt`
   });
-  llm = new LlmService({ client, restartService: () => runAction("restart") });
+  llm = new LlmService({ client, restartService: () => runAction("restart"), statePath: `${STATE_DIR}/memory-index.json`, mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt` });
   search = new SearchService({ client, restartService: () => runAction("restart") });
   const home = process.env.HOME ?? "/home/controlclaw";
   connectors = new ConnectorsService({
