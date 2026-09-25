@@ -71,7 +71,7 @@ drain_mount() {
 }
 
 # Set as soon as the desired set is parsed, so a `die` before that still writes a usable state file.
-CONNECTED=0 PLACEHOLDER="" SCOPE="" EXPORT="" CACHE_MAX="" CACHE_MIN_FREE=""
+CONNECTED=0 PLACEHOLDER="" SCOPE="" EXPORT="" CACHE_MAX="" CACHE_MIN_FREE="" SKIP_GDOCS=1
 WANTED_NAMES=() WANTED_IDS=() WANTED_MODES=() WANTED_SLUGS=()
 
 # The state file is what the vm-agent reads for its heartbeat: which mounts exist, which rc port
@@ -170,6 +170,10 @@ scope = d.get("scope") or "https://www.googleapis.com/auth/drive"
 connected = bool(d.get("connected"))
 defaults = d.get("defaults") or {}
 export = defaults.get("exportFormats") or "docx,xlsx,pdf"
+# Google-native files are hidden unless the firewall says otherwise. Through a mount they stat as 0
+# bytes and read as 0 bytes (measured on a real box, 2026-09-24), and an agent will summarise an
+# empty file as though it were the document. Absent flag = skip, so an older firewall is safe too.
+skip_gdocs = defaults.get("skipGdocs") is not False
 cache_max = defaults.get("vfsCacheMaxSize") or "2G"
 cache_min_free = defaults.get("vfsCacheMinFreeSpace") or "4G"
 
@@ -216,6 +220,7 @@ print(f"CONNECTED\t{1 if connected else 0}")
 print(f"PLACEHOLDER\t{placeholder}")
 print(f"SCOPE\t{scope}")
 print(f"EXPORT\t{export}")
+print(f"SKIP_GDOCS\t{1 if skip_gdocs else 0}")
 print(f"CACHE_MAX\t{cache_max}")
 print(f"CACHE_MIN_FREE\t{cache_min_free}")
 slugs = set()
@@ -239,6 +244,7 @@ for line in ${DESIRED_LINES+"${DESIRED_LINES[@]}"}; do
     PLACEHOLDER) PLACEHOLDER="$a" ;;
     SCOPE) SCOPE="$a" ;;
     EXPORT) EXPORT="$a" ;;
+    SKIP_GDOCS) SKIP_GDOCS="$a" ;;
     CACHE_MAX) CACHE_MAX="$a" ;;
     CACHE_MIN_FREE) CACHE_MIN_FREE="$a" ;;
     MOUNT) WANTED_NAMES+=("$a"); WANTED_IDS+=("$b"); WANTED_MODES+=("$c"); WANTED_SLUGS+=("$d") ;;
@@ -356,6 +362,8 @@ EOF
     echo "CC_DRIVE_CACHE_DIR=$DRIVE_DIR/cache/$esc"
     echo "CC_DRIVE_PLACEHOLDER=$PLACEHOLDER"
     echo "CC_DRIVE_EXPORT_FORMATS=$EXPORT"
+    # Unquoted and possibly empty, like CC_DRIVE_READONLY: systemd word-splits a bare $VAR.
+    echo "CC_DRIVE_SKIP_GDOCS=$([ "$SKIP_GDOCS" = "1" ] && printf '%s' '--drive-skip-gdocs')"
     echo "CC_DRIVE_CACHE_MAX_SIZE=$CACHE_MAX"
     echo "CC_DRIVE_CACHE_MIN_FREE=$CACHE_MIN_FREE"
     echo "CC_DRIVE_RC_PORT=$port"

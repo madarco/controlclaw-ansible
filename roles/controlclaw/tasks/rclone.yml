@@ -172,6 +172,7 @@
         --dir-cache-time 5m \
         --poll-interval 1m \
         --drive-export-formats "${CC_DRIVE_EXPORT_FORMATS}" \
+        $CC_DRIVE_SKIP_GDOCS \
         --rc --rc-addr "127.0.0.1:${CC_DRIVE_RC_PORT}" --rc-no-auth \
         --umask 022 \
         --log-level INFO \
