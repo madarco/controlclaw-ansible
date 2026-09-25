@@ -41,9 +41,12 @@
     enabled: false
   when: vm_hostname is not defined
 
+# A firewall box runs Caddy for one reason only (inbound webhooks), so it gets its own
+# template: none of the agent routes — OpenClaw, noVNC, the login shim — exist on that box, and
+# templating them in would widen the one surface this feature is meant to keep narrow.
 - name: Write the Caddyfile
   ansible.builtin.template:
-    src: Caddyfile.j2
+    src: "{{ 'Caddyfile-mitm.j2' if box_role == 'mitm' else 'Caddyfile.j2' }}"
     dest: /etc/caddy/Caddyfile
     owner: root
     group: root
@@ -66,4 +69,12 @@
   ansible.builtin.command:
     cmd: grep -qF '/__cc/verify-view' /etc/caddy/Caddyfile
   changed_when: false
-  when: vm_hostname is defined and browser_stream_enabled | bool
+  when: vm_hostname is defined and browser_stream_enabled | bool and box_role == 'openclaw'
+
+# The firewall's Caddyfile must serve the webhook prefix and nothing else. Asserted rather than
+# assumed: "one path and a 404" is the claim the whole ingress design rests on.
+- name: Check the firewall's Caddyfile serves only the webhook prefix
+  ansible.builtin.command:
+    cmd: grep -qF '/hook/*' /etc/caddy/Caddyfile
+  changed_when: false
+  when: vm_hostname is defined and box_role == 'mitm'

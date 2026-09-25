@@ -251,6 +251,13 @@ connector_port: 3910                 # loopback only: the runtime itself
 connector_gate_port: 3900            # private IP: the mitm-agent's gate the agent boxes dial
 connector_memory_max: 512m
 
+# Inbound webhooks (controlclaw docs/plans/webhooks.md). Caddy on the firewall box terminates TLS
+# for the org's firewall hostname and hands /hook/* to the mitm-agent's ingress on loopback.
+# `ingress_max_body` is Caddy's outer bound only: the ingress caps each registration itself,
+# because an HMAC is computed over the whole body and the check must see the same bytes.
+ingress_port: 8790                   # loopback only: the mitm-agent's webhook ingress
+ingress_max_body: 1MB                # the hard ceiling; a registration's own cap is <= this
+
 # OpenClaw box egress wiring (set when the org has a mitm box)
 mitm_box_private_ip: ""              # private IP of the org mitm box
 mitm_ca_cert: ""                     # public CA cert (PEM) to install in the trust store

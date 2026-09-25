@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 """Rebuild the HAProxy route map from Hetzner server labels.
 
-Every agent box is created with labels cc-role=agent and cc-host=<slug>. This script lists
-them with a READ-ONLY token, writes "<slug><suffix> <public ipv4>" lines to the map, and
-reloads HAProxy only when the map changed. Stdlib only; runs from cc-proxy-routes.timer.
+Agent boxes are created with cc-role=agent and cc-host=<slug>. FIREWALL boxes carry
+cc-role=mitm and a cc-host of their own, because inbound webhooks arrive at the firewall and
+need the same blind SNI route an agent gets (controlclaw docs/plans/webhooks.md). Both are
+listed here with a READ-ONLY token; this script writes "<slug><suffix> <public ipv4>" lines to
+the map and reloads HAProxy only when the map changed. Stdlib only; runs from
+cc-proxy-routes.timer.
+
+The proxy stays blind either way: it forwards ciphertext by server name and holds no
+certificate. What a firewall box serves on the far side of that route is one path prefix
+(Caddyfile-mitm.j2), not the agent console.
 """
 import json
 import os
@@ -23,11 +30,11 @@ def env(name: str, default: str | None = None) -> str:
     return value
 
 
-def list_agents(token: str) -> list[dict]:
+def list_boxes(token: str) -> list[dict]:
     servers: list[dict] = []
     page = 1
     while True:
-        query = urllib.parse.urlencode({"label_selector": "cc-role==agent", "per_page": 50, "page": page})
+        query = urllib.parse.urlencode({"label_selector": "cc-role in (agent,mitm)", "per_page": 50, "page": page})
         req = urllib.request.Request(f"{API}?{query}", headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=15) as res:
             body = json.load(res)
@@ -65,7 +72,7 @@ def main() -> None:
     with open(token_file, encoding="utf-8") as fh:
         token = fh.read().strip()
 
-    content = build_map(list_agents(token), suffix)
+    content = build_map(list_boxes(token), suffix)
     try:
         with open(map_path, encoding="utf-8") as fh:
             current = fh.read()

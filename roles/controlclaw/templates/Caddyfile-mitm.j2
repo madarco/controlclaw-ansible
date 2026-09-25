@@ -1,0 +1,37 @@
+# Managed by Ansible (roles/controlclaw/templates/Caddyfile-mitm.j2). Do not edit on the box.
+#
+# Caddy on the FIREWALL box. It exists for one thing: inbound webhooks (controlclaw
+# docs/plans/webhooks.md). It terminates TLS for this firewall's own hostname with a Let's
+# Encrypt certificate (HTTP-01, relayed by the proxy box on port 80, exactly as an agent box's
+# is) and hands /hook/* to the mitm-agent's ingress listener on loopback.
+#
+# The reachable surface of a firewall box is precisely what this file serves. That is the whole
+# argument for putting ingress here rather than on the agent box, so it has to stay true: one
+# path prefix, and a bare 404 for everything else. No admin endpoint, no file server, no
+# directory listing, no OpenClaw, no noVNC — none of those exist on this box.
+{
+    email {{ caddy_acme_email }}
+    # Pinned so a Let's Encrypt failure never silently falls back to another issuer.
+    acme_ca https://acme-v02.api.letsencrypt.org/directory
+    # Nothing on this box needs Caddy's admin API, and it listens on loopback by default. A
+    # firewall box holds the org's secrets; it does not get a second control surface.
+    admin off
+}
+
+{{ vm_hostname }} {
+    handle /hook/* {
+        # The ingress caps the body itself, because an HMAC is computed over the whole of it and
+        # the check has to see the same bytes. This is the outer bound, so a stranger cannot make
+        # Caddy buffer more than the ingress would ever accept.
+        request_body {
+            max_size {{ ingress_max_body }}
+        }
+        reverse_proxy 127.0.0.1:{{ ingress_port }}
+    }
+
+    # Everything else, including /, is a bare 404. No body: a probe learns nothing about whether
+    # this box exists, what it runs, or which hook ids are registered.
+    handle {
+        respond 404
+    }
+}

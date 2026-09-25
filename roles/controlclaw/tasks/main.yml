@@ -85,7 +85,10 @@
 
 - name: Include Caddy (TLS termination + auth shim in front of OpenClaw)
   ansible.builtin.include_tasks: caddy.yml
-  when: box_role == 'openclaw'
+  # Firewall boxes too, since inbound webhooks arrive there and need a real certificate for the
+  # org's firewall hostname (controlclaw docs/plans/webhooks.md). They get Caddyfile-mitm.j2,
+  # which serves one path prefix and a bare 404 for everything else.
+  when: box_role in ['openclaw', 'mitm'] and vm_hostname is defined
 
 # The firewall's identity is checked HERE, before anything writes, and not only inside
 # mitmbox.yml. self-update.yml runs first and rewrites /etc/controlclaw/update.conf, which is one

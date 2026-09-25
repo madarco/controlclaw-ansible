@@ -384,6 +384,12 @@
       # the box key. On the state volume with the other stores, so a firewall restore brings it
       # back with them.
       Environment=EXIT_STORE_PATH=/opt/controlclaw/state/exit.enc
+      # Inbound webhooks (controlclaw docs/plans/webhooks.md). Loopback only: Caddy on this box
+      # owns the certificate and the public port and hands /hook/* here. The registration set is
+      # a file on the state volume until the sealed store and the webhook.* command family land.
+      Environment=INGRESS_PORT={{ ingress_port }}
+      Environment=INGRESS_BIND=127.0.0.1
+      Environment=WEBHOOKS_PATH=/opt/controlclaw/state/webhooks.json
       ExecStart=/usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
       Restart=always
       RestartSec=10
@@ -408,6 +414,27 @@
     proto: tcp
     comment: 'ControlClaw mitm agent'
   when: not ci_test
+
+# Inbound webhooks (controlclaw docs/plans/webhooks.md). The Hetzner firewall this box already
+# carries (`controlclaw-vm`) allows 80 and 443 from the proxy box and from nowhere else, so these
+# two rules are what was missing: a firewall box has never served either port, and without them
+# Caddy's ACME challenge never completes. The source is not narrowed here because the Hetzner
+# rule is the enforcement boundary, exactly as it is for an agent box.
+- name: Allow HTTP in UFW for the ACME challenge (webhook ingress)
+  community.general.ufw:
+    rule: allow
+    port: '80'
+    proto: tcp
+    comment: 'ControlClaw webhook ingress (ACME)'
+  when: not ci_test and vm_hostname is defined
+
+- name: Allow HTTPS in UFW for inbound webhooks
+  community.general.ufw:
+    rule: allow
+    port: '443'
+    proto: tcp
+    comment: 'ControlClaw webhook ingress'
+  when: not ci_test and vm_hostname is defined
 
 # Recovery over the network without the control plane (`npx @controlclaw/recover`,
 # apps/saas/docs/features/backups.md). The agent creates both of these itself; they are here so a
