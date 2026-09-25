@@ -14,6 +14,39 @@ exit_relay_upstream_port: 8000
 exit_relay_upstream_groups: "RESIDENTIAL"
 exit_relay_id: "relay-1"
 
+# /etc/letsencrypt lives on a Hetzner volume that outlives the server, because every relay setting
+# travels in user_data and so every settings change replaces the box — and Let's Encrypt issues only
+# five certificates a week for the same name. Empty means no volume: the role then leaves
+# /etc/letsencrypt on the server's own disk, which is what the relay did before the volume existed
+# and what any box built without one still does. Terraform passes the volume id (infra/exit-relay.tf).
+exit_relay_cert_volume_id: ""
+exit_relay_cert_volume_fstype: "ext4"
+
+# Hetzner exposes an attached volume under a path built from its id. Derived rather than passed so
+# Terraform only has to hand over the id.
+exit_relay_cert_volume_device: "/dev/disk/by-id/scsi-0HC_Volume_{{ exit_relay_cert_volume_id }}"
+
+# Further names the one certificate must also cover. exit.<domain> alone ran into Let's Encrypt's
+# weekly limit, so the live certificate covers exit2.<domain> as well and the relay answers on
+# either. They share a lineage named after exit_relay_host, so the paths below do not move.
+# Note the trade-off: one certificate covering several names means certbot validates all of them in
+# one order, so a name in this list that does NOT resolve to this box fails the order and the relay
+# gets no certificate for the primary name either. Only put names here that point at this relay.
+exit_relay_extra_hosts: []
+
+# Where certbot keeps the lineage this relay reads. --cert-name pins it to exit_relay_host, so
+# adding a name to the certificate does not move the PEM files the unit points at.
+exit_relay_cert_live_dir: "/etc/letsencrypt/live/{{ exit_relay_host }}"
+
+# Ask Let's Encrypt's staging CA instead of the real one. Staging certificates are not trusted by
+# anything, so this is for tests of this role on throwaway boxes only — it is what lets a test prove
+# the volume keeps a certificate without spending one of the five. Production is the default.
+exit_relay_acme_staging: false
+
+# Re-issue when the certificate on the volume has less than this long to run. Below it the role
+# calls certbot; above it the volume's certificate is used as it is and nothing touches ACME.
+exit_relay_cert_renew_days: 30
+
 # Tailscale settings
 tailscale_enabled: false
 tailscale_authkey: ""

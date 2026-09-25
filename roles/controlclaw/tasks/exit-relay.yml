@@ -25,6 +25,130 @@
       exit_relay_metering_secret and exit_relay_control_plane. Refusing rather than building a
       relay that cannot verify a token or report a byte.
 
+# Every name the one certificate covers, primary first — the lineage is named after the primary, so
+# its order is what keeps --cert-name and the PEM paths pointing at the same place.
+- name: Work out every name the certificate has to cover
+  ansible.builtin.set_fact:
+    exit_relay_cert_names: "{{ [exit_relay_host] + (exit_relay_extra_hosts | default([])) }}"
+
+# ---------------------------------------------------------------------------------------------
+# The certificate volume
+#
+# Mounted BEFORE certbot is installed, so everything under /etc/letsencrypt — the account key, the
+# certificate, the renewal config — is on the volume from the first moment there is anything to put
+# there, and nothing the package created is left shadowed underneath the mount.
+#
+# Why a volume at all: the relay's settings travel in user_data, so changing one replaces the
+# server, and certbot on the new box asked Let's Encrypt for a fresh certificate every time. Five
+# a week per name is the limit. The volume makes a replacement free.
+#
+# Skipped entirely when no volume id is passed. A relay built before the volume existed keeps
+# /etc/letsencrypt on its own disk and this role goes on working for it unchanged.
+# ---------------------------------------------------------------------------------------------
+
+- name: Set up the certificate volume
+  when: exit_relay_cert_volume_id | default('') | length > 0 and not ci_test
+  block:
+    # Terraform attaches the volume as a separate resource, so on a fresh boot the attachment can
+    # still be in flight while cloud-init is already running ansible-pull. Wait rather than race.
+    #
+    # Failing here is the right outcome if it never arrives: certbot would otherwise write the
+    # certificate to the server's own disk, which both loses it on the next replacement and spends
+    # one of the five to do so. A box that stops here has cost nothing.
+    - name: Wait for the certificate volume to attach
+      ansible.builtin.wait_for:
+        path: "{{ exit_relay_cert_volume_device }}"
+        state: present
+        timeout: 600
+      # ansible-pull is once per instance, so this failing is the end of the road for this box
+      # rather than something a later run retries — hence ten minutes rather than a token wait.
+      # Recovering means attaching the volume and re-running the play by hand, or replacing the box.
+      #
+      # ignore_errors rather than failed_when:false, which would clear `failed` and make the check
+      # below useless: the point is to keep the failure and say something useful about it.
+      register: exit_relay_volume_device
+      ignore_errors: true
+
+    - name: Refuse to go on without the certificate volume
+      ansible.builtin.fail:
+        msg: >-
+          {{ exit_relay_cert_volume_device }} never appeared. Terraform attaches the volume after
+          the server boots, so this is normally a few seconds; ten minutes means the attachment did
+          not happen. Stopping here rather than letting certbot write the certificate to a disk the
+          next rebuild deletes — and spend one of the five issuances a week to do it.
+      when: exit_relay_volume_device is failed
+
+    # force is false (the default), so this creates a filesystem only when the volume has none.
+    # An empty volume on a first boot gets one; a volume that already carries the certificate is
+    # left exactly as it is. If it somehow holds a DIFFERENT filesystem the module fails instead
+    # of overwriting, which is what we want from anything that could erase the certificate.
+    - name: Make the temporary staging mountpoint
+      ansible.builtin.file:
+        path: /mnt/cc-letsencrypt-seed
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Create a filesystem on the certificate volume if it has none
+      community.general.filesystem:
+        dev: "{{ exit_relay_cert_volume_device }}"
+        fstype: "{{ exit_relay_cert_volume_fstype }}"
+
+    # Mounting over /etc/letsencrypt hides whatever was under it. On a fresh box that is nothing,
+    # but attaching this volume to a relay that is ALREADY running and re-running the play would
+    # hide a working certificate behind an empty volume — and the role would then go and spend an
+    # issuance it may not have, in exactly the situation that motivated the volume. So look first,
+    # and carry an existing certificate onto an empty volume before the mount rather than after.
+    - name: Look for a certificate already on the server's own disk
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ exit_relay_host }}/fullchain.pem"
+      register: exit_relay_cert_on_disk
+
+    - name: Carry an existing /etc/letsencrypt onto an empty volume
+      when: exit_relay_cert_on_disk.stat.exists
+      block:
+        # A bare mount rather than ansible.posix.mount: this is a staging point for one copy and
+        # has no business in fstab.
+        - name: Mount the volume somewhere temporary to look at it
+          ansible.builtin.command:
+            cmd: mount {{ exit_relay_cert_volume_device }} /mnt/cc-letsencrypt-seed
+            creates: /mnt/cc-letsencrypt-seed/lost+found
+          register: exit_relay_seed_mount
+
+        - name: Copy the certificate onto the volume if it has none
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail;
+              if [ ! -e /mnt/cc-letsencrypt-seed/live/{{ exit_relay_host }}/fullchain.pem ]; then
+                cp -a /etc/letsencrypt/. /mnt/cc-letsencrypt-seed/ && echo seeded;
+              else
+                echo 'volume already has a certificate; left alone';
+              fi
+            executable: /bin/bash
+          register: exit_relay_seed_copy
+          changed_when: "'seeded' in exit_relay_seed_copy.stdout"
+
+        - name: Say what the volume ended up with
+          ansible.builtin.debug:
+            msg: "{{ exit_relay_seed_copy.stdout }}"
+
+      always:
+        - name: Unmount the temporary staging point
+          ansible.builtin.command:
+            cmd: umount /mnt/cc-letsencrypt-seed
+            removes: /mnt/cc-letsencrypt-seed/lost+found
+
+    # nofail so a missing or unattachable volume is a relay that will not start rather than a box
+    # that will not boot — an operator can still get in and look at it.
+    - name: Mount the certificate volume at /etc/letsencrypt
+      ansible.posix.mount:
+        path: /etc/letsencrypt
+        src: "{{ exit_relay_cert_volume_device }}"
+        fstype: "{{ exit_relay_cert_volume_fstype }}"
+        opts: discard,nofail
+        state: mounted
+
 - name: Install certbot
   ansible.builtin.apt:
     name: certbot
@@ -90,13 +214,152 @@
     comment: 'ControlClaw exit relay (CONNECT, token-checked)'
   when: not ci_test
 
+# The renewal hooks directory is certbot's, but the mount above replaces whatever the package put
+# under /etc/letsencrypt, and on a first boot the volume is empty. Create it before writing a hook
+# into it.
+- name: Make sure the certbot deploy-hook directory exists
+  ansible.builtin.file:
+    path: /etc/letsencrypt/renewal-hooks/deploy
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: not ci_test
+
+# What follows replaces a plain `creates:` guard. On a volume the certificate usually IS already
+# there, and the question is no longer "has this host ever had one" but "is the one on the volume
+# still good" — so look at the certificate itself and go to Let's Encrypt only if it is missing or
+# close to expiry. This is what makes a rebuild free.
+# Both PEMs, not just the certificate: the relay refuses to bind without the key, and a lineage
+# left half-copied or half-issued would otherwise read as "good" here and crash-loop the unit with
+# nothing scheduled to fix it (ansible-pull runs once per instance).
+- name: Look for a certificate and its key on the volume
+  ansible.builtin.stat:
+    path: "{{ exit_relay_cert_live_dir }}/{{ item }}"
+  register: exit_relay_cert_pems
+  loop:
+    - fullchain.pem
+    - privkey.pem
+  when: not ci_test
+
+- name: Note whether the volume has a usable certificate
+  ansible.builtin.set_fact:
+    exit_relay_cert_present: >-
+      {{ (exit_relay_cert_pems.results | default([]) | selectattr('stat.exists') | list | length) == 2 }}
+  when: not ci_test
+
+# Exit 0 means it has more than exit_relay_cert_renew_days left, 1 means it does not. Anything else
+# (an unreadable or corrupt file) also lands in "re-issue", which is the safe way to be wrong.
+- name: Check how long the certificate on the volume has left
+  ansible.builtin.command:
+    cmd: >-
+      openssl x509 -checkend {{ exit_relay_cert_renew_days | int * 86400 }}
+      -noout -in {{ exit_relay_cert_live_dir }}/fullchain.pem
+  register: exit_relay_cert_checkend
+  changed_when: false
+  failed_when: false
+  when: not ci_test and exit_relay_cert_present | default(false) | bool
+
+# Expiry is not the only way the certificate on the volume can be the wrong one: adding a name to
+# exit_relay_extra_hosts has to reach the certificate, and a guard that only looked at the date
+# would keep serving the old set of names until it expired. Read the names it actually carries.
+- name: Read the names on the certificate
+  ansible.builtin.command:
+    cmd: >-
+      openssl x509 -noout -ext subjectAltName
+      -in {{ exit_relay_cert_live_dir }}/fullchain.pem
+  register: exit_relay_cert_sans
+  changed_when: false
+  failed_when: false
+  when: not ci_test and exit_relay_cert_present | default(false) | bool
+
+# Names we asked for that the certificate does not carry. One expression rather than a chain of
+# templated vars: a `>-` block that ends in `| list` hands the next template a *string* that looks
+# like a list, and `difference` on two real lists cannot be fooled that way. "DNS:a, DNS:b" -> [a, b],
+# and anything unreadable yields an empty list, so every name counts as missing and the certificate
+# is re-issued rather than trusted blind.
+# Let's Encrypt's staging CA issues "(STAGING)" / "Fake LE" certificates that nothing trusts. They
+# look perfectly healthy to a date check, so a volume that was once used for a staging run would
+# otherwise hand a production relay a certificate every firewall then refuses — and the renewal
+# config left beside it pins the staging server, so the timer would keep it that way. Compare what
+# the certificate IS against what this box is asking for, in both directions.
+- name: Read the issuer of the certificate on the volume
+  ansible.builtin.command:
+    cmd: openssl x509 -noout -issuer -in {{ exit_relay_cert_live_dir }}/fullchain.pem
+  register: exit_relay_cert_issuer
+  changed_when: false
+  failed_when: false
+  when: not ci_test and exit_relay_cert_present | default(false) | bool
+
+- name: Note whether the certificate came from the staging CA
+  ansible.builtin.set_fact:
+    exit_relay_cert_is_staging: >-
+      {{ '(STAGING)' in (exit_relay_cert_issuer.stdout | default(''))
+         or 'Fake LE' in (exit_relay_cert_issuer.stdout | default('')) }}
+  when: not ci_test
+
+- name: Work out which names the certificate is missing
+  ansible.builtin.set_fact:
+    exit_relay_cert_missing_names: >-
+      {{ exit_relay_cert_names | map('lower') | list
+         | difference(exit_relay_cert_sans.stdout | default('')
+                      | regex_findall('DNS:([^,\s]+)') | map('lower') | list) }}
+  when: not ci_test
+
+- name: Decide whether Let's Encrypt has to be asked for anything
+  ansible.builtin.set_fact:
+    exit_relay_needs_cert: >-
+      {{ not (exit_relay_cert_present | default(false) | bool)
+         or (exit_relay_cert_checkend.rc | default(1)) != 0
+         or (exit_relay_cert_missing_names | default([]) | length) > 0
+         or (exit_relay_cert_is_staging | default(false) | bool) != (exit_relay_acme_staging | bool) }}
+  when: not ci_test
+
+- name: Say why the certificate is being re-issued
+  ansible.builtin.debug:
+    msg: >-
+      Asking Let's Encrypt for {{ exit_relay_cert_names | join(', ') }}
+      ({{ 'no certificate and key on the volume' if not (exit_relay_cert_present | default(false) | bool)
+          else ('under ' ~ exit_relay_cert_renew_days ~ ' days left'
+                if (exit_relay_cert_checkend.rc | default(1)) != 0
+                else ('the certificate on the volume is from the wrong CA'
+                      if (exit_relay_cert_is_staging | default(false) | bool) != (exit_relay_acme_staging | bool)
+                      else 'the certificate does not cover every name')) }}).
+  when: not ci_test and exit_relay_needs_cert | default(true) | bool
+
+- name: Report the certificate the volume already holds
+  ansible.builtin.debug:
+    msg: >-
+      Certificate for {{ exit_relay_host }} is on {{ exit_relay_cert_live_dir }} with more than
+      {{ exit_relay_cert_renew_days }} days to run — not asking Let's Encrypt for anything.
+  when: not ci_test and not (exit_relay_needs_cert | default(true) | bool)
+
+# --keep-until-expiring as well as the guard above: if the guard is ever wrong, certbot still
+# declines to spend an issuance on a certificate that does not need one.
+# --expand is what lets a name be ADDED to the certificate. Non-interactive certbot will not grow an
+# existing lineage without it — it errors out — so without this flag exit_relay_extra_hosts would be
+# a variable that quietly never reached a certificate. The two flags do not fight: the same names
+# and plenty of time left is kept, a strict superset of names is expanded.
+# --cert-name pins the lineage to the primary hostname, so the live directory this role reads is the
+# one certbot writes even when the certificate carries more than one name.
+# --no-directory-hooks because the deploy hook now lives on the VOLUME, so on a rebuild the previous
+# server's copy is already there and would fire here — restarting a unit this play has not written
+# yet. The role starts the relay itself a few tasks below, so there is nothing for a hook to do at
+# provisioning time; renewals later are what the hook is for.
 - name: Obtain the Let's Encrypt certificate
   ansible.builtin.command:
     cmd: >-
-      certbot certonly --standalone --non-interactive --agree-tos
-      --email {{ exit_relay_acme_email }} -d {{ exit_relay_host }}
-    creates: "/etc/letsencrypt/live/{{ exit_relay_host }}/fullchain.pem"
-  when: not ci_test
+      certbot certonly --standalone --non-interactive --agree-tos --no-directory-hooks
+      --keep-until-expiring --expand --cert-name {{ exit_relay_host }}
+      --email {{ exit_relay_acme_email }}
+      {{ exit_relay_cert_names | map('regex_replace', '^', '-d ') | join(' ') }}
+      {{ '--test-cert' if exit_relay_acme_staging | bool else '' }}
+  register: exit_relay_certbot
+  # The guard above means this task only runs when a certificate has to be obtained, so a clean exit
+  # IS the change. Matching certbot's wording instead would report "ok" on certbot 1.x, which words
+  # success differently — and this is the one line of ansible-pull output worth not losing.
+  changed_when: exit_relay_certbot.rc == 0
+  when: not ci_test and exit_relay_needs_cert | default(true) | bool
 
 - name: Restart the relay when the certificate is renewed
   ansible.builtin.copy:
@@ -105,6 +368,11 @@
       #!/bin/sh
       # Node reads the certificate once, at listen time. Without this the box would go on
       # presenting the expired one after every renewal.
+      #
+      # This script lives on the certificate volume, so a newly built server finds the previous
+      # one's copy here before the unit exists. Do nothing in that case rather than fail: certbot
+      # treats a non-zero deploy hook as an error, and provisioning restarts the relay itself.
+      systemctl list-unit-files controlclaw-exit-relay.service >/dev/null 2>&1 || exit 0
       systemctl restart controlclaw-exit-relay
     owner: root
     group: root
