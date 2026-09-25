@@ -32122,6 +32122,9 @@ async function fetchPolicy(url2, getToken2) {
   const body = await res.json();
   return { rules: body.rules ?? [], ai: body.ai ?? null };
 }
+function fetchWebhooks(url2, getToken2) {
+  return fetchList(url2, "hooks", getToken2);
+}
 function fetchIdentities(url2, getToken2) {
   return fetchList(url2, "identities", getToken2);
 }
@@ -34316,32 +34319,32 @@ import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as rea
 import { dirname as dirname2 } from "path";
 var NONCE_BYTES2 = 12;
 var TAG_BYTES2 = 16;
-function encryptJson(value, boxKeyB64, aad11) {
+function encryptJson(value, boxKeyB64, aad12) {
   const key = Buffer.from(boxKeyB64, "base64");
   const nonce = randomBytes2(NONCE_BYTES2);
   const cipher = createCipheriv2("aes-256-gcm", key, nonce);
-  cipher.setAAD(Buffer.from(aad11, "utf8"));
+  cipher.setAAD(Buffer.from(aad12, "utf8"));
   const ct = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(value), "utf8")), cipher.final(), cipher.getAuthTag()]);
   return JSON.stringify({ alg: "AES-256-GCM", nonce: nonce.toString("base64"), ct: ct.toString("base64") });
 }
-function decryptJson(raw, boxKeyB64, aad11) {
+function decryptJson(raw, boxKeyB64, aad12) {
   const { nonce, ct } = JSON.parse(raw);
   const key = Buffer.from(boxKeyB64, "base64");
   const buf = Buffer.from(ct, "base64");
   const decipher = createDecipheriv2("aes-256-gcm", key, Buffer.from(nonce, "base64"));
-  decipher.setAAD(Buffer.from(aad11, "utf8"));
+  decipher.setAAD(Buffer.from(aad12, "utf8"));
   decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES2));
   const pt = Buffer.concat([decipher.update(buf.subarray(0, buf.length - TAG_BYTES2)), decipher.final()]);
   return JSON.parse(pt.toString("utf8"));
 }
-function loadEncryptedJson(path, boxKeyB64, aad11) {
+function loadEncryptedJson(path, boxKeyB64, aad12) {
   if (!existsSync4(path)) return null;
-  return decryptJson(readFileSync6(path, "utf8"), boxKeyB64, aad11);
+  return decryptJson(readFileSync6(path, "utf8"), boxKeyB64, aad12);
 }
-function saveEncryptedJson(path, value, boxKeyB64, aad11) {
+function saveEncryptedJson(path, value, boxKeyB64, aad12) {
   mkdirSync3(dirname2(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync4(tmp, encryptJson(value, boxKeyB64, aad11), { mode: 384 });
+  writeFileSync4(tmp, encryptJson(value, boxKeyB64, aad12), { mode: 384 });
   renameSync(tmp, path);
 }
 
@@ -36534,8 +36537,821 @@ var GoogleFirewall = class {
   }
 };
 
-// src/llm-store.ts
+// src/webhooks.ts
+import { randomBytes as randomBytes6 } from "crypto";
+
+// src/ingress.ts
+import { createHmac, timingSafeEqual as timingSafeEqual2 } from "crypto";
+import { appendFileSync } from "fs";
+var INGRESS_PATH_PREFIX = "/hook/";
+var INGRESS_DEFAULT_BODY_BYTES = 256 * 1024;
+var INGRESS_MAX_BODY_BYTES = 1024 * 1024;
+var INGRESS_DEFAULT_PER_MINUTE = 60;
+var INGRESS_MAX_PER_MINUTE = 180;
+var INGRESS_ORG_PER_MINUTE = 180;
+var INGRESS_IN_FLIGHT_PER_VM = 4;
+var INGRESS_IN_FLIGHT_ORG = 16;
+var INGRESS_FORWARD_TIMEOUT_MS = 8e3;
+var INGRESS_UNVERIFIED_PER_MINUTE = 20;
+var INGRESS_UNVERIFIED_LOCKOUT_MS = 15 * 6e4;
+var OIDC_DISCOVERY_TIMEOUT_MS = 5e3;
+var FORWARD_HEADER_ALLOWLIST = ["content-type", "authorization"];
+var FORWARD_HEADER_PREFIXES = ["x-goog-", "x-hub-signature", "x-github-", "x-slack-"];
+var INGRESS_TARGET_PORT_MIN = 8700;
+var INGRESS_TARGET_PORT_MAX = 8799;
+function clamp(value, low, high) {
+  return Math.min(Math.max(value, low), high);
+}
+function targetPortAllowed(port) {
+  return Number.isInteger(port) && port >= INGRESS_TARGET_PORT_MIN && port <= INGRESS_TARGET_PORT_MAX;
+}
+function ownsIngressPath(path) {
+  return path.startsWith(INGRESS_PATH_PREFIX);
+}
+function sameSecret(a, b) {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  if (left.length !== right.length) {
+    timingSafeEqual2(left, left);
+    return false;
+  }
+  return timingSafeEqual2(left, right);
+}
+function headerValue(req, name25) {
+  const raw = req.headers[name25.toLowerCase()];
+  if (Array.isArray(raw)) return raw[0] ?? "";
+  return typeof raw === "string" ? raw : "";
+}
+var IngressRoutes = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? console.log;
+  }
+  now;
+  log;
+  /** Per registration: the deliveries that passed their checks. */
+  delivered = /* @__PURE__ */ new Map();
+  /** Org-wide, across registrations. */
+  orgDelivered = [];
+  /** Unverified attempts, counted apart from the above. */
+  unverified = [];
+  unverifiedLockedUntil = 0;
+  inFlightOrg = 0;
+  inFlightByVm = /* @__PURE__ */ new Map();
+  jwksCache = /* @__PURE__ */ new Map();
+  /**
+   * One delivery.
+   *
+   * The order is the part most likely to be got wrong later, and it was got wrong once already.
+   *
+   * An HMAC is computed over the whole body, so the body must be read before the delivery can be
+   * verified. That looks like it forces a choice between buffering a megabyte for any stranger who
+   * learns a URL, and letting a stranger's junk spend the real sender's rate limit. It does not:
+   * what bounds memory is the **in-flight cap**, taken before the read, and what the rate limiter
+   * sees is the **verdict**, because it runs after the checks.
+   *
+   * So: slot, read, verify, then charge. A refusal charges the unverified budget and a pass
+   * charges the delivered one, and the unverified lockout is consulted only on the refusal path.
+   * That is what makes "a verified delivery is never rate-limited by somebody else's noise" true
+   * rather than merely intended. `recovery.ts` is shaped the same way for the same reason, and
+   * `ingress.test.ts` fails if any of it is reordered.
+   */
+  async handle(req, res, path) {
+    const started = this.now();
+    const deliveryId = `wh_${started.toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const refuse = (status, verdict, reason, reg2, bytes = 0, close = false) => {
+      if (!res.headersSent) {
+        res.writeHead(status, close ? { "content-length": "0", connection: "close" } : { "content-length": "0" });
+        res.end(close ? () => req.socket?.destroy() : void 0);
+      }
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg2?.id ?? "",
+        hook_name: reg2?.name ?? "",
+        verdict,
+        reason,
+        target_vm_id: reg2?.target.vmId,
+        bytes,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    };
+    if (req.method !== "POST") {
+      res.writeHead(405, { "content-length": "0" });
+      res.end();
+      return;
+    }
+    const id = path.slice(INGRESS_PATH_PREFIX.length);
+    const reg = this.opts.registrations().find((r) => r.id === id && r.enabled);
+    if (!reg) {
+      this.countUnverified();
+      return refuse(404, "unknown_hook", "no registration with that id", void 0);
+    }
+    if (reg.verify.length === 0) {
+      return refuse(503, "needs_setup", "this webhook has no checks on this firewall yet", reg);
+    }
+    if (!this.takeSlot(reg.target.vmId)) {
+      return refuse(503, "agent_unreachable", "too many deliveries in flight for that agent", reg);
+    }
+    try {
+      const cap = Math.min(reg.maxBodyBytes || INGRESS_DEFAULT_BODY_BYTES, INGRESS_MAX_BODY_BYTES);
+      let body;
+      try {
+        body = await readBody(req, cap);
+      } catch (error48) {
+        if (error48.tooLarge) {
+          this.countUnverified();
+          return refuse(413, "too_large", "body over the cap", reg, 0, true);
+        }
+        return refuse(400, "refused", "the sender stopped before the body arrived", reg);
+      }
+      for (const rule of reg.verify) {
+        const verdict = await this.check(rule, req, body);
+        if (verdict.ok) continue;
+        this.countUnverified();
+        if (this.unverifiedLockedUntil > this.now()) {
+          return refuse(429, "rate_limited", "too many refused deliveries", reg, body.byteLength);
+        }
+        return refuse(401, "refused", verdict.reason, reg, body.byteLength);
+      }
+      this.clearUnverified();
+      if (!this.chargeDelivered(reg)) {
+        return refuse(429, "rate_limited", "over this webhook's rate", reg, body.byteLength);
+      }
+      return await this.forward(reg, req, res, body, deliveryId, started);
+    } finally {
+      this.releaseSlot(reg.target.vmId);
+    }
+  }
+  async forward(reg, req, res, body, deliveryId, started) {
+    const refuse = (status, verdict, reason) => {
+      if (!res.headersSent) {
+        res.writeHead(status, { "content-length": "0" });
+        res.end();
+      }
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg.id,
+        hook_name: reg.name,
+        verdict,
+        reason,
+        target_vm_id: reg.target.vmId,
+        bytes: body.byteLength,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    };
+    try {
+      const { status } = await this.opts.deliver(reg, {
+        method: "POST",
+        headers: forwardHeaders(req),
+        bodyB64: body.toString("base64")
+      });
+      const out = status >= 200 && status < 300 ? 204 : status >= 500 ? 503 : status;
+      res.writeHead(out, { "content-length": "0" });
+      res.end();
+      const ok = status >= 200 && status < 300;
+      const verdict = ok ? "delivered" : status >= 500 ? "agent_unreachable" : "listener_refused";
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg.id,
+        hook_name: reg.name,
+        verdict,
+        ...ok ? {} : { reason: `the listener on the agent answered ${status}` },
+        target_vm_id: reg.target.vmId,
+        forward_status: status,
+        bytes: body.byteLength,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    } catch (error48) {
+      refuse(503, "agent_unreachable", error48.message);
+    }
+  }
+  // ---- checks ----
+  async check(rule, req, body) {
+    if (rule.kind === "hmac") {
+      const sent = headerValue(req, rule.header);
+      if (!sent) return { ok: false, reason: `no ${rule.header} header` };
+      let signed = body;
+      if (rule.timestampHeader) {
+        const raw = headerValue(req, rule.timestampHeader);
+        const ts = Number(raw);
+        if (!raw || !Number.isFinite(ts)) return { ok: false, reason: `no ${rule.timestampHeader} header` };
+        const ageS = Math.abs(this.now() / 1e3 - ts);
+        if (ageS > (rule.maxAgeS ?? 300)) return { ok: false, reason: "the delivery was too old to accept" };
+        const format = rule.signedFormat ?? "{ts}.{body}";
+        signed = Buffer.from(format.replace("{ts}", String(raw)).replace("{body}", body.toString("utf8")), "utf8");
+      }
+      const mac3 = createHmac(rule.algo, rule.secret).update(signed).digest(rule.encoding);
+      const want = `${rule.prefix ?? ""}${mac3}`;
+      return sameSecret(sent, want) ? { ok: true } : { ok: false, reason: "the signature did not match" };
+    }
+    const auth = headerValue(req, "authorization");
+    if (!auth.startsWith("Bearer ")) return { ok: false, reason: "no bearer token" };
+    try {
+      const jwks = this.opts.jwks?.(rule.issuer) ?? await this.jwksFor(rule.issuer);
+      const { payload } = await jwtVerify(auth.slice(7), jwks, {
+        issuer: rule.issuer,
+        // Exact, and required. Left to be rebuilt from forwarded headers it would be one proxy
+        // hop away from silently accepting a token minted for somebody else.
+        audience: rule.audience
+      });
+      if (rule.subjectEmail) {
+        const email3 = typeof payload.email === "string" ? payload.email : "";
+        if (email3 !== rule.subjectEmail) return { ok: false, reason: "the token came from a different service account" };
+      }
+      return { ok: true };
+    } catch (error48) {
+      const claim = error48.claim;
+      if (claim === "aud") return { ok: false, reason: "the token was for a different audience" };
+      if (claim === "iss") return { ok: false, reason: "the token came from a different issuer" };
+      if (error48.code === "ERR_JWT_EXPIRED") return { ok: false, reason: "the token had expired" };
+      return { ok: false, reason: "the token did not verify" };
+    }
+  }
+  /**
+   * The issuer's signing keys, found the way OIDC says to find them: fetch
+   * `/.well-known/openid-configuration` and use the `jwks_uri` it names.
+   *
+   * An earlier version guessed at `<issuer>/.well-known/openid-configuration/jwks` instead. That
+   * is not a path anybody serves. For `https://accounts.google.com` the discovery document points
+   * at `https://www.googleapis.com/oauth2/v3/certs`, on a different host entirely, so every OIDC
+   * delivery would have failed with "the token did not verify" and the first consumer of this
+   * feature is Gmail push. Discovery is one request, cached for the life of the process, and it is
+   * the only thing that makes this generic across issuers rather than Google-shaped.
+   */
+  async jwksFor(issuer) {
+    const hit = this.jwksCache.get(issuer);
+    if (hit) return hit;
+    const discovery = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+    const res = await fetch(discovery, { signal: AbortSignal.timeout(OIDC_DISCOVERY_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`discovery for ${issuer} answered ${res.status}`);
+    const doc = await res.json();
+    if (typeof doc.jwks_uri !== "string" || !doc.jwks_uri) throw new Error(`discovery for ${issuer} names no jwks_uri`);
+    if (typeof doc.issuer === "string" && doc.issuer.replace(/\/$/, "") !== issuer.replace(/\/$/, "")) {
+      throw new Error(`discovery for ${issuer} claims to be ${doc.issuer}`);
+    }
+    const made = createRemoteJWKSet(new URL(doc.jwks_uri));
+    this.jwksCache.set(issuer, made);
+    return made;
+  }
+  // ---- budgets ----
+  /**
+   * One delivery that did not verify. Called only on the refusal path, so nothing a real sender
+   * does ever touches this counter.
+   */
+  countUnverified() {
+    const cutoff = this.now() - 6e4;
+    this.unverified = this.unverified.filter((t) => t > cutoff);
+    this.unverified.push(this.now());
+    if (this.unverified.length < INGRESS_UNVERIFIED_PER_MINUTE) return;
+    this.unverifiedLockedUntil = this.now() + INGRESS_UNVERIFIED_LOCKOUT_MS;
+    this.unverified = [];
+    this.log(`[ingress] ${INGRESS_UNVERIFIED_PER_MINUTE} refused deliveries in a minute; refusing unverified callers for ${INGRESS_UNVERIFIED_LOCKOUT_MS / 6e4} minutes`);
+  }
+  /**
+   * A delivery passed its checks, so whoever sent it holds the secret: the run of bad attempts is
+   * forgotten and the lockout lifts. This is the half that makes the two budgets worth having.
+   */
+  clearUnverified() {
+    this.unverified = [];
+    this.unverifiedLockedUntil = 0;
+  }
+  chargeDelivered(reg) {
+    const cutoff = this.now() - 6e4;
+    const per = Math.min(reg.perMinute || INGRESS_DEFAULT_PER_MINUTE, INGRESS_MAX_PER_MINUTE);
+    const mine = (this.delivered.get(reg.id) ?? []).filter((t) => t > cutoff);
+    this.orgDelivered = this.orgDelivered.filter((t) => t > cutoff);
+    if (mine.length >= per || this.orgDelivered.length >= INGRESS_ORG_PER_MINUTE) {
+      this.delivered.set(reg.id, mine);
+      return false;
+    }
+    mine.push(this.now());
+    this.orgDelivered.push(this.now());
+    this.delivered.set(reg.id, mine);
+    return true;
+  }
+  takeSlot(vmId) {
+    const mine = this.inFlightByVm.get(vmId) ?? 0;
+    if (mine >= INGRESS_IN_FLIGHT_PER_VM || this.inFlightOrg >= INGRESS_IN_FLIGHT_ORG) return false;
+    this.inFlightByVm.set(vmId, mine + 1);
+    this.inFlightOrg++;
+    return true;
+  }
+  releaseSlot(vmId) {
+    this.inFlightByVm.set(vmId, Math.max(0, (this.inFlightByVm.get(vmId) ?? 1) - 1));
+    this.inFlightOrg = Math.max(0, this.inFlightOrg - 1);
+  }
+  // ---- Activity ----
+  /**
+   * Metadata only. Never the body, never a header value, never the token. A webhook body is
+   * exactly the kind of thing that must not end up in our database: someone's email, someone's
+   * ticket. The same rule the egress log and the AI review already follow.
+   */
+  record(rec) {
+    this.log(`[ingress] ${rec.verdict} ${rec.hook_name || rec.hook_id || "(unknown)"}${rec.reason ? `: ${rec.reason}` : ""}`);
+    if (!this.opts.logPath) return;
+    try {
+      appendFileSync(this.opts.logPath, `${JSON.stringify(rec)}
+`);
+    } catch (error48) {
+      this.log(`[ingress] could not record that delivery: ${error48.message}`);
+    }
+  }
+};
+var BodyTooLarge = class extends Error {
+  tooLarge = true;
+  constructor() {
+    super("body over the cap");
+    this.name = "BodyTooLarge";
+  }
+};
+function readBody(req, cap) {
+  return new Promise((resolve2, reject) => {
+    const declared = Number(req.headers["content-length"] ?? NaN);
+    if (Number.isFinite(declared) && declared > cap) {
+      req.pause();
+      reject(new BodyTooLarge());
+      return;
+    }
+    const chunks = [];
+    let total = 0;
+    let stopped = false;
+    req.on("data", (chunk) => {
+      if (stopped) return;
+      total += chunk.length;
+      if (total > cap) {
+        stopped = true;
+        req.pause();
+        reject(new BodyTooLarge());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!stopped) resolve2(Buffer.concat(chunks));
+    });
+    req.on("error", (error48) => {
+      if (!stopped) reject(error48);
+    });
+  });
+}
+function forwardHeaders(req) {
+  const out = {};
+  for (const [name25, raw] of Object.entries(req.headers)) {
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value !== "string") continue;
+    const lower = name25.toLowerCase();
+    if (FORWARD_HEADER_ALLOWLIST.includes(lower) || FORWARD_HEADER_PREFIXES.some((p) => lower.startsWith(p))) {
+      out[lower] = value;
+    }
+  }
+  return out;
+}
+function parseRegistrations(json3) {
+  if (!Array.isArray(json3)) return [];
+  const out = [];
+  for (const raw of json3) {
+    const r = raw;
+    const target = r.target ?? {};
+    const port = Number(target.port);
+    if (typeof r.id !== "string" || !r.id) continue;
+    if (typeof target.vmId !== "string" || typeof target.hostname !== "string") continue;
+    if (!targetPortAllowed(port)) continue;
+    out.push({
+      id: r.id,
+      name: typeof r.name === "string" ? r.name : r.id,
+      target: {
+        vmId: target.vmId,
+        hostname: target.hostname,
+        port,
+        path: typeof target.path === "string" && target.path.startsWith("/") ? target.path : "/"
+      },
+      verify: parseVerify(r.verify),
+      // Clamped at both ends. Without a lower bound a negative value passes straight through
+      // `Math.min` and every delivery, including a zero-byte one, is refused 413 forever.
+      maxBodyBytes: clamp(Number(r.maxBodyBytes) || INGRESS_DEFAULT_BODY_BYTES, 1, INGRESS_MAX_BODY_BYTES),
+      perMinute: clamp(Number(r.perMinute) || INGRESS_DEFAULT_PER_MINUTE, 1, INGRESS_MAX_PER_MINUTE),
+      enabled: r.enabled !== false
+    });
+  }
+  return out;
+}
+function parseVerify(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const entry of raw) {
+    const v = entry;
+    if (v.kind === "hmac" && typeof v.secret === "string" && typeof v.header === "string") {
+      out.push({
+        kind: "hmac",
+        header: v.header,
+        algo: v.algo === "sha1" ? "sha1" : "sha256",
+        encoding: v.encoding === "base64" ? "base64" : "hex",
+        prefix: typeof v.prefix === "string" ? v.prefix : void 0,
+        secret: v.secret,
+        timestampHeader: typeof v.timestampHeader === "string" ? v.timestampHeader : void 0,
+        signedFormat: typeof v.signedFormat === "string" ? v.signedFormat : void 0,
+        maxAgeS: Number.isFinite(Number(v.maxAgeS)) && Number(v.maxAgeS) > 0 ? Number(v.maxAgeS) : void 0
+      });
+    } else if (v.kind === "oidc" && typeof v.issuer === "string" && typeof v.audience === "string" && v.audience) {
+      out.push({
+        kind: "oidc",
+        issuer: v.issuer,
+        audience: v.audience,
+        subjectEmail: typeof v.subjectEmail === "string" ? v.subjectEmail : void 0
+      });
+    }
+  }
+  return out;
+}
+
+// src/webhook-store.ts
 function aad5(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:webhooks`;
+}
+function emptyWebhookStore() {
+  return { version: 1, hooks: {}, pending: {} };
+}
+function loadWebhookStore(path, boxKeyB64, ids2, log = console.log) {
+  let parsed = null;
+  try {
+    parsed = loadEncryptedJson(path, boxKeyB64, aad5(ids2));
+  } catch (error48) {
+    log(`[webhooks] this firewall cannot read ${path} (${error48.message}); starting with no registrations`);
+    return emptyWebhookStore();
+  }
+  if (!parsed || parsed.version !== 1 || !parsed.hooks) return emptyWebhookStore();
+  return { ...parsed, pending: parsed.pending ?? {} };
+}
+function saveWebhookStore(path, store, boxKeyB64, ids2) {
+  saveEncryptedJson(path, store, boxKeyB64, aad5(ids2));
+}
+function applySync(store, entries, now2 = Date.now) {
+  const listed = new Set(entries.map((e) => e.id));
+  const unknown2 = [];
+  const dropped = [];
+  let changed = false;
+  for (const entry of entries) {
+    const held = store.hooks[entry.id];
+    if (!held) {
+      unknown2.push(entry.id);
+      const label = entry.name || entry.id;
+      if (store.pending[entry.id] !== label) {
+        store.pending[entry.id] = label;
+        changed = true;
+      }
+      continue;
+    }
+    delete store.pending[entry.id];
+    const before = JSON.stringify(held);
+    if (typeof entry.name === "string" && entry.name) held.name = entry.name;
+    if (typeof entry.enabled === "boolean") held.enabled = entry.enabled;
+    if (Number.isFinite(entry.maxBodyBytes)) held.maxBodyBytes = Number(entry.maxBodyBytes);
+    if (Number.isFinite(entry.perMinute)) held.perMinute = Number(entry.perMinute);
+    if (JSON.stringify(held) !== before) {
+      held.updatedAt = new Date(now2()).toISOString();
+      changed = true;
+    }
+  }
+  for (const id of Object.keys(store.hooks)) {
+    if (listed.has(id)) continue;
+    delete store.hooks[id];
+    dropped.push(id);
+    changed = true;
+  }
+  for (const id of Object.keys(store.pending)) {
+    if (listed.has(id)) continue;
+    delete store.pending[id];
+    changed = true;
+  }
+  return { unknown: unknown2, dropped, changed };
+}
+function registrationsFor(store) {
+  const pending = Object.entries(store.pending).map(([id, name25]) => ({
+    id,
+    name: name25,
+    // Inert on purpose. The ingress refuses a registration with no checks before it reads the
+    // target, so these values are never used for anything.
+    target: { vmId: "", hostname: "", port: 0, path: "/" },
+    verify: [],
+    maxBodyBytes: 0,
+    perMinute: 0,
+    enabled: true
+  }));
+  return pending.concat(Object.values(store.hooks).map((h) => ({
+    id: h.id,
+    name: h.name,
+    target: { ...h.target },
+    verify: h.verify,
+    maxBodyBytes: h.maxBodyBytes,
+    perMinute: h.perMinute,
+    enabled: h.enabled
+  })));
+}
+function inventoryFor(store) {
+  return [
+    ...Object.keys(store.pending).map((id) => ({ id, ready: false })),
+    ...Object.values(store.hooks).map((h) => ({ id: h.id, ready: h.verify.length > 0 }))
+  ];
+}
+
+// src/webhooks.ts
+var SCOPE4 = "webhooks";
+function clamp2(value, low, high, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.max(n, low), high);
+}
+function parseVerifyRules(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const entry of raw) {
+    const v = entry ?? {};
+    if (v.kind === "hmac" && typeof v.secret === "string" && v.secret && typeof v.header === "string" && v.header) {
+      out.push({
+        kind: "hmac",
+        header: v.header,
+        algo: v.algo === "sha1" ? "sha1" : "sha256",
+        encoding: v.encoding === "base64" ? "base64" : "hex",
+        prefix: typeof v.prefix === "string" ? v.prefix : void 0,
+        secret: v.secret,
+        timestampHeader: typeof v.timestampHeader === "string" ? v.timestampHeader : void 0,
+        signedFormat: typeof v.signedFormat === "string" ? v.signedFormat : void 0,
+        maxAgeS: Number.isFinite(Number(v.maxAgeS)) && Number(v.maxAgeS) > 0 ? Number(v.maxAgeS) : void 0
+      });
+    } else if (v.kind === "oidc" && typeof v.issuer === "string" && v.issuer && typeof v.audience === "string" && v.audience) {
+      out.push({
+        kind: "oidc",
+        issuer: v.issuer,
+        audience: v.audience,
+        subjectEmail: typeof v.subjectEmail === "string" ? v.subjectEmail : void 0
+      });
+    }
+  }
+  return out;
+}
+function summarize4(p) {
+  switch (p.kind) {
+    case "register":
+      return `Let "${p.name}" deliver to port ${p.target?.port} on ${p.target?.hostname ?? "an agent"}`;
+    case "retarget":
+      return `Point "${p.name}" at port ${p.target?.port} on ${p.target?.hostname ?? "an agent"}`;
+    case "reverify":
+      return `Change how "${p.name}" checks that a delivery is genuine`;
+    case "forget":
+      return `Remove the webhook "${p.name}"`;
+  }
+}
+var WebhookFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadWebhookStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  handlers() {
+    return {
+      "webhook.propose": (p) => this.propose(p),
+      "webhook.confirm": (p) => this.confirm(p),
+      "webhook.cancel": (p) => this.cancel(p),
+      "webhook.sync": (p) => this.sync(p),
+      // Revoking is not a coded change (§5.3), so it arrives as its own command rather than a
+      // proposal. Without this the control plane's revoke was an unknown action and the hook
+      // stayed served until the next sync dropped it.
+      "webhook.forget": (p) => this.forget(p),
+      "webhook.read": async () => ({ ok: true, status: "read", data: { hooks: this.summary() } })
+    };
+  }
+  /** The live set, for the ingress. Called per delivery, so a revoke lands on the next one. */
+  registrations() {
+    return registrationsFor(this.store);
+  }
+  /** For the beat: which registrations this firewall can actually serve (§5.2b). */
+  inventory() {
+    return inventoryFor(this.store);
+  }
+  /** What the console may see. Never a secret, and never the HMAC's bytes. */
+  summary() {
+    return Object.values(this.store.hooks).map((h) => ({
+      id: h.id,
+      name: h.name,
+      target: { vmId: h.target.vmId, hostname: h.target.hostname, port: h.target.port, path: h.target.path },
+      // The kinds only, never the material. A console that could read the secret back would make
+      // the control plane a holder of it, which is exactly what this store exists to prevent.
+      checks: h.verify.map((v) => v.kind === "hmac" ? { kind: "hmac", header: v.header, algo: v.algo, replayProtected: Boolean(v.timestampHeader) } : { kind: "oidc", issuer: v.issuer, audience: v.audience, subjectEmail: v.subjectEmail ?? null }),
+      ready: h.verify.length > 0,
+      maxBodyBytes: h.maxBodyBytes,
+      perMinute: h.perMinute,
+      enabled: h.enabled,
+      createdAt: h.createdAt,
+      updatedAt: h.updatedAt
+    }));
+  }
+  save() {
+    saveWebhookStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+    this.opts.onChange?.();
+  }
+  // ---- the family ----
+  async propose(payload) {
+    const p = this.parseProposal(payload);
+    if (typeof p === "string") return { ok: false, status: "refused", message: p };
+    if (p.kind !== "register" && !this.store.hooks[p.hookId]) {
+      return { ok: false, status: "refused", message: "This firewall does not hold that webhook." };
+    }
+    if (p.kind === "register" && this.store.hooks[p.hookId]) {
+      return { ok: false, status: "refused", message: "This firewall already holds a webhook with that id." };
+    }
+    const routes = await this.opts.codeRoutes();
+    const summary = summarize4(p);
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "no_channels",
+        message: "This firewall cannot read its channel list, so it cannot ask anyone to confirm this. Nothing was changed."
+      };
+    }
+    if (routes.length === 0) {
+      this.log(`[webhooks] no approved sender on any channel; applying "${summary}" without a code (first use)`);
+      if (!this.apply(p)) return { ok: false, status: "gone", message: "That webhook is no longer on this firewall." };
+      return { ok: true, status: "applied", message: `${summary}. Nobody is approved on a channel yet, so this applied without a code.` };
+    }
+    const sent = await this.codes.send(SCOPE4, p, p.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message };
+    return { ok: true, status: "code_sent", message: summary, data: { sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = String(payload.changeId ?? "");
+    const code = String(payload.code ?? "");
+    const verdict = this.codes.verify(SCOPE4, changeId, code);
+    if (verdict.kind === "expired") return { ok: false, status: "expired", message: "That change is no longer waiting for a code." };
+    if (verdict.kind === "invalid") {
+      return { ok: false, status: "invalid_code", message: `That code is not right. ${verdict.attemptsLeft} attempt(s) left.`, data: { attemptsLeft: verdict.attemptsLeft } };
+    }
+    if (!this.apply(verdict.proposal)) {
+      return { ok: false, status: "gone", message: "That webhook was removed while this change was waiting." };
+    }
+    return { ok: true, status: "applied", message: summarize4(verdict.proposal) };
+  }
+  /** Drop a registration now. The sync would drop it too; this makes it immediate. */
+  async forget(payload) {
+    const hookId = String(payload.hookId ?? "");
+    const going = this.store.hooks[hookId];
+    if (!going) return { ok: true, status: "already_gone" };
+    delete this.store.hooks[hookId];
+    delete this.store.pending[hookId];
+    this.save();
+    void this.stopGmail(going);
+    return { ok: true, status: "forgotten" };
+  }
+  async cancel(payload) {
+    const changeId = payload.changeId ? String(payload.changeId) : null;
+    const dropped = this.codes.cancel(SCOPE4, changeId);
+    return { ok: true, status: dropped ? "cancelled" : "nothing_waiting" };
+  }
+  /**
+   * The control plane's half (§5.2). Carries ids, `enabled`, the name and the limits, and cannot
+   * create a registration or touch a target or a check: `applySync` enforces that, not this.
+   */
+  async sync(payload) {
+    const raw = Array.isArray(payload.hooks) ? payload.hooks : [];
+    const entries = raw.map((e) => e ?? {}).filter((e) => typeof e.id === "string" && e.id).map((e) => ({
+      id: String(e.id),
+      name: typeof e.name === "string" ? e.name : void 0,
+      enabled: typeof e.enabled === "boolean" ? e.enabled : void 0,
+      maxBodyBytes: Number.isFinite(Number(e.maxBodyBytes)) ? Number(e.maxBodyBytes) : void 0,
+      perMinute: Number.isFinite(Number(e.perMinute)) ? Number(e.perMinute) : void 0
+    }));
+    const outcome = applySync(this.store, entries, this.now);
+    if (outcome.changed) this.save();
+    if (outcome.unknown.length) {
+      this.log(`[webhooks] the sync listed ${outcome.unknown.length} registration(s) this firewall does not hold; ignored`);
+    }
+    if (outcome.dropped.length) this.log(`[webhooks] dropped ${outcome.dropped.length} revoked registration(s)`);
+    return { ok: true, status: "synced", data: { unknown: outcome.unknown, dropped: outcome.dropped, held: Object.keys(this.store.hooks).length } };
+  }
+  /**
+   * Tell the agent box to start (or stop) its Gmail watcher.
+   *
+   * Provider-specific knowledge stops here, at one `if`: the firewall knows a registration whose
+   * only check is an OIDC token from Google, and hands the agent the audience and the path. What
+   * Gmail is, and what to do with a push, lives on the agent box.
+   *
+   * Best effort on purpose. A registration is real the moment the firewall holds it; an agent that
+   * is down must not make a confirmed change fail, and the next apply picks it up.
+   */
+  async pushGmail(hook) {
+    const oidc = hook.verify.find((v) => v.kind === "oidc");
+    if (!oidc || oidc.kind !== "oidc" || !oidc.issuer.includes("accounts.google.com")) return;
+    try {
+      await this.opts.agent.post({ vmId: hook.target.vmId, hostname: hook.target.hostname }, "/hooks/gmail", {
+        audience: oidc.audience,
+        path: hook.target.path,
+        port: hook.target.port,
+        subjectEmail: oidc.subjectEmail ?? null,
+        // Both are needed for the renewal timer. Without them the watch dies after seven days
+        // and nothing says so.
+        account: this.opts.gmailAccount?.() ?? null,
+        topic: hook.gmailTopic ?? null
+      });
+      this.log(`[webhooks] gmail watcher configured on ${hook.target.hostname}`);
+    } catch (error48) {
+      this.log(`[webhooks] could not configure the gmail watcher on ${hook.target.hostname}: ${error48.message}`);
+    }
+  }
+  async stopGmail(hook) {
+    const oidc = hook.verify.find((v) => v.kind === "oidc");
+    if (!oidc || oidc.kind !== "oidc" || !oidc.issuer.includes("accounts.google.com")) return;
+    await this.opts.agent.post({ vmId: hook.target.vmId, hostname: hook.target.hostname }, "/hooks/gmail", { stop: true }).catch((error48) => this.log(`[webhooks] could not stop the gmail watcher: ${error48.message}`));
+  }
+  apply(p) {
+    if (p.kind === "forget") {
+      const going = this.store.hooks[p.hookId];
+      delete this.store.hooks[p.hookId];
+      this.save();
+      if (going) void this.stopGmail(going);
+      return true;
+    }
+    const iso = new Date(this.now()).toISOString();
+    const held = this.store.hooks[p.hookId];
+    if (p.kind !== "register" && !held) return false;
+    if (p.kind === "register") {
+      this.store.hooks[p.hookId] = {
+        id: p.hookId,
+        name: p.name,
+        target: p.target,
+        verify: p.verify,
+        maxBodyBytes: clamp2(p.maxBodyBytes, 1, INGRESS_MAX_BODY_BYTES, INGRESS_DEFAULT_BODY_BYTES),
+        perMinute: clamp2(p.perMinute, 1, INGRESS_MAX_PER_MINUTE, INGRESS_DEFAULT_PER_MINUTE),
+        enabled: true,
+        gmailTopic: p.gmailTopic ?? null,
+        createdAt: iso,
+        updatedAt: iso
+      };
+    } else if (p.kind === "retarget") {
+      held.target = p.target;
+      held.updatedAt = iso;
+    } else {
+      held.verify = p.verify;
+      held.updatedAt = iso;
+    }
+    delete this.store.pending[p.hookId];
+    this.save();
+    void this.pushGmail(this.store.hooks[p.hookId]);
+    return true;
+  }
+  parseProposal(payload) {
+    const changeId = String(payload.changeId ?? "");
+    const kind = String(payload.kind ?? "");
+    const hookId = String(payload.hookId ?? "");
+    const name25 = String(payload.name ?? "").slice(0, 120);
+    if (!changeId) return "This change carries no id.";
+    if (!["register", "retarget", "reverify", "forget"].includes(kind)) return "That is not a change this firewall knows how to make.";
+    if (!/^hk_[0-9a-f]{32}$/.test(hookId)) return "That is not a webhook id.";
+    if (!name25 && kind !== "forget") return "A webhook needs a name.";
+    const p = { changeId, kind, hookId, name: name25 || hookId };
+    if (kind === "register" || kind === "retarget") {
+      const t = payload.target ?? {};
+      const port = Number(t.port);
+      if (typeof t.vmId !== "string" || !t.vmId) return "A webhook has to name the agent it delivers to.";
+      if (typeof t.hostname !== "string" || !t.hostname) return "A webhook has to name the agent's hostname.";
+      if (!targetPortAllowed(port)) return `A webhook may only deliver to a port between 8700 and 8799 (got ${t.port}).`;
+      const path = typeof t.path === "string" && t.path.startsWith("/") ? t.path : "/";
+      p.target = { vmId: t.vmId, hostname: t.hostname, port, path };
+    }
+    if (kind === "register" || kind === "reverify") {
+      const verify2 = parseVerifyRules(payload.verify);
+      if (verify2.length === 0) return "A webhook needs at least one way to check that a delivery is genuine.";
+      p.verify = verify2;
+    }
+    if (kind === "register") {
+      p.maxBodyBytes = Number(payload.maxBodyBytes);
+      p.perMinute = Number(payload.perMinute);
+      const topic = typeof payload.gmailTopic === "string" ? payload.gmailTopic : "";
+      if (topic && !/^projects\/[a-z0-9-]{4,30}\/topics\/[A-Za-z0-9._~%+-]{3,255}$/.test(topic)) {
+        return "That is not a Pub/Sub topic name.";
+      }
+      p.gmailTopic = topic || null;
+    }
+    return p;
+  }
+};
+
+// src/llm-store.ts
+function aad6(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:llm`;
 }
 function emptyLlmStore() {
@@ -36551,17 +37367,17 @@ function withRoles(store) {
   return store;
 }
 function loadLlmStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad5(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad6(ids2));
   return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? withRoles(parsed) : emptyLlmStore();
 }
 function saveLlmStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad5(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad6(ids2));
 }
 
 // src/llm.ts
 var REFRESH_AHEAD_MS = 15 * 6e4;
 var REFRESH_TIMEOUT_MS = 3e4;
-var SCOPE4 = "org";
+var SCOPE5 = "org";
 function str4(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
@@ -36576,7 +37392,7 @@ function modelShort(model) {
   const bare = at > 0 && model.slice(at + 1).includes(":") ? model.slice(0, at) : model;
   return bare.includes("/") ? bare.slice(bare.indexOf("/") + 1) : bare;
 }
-function summarize4(p) {
+function summarize5(p) {
   const a = p.agents[0];
   const replaced = p.replaces ? `, replacing ${p.replaces}` : "";
   switch (p.kind) {
@@ -36762,15 +37578,15 @@ var LlmFirewall = class {
   // ---- commands ----
   async propose(payload) {
     const p = parseProposal4(payload);
-    const summary = summarize4(p);
+    const summary = summarize5(p);
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE4);
+      this.codes.drop(SCOPE5);
       const applied = await this.apply(p);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
-    const sent = await this.codes.send(SCOPE4, p, "your organization's model providers", summary, routes);
+    const sent = await this.codes.send(SCOPE5, p, "your organization's model providers", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[llm] code sent for ${p.kind} ${p.provider} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
@@ -36780,15 +37596,15 @@ var LlmFirewall = class {
     const code = str4(payload.code) ?? "";
     if (!changeId) throw new Error("malformed llm.confirm payload");
     const data = { changeId };
-    const v = this.codes.verify(SCOPE4, changeId, code);
+    const v = this.codes.verify(SCOPE5, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize4(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize5(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str4(payload.changeId);
-    this.codes.cancel(SCOPE4, changeId);
+    this.codes.cancel(SCOPE5, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   async push(payload) {
@@ -37056,29 +37872,29 @@ var LlmFirewall = class {
 };
 
 // src/search-store.ts
-function aad6(ids2) {
+function aad7(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:search`;
 }
 function emptySearchStore() {
   return { version: 1, credentialId: null, credential: null, agents: {} };
 }
 function loadSearchStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad6(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad7(ids2));
   return parsed && parsed.version === 1 && parsed.agents ? parsed : emptySearchStore();
 }
 function saveSearchStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad6(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad7(ids2));
 }
 
 // src/search.ts
-var SCOPE5 = "org";
+var SCOPE6 = "org";
 function str5(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 function isKind5(v) {
   return v === "add" || v === "replace" || v === "remove";
 }
-function summarize5(p) {
+function summarize6(p) {
   switch (p.kind) {
     case "add":
       return `Use ${p.providerName} for web search (key ${p.hint ?? "key"})`;
@@ -37179,15 +37995,15 @@ var SearchFirewall = class {
   // ---- commands ----
   async propose(payload) {
     const p = parseProposal5(payload);
-    const summary = summarize5(p);
+    const summary = summarize6(p);
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE5);
+      this.codes.drop(SCOPE6);
       const applied = await this.apply(p);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
-    const sent = await this.codes.send(SCOPE5, p, "your organization's web search", summary, routes);
+    const sent = await this.codes.send(SCOPE6, p, "your organization's web search", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[search] code sent for ${p.kind} ${p.provider} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
@@ -37197,15 +38013,15 @@ var SearchFirewall = class {
     const code = str5(payload.code) ?? "";
     if (!changeId) throw new Error("malformed search.confirm payload");
     const data = { changeId };
-    const v = this.codes.verify(SCOPE5, changeId, code);
+    const v = this.codes.verify(SCOPE6, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize5(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize6(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str5(payload.changeId);
-    this.codes.cancel(SCOPE5, changeId);
+    this.codes.cancel(SCOPE6, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   async push(payload) {
@@ -37311,18 +38127,18 @@ var SearchFirewall = class {
 };
 
 // src/tailscale-store.ts
-function aad7(ids2) {
+function aad8(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:tailscale`;
 }
 function emptyTailscaleStore() {
   return { version: 1, agents: {} };
 }
 function loadTailscaleStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad7(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad8(ids2));
   return parsed && parsed.version === 1 && parsed.agents ? parsed : emptyTailscaleStore();
 }
 function saveTailscaleStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad7(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad8(ids2));
 }
 
 // src/tailscale.ts
@@ -37330,7 +38146,7 @@ var SCOPE_PREFIX = "tailscale:";
 function str6(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-function summarize6(p) {
+function summarize7(p) {
   return p.kind === "join" ? `Put ${p.agent.name} on your Tailscale network${p.ssh ? ", with Tailscale SSH" : ""}` : `Take ${p.agent.name} off your Tailscale network`;
 }
 function parseProposal6(payload) {
@@ -37431,7 +38247,7 @@ var TailscaleFirewall = class {
   }
   async propose(payload) {
     const p = parseProposal6(payload);
-    const summary = summarize6(p);
+    const summary = summarize7(p);
     const data = { changeId: p.changeId, summary };
     if (!this.opts.channelsReady()) {
       return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
@@ -37457,7 +38273,7 @@ var TailscaleFirewall = class {
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize6(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize7(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str6(payload.changeId);
@@ -37468,7 +38284,7 @@ var TailscaleFirewall = class {
 };
 
 // src/exit.ts
-import { createHmac, randomBytes as randomBytes6 } from "crypto";
+import { createHmac as createHmac2, randomBytes as randomBytes7 } from "crypto";
 
 // src/exit-check.ts
 import { connect as tcpConnect } from "net";
@@ -37633,7 +38449,7 @@ Connection: close\r
 }
 
 // src/exit-store.ts
-function aad8(ids2) {
+function aad9(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:exit`;
 }
 function monthKey(now2) {
@@ -37653,15 +38469,15 @@ function emptyExitStore(now2 = Date.now()) {
   };
 }
 function loadExitStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad8(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad9(ids2));
   return parsed && parsed.version === 1 ? { ...emptyExitStore(), ...parsed } : emptyExitStore();
 }
 function saveExitStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad8(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad9(ids2));
 }
 
 // src/exit.ts
-var SCOPE6 = "org";
+var SCOPE7 = "org";
 var CHECK_INTERVAL_MS = 15 * 6e4;
 var DEFAULT_CAP_BYTES = 5 * 1024 ** 3;
 var COUNTED_IDS_KEPT = 2e4;
@@ -37713,7 +38529,7 @@ function renderTemplate(template, values) {
   });
   return out.replace(PLACEHOLDERS, (_m, name25) => placeholderValue(name25, values));
 }
-function summarize7(p, current) {
+function summarize8(p, current) {
   const who = p.usernameHint ? ` (${p.usernameHint})` : "";
   switch (p.kind) {
     case "add":
@@ -37999,7 +38815,7 @@ var ExitFirewall = class {
     if (p.country !== void 0) this.store.country = p.country;
     if (p.capBytes !== void 0) this.store.capBytes = p.capBytes;
     else if (!previous) this.store.capBytes = DEFAULT_CAP_BYTES;
-    this.store.stickySalt = randomBytes6(32).toString("hex");
+    this.store.stickySalt = randomBytes7(32).toString("hex");
     this.store.lastCheck = null;
     this.save();
     await this.opts.onExitChanged?.();
@@ -38017,18 +38833,18 @@ var ExitFirewall = class {
   }
   async propose(payload) {
     const p = parseProposal7(payload);
-    const summary = summarize7(p, { country: this.store.country });
+    const summary = summarize8(p, { country: this.store.country });
     const data = { changeId: p.changeId, summary };
     if (!this.opts.channelsReady()) {
       return { ok: false, status: "failed", data, message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly." };
     }
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE6);
+      this.codes.drop(SCOPE7);
       const applied = await this.apply(p);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
-    const sent = await this.codes.send(SCOPE6, p, "your organization's exit", summary, routes);
+    const sent = await this.codes.send(SCOPE7, p, "your organization's exit", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[exit] code sent for ${p.kind} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
@@ -38038,16 +38854,16 @@ var ExitFirewall = class {
     if (!changeId) throw new Error("malformed exit.confirm payload");
     const code = str7(payload.code) ?? "";
     const data = { changeId };
-    const v = this.codes.verify(SCOPE6, changeId, code);
+    const v = this.codes.verify(SCOPE7, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
-    const summary = summarize7(v.proposal, { country: this.store.country });
+    const summary = summarize8(v.proposal, { country: this.store.country });
     const applied = await this.apply(v.proposal);
     return { ok: true, status: "applied", data: { ...data, ...applied, summary, sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str7(payload.changeId);
-    this.codes.cancel(SCOPE6, changeId);
+    this.codes.cancel(SCOPE7, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
 };
@@ -38183,18 +38999,18 @@ var ConnectorRuntime = class {
 };
 
 // src/connector-store.ts
-function aad9(ids2) {
+function aad10(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:connectors`;
 }
 function emptyConnectorStore() {
   return { version: 1, connections: {}, agents: {} };
 }
 function loadConnectorStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad9(ids2));
+  const parsed = loadEncryptedJson(path, boxKeyB64, aad10(ids2));
   return parsed && parsed.version === 1 && parsed.connections && parsed.agents ? parsed : emptyConnectorStore();
 }
 function saveConnectorStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad9(ids2));
+  saveEncryptedJson(path, store, boxKeyB64, aad10(ids2));
 }
 function servicesFor(store, agent) {
   const services = /* @__PURE__ */ new Set();
@@ -38206,7 +39022,7 @@ function servicesFor(store, agent) {
 }
 
 // src/connectors.ts
-var SCOPE7 = "org";
+var SCOPE8 = "org";
 var OAUTH_PENDING_MS = 15 * 6e4;
 function str8(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
@@ -38376,7 +39192,7 @@ var ConnectorsFirewall = class {
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE7);
+      this.codes.drop(SCOPE8);
       try {
         const applied = await this.apply(p);
         return { ok: true, status: applied.status, message: applied.message ?? "", data: { ...data, ...applied.data, tofu: true } };
@@ -38384,7 +39200,7 @@ var ConnectorsFirewall = class {
         return { ok: false, status: "failed", message: messageOf(err), data };
       }
     }
-    const sent = await this.codes.send(SCOPE7, p, "your organization's app connections", summary, routes);
+    const sent = await this.codes.send(SCOPE8, p, "your organization's app connections", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[connectors] code sent for ${p.kind} ${p.service} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
@@ -38394,7 +39210,7 @@ var ConnectorsFirewall = class {
     const code = str8(payload.code) ?? "";
     if (!changeId) throw new Error("malformed connectors.confirm payload");
     const data = { changeId };
-    const v = this.codes.verify(SCOPE7, changeId, code);
+    const v = this.codes.verify(SCOPE8, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     try {
@@ -38406,7 +39222,7 @@ var ConnectorsFirewall = class {
   }
   async cancel(payload) {
     const changeId = str8(payload.changeId);
-    this.codes.cancel(SCOPE7, changeId);
+    this.codes.cancel(SCOPE8, changeId);
     for (const [state, pending] of this.pendingOauth) if (pending.proposal.changeId === changeId) this.pendingOauth.delete(state);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -38866,7 +39682,7 @@ var SCOPE_PREFIX2 = "update:";
 function str9(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-function summarize8(p) {
+function summarize9(p) {
   return `Update the software on ${p.agent.name}`;
 }
 function parseProposal8(payload) {
@@ -38906,7 +39722,7 @@ var UpdateFirewall = class {
   }
   async propose(payload) {
     const p = parseProposal8(payload);
-    const summary = summarize8(p);
+    const summary = summarize9(p);
     const data = { changeId: p.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (!this.opts.channelsReady()) {
@@ -38937,7 +39753,7 @@ var UpdateFirewall = class {
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize8(v.proposal), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize9(v.proposal), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str9(payload.changeId);
@@ -39274,19 +40090,19 @@ var EXPIRY_GRACE_MS = 24 * 60 * 60 * 1e3;
 var DAY_MS = 24 * 60 * 60 * 1e3;
 
 // src/backup-store.ts
-function aad10(ids2) {
+function aad11(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:backup`;
 }
 function emptyBackupStore() {
   return { version: 1, keypair: null, recovery: null };
 }
 function loadBackupStore(path, boxKey, ids2) {
-  const loaded2 = loadEncryptedJson(path, boxKey, aad10(ids2));
+  const loaded2 = loadEncryptedJson(path, boxKey, aad11(ids2));
   if (!loaded2) return emptyBackupStore();
   return { version: 1, keypair: loaded2.keypair ?? null, recovery: loaded2.recovery ? { ...loaded2.recovery, signingPublicKey: loaded2.recovery.signingPublicKey ?? null } : null };
 }
 function saveBackupStore(path, store, boxKey, ids2) {
-  saveEncryptedJson(path, store, boxKey, aad10(ids2));
+  saveEncryptedJson(path, store, boxKey, aad11(ids2));
 }
 
 // src/self-backup.ts
@@ -40351,11 +41167,11 @@ var SelfUpdateService = class {
 
 // src/firewall-update.ts
 var SCOPE_PREFIX3 = "firewall-update:";
-var SCOPE8 = `${SCOPE_PREFIX3}self`;
+var SCOPE9 = `${SCOPE_PREFIX3}self`;
 function str11(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-function summarize9() {
+function summarize10() {
   return "Update the software on your firewall";
 }
 var FirewallUpdate = class {
@@ -40392,7 +41208,7 @@ var FirewallUpdate = class {
   async propose(payload) {
     const changeId = str11(payload.changeId);
     if (!changeId) throw new Error("malformed firewall-update.propose payload");
-    const summary = summarize9();
+    const summary = summarize10();
     const data = { changeId, summary };
     if (!this.opts.service.pinned()) {
       return {
@@ -40412,7 +41228,7 @@ var FirewallUpdate = class {
     }
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
-      this.codes.drop(SCOPE8);
+      this.codes.drop(SCOPE9);
       return {
         ok: false,
         status: "failed",
@@ -40420,7 +41236,7 @@ var FirewallUpdate = class {
         data
       };
     }
-    const sent = await this.codes.send(SCOPE8, { changeId }, this.boxName, summary, routes);
+    const sent = await this.codes.send(SCOPE9, { changeId }, this.boxName, summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[firewall-update] code sent via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
@@ -40430,15 +41246,15 @@ var FirewallUpdate = class {
     if (!changeId) throw new Error("malformed firewall-update.confirm payload");
     const code = str11(payload.code) ?? "";
     const data = { changeId };
-    const v = this.codes.verify(SCOPE8, changeId, code);
+    const v = this.codes.verify(SCOPE9, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
     const applied = this.apply();
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize9(), sentVia: v.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize10(), sentVia: v.sentVia, tofu: false } };
   }
   async cancel(payload) {
     const changeId = str11(payload.changeId);
-    this.codes.cancel(SCOPE8, changeId);
+    this.codes.cancel(SCOPE9, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
 };
@@ -40454,7 +41270,7 @@ function hours(seconds) {
   if (h >= 24 && h % 24 === 0) return `${h / 24} day${h === 24 ? "" : "s"}`;
   return `${h} hour${h === 1 ? "" : "s"}`;
 }
-function summarize10(p, boxName) {
+function summarize11(p, boxName) {
   return `Let ControlClaw support open a shell on ${p.agent?.name ?? boxName} for ${hours(p.seconds)}`;
 }
 function parseProposal9(payload) {
@@ -40513,7 +41329,7 @@ var SshFirewall = class {
   }
   async propose(payload) {
     const p = parseProposal9(payload);
-    const summary = summarize10(p, this.boxName);
+    const summary = summarize11(p, this.boxName);
     const data = { changeId: p.changeId, summary };
     if (!this.opts.channelsReady()) {
       return {
@@ -40553,7 +41369,7 @@ var SshFirewall = class {
       status: "opened",
       // `privateKey` rides in here and is taken out of the result by the control plane before
       // anything is written down (`app/(ssh)/lib/ssh-access.server.ts`). It is not logged here.
-      data: { ...data, ...opened, summary: summarize10(v.proposal, this.boxName), sentVia: v.sentVia, vmId: v.proposal.agent?.vmId ?? null }
+      data: { ...data, ...opened, summary: summarize11(v.proposal, this.boxName), sentVia: v.sentVia, vmId: v.proposal.agent?.vmId ?? null }
     };
   }
   async cancel(payload) {
@@ -40779,440 +41595,6 @@ var SshLoginWatcher = class {
     return records.length;
   }
 };
-
-// src/ingress.ts
-import { createHmac as createHmac2, timingSafeEqual as timingSafeEqual2 } from "crypto";
-import { appendFileSync } from "fs";
-var INGRESS_PATH_PREFIX = "/hook/";
-var INGRESS_DEFAULT_BODY_BYTES = 256 * 1024;
-var INGRESS_MAX_BODY_BYTES = 1024 * 1024;
-var INGRESS_DEFAULT_PER_MINUTE = 60;
-var INGRESS_MAX_PER_MINUTE = 180;
-var INGRESS_ORG_PER_MINUTE = 180;
-var INGRESS_IN_FLIGHT_PER_VM = 4;
-var INGRESS_IN_FLIGHT_ORG = 16;
-var INGRESS_FORWARD_TIMEOUT_MS = 8e3;
-var INGRESS_UNVERIFIED_PER_MINUTE = 20;
-var INGRESS_UNVERIFIED_LOCKOUT_MS = 15 * 6e4;
-var OIDC_DISCOVERY_TIMEOUT_MS = 5e3;
-var FORWARD_HEADER_ALLOWLIST = ["content-type", "authorization"];
-var FORWARD_HEADER_PREFIXES = ["x-goog-", "x-hub-signature", "x-github-", "x-slack-"];
-var INGRESS_TARGET_PORT_MIN = 8700;
-var INGRESS_TARGET_PORT_MAX = 8799;
-function clamp(value, low, high) {
-  return Math.min(Math.max(value, low), high);
-}
-function targetPortAllowed(port) {
-  return Number.isInteger(port) && port >= INGRESS_TARGET_PORT_MIN && port <= INGRESS_TARGET_PORT_MAX;
-}
-function ownsIngressPath(path) {
-  return path.startsWith(INGRESS_PATH_PREFIX);
-}
-function sameSecret(a, b) {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  if (left.length !== right.length) {
-    timingSafeEqual2(left, left);
-    return false;
-  }
-  return timingSafeEqual2(left, right);
-}
-function headerValue(req, name25) {
-  const raw = req.headers[name25.toLowerCase()];
-  if (Array.isArray(raw)) return raw[0] ?? "";
-  return typeof raw === "string" ? raw : "";
-}
-var IngressRoutes = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? console.log;
-  }
-  now;
-  log;
-  /** Per registration: the deliveries that passed their checks. */
-  delivered = /* @__PURE__ */ new Map();
-  /** Org-wide, across registrations. */
-  orgDelivered = [];
-  /** Unverified attempts, counted apart from the above. */
-  unverified = [];
-  unverifiedLockedUntil = 0;
-  inFlightOrg = 0;
-  inFlightByVm = /* @__PURE__ */ new Map();
-  jwksCache = /* @__PURE__ */ new Map();
-  /**
-   * One delivery.
-   *
-   * The order is the part most likely to be got wrong later, and it was got wrong once already.
-   *
-   * An HMAC is computed over the whole body, so the body must be read before the delivery can be
-   * verified. That looks like it forces a choice between buffering a megabyte for any stranger who
-   * learns a URL, and letting a stranger's junk spend the real sender's rate limit. It does not:
-   * what bounds memory is the **in-flight cap**, taken before the read, and what the rate limiter
-   * sees is the **verdict**, because it runs after the checks.
-   *
-   * So: slot, read, verify, then charge. A refusal charges the unverified budget and a pass
-   * charges the delivered one, and the unverified lockout is consulted only on the refusal path.
-   * That is what makes "a verified delivery is never rate-limited by somebody else's noise" true
-   * rather than merely intended. `recovery.ts` is shaped the same way for the same reason, and
-   * `ingress.test.ts` fails if any of it is reordered.
-   */
-  async handle(req, res, path) {
-    const started = this.now();
-    const deliveryId = `wh_${started.toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-    const refuse = (status, verdict, reason, reg2, bytes = 0, close = false) => {
-      if (!res.headersSent) {
-        res.writeHead(status, close ? { "content-length": "0", connection: "close" } : { "content-length": "0" });
-        res.end(close ? () => req.socket?.destroy() : void 0);
-      }
-      this.record({
-        source: "webhook",
-        delivery_id: deliveryId,
-        ts: Math.floor(started / 1e3),
-        hook_id: reg2?.id ?? "",
-        hook_name: reg2?.name ?? "",
-        verdict,
-        reason,
-        target_vm_id: reg2?.target.vmId,
-        bytes,
-        duration_ms: this.now() - started,
-        arrived: "via proxy"
-      });
-    };
-    if (req.method !== "POST") {
-      res.writeHead(405, { "content-length": "0" });
-      res.end();
-      return;
-    }
-    const id = path.slice(INGRESS_PATH_PREFIX.length);
-    const reg = this.opts.registrations().find((r) => r.id === id && r.enabled);
-    if (!reg) {
-      this.countUnverified();
-      return refuse(404, "unknown_hook", "no registration with that id", void 0);
-    }
-    if (reg.verify.length === 0) {
-      return refuse(503, "needs_setup", "this webhook has no checks on this firewall yet", reg);
-    }
-    if (!this.takeSlot(reg.target.vmId)) {
-      return refuse(503, "agent_unreachable", "too many deliveries in flight for that agent", reg);
-    }
-    try {
-      const cap = Math.min(reg.maxBodyBytes || INGRESS_DEFAULT_BODY_BYTES, INGRESS_MAX_BODY_BYTES);
-      let body;
-      try {
-        body = await readBody(req, cap);
-      } catch (error48) {
-        if (error48.tooLarge) {
-          this.countUnverified();
-          return refuse(413, "too_large", "body over the cap", reg, 0, true);
-        }
-        return refuse(400, "refused", "the sender stopped before the body arrived", reg);
-      }
-      for (const rule of reg.verify) {
-        const verdict = await this.check(rule, req, body);
-        if (verdict.ok) continue;
-        this.countUnverified();
-        if (this.unverifiedLockedUntil > this.now()) {
-          return refuse(429, "rate_limited", "too many refused deliveries", reg, body.byteLength);
-        }
-        return refuse(401, "refused", verdict.reason, reg, body.byteLength);
-      }
-      this.clearUnverified();
-      if (!this.chargeDelivered(reg)) {
-        return refuse(429, "rate_limited", "over this webhook's rate", reg, body.byteLength);
-      }
-      return await this.forward(reg, req, res, body, deliveryId, started);
-    } finally {
-      this.releaseSlot(reg.target.vmId);
-    }
-  }
-  async forward(reg, req, res, body, deliveryId, started) {
-    const refuse = (status, verdict, reason) => {
-      if (!res.headersSent) {
-        res.writeHead(status, { "content-length": "0" });
-        res.end();
-      }
-      this.record({
-        source: "webhook",
-        delivery_id: deliveryId,
-        ts: Math.floor(started / 1e3),
-        hook_id: reg.id,
-        hook_name: reg.name,
-        verdict,
-        reason,
-        target_vm_id: reg.target.vmId,
-        bytes: body.byteLength,
-        duration_ms: this.now() - started,
-        arrived: "via proxy"
-      });
-    };
-    try {
-      const { status } = await this.opts.deliver(reg, {
-        method: "POST",
-        headers: forwardHeaders(req),
-        bodyB64: body.toString("base64")
-      });
-      const out = status >= 200 && status < 300 ? 204 : status >= 500 ? 503 : status;
-      res.writeHead(out, { "content-length": "0" });
-      res.end();
-      const ok = status >= 200 && status < 300;
-      const verdict = ok ? "delivered" : status >= 500 ? "agent_unreachable" : "listener_refused";
-      this.record({
-        source: "webhook",
-        delivery_id: deliveryId,
-        ts: Math.floor(started / 1e3),
-        hook_id: reg.id,
-        hook_name: reg.name,
-        verdict,
-        ...ok ? {} : { reason: `the listener on the agent answered ${status}` },
-        target_vm_id: reg.target.vmId,
-        forward_status: status,
-        bytes: body.byteLength,
-        duration_ms: this.now() - started,
-        arrived: "via proxy"
-      });
-    } catch (error48) {
-      refuse(503, "agent_unreachable", error48.message);
-    }
-  }
-  // ---- checks ----
-  async check(rule, req, body) {
-    if (rule.kind === "hmac") {
-      const sent = headerValue(req, rule.header);
-      if (!sent) return { ok: false, reason: `no ${rule.header} header` };
-      let signed = body;
-      if (rule.timestampHeader) {
-        const raw = headerValue(req, rule.timestampHeader);
-        const ts = Number(raw);
-        if (!raw || !Number.isFinite(ts)) return { ok: false, reason: `no ${rule.timestampHeader} header` };
-        const ageS = Math.abs(this.now() / 1e3 - ts);
-        if (ageS > (rule.maxAgeS ?? 300)) return { ok: false, reason: "the delivery was too old to accept" };
-        const format = rule.signedFormat ?? "{ts}.{body}";
-        signed = Buffer.from(format.replace("{ts}", String(raw)).replace("{body}", body.toString("utf8")), "utf8");
-      }
-      const mac3 = createHmac2(rule.algo, rule.secret).update(signed).digest(rule.encoding);
-      const want = `${rule.prefix ?? ""}${mac3}`;
-      return sameSecret(sent, want) ? { ok: true } : { ok: false, reason: "the signature did not match" };
-    }
-    const auth = headerValue(req, "authorization");
-    if (!auth.startsWith("Bearer ")) return { ok: false, reason: "no bearer token" };
-    try {
-      const jwks = this.opts.jwks?.(rule.issuer) ?? await this.jwksFor(rule.issuer);
-      const { payload } = await jwtVerify(auth.slice(7), jwks, {
-        issuer: rule.issuer,
-        // Exact, and required. Left to be rebuilt from forwarded headers it would be one proxy
-        // hop away from silently accepting a token minted for somebody else.
-        audience: rule.audience
-      });
-      if (rule.subjectEmail) {
-        const email3 = typeof payload.email === "string" ? payload.email : "";
-        if (email3 !== rule.subjectEmail) return { ok: false, reason: "the token came from a different service account" };
-      }
-      return { ok: true };
-    } catch (error48) {
-      const claim = error48.claim;
-      if (claim === "aud") return { ok: false, reason: "the token was for a different audience" };
-      if (claim === "iss") return { ok: false, reason: "the token came from a different issuer" };
-      if (error48.code === "ERR_JWT_EXPIRED") return { ok: false, reason: "the token had expired" };
-      return { ok: false, reason: "the token did not verify" };
-    }
-  }
-  /**
-   * The issuer's signing keys, found the way OIDC says to find them: fetch
-   * `/.well-known/openid-configuration` and use the `jwks_uri` it names.
-   *
-   * An earlier version guessed at `<issuer>/.well-known/openid-configuration/jwks` instead. That
-   * is not a path anybody serves. For `https://accounts.google.com` the discovery document points
-   * at `https://www.googleapis.com/oauth2/v3/certs`, on a different host entirely, so every OIDC
-   * delivery would have failed with "the token did not verify" and the first consumer of this
-   * feature is Gmail push. Discovery is one request, cached for the life of the process, and it is
-   * the only thing that makes this generic across issuers rather than Google-shaped.
-   */
-  async jwksFor(issuer) {
-    const hit = this.jwksCache.get(issuer);
-    if (hit) return hit;
-    const discovery = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
-    const res = await fetch(discovery, { signal: AbortSignal.timeout(OIDC_DISCOVERY_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`discovery for ${issuer} answered ${res.status}`);
-    const doc = await res.json();
-    if (typeof doc.jwks_uri !== "string" || !doc.jwks_uri) throw new Error(`discovery for ${issuer} names no jwks_uri`);
-    if (typeof doc.issuer === "string" && doc.issuer.replace(/\/$/, "") !== issuer.replace(/\/$/, "")) {
-      throw new Error(`discovery for ${issuer} claims to be ${doc.issuer}`);
-    }
-    const made = createRemoteJWKSet(new URL(doc.jwks_uri));
-    this.jwksCache.set(issuer, made);
-    return made;
-  }
-  // ---- budgets ----
-  /**
-   * One delivery that did not verify. Called only on the refusal path, so nothing a real sender
-   * does ever touches this counter.
-   */
-  countUnverified() {
-    const cutoff = this.now() - 6e4;
-    this.unverified = this.unverified.filter((t) => t > cutoff);
-    this.unverified.push(this.now());
-    if (this.unverified.length < INGRESS_UNVERIFIED_PER_MINUTE) return;
-    this.unverifiedLockedUntil = this.now() + INGRESS_UNVERIFIED_LOCKOUT_MS;
-    this.unverified = [];
-    this.log(`[ingress] ${INGRESS_UNVERIFIED_PER_MINUTE} refused deliveries in a minute; refusing unverified callers for ${INGRESS_UNVERIFIED_LOCKOUT_MS / 6e4} minutes`);
-  }
-  /**
-   * A delivery passed its checks, so whoever sent it holds the secret: the run of bad attempts is
-   * forgotten and the lockout lifts. This is the half that makes the two budgets worth having.
-   */
-  clearUnverified() {
-    this.unverified = [];
-    this.unverifiedLockedUntil = 0;
-  }
-  chargeDelivered(reg) {
-    const cutoff = this.now() - 6e4;
-    const per = Math.min(reg.perMinute || INGRESS_DEFAULT_PER_MINUTE, INGRESS_MAX_PER_MINUTE);
-    const mine = (this.delivered.get(reg.id) ?? []).filter((t) => t > cutoff);
-    this.orgDelivered = this.orgDelivered.filter((t) => t > cutoff);
-    if (mine.length >= per || this.orgDelivered.length >= INGRESS_ORG_PER_MINUTE) {
-      this.delivered.set(reg.id, mine);
-      return false;
-    }
-    mine.push(this.now());
-    this.orgDelivered.push(this.now());
-    this.delivered.set(reg.id, mine);
-    return true;
-  }
-  takeSlot(vmId) {
-    const mine = this.inFlightByVm.get(vmId) ?? 0;
-    if (mine >= INGRESS_IN_FLIGHT_PER_VM || this.inFlightOrg >= INGRESS_IN_FLIGHT_ORG) return false;
-    this.inFlightByVm.set(vmId, mine + 1);
-    this.inFlightOrg++;
-    return true;
-  }
-  releaseSlot(vmId) {
-    this.inFlightByVm.set(vmId, Math.max(0, (this.inFlightByVm.get(vmId) ?? 1) - 1));
-    this.inFlightOrg = Math.max(0, this.inFlightOrg - 1);
-  }
-  // ---- Activity ----
-  /**
-   * Metadata only. Never the body, never a header value, never the token. A webhook body is
-   * exactly the kind of thing that must not end up in our database: someone's email, someone's
-   * ticket. The same rule the egress log and the AI review already follow.
-   */
-  record(rec) {
-    this.log(`[ingress] ${rec.verdict} ${rec.hook_name || rec.hook_id || "(unknown)"}${rec.reason ? `: ${rec.reason}` : ""}`);
-    if (!this.opts.logPath) return;
-    try {
-      appendFileSync(this.opts.logPath, `${JSON.stringify(rec)}
-`);
-    } catch (error48) {
-      this.log(`[ingress] could not record that delivery: ${error48.message}`);
-    }
-  }
-};
-var BodyTooLarge = class extends Error {
-  tooLarge = true;
-  constructor() {
-    super("body over the cap");
-    this.name = "BodyTooLarge";
-  }
-};
-function readBody(req, cap) {
-  return new Promise((resolve2, reject) => {
-    const declared = Number(req.headers["content-length"] ?? NaN);
-    if (Number.isFinite(declared) && declared > cap) {
-      req.pause();
-      reject(new BodyTooLarge());
-      return;
-    }
-    const chunks = [];
-    let total = 0;
-    let stopped = false;
-    req.on("data", (chunk) => {
-      if (stopped) return;
-      total += chunk.length;
-      if (total > cap) {
-        stopped = true;
-        req.pause();
-        reject(new BodyTooLarge());
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      if (!stopped) resolve2(Buffer.concat(chunks));
-    });
-    req.on("error", (error48) => {
-      if (!stopped) reject(error48);
-    });
-  });
-}
-function forwardHeaders(req) {
-  const out = {};
-  for (const [name25, raw] of Object.entries(req.headers)) {
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (typeof value !== "string") continue;
-    const lower = name25.toLowerCase();
-    if (FORWARD_HEADER_ALLOWLIST.includes(lower) || FORWARD_HEADER_PREFIXES.some((p) => lower.startsWith(p))) {
-      out[lower] = value;
-    }
-  }
-  return out;
-}
-function parseRegistrations(json3) {
-  if (!Array.isArray(json3)) return [];
-  const out = [];
-  for (const raw of json3) {
-    const r = raw;
-    const target = r.target ?? {};
-    const port = Number(target.port);
-    if (typeof r.id !== "string" || !r.id) continue;
-    if (typeof target.vmId !== "string" || typeof target.hostname !== "string") continue;
-    if (!targetPortAllowed(port)) continue;
-    out.push({
-      id: r.id,
-      name: typeof r.name === "string" ? r.name : r.id,
-      target: {
-        vmId: target.vmId,
-        hostname: target.hostname,
-        port,
-        path: typeof target.path === "string" && target.path.startsWith("/") ? target.path : "/"
-      },
-      verify: parseVerify(r.verify),
-      // Clamped at both ends. Without a lower bound a negative value passes straight through
-      // `Math.min` and every delivery, including a zero-byte one, is refused 413 forever.
-      maxBodyBytes: clamp(Number(r.maxBodyBytes) || INGRESS_DEFAULT_BODY_BYTES, 1, INGRESS_MAX_BODY_BYTES),
-      perMinute: clamp(Number(r.perMinute) || INGRESS_DEFAULT_PER_MINUTE, 1, INGRESS_MAX_PER_MINUTE),
-      enabled: r.enabled !== false
-    });
-  }
-  return out;
-}
-function parseVerify(raw) {
-  if (!Array.isArray(raw)) return [];
-  const out = [];
-  for (const entry of raw) {
-    const v = entry;
-    if (v.kind === "hmac" && typeof v.secret === "string" && typeof v.header === "string") {
-      out.push({
-        kind: "hmac",
-        header: v.header,
-        algo: v.algo === "sha1" ? "sha1" : "sha256",
-        encoding: v.encoding === "base64" ? "base64" : "hex",
-        prefix: typeof v.prefix === "string" ? v.prefix : void 0,
-        secret: v.secret,
-        timestampHeader: typeof v.timestampHeader === "string" ? v.timestampHeader : void 0,
-        signedFormat: typeof v.signedFormat === "string" ? v.signedFormat : void 0,
-        maxAgeS: Number.isFinite(Number(v.maxAgeS)) && Number(v.maxAgeS) > 0 ? Number(v.maxAgeS) : void 0
-      });
-    } else if (v.kind === "oidc" && typeof v.issuer === "string" && typeof v.audience === "string" && v.audience) {
-      out.push({
-        kind: "oidc",
-        issuer: v.issuer,
-        audience: v.audience,
-        subjectEmail: typeof v.subjectEmail === "string" ? v.subjectEmail : void 0
-      });
-    }
-  }
-  return out;
-}
 
 // src/sync.ts
 import { writeFileSync as writeFileSync8, mkdirSync as mkdirSync7, renameSync as renameSync4 } from "fs";
@@ -101239,7 +101621,7 @@ async function requireAuth(req, res) {
 import { createWriteStream, existsSync as existsSync11, mkdirSync as mkdirSync10, readdirSync as readdirSync2, rmSync as rmSync3, statSync as statSync3 } from "fs";
 import { createReadStream } from "fs";
 import { join as join7 } from "path";
-import { randomBytes as randomBytes7 } from "crypto";
+import { randomBytes as randomBytes8 } from "crypto";
 var RECOVERY_RATE_PER_MINUTE = 10;
 var RECOVERY_BAD_SIGNATURES = 5;
 var RECOVERY_LOCKOUT_MS = 15 * 6e4;
@@ -101390,7 +101772,7 @@ var RecoveryRoutes = class {
       } catch {
       }
     }
-    return join7(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes7(6).toString("hex")}`);
+    return join7(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes8(6).toString("hex")}`);
   }
   async read(req, spillPath) {
     const hasher = await createRecoveryBodyHasher();
@@ -101573,7 +101955,7 @@ var RecoveryRoutes = class {
     if (!this.opts.staging.baseUrl) {
       throw new Error("This firewall has no private address to serve the archive from, so pass --archive-url with somewhere the agent box can fetch it.");
     }
-    const token = randomBytes7(32).toString("hex");
+    const token = randomBytes8(32).toString("hex");
     this.staged.set(token, { path: tailPath, bytes: statSync3(tailPath).size, at: this.now() });
     return { url: `${this.opts.staging.baseUrl}${RECOVERY_PATH_PREFIX}staged/${token}`, token };
   }
@@ -101672,8 +102054,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "6312741" : "unknown",
-  builtAt: true ? "2026-09-25T20:16:35+01:00" : "unknown"
+  commit: true ? "3159819" : "unknown",
+  builtAt: true ? "2026-09-25T21:06:55+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -101775,6 +102157,7 @@ var BOX_KEY_PATH = process.env.BOX_KEY_PATH ?? `${KEYS_DIR2}/box_key`;
 var STORE_URL = process.env.STORE_URL ?? "";
 var RULES_URL = process.env.RULES_URL ?? "";
 var IDENTITIES_URL = process.env.IDENTITIES_URL ?? "";
+var WEBHOOKS_URL = process.env.WEBHOOKS_URL ?? "";
 var PROXY_CONFIG_DIR = process.env.PROXY_CONFIG_DIR ?? "/run/mitm/config";
 var CA_CERT_PATH = process.env.CA_CERT_PATH ?? "";
 var CA_URL = process.env.CA_URL ?? "";
@@ -101794,6 +102177,7 @@ var CHANNELS_PLACEHOLDER_SWAP = process.env.CHANNELS_PLACEHOLDER_SWAP === "1";
 var LLM_STORE_PATH = process.env.LLM_STORE_PATH ?? "/opt/controlclaw/state/llm.enc";
 var DRIVE_STORE_PATH = process.env.DRIVE_STORE_PATH ?? "/opt/controlclaw/state/drive.enc";
 var GOOGLE_STORE_PATH = process.env.GOOGLE_STORE_PATH ?? "/opt/controlclaw/state/google.enc";
+var WEBHOOK_STORE_PATH = process.env.WEBHOOK_STORE_PATH ?? "/opt/controlclaw/state/webhooks.enc";
 var SEARCH_STORE_PATH = process.env.SEARCH_STORE_PATH ?? "/opt/controlclaw/state/search.enc";
 var TAILSCALE_STORE_PATH = process.env.TAILSCALE_STORE_PATH ?? "/opt/controlclaw/state/tailscale.enc";
 var EXIT_STORE_PATH = process.env.EXIT_STORE_PATH ?? "/opt/controlclaw/state/exit.enc";
@@ -101849,6 +102233,7 @@ var channels = null;
 var llm = null;
 var drive = null;
 var google2 = null;
+var webhooks = null;
 var search = null;
 var tailscale = null;
 var exitFirewall = null;
@@ -101868,6 +102253,13 @@ async function runSync(boxKey) {
     const policy = await fetchPolicy(RULES_URL, getToken);
     cfg.rules = policy.rules;
     aiSettings = parseAiSettings(policy.ai);
+  }
+  if (WEBHOOKS_URL && webhooks) {
+    try {
+      await webhooks.handlers()["webhook.sync"]({ hooks: await fetchWebhooks(WEBHOOKS_URL, getToken) });
+    } catch (error48) {
+      console.error(`[webhooks] could not pull the registration list: ${error48.message}`);
+    }
   }
   if (IDENTITIES_URL) {
     cfg.identities = await fetchIdentities(IDENTITIES_URL, getToken);
@@ -101915,13 +102307,16 @@ async function maybeMigrate() {
   return boxKey;
 }
 var INVENTORY_CAP = 50;
-function firewallInventory(channels2, llm2) {
+var WEBHOOK_INVENTORY_CAP = 100;
+function firewallInventory(channels2, llm2, hooks = null) {
   const out = {};
   const cs = channels2?.summary();
   if (cs && cs.length <= INVENTORY_CAP) out.channels = cs.map((c) => ({ id: c.id, type: c.type, assignedVmId: c.assignedVmId }));
   const ls = llm2?.summary().credentials;
   if (ls && ls.length <= INVENTORY_CAP) out.credentials = ls.map((c) => ({ id: c.id, provider: c.provider }));
-  return out.channels || out.credentials ? out : null;
+  const ws = hooks?.inventory();
+  if (ws && ws.length <= WEBHOOK_INVENTORY_CAP) out.webhooks = ws;
+  return out.channels || out.credentials || out.webhooks ? out : null;
 }
 function makeShipper() {
   if (!ACTIVITY_URL || !TRAFFIC_LOG_PATH || !getToken) return null;
@@ -102007,6 +102402,23 @@ async function main() {
       console.log(`[mitm-agent] drive store loaded (${ds.accounts.length} account(s), ${ds.folders.length} folder(s))`);
     } catch (err) {
       console.error(`[mitm-agent] drive store unreadable, drive commands disabled: ${err.message}`);
+    }
+    try {
+      webhooks = new WebhookFirewall({
+        storePath: WEBHOOK_STORE_PATH,
+        boxKey,
+        ids,
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+        codeRoutes: () => channels?.codeRoutes() ?? [],
+        // Fail closed: `[]` from codeRoutes means "nobody approved yet" only when the channel
+        // store could actually be read. A box that cannot read it must not apply a change
+        // unconfirmed.
+        channelsReady: () => channels !== null,
+        gmailAccount: () => google2?.summary().account?.accountLabel ?? null
+      });
+      console.log(`[mitm-agent] webhook store loaded (${webhooks.registrations().length} registration(s))`);
+    } catch (err) {
+      console.error(`[mitm-agent] webhook store unreadable, webhook commands disabled: ${err.message}`);
     }
     try {
       google2 = new GoogleFirewall({
@@ -102326,6 +102738,7 @@ async function main() {
           ...llm?.handlers() ?? {},
           ...drive?.handlers() ?? {},
           ...google2?.handlers() ?? {},
+          ...webhooks?.handlers() ?? {},
           ...search?.handlers() ?? {},
           ...tailscale?.handlers() ?? {},
           ...exitFirewall?.handlers() ?? {},
@@ -102374,7 +102787,7 @@ async function main() {
           if (exitFirewall) features.push("residential_exit");
           const backupStatus = backups?.status() ?? null;
           const recoveryRoutes = recoveryTls && recovery ? { enabled: true, port: PORT, certFingerprint: recoveryTls.fingerprint } : { enabled: false, port: PORT, certFingerprint: null };
-          const inventory = firewallInventory(channels, llm);
+          const inventory = firewallInventory(channels, llm, webhooks);
           return {
             ...features.length ? { features } : {},
             ...inventory ? { inventory } : {},
@@ -102448,6 +102861,7 @@ async function main() {
 }
 function startIngress() {
   const read = () => {
+    if (webhooks) return webhooks.registrations();
     try {
       return parseRegistrations(JSON.parse(readFileSync19(WEBHOOKS_PATH, "utf-8")));
     } catch (error48) {

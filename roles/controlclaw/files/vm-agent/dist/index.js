@@ -27199,14 +27199,14 @@ var require_libsodium = __commonJS({
                 __indirect_function_table2 = wasmExports3["__indirect_function_table"];
               }
               var wasmImports2 = { b: ___assert_fail2, c: __abort_js2, a: _emscripten_asm_const_int2, d: _emscripten_resize_heap2 };
-              function run3() {
+              function run4() {
                 if (runDependencies2 > 0) {
-                  dependenciesFulfilled2 = run3;
+                  dependenciesFulfilled2 = run4;
                   return;
                 }
                 preRun2();
                 if (runDependencies2 > 0) {
-                  dependenciesFulfilled2 = run3;
+                  dependenciesFulfilled2 = run4;
                   return;
                 }
                 function doRun() {
@@ -27228,7 +27228,7 @@ var require_libsodium = __commonJS({
               }
               var wasmExports2;
               createWasm2();
-              run3();
+              run4();
             });
           };
           var Module2 = typeof Module2 != "undefined" ? Module2 : {};
@@ -27857,14 +27857,14 @@ var require_libsodium = __commonJS({
             __indirect_function_table = wasmExports2["__indirect_function_table"];
           }
           var wasmImports = { b: ___assert_fail, c: __abort_js, a: _emscripten_asm_const_int, d: _emscripten_resize_heap };
-          function run2() {
+          function run3() {
             if (runDependencies > 0) {
-              dependenciesFulfilled = run2;
+              dependenciesFulfilled = run3;
               return;
             }
             preRun();
             if (runDependencies > 0) {
-              dependenciesFulfilled = run2;
+              dependenciesFulfilled = run3;
               return;
             }
             function doRun() {
@@ -27886,7 +27886,7 @@ var require_libsodium = __commonJS({
           }
           var wasmExports;
           createWasm();
-          run2();
+          run3();
         }).catch(function() {
           return _Module.useBackupModule();
         });
@@ -30510,7 +30510,7 @@ var require_libsodium_wrappers = __commonJS({
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID3 } from "crypto";
-import { readFileSync as readFileSync17 } from "fs";
+import { readFileSync as readFileSync18 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "6312741" : "unknown",
-  builtAt: true ? "2026-09-25T20:16:35+01:00" : "unknown"
+  commit: true ? "3159819" : "unknown",
+  builtAt: true ? "2026-09-25T21:06:55+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -32797,12 +32797,12 @@ var ChannelsService = class {
    * `openclaw plugins install` edits the same file, and so does the WhatsApp login when it lands.
    */
   patchConfig(patch) {
-    const run2 = this.patchChain.then(
+    const run3 = this.patchChain.then(
       () => this.patchOnce(patch),
       () => this.patchOnce(patch)
     );
-    this.patchChain = run2.catch(() => void 0);
-    return run2;
+    this.patchChain = run3.catch(() => void 0);
+    return run3;
   }
   async patchOnce(patch) {
     try {
@@ -32848,14 +32848,14 @@ var ChannelsService = class {
     if (!pkg) return Promise.resolve(true);
     const inFlight = this.installing.get(type);
     if (inFlight) return inFlight;
-    const run2 = this.installPlugin(type, pkg).catch((err) => {
+    const run3 = this.installPlugin(type, pkg).catch((err) => {
       const message = execFailureLine(err);
       this.setup.set(type, { state: "failed", message });
       this.log(`[channels] installing ${pkg} failed: ${message}`);
       return false;
     }).finally(() => this.installing.delete(type));
-    this.installing.set(type, run2);
-    return run2;
+    this.installing.set(type, run3);
+    return run3;
   }
   async installPlugin(type, pkg) {
     try {
@@ -33872,12 +33872,12 @@ var ConnectorsService = class {
    * failure. The two services still hold no lock between them, so the retry is what covers it.
    */
   patchMcp(entry) {
-    const run2 = this.patchChain.then(
+    const run3 = this.patchChain.then(
       () => this.patchMcpOnce(entry),
       () => this.patchMcpOnce(entry)
     );
-    this.patchChain = run2.catch(() => void 0);
-    return run2;
+    this.patchChain = run3.catch(() => void 0);
+    return run3;
   }
   async patchMcpOnce(entry) {
     try {
@@ -36665,6 +36665,144 @@ async function handleTailscale(req, res, url2, service) {
 
 // src/routes/hooks.ts
 import { request as httpRequest2 } from "http";
+
+// src/gmail-watch.ts
+import { execFile as execFile5 } from "child_process";
+import { existsSync as existsSync10, mkdirSync as mkdirSync9, readFileSync as readFileSync17, rmSync as rmSync3, writeFileSync as writeFileSync11 } from "fs";
+import { dirname as dirname11 } from "path";
+import { promisify } from "util";
+var run2 = promisify(execFile5);
+var UNIT = "cc-gmail-watch.service";
+function envSafe(value) {
+  return !/[\r\n=]/.test(value);
+}
+function parseGmailWatch(body) {
+  const audience = typeof body.audience === "string" ? body.audience : "";
+  if (!/^https:\/\/[^\s]+$/.test(audience)) return "audience must be the registration's https URL";
+  const path = typeof body.path === "string" && body.path.startsWith("/") ? body.path : null;
+  if (!path) return "path must start with /";
+  for (const [field, value] of Object.entries({ audience, path, account: body.account, topic: body.topic, subjectEmail: body.subjectEmail })) {
+    if (typeof value === "string" && !envSafe(value)) return `${field} may not contain a newline or an =`;
+  }
+  const port = Number(body.port);
+  if (!Number.isInteger(port) || port < 8700 || port > 8799) return "port must be between 8700 and 8799";
+  return {
+    audience,
+    path,
+    port,
+    account: typeof body.account === "string" ? body.account : null,
+    topic: typeof body.topic === "string" ? body.topic : null,
+    subjectEmail: typeof body.subjectEmail === "string" ? body.subjectEmail : null
+  };
+}
+var GmailWatchService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.exec = opts.exec ?? run2;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.gogBin = opts.gogBin ?? "/usr/local/bin/gog";
+    this.unit = opts.unit ?? UNIT;
+  }
+  exec;
+  log;
+  gogBin;
+  unit;
+  /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
+  supported() {
+    return existsSync10(this.gogBin);
+  }
+  /**
+   * Write the watcher's configuration and (re)start it.
+   *
+   * The environment file is the whole interface: the unit is static and ships with the Ansible
+   * role, so nothing here writes a systemd unit at runtime.
+   */
+  async apply(cfg) {
+    mkdirSync9(dirname11(this.opts.envPath), { recursive: true });
+    const lines = [
+      "# Managed by the ControlClaw vm-agent. Do not edit.",
+      "# The audience is the firewall's public URL for this webhook, set explicitly: derived from",
+      "# forwarded headers it would be one proxy hop from accepting somebody else's token.",
+      `CC_GMAIL_AUDIENCE=${cfg.audience}`,
+      `CC_GMAIL_PATH=${cfg.path}`,
+      `CC_GMAIL_PORT=${cfg.port}`,
+      ...cfg.account ? [`CC_GMAIL_ACCOUNT=${cfg.account}`] : [],
+      ...cfg.topic ? [`CC_GMAIL_TOPIC=${cfg.topic}`] : [],
+      ...cfg.subjectEmail ? [`CC_GMAIL_OIDC_EMAIL=${cfg.subjectEmail}`] : [],
+      // Keeps the OpenClaw gateway from starting a second watcher on the same port.
+      "OPENCLAW_SKIP_GMAIL_WATCHER=1",
+      ""
+    ];
+    writeFileSync11(this.opts.envPath, lines.join("\n"), { mode: 384 });
+    writeFileSync11(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+    await this.systemctl("restart");
+    this.log(`[gmail-watch] serving ${cfg.path} on 127.0.0.1:${cfg.port} for ${cfg.audience}`);
+    return this.status();
+  }
+  /** Stop watching and forget the configuration. Used when the registration is revoked. */
+  async clear() {
+    rmSync3(this.opts.envPath, { force: true });
+    rmSync3(this.opts.statePath, { force: true });
+    await this.systemctl("stop").catch(() => void 0);
+    return this.status();
+  }
+  async status() {
+    let cfg = null;
+    try {
+      cfg = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
+    } catch {
+      cfg = null;
+    }
+    let running = false;
+    try {
+      const { stdout } = await this.exec("systemctl", ["is-active", this.unit]);
+      running = stdout.trim() === "active";
+    } catch {
+      running = false;
+    }
+    let gogVersion = null;
+    try {
+      const { stdout } = await this.exec(this.gogBin, ["--version"]);
+      gogVersion = stdout.trim().slice(0, 64) || null;
+    } catch {
+      gogVersion = null;
+    }
+    return {
+      configured: cfg !== null,
+      running,
+      audience: cfg?.audience ?? null,
+      port: cfg?.port ?? null,
+      gogVersion,
+      at: cfg?.at ?? null
+    };
+  }
+  /**
+   * Renew the Gmail watch. Google expires one after seven days, so the timer runs this every
+   * twelve hours; it is an ordinary Gmail API call and goes out through the proxy with the
+   * placeholder like everything else `gog` does.
+   */
+  async renew() {
+    let cfg = null;
+    try {
+      cfg = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
+    } catch {
+      return { ok: false, message: "This box is not watching a mailbox." };
+    }
+    if (!cfg.account || !cfg.topic) return { ok: false, message: "No account or topic to renew with." };
+    try {
+      await this.exec(this.gogBin, ["gmail", "watch", "start", "--account", cfg.account, "--label", "INBOX", "--topic", cfg.topic]);
+      return { ok: true, message: "Watch renewed." };
+    } catch (error) {
+      this.log(`[gmail-watch] renew failed: ${error.message}`);
+      return { ok: false, message: "The watch could not be renewed." };
+    }
+  }
+  async systemctl(action) {
+    await this.exec("sudo", ["systemctl", action, this.unit]);
+  }
+};
+
+// src/routes/hooks.ts
 var HOOK_TARGET_PORT_MIN = 8700;
 var HOOK_TARGET_PORT_MAX = 8799;
 var HOOK_DELIVER_TIMEOUT_MS = 3e3;
@@ -36722,14 +36860,39 @@ function replay(d) {
     req.end(d.body);
   });
 }
-async function handleHooks(req, res, url2) {
-  if (url2.pathname !== "/hooks/deliver" || req.method !== "POST") {
+async function handleHooks(req, res, url2, gmail = null) {
+  const known = url2.pathname === "/hooks/deliver" || url2.pathname === "/hooks/gmail" || url2.pathname === "/hooks/gmail/status";
+  if (!known) {
     sendJson(res, 404, { error: "Not found" });
     return;
   }
   const auth = await verifyMitmRequest(req, "hooks");
   if (!auth) {
     sendJson(res, 401, { error: "a webhook delivery must come from the org firewall" });
+    return;
+  }
+  if (url2.pathname === "/hooks/gmail/status") {
+    if (!gmail) return sendJson(res, 501, { error: "This agent does not have gog yet." });
+    return sendJson(res, 200, await gmail.status());
+  }
+  if (url2.pathname === "/hooks/gmail") {
+    if (!gmail) return sendJson(res, 501, { error: "This agent does not have gog yet, so it cannot watch a mailbox. Update it." });
+    if (req.method !== "POST") return sendJson(res, 405, { error: "Use POST." });
+    const body2 = await readJsonBody(req);
+    if (!body2) return sendJson(res, 400, { error: "Invalid JSON" });
+    if (body2.stop === true) return sendJson(res, 200, await gmail.clear());
+    if (body2.renew === true) return sendJson(res, 200, await gmail.renew());
+    const cfg = parseGmailWatch(body2);
+    if (typeof cfg === "string") return sendJson(res, 400, { error: cfg });
+    try {
+      return sendJson(res, 200, await gmail.apply(cfg));
+    } catch (error) {
+      console.error(`[gmail-watch] apply failed: ${error.message}`);
+      return sendJson(res, 500, { error: "The watcher could not be started on this box." });
+    }
+  }
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Use POST." });
     return;
   }
   const body = await readJsonBody(req, MAX_ENVELOPE_BYTES);
@@ -36763,7 +36926,7 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 try {
-  const saasPublicKey2 = readFileSync17(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync18(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -36771,7 +36934,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync17(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync18(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -36843,6 +37006,7 @@ var search = null;
 var connectors = null;
 var drive = null;
 var google = null;
+var gmailWatch = null;
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
 var ssh = new SshAccessService({
   authorizedKeysPath: `${process.env.HOME ?? "/home/controlclaw"}/.ssh/authorized_keys`,
@@ -36935,7 +37099,7 @@ var server = createServer2(async (req, res) => {
     return;
   }
   if (url2.pathname.startsWith("/hooks/")) {
-    await handleHooks(req, res, url2);
+    await handleHooks(req, res, url2, gmailWatch);
     return;
   }
   if (url2.pathname.startsWith("/files/")) {
@@ -37014,5 +37178,11 @@ server.listen(PORT, BIND, () => {
   });
   google = googleService.supported() ? googleService : null;
   if (!google) console.log("[google] gog is not on this box: the org Google account is off until it is re-provisioned");
+  const gmailService = new GmailWatchService({
+    envPath: "/etc/controlclaw/gmail-watch.env",
+    statePath: `${STATE_DIR}/gmail-watch.json`
+  });
+  gmailWatch = gmailService.supported() ? gmailService : null;
+  if (!gmailWatch) console.log("[gmail-watch] gog is not on this box: Gmail push is off until it is re-provisioned");
   client?.onConnected(() => void channels?.reconcile());
 });
