@@ -94,3 +94,127 @@
   register: gog_installed
   changed_when: false
   failed_when: gog_version not in gog_installed.stdout
+
+
+# ---------------------------------------------------------------------------
+# Gmail push (controlclaw docs/plans/webhooks.md §7).
+#
+# `gog gmail watch serve` is the listener a Google Pub/Sub push ends up at. It binds loopback
+# inside the 8700-8799 range the vm-agent allows a delivery to reach, and the org firewall is what
+# puts a delivery in front of it: the public URL is the firewall's, the OIDC token is checked
+# there, and only then is the request replayed here.
+#
+# The unit is STATIC and inert until the vm-agent writes its environment file, which happens when
+# somebody confirms a Gmail webhook in the console. A box with no Gmail webhook has this unit
+# installed, stopped, and holding no configuration at all.
+# ---------------------------------------------------------------------------
+
+- name: Gmail push | The directory the watcher's environment file lives in
+  ansible.builtin.file:
+    path: /etc/controlclaw
+    state: directory
+    owner: root
+    group: "{{ controlclaw_user }}"
+    mode: '0750'
+
+- name: Gmail push | The watcher unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-gmail-watch.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw Gmail push watcher (gog gmail watch serve)
+      After=network-online.target
+      Wants=network-online.target
+      # Inert without the environment file the vm-agent writes on a confirmed Gmail webhook.
+      ConditionPathExists=/etc/controlclaw/gmail-watch.env
+
+      [Service]
+      Type=simple
+      User={{ controlclaw_user }}
+      EnvironmentFile=/etc/controlclaw/gmail-watch.env
+      # --oidc-audience is set EXPLICITLY. Left unset, gog rebuilds it from X-Forwarded-Proto and
+      # X-Forwarded-Host, which is one proxy hop away from accepting a token minted for somebody
+      # else. The firewall has already checked the same token; this is defence in depth and the
+      # two checks are independent.
+      ExecStart=/usr/local/bin/gog gmail watch serve \
+        --addr 127.0.0.1:${CC_GMAIL_PORT} \
+        --path ${CC_GMAIL_PATH} \
+        --verify-oidc \
+        --oidc-audience ${CC_GMAIL_AUDIENCE}
+      Restart=always
+      RestartSec=10
+      # The listener parses whatever Google (or anyone past the firewall) sends it, so it gets the
+      # ordinary confinement the rest of the box's units have.
+      NoNewPrivileges=true
+      PrivateTmp=true
+      ProtectSystem=strict
+      ProtectHome=true
+      ReadWritePaths={{ gog_home }}
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Gmail push | Renew the watch twice a day
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-gmail-watch-renew.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw Gmail watch renewal
+      ConditionPathExists=/etc/controlclaw/gmail-watch.env
+
+      [Service]
+      Type=oneshot
+      User={{ controlclaw_user }}
+      EnvironmentFile=/etc/controlclaw/gmail-watch.env
+      # Google expires a watch after seven days, so this runs twice a day. It is an ordinary Gmail
+      # API call and goes out through the proxy with the placeholder like everything else `gog`
+      # does, so the real token never touches this box.
+      ExecStart=/usr/local/bin/gog gmail watch start --account ${CC_GMAIL_ACCOUNT} --label INBOX --topic ${CC_GMAIL_TOPIC}
+
+- name: Gmail push | The renewal timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-gmail-watch-renew.timer
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Renew the ControlClaw Gmail watch every 12 hours
+
+      [Timer]
+      OnBootSec=15min
+      OnUnitActiveSec=12h
+      AccuracySec=5min
+
+      [Install]
+      WantedBy=timers.target
+
+# The vm-agent restarts the watcher when a Gmail webhook is confirmed or revoked. Two lines, both
+# naming the unit exactly, so taking the vm-agent buys the ability to bounce this one service and
+# nothing else.
+- name: Gmail push | Let the agent start and stop the watcher
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-gmail-watch
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart cc-gmail-watch.service
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl stop cc-gmail-watch.service
+
+- name: Gmail push | Enable the units
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    daemon_reload: true
+  loop:
+    - cc-gmail-watch.service
+    - cc-gmail-watch-renew.timer
+  when: not ci_test
