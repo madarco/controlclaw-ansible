@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsx src/index.ts",
-    "test": "tsx --test src/*.test.ts src/routes/*.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts && tsx src/search.test.ts && tsx src/tailscale.test.ts && tsx src/connectors.test.ts && tsx src/drive.test.ts && tsx src/backup.test.ts && tsx src/ssh.test.ts"
+    "test": "tsx --test src/*.test.ts src/routes/*.test.ts && tsx src/channels.test.ts && tsx src/llm.test.ts && tsx src/search.test.ts && tsx src/tailscale.test.ts && tsx src/connectors.test.ts && tsx src/drive.test.ts && tsx src/google.test.ts && tsx src/backup.test.ts && tsx src/ssh.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

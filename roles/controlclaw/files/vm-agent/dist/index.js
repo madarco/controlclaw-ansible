@@ -30510,7 +30510,7 @@ var require_libsodium_wrappers = __commonJS({
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID3 } from "crypto";
-import { readFileSync as readFileSync16 } from "fs";
+import { readFileSync as readFileSync17 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "31ad498" : "unknown",
-  builtAt: true ? "2026-09-25T17:20:03+01:00" : "unknown"
+  commit: true ? "6312741" : "unknown",
+  builtAt: true ? "2026-09-25T20:16:35+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -34354,8 +34354,193 @@ async function handleDrive(req, res, url2, service) {
   }
 }
 
+// src/google.ts
+import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync6, rmSync, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname7 } from "path";
+var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
+var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+var SERVICES = ["gmail", "calendar", "drive", "contacts", "sheets", "docs"];
+var LABEL_RE = /^[^\s<>"'\\]{3,254}$/;
+var VERSION_TIMEOUT_MS = 1e4;
+function parseApply5(body) {
+  const rawPlaceholder = body.placeholder;
+  if (rawPlaceholder !== null && typeof rawPlaceholder !== "string") return "placeholder must be a string or null";
+  const placeholder = rawPlaceholder === null || rawPlaceholder === "" ? null : rawPlaceholder;
+  if (placeholder !== null && !PLACEHOLDER_RE2.test(placeholder)) return "placeholder is not the shape the firewall generates";
+  const rawProject = body.projectId;
+  if (rawProject !== null && rawProject !== void 0 && typeof rawProject !== "string") return "projectId must be a string or null";
+  const projectId = rawProject ? String(rawProject) : null;
+  if (projectId !== null && !PROJECT_ID_RE.test(projectId)) return "projectId is not a Google Cloud project id";
+  if (!Array.isArray(body.services)) return "services must be an array";
+  const services = [];
+  for (const s of body.services) {
+    if (typeof s !== "string" || !SERVICES.includes(s)) return `services[] ${JSON.stringify(s)} is not a Google service`;
+    if (!services.includes(s)) services.push(s);
+  }
+  const rawLabel = body.accountLabel;
+  if (rawLabel !== null && rawLabel !== void 0 && typeof rawLabel !== "string") return "accountLabel must be a string or null";
+  const accountLabel = rawLabel ? String(rawLabel) : null;
+  if (accountLabel !== null && !LABEL_RE.test(accountLabel)) return "accountLabel is not an address";
+  return { placeholder, connected: body.connected === true, projectId, services, accountLabel };
+}
+function writeAtomic2(path, body, mode) {
+  mkdirSync7(dirname7(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync9(tmp, body, { mode });
+  renameSync6(tmp, path);
+}
+function envValue(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+var GoogleService = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.exec = opts.exec ?? defaultExec;
+    this.log = opts.log ?? ((l) => console.log(l));
+    this.gogBin = opts.gogBin ?? "/usr/local/bin/gog";
+  }
+  exec;
+  log;
+  gogBin;
+  /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
+  supported() {
+    return existsSync9(this.gogBin);
+  }
+  /**
+   * Make the box match the desired state. One atomic write, or one removal.
+   *
+   * A box with no grant has **no file**, rather than a file with an empty value: an empty
+   * `GOG_ACCESS_TOKEN` would leave `gog` looking for a stored account and reporting that none is
+   * configured, which is the same outcome by a more confusing route.
+   */
+  async apply(input) {
+    const granted = input.connected && !!input.placeholder;
+    try {
+      if (!granted) {
+        rmSync(this.opts.envPath, { force: true });
+      } else {
+        const lines = [
+          "# Written by the ControlClaw agent from what the org firewall pushed. Do not edit:",
+          "# the next push overwrites it. Nothing here is a secret.",
+          "#",
+          "# GOG_ACCESS_TOKEN is a PLACEHOLDER, not a token. The org firewall's proxy swaps it for a",
+          "# real Google access token on *.googleapis.com, for this box only. It does not expire, so",
+          "# ignore gog's note about a direct token expiring in about an hour (it prints that for any",
+          "# --access-token and cannot tell ours from a real one).",
+          `GOG_ACCESS_TOKEN=${envValue(input.placeholder)}`,
+          // Out of the home directory on purpose: gog's cache and config must not turn up in the
+          // agent's workspace, in the console's Files page, or in a workspace backup.
+          "GOG_HOME=/opt/controlclaw/gog",
+          // What the organization granted, for the bundled skill to tell the agent about. Not a
+          // permission boundary — Google enforces the scopes — just what is worth trying.
+          `CC_GOOGLE_SERVICES=${envValue(input.services.join(","))}`,
+          ...input.accountLabel ? [`CC_GOOGLE_ACCOUNT=${envValue(input.accountLabel)}`] : [],
+          // Sent as X-Goog-User-Project. Absent rather than empty when the organization named no
+          // project: a project this identity may not use turns working calls into USER_PROJECT_DENIED.
+          ...input.projectId ? [`GOG_QUOTA_PROJECT=${envValue(input.projectId)}`] : [],
+          ""
+        ];
+        writeAtomic2(this.opts.envPath, lines.join("\n"), 384);
+      }
+      writeAtomic2(
+        this.opts.statePath,
+        JSON.stringify({ ...input, placeholder: granted ? "set" : null, at: (/* @__PURE__ */ new Date()).toISOString() }, null, 2),
+        384
+      );
+    } catch (err) {
+      return { ok: false, error: `Could not write this box's Google settings: ${err.message}` };
+    }
+    this.log(granted ? `[google] ${input.accountLabel ?? "an account"} is available to gog (${input.services.join(", ") || "no services"})` : "[google] no grant on this box; gog has nothing to send");
+    return { ok: true, granted };
+  }
+  /** What the box has right now. No secrets: what it holds is a placeholder, and not even that. */
+  async status() {
+    const applied = this.readState();
+    return {
+      gogVersion: await this.version(),
+      // The file, not the remembered state: this is the question the console is really asking, and
+      // a state file that outlived its env file would answer it wrongly.
+      hasPlaceholder: existsSync9(this.opts.envPath),
+      connected: applied?.connected ?? false,
+      services: applied?.services ?? [],
+      projectId: applied?.projectId ?? null,
+      accountLabel: applied?.accountLabel ?? null,
+      at: applied?.at ?? null
+    };
+  }
+  readState() {
+    try {
+      const raw = JSON.parse(readFileSync14(this.opts.statePath, "utf8"));
+      if (!raw || typeof raw !== "object") return null;
+      return {
+        placeholder: null,
+        connected: raw.connected === true,
+        projectId: typeof raw.projectId === "string" ? raw.projectId : null,
+        services: Array.isArray(raw.services) ? raw.services.filter((s) => SERVICES.includes(s)) : [],
+        accountLabel: typeof raw.accountLabel === "string" ? raw.accountLabel : null,
+        at: typeof raw.at === "string" ? raw.at : ""
+      };
+    } catch {
+      return null;
+    }
+  }
+  /** `gog --version`, best effort. Null when it cannot be read, which the console shows as unknown. */
+  async version() {
+    try {
+      const { stdout } = await this.exec(this.gogBin, ["--version"], VERSION_TIMEOUT_MS);
+      const matched = /([0-9]+\.[0-9]+\.[0-9]+)/.exec(stdout)?.[1];
+      return matched ?? (stdout.trim().split("\n")[0] || null);
+    } catch (err) {
+      this.log(`[google] could not read the gog version: ${execFailureLine(err)}`);
+      return null;
+    }
+  }
+};
+
+// src/routes/google.ts
+async function handleGoogle(req, res, url2, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "google") : await verifyMitmRequest(req, "google") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "Google account changes must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  if (!service) {
+    sendJson(res, 501, { error: "This agent does not have gog yet, so it cannot use your Google account. Update it." });
+    return;
+  }
+  try {
+    if (url2.pathname === "/google/apply" && write) {
+      const body = await readJsonBody(req);
+      if (!body) {
+        sendJson(res, 400, { error: "invalid JSON body" });
+        return;
+      }
+      const input = parseApply5(body);
+      if (typeof input === "string") {
+        sendJson(res, 400, { error: input });
+        return;
+      }
+      const result = await service.apply(input);
+      if (!result.ok) {
+        sendJson(res, 500, { error: result.error });
+        return;
+      }
+      sendJson(res, 200, { ok: true, granted: result.granted });
+      return;
+    }
+    if (url2.pathname === "/google/status" && req.method === "GET") {
+      sendJson(res, 200, await service.status());
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
 // src/update.ts
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
 import { spawn as spawn2 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -34387,7 +34572,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync14(path, "utf8");
+      raw = readFileSync15(path, "utf8");
     } catch {
       return null;
     }
@@ -34401,7 +34586,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync14(this.opts.statePath, "utf8");
+      raw = readFileSync15(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -34473,7 +34658,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname as dirname7, join as join5 } from "path";
+import { dirname as dirname8, join as join5 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -34979,7 +35164,7 @@ var BackupService = class {
         takenAt: manifest.takenAt
       };
     } finally {
-      if (spool) await rm(dirname7(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (spool) await rm(dirname8(spool), { recursive: true, force: true }).catch(() => void 0);
       this.busy = null;
     }
   }
@@ -35063,7 +35248,7 @@ var BackupService = class {
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
             continue;
           }
-          await mkdir(dirname7(abs), { recursive: true, mode: 448 });
+          await mkdir(dirname8(abs), { recursive: true, mode: 448 });
           if (e.type === "link") {
             await symlink(e.target ?? "", abs).catch(() => void 0);
             continue;
@@ -35199,7 +35384,7 @@ async function swapDirectory(opts) {
       );
       if (!exists2) continue;
       await rm(to, { recursive: true, force: true });
-      await mkdir(dirname7(to), { recursive: true, mode: 448 });
+      await mkdir(dirname8(to), { recursive: true, mode: 448 });
       await rename(from, to);
       moved.push({ from, to });
     }
@@ -35356,7 +35541,7 @@ async function handleBackup(req, res, url2, service) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID2 } from "crypto";
-import { basename, dirname as dirname8, join as join6, resolve, sep } from "path";
+import { basename, dirname as dirname9, join as join6, resolve, sep } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -35507,7 +35692,7 @@ async function realpathLenient(path) {
       const real = await realpath(cursor);
       return missing.length ? join6(real, ...missing.reverse()) : real;
     } catch {
-      const parent = dirname8(cursor);
+      const parent = dirname9(cursor);
       if (parent === cursor) return resolve(path);
       missing.push(basename(cursor));
       cursor = parent;
@@ -35608,7 +35793,7 @@ var FilesService = class {
     }
     const name = basename(normalized);
     if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
-    const parentRel = dirname8(normalized) === "." ? "" : dirname8(normalized);
+    const parentRel = dirname9(normalized) === "." ? "" : dirname9(normalized);
     const parent = await this.resolveExisting(parentRel);
     const st = await stat2(parent.abs).catch(() => null);
     if (!st?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
@@ -36079,9 +36264,9 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync7, mkdtempSync, readFileSync as readFileSync15, rmSync, writeFileSync as writeFileSync9 } from "fs";
+import { mkdirSync as mkdirSync8, mkdtempSync, readFileSync as readFileSync16, rmSync as rmSync2, writeFileSync as writeFileSync10 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname9, join as join7 } from "path";
+import { dirname as dirname10, join as join7 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -36155,7 +36340,7 @@ var SshAccessService = class {
     } catch (err) {
       this.log(`[ssh] cc-ssh-close failed, the key is removed anyway: ${err.message}`);
     }
-    rmSync(this.opts.statePath, { force: true });
+    rmSync2(this.opts.statePath, { force: true });
     if (was) this.log(`[ssh] closed for ${this.user} (was ${was.fingerprint})`);
     return { user: this.user, closed: !!was };
   }
@@ -36170,11 +36355,11 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync15(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync15(path, "utf8")
+        publicKey: readFileSync16(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync16(path, "utf8")
       };
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync2(dir, { recursive: true, force: true });
     }
   }
   /** Replace whatever we manage in `authorized_keys` with this key, or with nothing. */
@@ -36182,7 +36367,7 @@ var SshAccessService = class {
     const path = this.opts.authorizedKeysPath;
     let current = "";
     try {
-      current = readFileSync15(path, "utf8");
+      current = readFileSync16(path, "utf8");
     } catch {
       current = "";
     }
@@ -36190,12 +36375,12 @@ var SshAccessService = class {
     if (publicKey) next += `# ${markerFor(grantId)} until ${endsAt}
 ${publicKey}
 `;
-    mkdirSync7(dirname9(path), { recursive: true, mode: 448 });
-    writeFileSync9(path, next, { mode: 384 });
+    mkdirSync8(dirname10(path), { recursive: true, mode: 448 });
+    writeFileSync10(path, next, { mode: 384 });
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync15(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync16(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -36208,8 +36393,8 @@ ${publicKey}
     }
   }
   writeState(state) {
-    mkdirSync7(dirname9(this.opts.statePath), { recursive: true });
-    writeFileSync9(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    mkdirSync8(dirname10(this.opts.statePath), { recursive: true });
+    writeFileSync10(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -36433,7 +36618,7 @@ var TailscaleService = class {
 
 // src/routes/tailscale.ts
 var AUTH_KEY_RE = /^tskey-auth-[A-Za-z0-9]+-[A-Za-z0-9]+$/;
-function parseApply5(body) {
+function parseApply6(body) {
   if (typeof body.authKey !== "string" || !AUTH_KEY_RE.test(body.authKey)) return "authKey must be a Tailscale auth key";
   if (typeof body.hostname !== "string" || !body.hostname) return "hostname required";
   return { authKey: body.authKey, ssh: body.ssh === true, hostname: body.hostname };
@@ -36464,7 +36649,7 @@ async function handleTailscale(req, res, url2, service) {
         sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
         return;
       }
-      const input = parseApply5(body);
+      const input = parseApply6(body);
       if (typeof input === "string") {
         sendJson(res, 400, { ok: false, error: input });
         return;
@@ -36578,7 +36763,7 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 try {
-  const saasPublicKey2 = readFileSync16(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync17(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -36586,7 +36771,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync16(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync17(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -36657,6 +36842,7 @@ var llm = null;
 var search = null;
 var connectors = null;
 var drive = null;
+var google = null;
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
 var ssh = new SshAccessService({
   authorizedKeysPath: `${process.env.HOME ?? "/home/controlclaw"}/.ssh/authorized_keys`,
@@ -36726,6 +36912,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/drive/")) {
     await handleDrive(req, res, url2, drive);
+    return;
+  }
+  if (url2.pathname.startsWith("/google/")) {
+    await handleGoogle(req, res, url2, google);
     return;
   }
   if (url2.pathname === "/update") {
@@ -36818,5 +37008,11 @@ server.listen(PORT, BIND, () => {
   });
   drive = driveService.supported() ? driveService : null;
   if (!drive) console.log("[drive] cc-drive-apply is not on this box: Drive folders off until it is re-provisioned");
+  const googleService = new GoogleService({
+    envPath: `${STATE_DIR}/gog.env`,
+    statePath: `${STATE_DIR}/google.json`
+  });
+  google = googleService.supported() ? googleService : null;
+  if (!google) console.log("[google] gog is not on this box: the org Google account is off until it is re-provisioned");
   client?.onConnected(() => void channels?.reconcile());
 });
