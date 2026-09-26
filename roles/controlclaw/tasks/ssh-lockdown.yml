@@ -7,10 +7,14 @@
 # that ended up on the wrong firewall all leave 22 reachable. So the box also makes sure there is
 # nothing to log in AS.
 #
-# What this does NOT touch: the `controlclaw` user's own authorized_keys. That is where a
+# What this does NOT touch: the `ccsupport` account's authorized_keys. That is where a
 # consent-coded rescue grant puts the key it minted on the box (ssh-access.yml, and
 # apps/saas/docs/features/shell-access.md in the controlclaw repo), and a grant has to keep working
 # afterwards. `PubkeyAuthentication yes` below is what keeps it working; only root, and passwords, go.
+#
+# `PermitRootLogin no` is not softened by the grant being root (T-70). A session lands as
+# `ccsupport` and becomes root with sudo, which is the shape this file wants: one account to log
+# in as, one thing in the journal per login, and nothing that makes `ssh root@` work.
 
 - name: SSH lockdown | the sshd drop-in
   # 01- so it sorts FIRST inside sshd_config.d. sshd keeps the first value it sees for a keyword and
@@ -24,8 +28,8 @@
     content: |
       # Managed by Ansible (roles/controlclaw/tasks/ssh-lockdown.yml). Do not edit.
       # ControlClaw has no key on this box. Root cannot log in and no password is accepted; a rescue
-      # grant logs in as {{ controlclaw_user | default('controlclaw') }} with a key the box minted
-      # itself, which is what PubkeyAuthentication keeps working.
+      # grant logs in as ccsupport with a key the box minted itself, which is what
+      # PubkeyAuthentication keeps working. That account can sudo, but only while a grant is open.
       PermitRootLogin no
       PasswordAuthentication no
       KbdInteractiveAuthentication no
