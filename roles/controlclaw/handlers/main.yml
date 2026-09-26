@@ -70,3 +70,7 @@
     name: controlclaw-agent
     state: restarted
     daemon_reload: true
+
+- name: reload systemd for disk encryption
+  ansible.builtin.systemd:
+    daemon_reload: true

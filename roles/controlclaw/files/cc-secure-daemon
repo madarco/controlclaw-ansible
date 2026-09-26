@@ -1,0 +1,510 @@
+#!/usr/bin/env node
+/**
+ * cc-secure-daemon — the only unit that touches the encrypted container, from boot to shutdown.
+ *
+ * `docs/plans/disk-encryption.md` §5 explains why this is one long-running `Type=notify` service and
+ * not the obvious four pieces (a oneshot unlock, a timer to retry it, a declared mount, and
+ * `RequiresMountsFor=` on every consumer). In short, all four are wrong:
+ *   - a `Type=oneshot` with `RemainAfterExit` stays *active*, so a timer that restarts it is a no-op;
+ *   - `RequiresMountsFor=` is a hard `Requires=`, so a mount that fails at boot — as it must, before
+ *     the device exists — takes every consumer down and nothing brings them back;
+ *   - two owners of one mount is one too many;
+ *   - and a `tangd.socket` gated on that mount fails at boot and is never re-triggered, leaving a box
+ *     unlocked but advertising nothing, unable to open its partner.
+ *
+ * So: this process opens the container, mounts it, starts tangd, then notifies systemd. Consumers
+ * declare `Requires=` + `After=` on it and therefore QUEUE rather than fail, for as long as it takes.
+ * `TimeoutStartSec=infinity` in the unit is not optional — the default 90s would kill the retry loop
+ * on its ninth attempt.
+ *
+ * Dependency-free on purpose: this runs before any `pnpm install` on a fresh box, and it must keep
+ * running on a box whose container (and therefore whose node_modules for the agent) is not mounted.
+ */
+"use strict";
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const http = require("node:http");
+const net = require("node:net");
+const { execFileSync, execFile } = require("node:child_process");
+
+const CC_SECURE = "/usr/local/bin/cc-secure";
+const SECURE = process.env.CC_SECURE_MOUNT || "/opt/controlclaw/secure";
+const STATE = `${SECURE}/state`;
+const ROLE = process.env.CC_BOX_ROLE || "openclaw";
+/**
+ * This box's address on the organization's private network, worked out HERE rather than handed in.
+ *
+ * It used to be an Ansible variable, and it was wrong in both directions: on an agent box the control
+ * plane never passes `private_ip`, so it was empty and the gate never bound at all ("no private IP;
+ * not serving tang") — an agent could not be opened by anybody. On the firewall it fell back to
+ * `ansible_facts.default_ipv4.address`, which on a Hetzner server is the PUBLIC address, so the gate
+ * would have been bound to the internet. The plan says never public, and a default that could do that
+ * has no business existing.
+ *
+ * The box knows its own addresses, so it picks the one inside the org's subnet and nothing else.
+ */
+const PRIVATE_SUBNET = process.env.CC_PRIVATE_SUBNET || "10.0.0.0/16";
+function inSubnet(ip, cidr) {
+  const [base, bitsRaw] = cidr.split("/");
+  const bits = Number(bitsRaw ?? 32);
+  const toInt = (a) => a.split(".").reduce((n, o) => (n << 8) + Number(o), 0) >>> 0;
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip) || !/^\d+\.\d+\.\d+\.\d+$/.test(base)) return false;
+  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
+  return (toInt(ip) & mask) === (toInt(base) & mask);
+}
+function privateIp() {
+  if (process.env.CC_PRIVATE_IP) return process.env.CC_PRIVATE_IP;
+  const ifaces = require("node:os").networkInterfaces();
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    if (name === "lo" || name.startsWith("docker") || name.startsWith("br-")) continue;
+    for (const a of addrs ?? []) {
+      if (a.family === "IPv4" && !a.internal && inSubnet(a.address, PRIVATE_SUBNET)) return a.address;
+    }
+  }
+  return "";
+}
+const PRIVATE_IP = privateIp();
+const GATE_PORT = Number(process.env.CC_TANG_GATE_PORT || 3920);
+const TANGD_PORT = Number(process.env.CC_TANGD_PORT || 3921);
+const LOCKED_PORT = Number(process.env.CC_LOCKED_PORT || 3101);
+const RECOVERY_BLOB = process.env.CC_SECURE_RECOVERY_JWE || "/etc/controlclaw/luks-recovery.sealed";
+/** vm_id and the control-plane URL, on the plain root: both are needed while the disk is shut. */
+const DISK_ENV = "/etc/controlclaw/disk.env";
+/** How far through the gate's audit log we have reported. On the plain root: it must survive a lock. */
+const AUDIT_CURSOR = "/etc/controlclaw/disk-audit.cursor";
+/** How often to report and reconcile. Cheap, and it is what makes an added or deleted agent land. */
+const REPORT_EVERY_MS = 60_000;
+const IDENTITY_KEY = "/etc/controlclaw/unlock_identity.key";
+const IDENTITY_PUB = "/etc/controlclaw/unlock_identity.pub";
+/** One successful disk-open per partner per this long. Counts successes only — see gate(). */
+const RECOVERY_COOLDOWN_MS = 10 * 60_000;
+const RETRY_FAST_MS = 10_000, RETRY_FAST_FOR_MS = 15 * 60_000, RETRY_SLOW_MS = 60_000;
+
+const log = (...a) => console.log(new Date().toISOString(), ...a);
+
+/**
+ * cc-secure reads CC_SECURE_*; the unit hands this daemon CC_* for its own settings. Translating here
+ * rather than relying on the two sets of names happening to line up: when they did not, `status`
+ * returned an empty thumbprint (cc-secure fell back to the default tang port and found nothing
+ * listening), no partner could ever bind to this box, and nothing anywhere said why.
+ */
+const SH_ENV = {
+  ...process.env,
+  CC_SECURE_MOUNT: SECURE,
+  CC_SECURE_IMG: process.env.CC_SECURE_IMG || "/var/lib/controlclaw/secure.img",
+  CC_SECURE_SIZE_GB: process.env.CC_SECURE_SIZE_GB || "20",
+  CC_SECURE_TANGD_PORT: String(TANGD_PORT),
+  CC_SECURE_RECOVERY_JWE: RECOVERY_BLOB,
+};
+const sh = (args, opts) => execFileSync(CC_SECURE, args, { encoding: "utf8", env: SH_ENV, ...opts });
+
+// ---------------------------------------------------------------- systemd notify (no library)
+function notify(state) {
+  const path = process.env.NOTIFY_SOCKET;
+  if (!path) return;
+  try {
+    const s = require("node:dgram").createSocket("unix_dgram");
+    s.send(Buffer.from(state), 0, state.length, path.startsWith("@") ? "\0" + path.slice(1) : path, () => s.close());
+  } catch {
+    // Node has no unix_dgram on every build. systemd-notify is in systemd, which is always there.
+    try { execFileSync("systemd-notify", [state]); } catch { /* a missing notify must not stop a boot */ }
+  }
+}
+
+// ---------------------------------------------------------------- X25519 / Ed25519, natively
+const SPKI_X = Buffer.from("302a300506032b656e032100", "hex");
+const PKCS8_X = Buffer.from("302e020100300506032b656e04220420", "hex");
+const xPub = (raw) => crypto.createPublicKey({ key: Buffer.concat([SPKI_X, raw]), format: "der", type: "spki" });
+const rawOf = (k) => k.export({ format: "der", type: k.type === "private" ? "pkcs8" : "spki" }).subarray(k.type === "private" ? 16 : 12);
+
+/** The same format cc-seal writes and packages/backup-envelope opens. */
+function openSealed(blob, privateKey) {
+  const eph = Buffer.from(blob.eph, "base64");
+  const shared = crypto.diffieHellman({ privateKey, publicKey: xPub(eph) });
+  const mine = rawOf(crypto.createPublicKey(privateKey));
+  const key = Buffer.from(crypto.hkdfSync("sha256", shared, Buffer.concat([eph, mine]), Buffer.from("controlclaw/luks-recovery/v1", "utf8"), 32));
+  const ct = Buffer.from(blob.ct, "base64");
+  const d = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(blob.iv, "base64"));
+  d.setAuthTag(ct.subarray(ct.length - 16));
+  return Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]);
+}
+
+/**
+ * The box's long-lived unlock identity, on the PLAIN root behind an existence guard. It is not a
+ * secret that protects data; it is how an owner doing a recovery can tell they are sealing a
+ * passphrase to the real box and not to something wearing its address. Its fingerprint is shown in
+ * the console next to the recovery key, so there is something to compare against that did not arrive
+ * at the moment of an attack.
+ */
+function identity() {
+  if (!fs.existsSync(IDENTITY_KEY)) {
+    const kp = crypto.generateKeyPairSync("ed25519");
+    fs.writeFileSync(IDENTITY_KEY, kp.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+    fs.writeFileSync(IDENTITY_PUB, kp.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o644 });
+    log("generated this box's unlock identity");
+  }
+  const privateKey = crypto.createPrivateKey(fs.readFileSync(IDENTITY_KEY));
+  const publicPem = fs.readFileSync(IDENTITY_PUB, "utf8");
+  const fp = crypto.createHash("sha256").update(rawOf(crypto.createPublicKey(privateKey))).digest("base64");
+  return { privateKey, publicPem, fingerprint: fp };
+}
+
+// ---------------------------------------------------------------- the locked state
+/**
+ * While the container is shut, this answers two things and nothing else.
+ *
+ * **Neither is authenticated, and that is deliberate.** `/disk/unlock` takes a passphrase sealed to
+ * this boot's public key: only a holder of the organization's recovery key can produce one, so the
+ * ciphertext *is* the proof, and a JWT in front of it would add nothing except a dependency on the
+ * control plane being honest — which is the one thing this path exists not to need. `/disk/status`
+ * returns a boot id, a public key, a signature over them, and a blob that is ciphertext to everyone
+ * but the owner. Rate limits, not auth, are what stop someone burning the box's CPU.
+ */
+function serveLocked(ident, onPassphrase) {
+  const eph = crypto.generateKeyPairSync("x25519");
+  const bootId = crypto.randomBytes(16).toString("hex");
+  const unlockPub = rawOf(eph.publicKey).toString("base64");
+  const sig = crypto.sign(null, Buffer.from(`${bootId}|${unlockPub}`, "utf8"), ident.privateKey).toString("base64");
+  let attempts = 0;
+
+  const server = http.createServer((req, res) => {
+    const send = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.method === "GET" && req.url.startsWith("/disk/status")) {
+      let blob = null;
+      try { blob = JSON.parse(fs.readFileSync(RECOVERY_BLOB, "utf8")); } catch { /* not sealed yet */ }
+      return send(200, {
+        locked: true, role: ROLE, bootId, unlockPublicKey: unlockPub, signature: sig,
+        identityPublicKey: ident.publicPem, identityFingerprint: ident.fingerprint,
+        recoverySealed: !!blob, sealed: blob,
+      });
+    }
+    if (req.method === "POST" && req.url.startsWith("/disk/unlock")) {
+      if (++attempts > 20) return send(429, { error: "too many attempts this boot" });
+      let raw = "";
+      req.on("data", (c) => { raw += c; if (raw.length > 8192) req.destroy(); });
+      req.on("end", () => {
+        let pass;
+        try {
+          pass = openSealed(JSON.parse(raw).sealed, eph.privateKey);
+        } catch {
+          log("unlock: a payload this box could not open (wrong key, or noise)");
+          return send(400, { error: "that payload was not sealed to this box" });
+        }
+        onPassphrase(pass, (ok, why) => ok ? send(200, { unlocked: true }) : send(409, { error: why }));
+      });
+      return;
+    }
+    send(404, { error: "not found" });
+  });
+  // Same reasoning as the gate: a port clash here must not stop the box retrying its partners.
+  server.on("error", (e) => log(`locked-state listener could not bind ${LOCKED_PORT}: ${e.message}`));
+  server.listen(LOCKED_PORT, "127.0.0.1", () => log(`locked; waiting on 127.0.0.1:${LOCKED_PORT} (boot ${bootId})`));
+  return server;
+}
+
+// ---------------------------------------------------------------- the tang gate
+const partners = () => { try { return JSON.parse(fs.readFileSync(`${STATE}/tang-partners.json`, "utf8")); } catch { return []; } };
+const audit = (entry) => { try { fs.appendFileSync(`${STATE}/tang-requests.jsonl`, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n"); } catch { /* never fail an unlock over a log */ } };
+
+/** Can we reach that address? Used as a liveness probe, with a short timeout. */
+function reachable(ip, port, ms = 1200) {
+  return new Promise((resolve) => {
+    const s = net.connect({ host: ip, port });
+    const done = (v) => { s.destroy(); resolve(v); };
+    s.setTimeout(ms, () => done(false));
+    s.once("connect", () => done(true));
+    s.once("error", () => done(false));
+  });
+}
+
+/**
+ * Is the partner asking us already running? A box that is up does not need its disk opened, so this is
+ * what stands between a cloned image and the organization's data (§8.1).
+ *
+ * It has to be answered **locally** — a control-plane lookup would be wrong (`vm.status` lags a
+ * reboot) and pointless (the whole design assumes the control plane may be hostile).
+ *
+ * It also has to be answered **now**, which is what the first version got wrong. It read the socket
+ * table for an established connection from the partner's address, and a box that has just hard
+ * rebooted leaves exactly that behind on this one: connections nobody closed, because the peer
+ * vanished without a FIN. So a genuine unlock was refused for as long as the kernel kept the residue
+ * — measured on a real pair at **fourteen minutes** of "that box is already running", on a box that
+ * had been down the whole time. Every reboot would have been a quarter-hour outage.
+ *
+ * So: ask the partner, rather than ask the socket table about the partner. A box whose container is
+ * open serves its own tang gate; a locked one does not, because the gate starts after the unlock. A
+ * connect that succeeds means it is up now, and a connect that fails means it is not.
+ */
+async function partnerAlreadyUp(ip) {
+  return reachable(ip, GATE_PORT);
+}
+
+const lastOpened = new Map();
+
+// ---------------------------------------------------------------- the tang gate
+/**
+ * The gate in front of tangd.
+ *
+ * **It has to tell two requests apart, and getting that wrong made binding impossible.** Tang speaks
+ * two things:
+ *
+ *   GET  /adv[/<thp>]   the public advertisement. Reading it is how a partner BINDS a keyslot, and it
+ *                       reveals nothing: it is a signed public key, published to be read.
+ *   POST /rec/<kid>     the actual key recovery — the request that opens a disk.
+ *
+ * The first version applied the "is this partner already running?" check and the cooldown to both, so
+ * a healthy agent could never bind to its firewall: binding means fetching the advert, and an agent
+ * that is up is exactly the state that check refuses. Every box came up unable to form the very
+ * binding the feature exists for, and the log said "wrong thumbprint, or the partner is unreachable",
+ * which is neither.
+ *
+ * So the advert is allowed for any registered partner, and the checks that matter — the liveness
+ * check of §8.1, the cooldown, the Activity line — go where the disk is actually opened.
+ */
+function serveGate() {
+  if (!PRIVATE_IP) {
+    log(`ERROR: no address of this box is inside ${PRIVATE_SUBNET}, so the tang gate cannot listen;` +
+        " no partner will be able to open this box's disk");
+    return null;
+  }
+  const server = net.createServer((sock) => {
+    const ip = sock.remoteAddress?.replace(/^::ffff:/, "") || "";
+    const refuse = (why) => { audit({ event: "tang.refused", ip, why }); sock.end(); };
+    const forward = (first) => {
+      const up = net.connect({ host: "127.0.0.1", port: TANGD_PORT }, () => {
+        up.write(first);
+        sock.pipe(up);
+        up.pipe(sock);
+      });
+      const bye = () => { sock.destroy(); up.destroy(); };
+      sock.once("error", bye); up.once("error", bye);
+    };
+
+    sock.once("data", async (first) => {
+      const known = partners().find((p) => p.ip === ip);
+      if (!known) return refuse("not a partner of this organization");
+
+      // The request line is the first thing on the wire and is all this needs to see.
+      const line = first.subarray(0, 200).toString("latin1").split("\r\n", 1)[0] ?? "";
+      const isRecovery = /^POST\s+\/rec\//.test(line);
+
+      if (!isRecovery) {
+        // An advertisement, or anything else tangd knows how to refuse. Reading it is how a partner
+        // binds a keyslot, so it must work while that partner is up and running.
+        audit({ event: "tang.adv", ip, name: known.name || null });
+        return forward(first);
+      }
+
+      // From here down it is a request to OPEN THIS BOX'S DISK.
+      if (await partnerAlreadyUp(ip)) {
+        return refuse("that box is already running; a running box does not need its disk opened");
+      }
+      const last = lastOpened.get(ip) || 0;
+      if (Date.now() - last < RECOVERY_COOLDOWN_MS) return refuse("one disk open per partner per ten minutes");
+      // Only a real recovery costs budget. Counting attempts would be self-defeating: the retry loop
+      // tries every 10s, so one refusal for an unrelated reason would cost ten minutes.
+      lastOpened.set(ip, Date.now());
+      audit({ event: "tang.opened", ip, name: known.name || null });
+      forward(first);
+    });
+    sock.once("error", () => sock.destroy());
+  });
+  // A gate that cannot bind must NOT take the container down with it. Without this an EADDRINUSE — or
+  // a private IP that is not configured yet at boot — crashes the daemon, systemd restarts it, and the
+  // box flaps between open and shut. The container being open matters more than the gate.
+  server.on("error", (e) => {
+    log(`tang gate could not listen on ${PRIVATE_IP}:${GATE_PORT}: ${e.message}; retrying in 30s`);
+    setTimeout(() => { try { server.listen(GATE_PORT, PRIVATE_IP); } catch { /* the next tick tries again */ } }, 30_000);
+  });
+  server.listen(GATE_PORT, PRIVATE_IP, () => log(`tang gate on ${PRIVATE_IP}:${GATE_PORT}`));
+  return server;
+}
+
+// ---------------------------------------------------------------- talking to the control plane
+function diskEnv() {
+  const out = {};
+  try {
+    for (const line of fs.readFileSync(DISK_ENV, "utf8").split("\n")) {
+      const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
+      if (m) out[m[1]] = m[2];
+    }
+  } catch { /* a box with no config reports nothing and still opens normally */ }
+  return out;
+}
+
+/**
+ * Report what this box can see about its disk, and get back the partners that should be able to open
+ * it. Signed with the unlock identity, because a locked box has no other key: KEYS_DIR is inside the
+ * container. The endpoint's own comment explains why that is proportionate — nothing secret travels
+ * here and nothing here can open a disk.
+ */
+/**
+ * The audit lines not yet shipped. Cursor kept on the PLAIN root, so it survives the container being
+ * shut — otherwise every lock/unlock cycle would re-ship the whole log.
+ */
+function pendingOpens() {
+  let cursor = 0;
+  try { cursor = Number(fs.readFileSync(AUDIT_CURSOR, "utf8").trim()) || 0; } catch { /* first run */ }
+  let lines = [];
+  try { lines = fs.readFileSync(`${STATE}/tang-requests.jsonl`, "utf8").split("\n").filter(Boolean); }
+  catch { return { opens: [], next: cursor }; }
+  // A truncated or rotated log resets the cursor rather than skipping everything after it.
+  if (cursor > lines.length) cursor = 0;
+  // At most 200 a tick, and the cursor advances only past the lines actually taken — returning
+  // `lines.length` here would silently drop everything beyond the batch, which is the audit trail
+  // the security claim leans on. The rest go next tick, a minute later.
+  const take = lines.slice(cursor, cursor + 200);
+  const opens = [];
+  for (const l of take) { try { opens.push(JSON.parse(l)); } catch { /* skip a torn line */ } }
+  return { opens, next: cursor + take.length };
+}
+
+async function report(ident, status) {
+  const env = diskEnv();
+  if (!env.CONTROLCLAW_URL || !env.VM_ID) return null;
+  let sealed = null;
+  try { sealed = JSON.parse(fs.readFileSync(RECOVERY_BLOB, "utf8")); } catch { /* not sealed yet */ }
+  const body = {
+    locked: !status.mounted,
+    thumbprint: status.thumbprint || null,
+    sealed,
+  };
+  // Every disk open and every refusal goes to the owner's Activity page. The security claim leans on
+  // this: a clone catching a window is only an acceptable residual because the owner sees it happen.
+  const { opens, next } = status.mounted ? pendingOpens() : { opens: [], next: null };
+  const signed = `${env.VM_ID}|${JSON.stringify(body)}|${JSON.stringify(opens)}`;
+  const payload = {
+    vm_id: env.VM_ID,
+    identity_public_key: ident.publicPem,
+    identity_fingerprint: ident.fingerprint,
+    report: body,
+    opens,
+    signature: crypto.sign(null, Buffer.from(signed, "utf8"), ident.privateKey).toString("base64"),
+  };
+
+  // When the container is open we also have the box's REAL key, and we sign with it. That is what
+  // lets the control plane pin this unlock identity to this box rather than to whoever spoke first:
+  // the identity lives on the plain root, so without this anybody who learned a vm_id could register
+  // one of their own and lock the real box out of its own recovery path forever.
+  try {
+    const vmKey = crypto.createPrivateKey(fs.readFileSync(`${SECURE}/keys/vm_private_key.pem`));
+    payload.vm_signature = crypto.sign(null, Buffer.from(signed, "utf8"), vmKey).toString("base64");
+  } catch { /* locked, or a box whose key lives elsewhere: the identity must already be pinned */ }
+  try {
+    const res = await fetch(`${env.CONTROLCLAW_URL}/api/vm-agent/disk`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) { log(`disk report refused: ${res.status}`); return null; }
+    // Only advance the cursor once the control plane has the lines, so a failed report re-ships them
+    // rather than losing them. At-least-once; the route dedupes.
+    if (next !== null) { try { fs.writeFileSync(AUDIT_CURSOR, String(next)); } catch { /* retry next tick */ } }
+    return await res.json();
+  } catch (e) {
+    log(`disk report failed: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Make the container's keyslots match the partner list, and write the gate's allow-list.
+ *
+ * Binding is the only place a thumbprint from the control plane is used, and it is safe because
+ * clevis checks it against what the partner's own tang advertises: a thumbprint the control plane
+ * invented is refused outright, so the worst a hostile list achieves is a bind that fails.
+ *
+ * Unbinding is the half that matters for §7.3: an agent that was deleted must stop being able to open
+ * the firewall's disk, and this is what removes its slot.
+ */
+function reconcile(partners) {
+  try {
+    fs.mkdirSync(STATE, { recursive: true });
+    fs.writeFileSync(`${STATE}/tang-partners.json`, JSON.stringify(partners.map((p) => ({ ip: p.ip, name: p.name }))));
+  } catch (e) { log(`could not write the partner allow-list: ${e.message}`); }
+
+  let bound = [];
+  try { bound = sh(["list"]).split("\n").filter(Boolean).map((l) => JSON.parse(l)); }
+  catch { return; }
+
+  const wantUrl = (p) => `http://${p.ip}:${GATE_PORT}`;
+  for (const p of partners) {
+    const already = bound.find((b) => b.url === wantUrl(p) && b.thp === p.thumbprint);
+    if (already) continue;
+    try { sh(["bind", wantUrl(p), p.thumbprint], { stdio: "inherit" }); }
+    catch { log(`could not bind ${p.name} (${p.ip}); leaving the slots as they are`); }
+  }
+  for (const b of bound) {
+    if (partners.some((p) => wantUrl(p) === b.url)) continue;
+    // A slot for a box that is no longer a partner. cc-secure refuses to remove the last one, so a
+    // list that arrives empty (a control plane that has lost its mind, or a network blip mid-deploy)
+    // cannot lock this box out of itself.
+    try { sh(["unbind", b.url], { stdio: "inherit" }); }
+    catch { log(`could not unbind ${b.url}`); }
+  }
+}
+
+async function reportLoop(ident) {
+  for (;;) {
+    let status = { mounted: false, thumbprint: "" };
+    try { status = JSON.parse(sh(["status"])); } catch { /* report what little we know */ }
+    const res = await report(ident, status);
+    if (res?.partners && status.mounted) reconcile(res.partners);
+    await new Promise((r) => setTimeout(r, REPORT_EVERY_MS));
+  }
+}
+
+// ---------------------------------------------------------------- main
+async function main() {
+  const ident = identity();
+  const started = Date.now();
+  let lockedServer = null;
+  // The recovery path finishes from inside an HTTP handler while the loop below is still parked in
+  // its sleep; without this the loop wakes, `cc-secure open` says "already open", and finish() runs a
+  // second time — a second mount, a second READY=1, and a second gate that can never bind and then
+  // retries its own port every 30s for the life of the box.
+  let done = false;
+
+  // Runs whether the container is open or not: a locked box reporting that it is locked is the whole
+  // point, and it is what puts "Locked — waiting" in front of the owner.
+  reportLoop(ident).catch((e) => log("report loop stopped:", e.message));
+
+  const finish = () => {
+    if (done) return;
+    done = true;
+    sh(["mount"], { stdio: "inherit" });
+    if (lockedServer) { lockedServer.close(); lockedServer = null; }
+    notify("READY=1");
+    log("container is open; consumers may start");
+    serveGate();
+  };
+
+  for (;;) {
+    if (done) return;
+    try { sh(["open"], { stdio: "inherit" }); finish(); return; }
+    catch { /* exit 2 is "locked", which is a state to wait in, not a failure to report */ }
+
+    if (!lockedServer) {
+      lockedServer = serveLocked(ident, (pass, reply) => {
+        const tmp = `/dev/shm/cc-unlock.${process.pid}`;
+        try {
+          fs.writeFileSync(tmp, pass, { mode: 0o600 });
+          sh(["open-with", tmp]);
+          fs.rmSync(tmp, { force: true });
+          reply(true);
+          setImmediate(finish);
+        } catch (e) {
+          fs.rmSync(tmp, { force: true });
+          log("unlock: that passphrase did not open the container");
+          reply(false, "that passphrase did not open this container");
+        }
+      });
+    }
+    notify(`STATUS=locked, waiting for a partner (${Math.round((Date.now() - started) / 1000)}s)`);
+    const wait = Date.now() - started < RETRY_FAST_FOR_MS ? RETRY_FAST_MS : RETRY_SLOW_MS;
+    await new Promise((r) => setTimeout(r, wait));
+  }
+}
+
+main().catch((e) => { log("fatal:", e.message); process.exit(1); });

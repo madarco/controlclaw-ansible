@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+/**
+ * cc-seal — seal a box's LUKS passphrase to the organization's recovery key.
+ *
+ *   cc-seal <recovery-pub.b64> <plaintext-file> <out-file>
+ *   cc-seal --selftest
+ *
+ * Deliberately dependency-free: this runs while a box is formatting its disk, long before any
+ * `pnpm install`, so it may use nothing but Node's own `crypto`. That is why the format is spelled
+ * out in primitives Node ships with rather than libsodium's `crypto_box_seal`, which is what the
+ * backups feature uses to wrap data keys to this same key.
+ *
+ *   eph    = X25519 keypair, fresh per seal
+ *   shared = X25519(eph.secret, recoveryPublicKey)
+ *   key    = HKDF-SHA256(shared, salt = eph.public ‖ recoveryPublicKey, info = CONTEXT, 32)
+ *   out    = {"v":1,"eph":b64,"iv":b64,"ct":b64}      AES-256-GCM, 16-byte tag appended to ct
+ *
+ * The owner's half of this lives in `packages/backup-envelope/src/luks-recovery.ts` in the
+ * controlclaw repo, and the two must agree byte for byte forever — an owner discovering otherwise
+ * would discover it while unable to open their own disk. So VECTOR below is the same vector that
+ * file's test checks, `--selftest` opens it, and the play runs `--selftest` on every box before it
+ * seals anything real.
+ */
+"use strict";
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+
+const CONTEXT = "controlclaw/luks-recovery/v1";
+
+// Node will not take a raw 32-byte X25519 key, so wrap it in the minimal DER it does take.
+const SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
+const PKCS8_PREFIX = Buffer.from("302e020100300506032b656e04220420", "hex");
+const pub = (raw) => crypto.createPublicKey({ key: Buffer.concat([SPKI_PREFIX, raw]), format: "der", type: "spki" });
+const priv = (raw) => crypto.createPrivateKey({ key: Buffer.concat([PKCS8_PREFIX, raw]), format: "der", type: "pkcs8" });
+const rawOf = (key) => key.export({ format: "der", type: key.type === "private" ? "pkcs8" : "spki" }).subarray(key.type === "private" ? 16 : 12);
+
+function derive(shared, ephPubRaw, recipientPubRaw) {
+  const salt = Buffer.concat([ephPubRaw, recipientPubRaw]);
+  return Buffer.from(crypto.hkdfSync("sha256", shared, salt, Buffer.from(CONTEXT, "utf8"), 32));
+}
+
+function seal(plaintext, recipientPubRaw) {
+  if (recipientPubRaw.length !== 32) throw new Error("recovery public key must be 32 bytes");
+  const eph = crypto.generateKeyPairSync("x25519");
+  const ephPubRaw = rawOf(eph.publicKey);
+  const shared = crypto.diffieHellman({ privateKey: eph.privateKey, publicKey: pub(recipientPubRaw) });
+  const key = derive(shared, ephPubRaw, recipientPubRaw);
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([c.update(plaintext), c.final(), c.getAuthTag()]);
+  return { v: 1, eph: ephPubRaw.toString("base64"), iv: iv.toString("base64"), ct: ct.toString("base64") };
+}
+
+function open_(blob, recoverySecretRaw) {
+  const ephPubRaw = Buffer.from(blob.eph, "base64");
+  const secret = priv(recoverySecretRaw);
+  const shared = crypto.diffieHellman({ privateKey: secret, publicKey: pub(ephPubRaw) });
+  const recipientPubRaw = rawOf(crypto.createPublicKey(secret));
+  const key = derive(shared, ephPubRaw, recipientPubRaw);
+  const ct = Buffer.from(blob.ct, "base64");
+  const d = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(blob.iv, "base64"));
+  d.setAuthTag(ct.subarray(ct.length - 16));
+  return Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]).toString("utf8");
+}
+
+/** Must stay identical to LUKS_SEAL_VECTOR in packages/backup-envelope/src/luks-recovery.ts. */
+const VECTOR = {
+  recoverySecretKey: "Y29udHJvbGNsYXctbHVrcy1zZWFsLXRlc3QtdmVjdG8=",
+  recoveryPublicKey: "OLIAAYYu9C/XU5mQckoX00FBWNlYg7+Ur4qx2M/tKXs=",
+  passphrase: "vector-passphrase-do-not-use",
+  sealed: {
+    v: 1,
+    eph: "DNeI9JVpucy5zvkkwMUvGGkdlEB73HMIMluNnjz8sHk=",
+    iv: "Yr0Nnhumk9xZOHUT",
+    ct: "P0RioW2uVExRNeuGbesfn/f7EpXKmbx23w+85AUJ+CERJSET0K3JEdj4qng=",
+  },
+};
+
+function selftest() {
+  const secret = Buffer.from(VECTOR.recoverySecretKey, "base64");
+  // 1. the checked-in blob, made by the other implementation, opens here.
+  const got = open_(VECTOR.sealed, secret);
+  if (got !== VECTOR.passphrase) throw new Error(`vector did not open: got ${JSON.stringify(got)}`);
+  // 2. and what we seal opens too, so the format is agreed in both directions.
+  const round = open_(seal(Buffer.from(VECTOR.passphrase, "utf8"), Buffer.from(VECTOR.recoveryPublicKey, "base64")), secret);
+  if (round !== VECTOR.passphrase) throw new Error("round trip failed");
+  console.log("cc-seal: selftest ok");
+}
+
+function main(argv) {
+  if (argv[0] === "--selftest") return selftest();
+  const [pubFile, inFile, outFile] = argv;
+  if (!pubFile || !inFile || !outFile) {
+    console.error("usage: cc-seal <recovery-pub.b64> <plaintext-file> <out-file>   |   cc-seal --selftest");
+    process.exit(2);
+  }
+  selftest(); // never seal with an implementation that cannot open its own vector
+  const recipient = Buffer.from(fs.readFileSync(pubFile, "utf8").trim(), "base64");
+  const blob = seal(fs.readFileSync(inFile), recipient);
+  // 0600 while it is written: the blob is not a secret, but it is written from one.
+  fs.writeFileSync(outFile, JSON.stringify(blob), { mode: 0o600 });
+}
+
+try {
+  main(process.argv.slice(2));
+} catch (e) {
+  console.error(`cc-seal: ${e.message}`);
+  process.exit(1);
+}

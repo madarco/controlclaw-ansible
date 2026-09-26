@@ -1,0 +1,398 @@
+#!/bin/bash
+# cc-secure — the only thing on the box that touches the encrypted container.
+#
+# One LUKS2 container per box, a sparse file on the plain root, holding everything that is the
+# organization's (docs/plans/disk-encryption.md §1). Its keyslots are:
+#
+#   slot 0        a random 256-bit passphrase, kept at $SECURE/keys/luks.key — INSIDE the container
+#                 it opens, so it is readable exactly when a re-bind or a rekey needs it, and a disk
+#                 image does not give it up. Also sealed to the org's recovery key, on the plain
+#                 root, as the only way back in when no partner is up.
+#   slots 1..N    one `clevis tang` binding per partner box. Clevis tries each in turn, so any one
+#                 partner being up is enough. Adding a partner is one bind; removing one is one
+#                 unbind. See §4 for why this is not `sss`.
+#
+# Every subcommand is small and does one thing, because this runs as root behind a sudoers line and
+# is what stands between a customer's data and a box that will not boot.
+set -euo pipefail
+
+IMG=${CC_SECURE_IMG:-/var/lib/controlclaw/secure.img}
+SECURE=${CC_SECURE_MOUNT:-/opt/controlclaw/secure}
+MAPPER=${CC_SECURE_MAPPER:-cc-secure}
+SIZE_GB=${CC_SECURE_SIZE_GB:-20}
+TANG_DB="$SECURE/tang"
+KEYFILE="$SECURE/keys/luks.key"
+RECOVERY_JWE=${CC_SECURE_RECOVERY_JWE:-/etc/controlclaw/luks-recovery.sealed}
+# The organization's recovery key, X25519 public half, base64 — the same key the backups feature
+# wraps data keys to (`org_backup_settings.publicKey`). NOT a PEM: it is 32 raw bytes in base64,
+# because that is the shape libsodium and the owner's browser already speak.
+RECOVERY_PUB=${CC_SECURE_RECOVERY_PUB:-/etc/controlclaw/luks-recovery-pub.b64}
+TANGD_PORT=${CC_SECURE_TANGD_PORT:-3921}
+
+die() { echo "cc-secure: $*" >&2; exit 1; }
+
+# Seal a file's contents to the org's recovery public key, atomically. The crypto is deliberately
+# not in this script: `cc-seal` is a dependency-free Node program (X25519 + HKDF-SHA256 +
+# AES-256-GCM) whose format is pinned by a vector both it and packages/backup-envelope test
+# against, so the box and the owner's browser cannot drift apart.
+seal_to_recovery() {
+  local src=$1
+  [ -s "$RECOVERY_PUB" ] || return 1
+  /usr/local/bin/cc-seal "$RECOVERY_PUB" "$src" "$RECOVERY_JWE.tmp" || return 1
+  mv "$RECOVERY_JWE.tmp" "$RECOVERY_JWE"
+  chmod 0644 "$RECOVERY_JWE"
+}
+log() { echo "cc-secure: $*" >&2; }
+
+# The loop device for the image, attaching it if needed. `losetup --find` alone prints nothing, so
+# --show is required; and -j first, or a retry loop leaks a device per attempt.
+loopdev() {
+  local d
+  d=$(losetup -j "$IMG" -O NAME --noheadings 2>/dev/null | head -1 | tr -d ' ')
+  [ -n "$d" ] || d=$(losetup --find --show --sector-size 4096 "$IMG")
+  echo "$d"
+}
+
+is_mounted() { mountpoint -q "$SECURE"; }
+is_open()    { [ -e "/dev/mapper/$MAPPER" ]; }
+
+# ---------------------------------------------------------------------------- create
+
+cmd_init() {
+  [ -f "$IMG" ] && { log "container already exists"; return 0; }
+  [ -s "$RECOVERY_PUB" ] || die "no org recovery public key at $RECOVERY_PUB; refusing to make a container nobody can ever open"
+
+  mkdir -p "$(dirname "$IMG")" "$SECURE"
+  log "creating a ${SIZE_GB}G sparse container at $IMG"
+  # Sparse: it occupies what is written, not its nominal size, which is what keeps a box image small.
+  truncate -s "${SIZE_GB}G" "$IMG"
+  chmod 0600 "$IMG"
+
+  local loop pass
+  loop=$(loopdev)
+  pass=$(head -c 32 /dev/urandom | base64 -w0)
+
+  # The passphrase is written to a private tmpfs file, never an argv and never a heredoc in a log.
+  local tmp
+  tmp=$(mktemp -p /dev/shm cc-secure.XXXXXX); chmod 0600 "$tmp"
+  printf '%s' "$pass" > "$tmp"
+
+  cryptsetup luksFormat --type luks2 --batch-mode --key-file "$tmp" "$loop" \
+    || { rm -f "$tmp" "$IMG"; die "luksFormat failed"; }
+  cryptsetup luksOpen --key-file "$tmp" --allow-discards "$loop" "$MAPPER" \
+    || { rm -f "$tmp"; die "luksOpen failed"; }
+
+  # -E nodiscard so mkfs does not spend minutes discarding a file that is already sparse.
+  mkfs.ext4 -q -E nodiscard -L cc-secure "/dev/mapper/$MAPPER"
+  mount -o discard "/dev/mapper/$MAPPER" "$SECURE"
+  # 0711, not 0700: tangd runs as _tang and has to traverse this to reach $TANG_DB. 0700 here makes
+  # /adv answer nothing, which looks like a tang problem and is a permissions one. 0711 lists nothing
+  # to anybody; the sensitive subdirectories below keep their own modes.
+  chmod 0711 "$SECURE"
+  mkdir -p "$SECURE/keys" "$SECURE/state" "$TANG_DB"
+  chmod 0700 "$SECURE/keys" "$TANG_DB"
+
+  install -m 0600 "$tmp" "$KEYFILE"
+  # Seal the passphrase to the org's recovery key. This blob is the only way in when no partner is
+  # up; it lives on the PLAIN root on purpose, because a locked box has to be able to serve it.
+  seal_to_recovery "$tmp" || { rm -f "$tmp"; die "could not seal the passphrase to the recovery key"; }
+  rm -f "$tmp"
+
+  cmd_tang_keygen
+  log "container created, mounted and sealed"
+}
+
+# ---------------------------------------------------------------------------- open / mount
+
+# Try every clevis binding. Exits 2 when none worked — that is "locked", not "broken", and the
+# daemon treats it as a state to wait in rather than a failure to report.
+cmd_open() {
+  is_open && { log "already open"; return 0; }
+  [ -f "$IMG" ] || die "no container at $IMG"
+  local loop; loop=$(loopdev)
+  if clevis luks unlock -d "$loop" -n "$MAPPER" >/dev/null 2>&1; then
+    log "opened by a partner's tang"
+    return 0
+  fi
+  log "no partner could open it"
+  return 2
+}
+
+# Open with a passphrase read from a file (the recovery path). The file is the caller's to remove.
+cmd_open_with() {
+  local f=${1:?usage: cc-secure open-with <passphrase-file>}
+  is_open && { log "already open"; return 0; }
+  local loop; loop=$(loopdev)
+  cryptsetup luksOpen --key-file "$f" --allow-discards "$loop" "$MAPPER" 2>/dev/null \
+    || return 2
+  log "opened with the recovery passphrase"
+}
+
+cmd_mount() {
+  is_open || die "container is not open"
+  is_mounted || { mkdir -p "$SECURE"; mount -o discard "/dev/mapper/$MAPPER" "$SECURE"; }
+  mkdir -p "$SECURE/keys" "$SECURE/state" "$TANG_DB"
+  chmod 0711 "$SECURE"          # traversable by _tang; see cmd_init
+  chmod 0700 "$SECURE/keys" "$TANG_DB"
+
+  # The bind mounts, as `subdir:target:owner:mode`. Each target is created on the plain root and then
+  # shadowed, so a service that somehow starts before us writes to an empty directory rather than
+  # failing on a missing path — and the play's own assert (disk-encryption.yml) is what stops that
+  # being mistaken for success.
+  local spec src dst owner mode
+  local IFS_SAVE=$IFS
+  for spec in ${CC_SECURE_BINDS:-}; do
+    IFS=: read -r sub dst owner mode <<< "$spec"
+    src="$SECURE/$sub"
+    mkdir -p "$src" "$dst"
+    chown "${owner:-root}:${owner:-root}" "$src"
+    chmod "${mode:-0750}" "$src"
+    mountpoint -q "$dst" || mount --bind "$src" "$dst"
+  done
+  IFS=$IFS_SAVE
+
+  # tangd is NOT enabled at boot: a socket advertising a key database that is not mounted answers
+  # its partner with an error, and nothing retries. It starts here, once there is something to serve.
+  if [ -d "$TANG_DB" ]; then
+    # tangd runs as _tang and has to WALK to the key database, which means every directory above it
+    # needs the execute bit for others. /opt/controlclaw is 0750 controlclaw:controlclaw, so without
+    # this tangd dies with `Error calling stat() on path: .../tang: Permission denied`, the socket
+    # accepts connections and every one of them fails, and the box publishes no thumbprint — so no
+    # partner can ever bind to it. 0751 lets a traversal through to a known path and still lists
+    # nothing; every directory under it keeps its own mode, and the key database itself stays 0700.
+    #
+    # Missed locally because a hand-made mount point was 0755 root. Found on a real box.
+    chmod o+x "$(dirname "$SECURE")" 2>/dev/null || true
+    chown -R _tang:_tang "$TANG_DB" 2>/dev/null || true
+    chmod 0440 "$TANG_DB"/*.jwk 2>/dev/null || true
+    # Errors captured, not swallowed. A tang that will not start is invisible everywhere else: the
+    # box still opens its disk, still reports, and simply never publishes a thumbprint — so no
+    # partner can bind to it and the mutual unlock quietly does not exist.
+    local err
+    if ! err=$(systemctl start tangd.socket 2>&1); then
+      log "ERROR: tangd.socket would not start: ${err:-no reason given}"
+    elif ! curl -sf --max-time 3 "http://127.0.0.1:${TANGD_PORT}/adv" >/dev/null 2>&1; then
+      log "ERROR: tangd.socket started but nothing answers on 127.0.0.1:${TANGD_PORT}; this box cannot be bound to by a partner"
+      systemctl show tangd.socket -p Listen --value 2>/dev/null | while read -r l; do log "  tangd is listening on: $l"; done
+    else
+      log "tang is serving on 127.0.0.1:${TANGD_PORT}"
+    fi
+  fi
+  log "mounted at $SECURE"
+}
+
+cmd_umount() {
+  systemctl stop tangd.socket 2>/dev/null || true
+  local spec dst
+  for spec in ${CC_SECURE_BINDS:-}; do
+    dst=$(printf '%s' "$spec" | cut -d: -f2)
+    mountpoint -q "$dst" && umount "$dst" || true
+  done
+  is_mounted && umount "$SECURE" || true
+  is_open && cryptsetup close "$MAPPER" || true
+  log "closed"
+}
+
+# ---------------------------------------------------------------------------- tang
+
+cmd_tang_keygen() {
+  is_mounted || die "container is not mounted"
+  mkdir -p "$TANG_DB"
+  if ! ls "$TANG_DB"/*.jwk >/dev/null 2>&1; then
+    /usr/libexec/tangd-keygen "$TANG_DB"
+    log "generated this box's tang keys"
+  fi
+  chown -R _tang:_tang "$TANG_DB"; chmod 0440 "$TANG_DB"/*.jwk
+}
+
+# This box's tang thumbprint, which is what a partner pins when it binds.
+cmd_thumbprint() {
+  curl -sf --max-time 5 "http://127.0.0.1:${TANGD_PORT}/adv" \
+    | jose fmt -j- -g payload -y -o- \
+    | jose jwk use -i- -r -u verify -o- \
+    | jose jwk thp -i-
+}
+
+# ---------------------------------------------------------------------------- bindings
+
+# What we pinned, per slot. The LUKS header stays the source of truth for *what can open this disk*;
+# this file only says which partner each slot belongs to and which thumbprint was pinned for it.
+#
+# It exists because clevis will not tell us. `clevis luks list` prints the URL and nothing else, and
+# the advertisement inside the token holds only the ECMR derive key — so the verify-key thumbprint a
+# partner publishes cannot be read back out of the slot that pinned it. Without this, `unbind <thp>`
+# silently matched nothing and removed no slot: a deleted agent would have kept its ability to open
+# the firewall's disk, which is the one thing §7.3 exists to prevent. Found by testing, not review.
+#
+# It lives INSIDE the container, so it is only readable when the box is already open, and a disk image
+# does not reveal which boxes an organization runs.
+BINDINGS="$SECURE/state/tang-bindings.json"
+
+bindings_read() { [ -s "$BINDINGS" ] && cat "$BINDINGS" || echo '{}'; }
+
+bindings_write() {
+  local slot=$1 url=$2 thp=$3 action=$4
+  mkdir -p "$(dirname "$BINDINGS")"
+  bindings_read | SLOT="$slot" URL="$url" THP="$thp" ACTION="$action" python3 -c '
+import json, os, sys
+m = json.load(sys.stdin)
+slot = os.environ["SLOT"]
+if os.environ["ACTION"] == "add":
+    m[slot] = {"url": os.environ["URL"], "thp": os.environ["THP"]}
+else:
+    m.pop(slot, None)
+print(json.dumps(m, sort_keys=True))' > "$BINDINGS.tmp" && mv "$BINDINGS.tmp" "$BINDINGS"
+  chmod 0600 "$BINDINGS"
+}
+
+# The slots clevis actually has, as `slot<TAB>url`.
+clevis_slots() {
+  local loop=$1
+  clevis luks list -d "$loop" 2>/dev/null | sed -n 's/^\([0-9]\+\): tang .*"url":"\([^"]*\)".*/\1\t\2/p'
+}
+
+# Bind a new partner. The thumbprint is REQUIRED and clevis checks it against what the URL
+# advertises: a wrong one is refused outright, which is what stops a control plane pointing a box at
+# a tang it controls. Whoever calls this has already checked that the thumbprint is signed by the
+# partner's pinned box key — that check does not belong in a root shell script.
+cmd_bind() {
+  local url=${1:?usage: cc-secure bind <url> <thumbprint>} thp=${2:?}
+  is_mounted || die "container is not mounted"
+  [ -s "$KEYFILE" ] || die "no $KEYFILE; cannot add a slot"
+  local loop; loop=$(loopdev)
+
+  # Idempotent on the URL, because that is what identifies a partner box. A partner whose tang key
+  # changed keeps the same URL, so re-binding it replaces the slot rather than adding a second one.
+  local stale pinned
+  stale=$(clevis_slots "$loop" | awk -F'\t' -v u="$url" '$2 == u {print $1; exit}')
+  if [ -n "$stale" ]; then
+    pinned=$(bindings_read | SLOT="$stale" python3 -c 'import json,os,sys; print(json.load(sys.stdin).get(os.environ["SLOT"],{}).get("thp",""))')
+    if [ "$pinned" = "$thp" ]; then log "already bound to $url with that key"; return 0; fi
+  fi
+
+  # ADD FIRST, remove second. The other order looks tidier and is destructive: a bind that fails —
+  # a wrong thumbprint, a partner that went away between the check and the call — would have already
+  # taken out the working slot, leaving a box that can no longer open itself. Caught by testing a
+  # refused re-bind, which is exactly the case that matters.
+  local before after slot
+  before=$(clevis_slots "$loop" | cut -f1 | sort | paste -sd, -)
+  clevis luks bind -y -d "$loop" -k "$KEYFILE" tang "{\"url\":\"$url\",\"thp\":\"$thp\"}" \
+    || die "bind to $url refused (wrong thumbprint, or the partner is unreachable); nothing was changed"
+  after=$(clevis_slots "$loop" | cut -f1 | sort | paste -sd, -)
+  slot=$(comm -13 <(printf '%s\n' "$before" | tr ',' '\n' | sed '/^$/d' | sort) \
+                  <(printf '%s\n' "$after"  | tr ',' '\n' | sed '/^$/d' | sort) | head -1)
+  [ -n "$slot" ] || die "bind reported success but no new slot appeared"
+  bindings_write "$slot" "$url" "$thp" add
+  log "bound slot $slot to $url"
+
+  # Only now is it safe to drop the old one, and only if the new slot is genuinely a different slot.
+  if [ -n "$stale" ] && [ "$stale" != "$slot" ]; then
+    clevis luks unbind -d "$loop" -s "$stale" -f && bindings_write "$stale" "" "" remove \
+      && log "removed the stale slot $stale for $url"
+  fi
+}
+
+# Remove a partner, by URL or by the thumbprint we pinned for it. Either identifies one slot.
+cmd_unbind() {
+  local what=${1:?usage: cc-secure unbind <url|thumbprint>}
+  is_mounted || die "container is not mounted (the record of what is bound lives inside it)"
+  local loop slot; loop=$(loopdev)
+
+  slot=$(clevis_slots "$loop" | awk -F'\t' -v u="$what" '$2 == u {print $1; exit}')
+  [ -n "$slot" ] || slot=$(bindings_read | WHAT="$what" python3 -c '
+import json, os, sys
+m = json.load(sys.stdin)
+w = os.environ["WHAT"]
+print(next((s for s, v in m.items() if v.get("thp") == w or v.get("url") == w), ""))')
+  [ -n "$slot" ] || { log "nothing bound matching $what"; return 0; }
+
+  # Refuse to remove the last partner. A box with only slot 0 left can still be recovered by its
+  # owner, but it can no longer come up on its own — and doing that silently during an ordinary agent
+  # deletion is a way to leave an organization's firewall needing a human at every reboot.
+  local bound; bound=$(clevis_slots "$loop" | wc -l)
+  if [ "$bound" -le 1 ] && [ "${CC_SECURE_ALLOW_LAST_UNBIND:-0}" != "1" ]; then
+    die "refusing to remove the last partner binding; set CC_SECURE_ALLOW_LAST_UNBIND=1 if that is really meant"
+  fi
+  clevis luks unbind -d "$loop" -s "$slot" -f
+  bindings_write "$slot" "" "" remove
+  log "unbound slot $slot ($what)"
+}
+
+# The real slots from the LUKS header, annotated with what we pinned. A slot the header has and this
+# box has no record of is reported with an empty thumbprint and `known: false` — that is a slot
+# somebody else added, and it should be visible rather than tidied away.
+cmd_list() {
+  local loop; loop=$(loopdev)
+  local recorded; recorded=$(bindings_read)
+  clevis_slots "$loop" | RECORDED="$recorded" python3 -c '
+import json, os, sys
+rec = json.loads(os.environ["RECORDED"])
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line: continue
+    slot, url = line.split("\t", 1)
+    r = rec.get(slot, {})
+    print(json.dumps({"slot": int(slot), "url": url, "thp": r.get("thp", ""), "known": bool(r)}))'
+}
+
+# ---------------------------------------------------------------------------- rekey
+
+# A new slot-0 passphrase and a new sealed blob. This is the answer to a leaked blob or a leaked
+# keyfile. It is NOT the answer to a shell-access grant: a root shell on a running box reads the
+# dm-crypt master key out of the kernel, and changing a keyslot leaves that master key alone. See
+# §7.5 — that case is "assume the key is known, rebuild the box", and the console says so.
+cmd_rekey() {
+  is_mounted || die "container is not mounted"
+  [ -s "$KEYFILE" ] || die "no $KEYFILE"
+  [ -s "$RECOVERY_PUB" ] || die "no recovery public key; a rekey would leave no way back in"
+  local loop tmp; loop=$(loopdev)
+  tmp=$(mktemp -p /dev/shm cc-secure.XXXXXX); chmod 0600 "$tmp"
+  head -c 32 /dev/urandom | base64 -w0 > "$tmp"
+  cryptsetup luksChangeKey --key-file "$KEYFILE" --new-keyfile "$tmp" "$loop" \
+    || { rm -f "$tmp"; die "luksChangeKey failed; the old passphrase still works"; }
+  seal_to_recovery "$tmp" || { rm -f "$tmp"; die "rekeyed but could not re-seal; $KEYFILE is authoritative"; }
+  install -m 0600 "$tmp" "$KEYFILE"; rm -f "$tmp"
+  log "rekeyed slot 0 and re-sealed the recovery blob"
+}
+
+# Re-seal to a NEW org recovery key, without changing the passphrase. Used when the owner rotates
+# their recovery key: every box re-seals its own, because only the box has the passphrase.
+cmd_reseal() {
+  is_mounted || die "container is not mounted"
+  [ -s "$KEYFILE" ] || die "no $KEYFILE"
+  [ -s "$RECOVERY_PUB" ] || die "no recovery public key"
+  seal_to_recovery "$KEYFILE" || die "could not seal to the new recovery key"
+  log "re-sealed to the current recovery key"
+}
+
+# ---------------------------------------------------------------------------- status
+
+cmd_status() {
+  local present=false mounted=false open=false thp="" slots="[]"
+  [ -f "$IMG" ] && present=true
+  is_open && open=true
+  is_mounted && mounted=true
+  if [ "$mounted" = true ]; then
+    thp=$(cmd_thumbprint 2>/dev/null || true)
+    slots=$(cmd_list 2>/dev/null | paste -sd, -); slots="[${slots}]"
+  fi
+  printf '{"present":%s,"open":%s,"mounted":%s,"thumbprint":"%s","partners":%s}\n' \
+    "$present" "$open" "$mounted" "$thp" "$slots"
+}
+
+case "${1:-}" in
+  init)         shift; cmd_init "$@" ;;
+  open)         shift; cmd_open "$@" ;;
+  open-with)    shift; cmd_open_with "$@" ;;
+  mount)        shift; cmd_mount "$@" ;;
+  umount)       shift; cmd_umount "$@" ;;
+  tang-keygen)  shift; cmd_tang_keygen "$@" ;;
+  thumbprint)   shift; cmd_thumbprint "$@" ;;
+  bind)         shift; cmd_bind "$@" ;;
+  unbind)       shift; cmd_unbind "$@" ;;
+  list)         shift; cmd_list "$@" ;;
+  rekey)        shift; cmd_rekey "$@" ;;
+  reseal)       shift; cmd_reseal "$@" ;;
+  status)       shift; cmd_status "$@" ;;
+  *) die "usage: cc-secure {init|open|open-with <file>|mount|umount|tang-keygen|thumbprint|bind <url> <thp>|unbind <thp>|list|rekey|reseal|status}" ;;
+esac

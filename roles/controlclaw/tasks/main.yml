@@ -56,6 +56,22 @@
   ansible.builtin.include_tasks: nodejs.yml
   when: box_role != 'proxy'
 
+# Encryption at rest, and it has to be HERE: everything below this line that writes a key writes it
+# into a path that belongs inside the container (/opt/controlclaw/keys, the agent's home, the CA), so
+# the container has to be open first. It runs after nodejs.yml because the container manager is a Node
+# program, after user.yml because the bind mounts are owned by that account, and after
+# firewall-linux.yml because it adds one UFW rule of its own.
+#
+# It also refuses to let the play continue on a box whose container did not open — see the assert in
+# disk-encryption.yml, which is the difference between a locked box and a box that has silently
+# regenerated its identity on the plain disk.
+- name: Include disk encryption (LUKS opened by the org's own boxes)
+  ansible.builtin.include_tasks: disk-encryption.yml
+  when:
+    - disk_encryption | bool
+    - box_role in ['openclaw', 'mitm']
+    - not ci_test
+
 # Before the browser: the live browser is what makes a swapless 4 GB box a problem, and a box
 # that has already started Chrome is a bad moment to be allocating a swap file.
 - name: Include swap tasks

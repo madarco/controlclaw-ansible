@@ -302,3 +302,68 @@ mitm_ca_cert: ""                     # public CA cert (PEM) to install in the tr
 # Where cc-install-ca puts the org mitm CA. Node ignores the OS trust store, so every task that
 # shells out to npm/pnpm points NODE_EXTRA_CA_CERTS at this file when it exists (see main.yml).
 mitm_ca_path: /usr/local/share/ca-certificates/controlclaw-mitm.crt
+
+# --- Encryption at rest -------------------------------------------------------------------------
+#
+# One LUKS2 container per box, opened over Clevis/Tang by the OTHER boxes in the same organization
+# and by nothing else. Design: controlclaw `docs/plans/disk-encryption.md`.
+#
+# FALSE by default, and the control plane passes `true` only for secured boxes. That direction
+# matters: an ansible-only change can never start encrypting boxes the control plane knows nothing
+# about, which would strand them (it holds the recovery blob and drives the bindings).
+#
+# An unsecured development box is deliberately NOT encrypted. It has no firewall, so it has no
+# partner, so every reboot would need a human — on the one kind of box whose whole point is speed.
+disk_encryption: false
+
+# The organization's recovery key, X25519 public half, base64. The same key the backups feature wraps
+# data keys to. Passed per box by the control plane; without it the play refuses, because the sealed
+# passphrase is the only way into a box whose partners are all down.
+luks_recovery_pubkey: ""
+
+luks_image_path: /var/lib/controlclaw/secure.img
+luks_secure_mount: /opt/controlclaw/secure
+
+# Sparse, so it occupies what is written rather than its nominal size — which is what keeps a box
+# image small. 20 GiB on an agent (cx23 has a 40 GB disk, cx33 80 GB), less on a firewall, which
+# holds stores and keys rather than an agent's workspace.
+luks_container_size_gb: "{{ 5 if box_role == 'mitm' else 20 }}"
+
+# Two ports, and only one of them is reachable. tangd itself is loopback-only; the gate in
+# cc-secure-daemon faces the org's private network, checks the caller and logs every open.
+luks_tang_gate_port: 3920
+luks_tangd_port: 3921
+# Where a locked box answers "here is this boot's key, seal the passphrase to it". Loopback; Caddy
+# publishes it at /__cc/disk/* so the console can reach a box that has not opened its disk yet.
+luks_locked_port: 3101
+
+# The gate binds this box's address on the org's private network — never 0.0.0.0, never the public
+# interface. There is deliberately NO variable for that address: the box works it out from the subnet
+# below, because the control plane does not pass one to an agent and the obvious Ansible fact
+# (`default_ipv4`) is the PUBLIC address on a Hetzner server. See cc-secure-daemon's `privateIp()`.
+
+# What moves inside the container, as `subdir:target:owner:mode`. Everything that is the
+# organization's, or that opens something of the organization's.
+#
+# Deliberately NOT here: /home/controlclaw/.ssh, because a consent-coded rescue grant puts its key
+# there and the one moment support is wanted is a box that did not come up; and the OS and every
+# binary, which are public, pinned and auditable, and whose staying plain is what means a locked box
+# still boots and can be told to open itself.
+luks_binds: >-
+  {{
+    ['keys:/opt/controlclaw/keys:' ~ controlclaw_user ~ ':0750',
+     'state:/opt/controlclaw/state:' ~ controlclaw_user ~ ':0750']
+    + (['openclaw:' ~ controlclaw_home ~ '/.openclaw:' ~ controlclaw_user ~ ':0750'] if box_role == 'openclaw' else [])
+    + (['mitm-ca:/opt/controlclaw/mitm/ca:root:0700',
+        'connector:/opt/controlclaw/connector:root:0700'] if box_role == 'mitm' else [])
+  }}
+
+# The units that read a path inside the container, and therefore wait for it. Caddy and ssh are
+# deliberately absent: they are how a locked box is reached and fixed.
+luks_dependent_units: >-
+  {{
+    (['controlclaw-agent.service', 'openclaw.service', 'browser-stream.service',
+      'cc-drive@.service', 'cc-gmail-watch.service'] if box_role == 'openclaw' else [])
+    + (['controlclaw-mitm-agent.service', 'controlclaw-mitmproxy.service',
+        'controlclaw-connector.service'] if box_role == 'mitm' else [])
+  }}

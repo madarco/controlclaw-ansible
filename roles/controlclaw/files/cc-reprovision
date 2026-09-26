@@ -37,6 +37,24 @@ json() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.st
 die() { say failed "$1"; exit 1; }
 
 [ -r "$CONF" ] || { logger -t cc-reprovision "no $CONF; refusing"; exit 1; }
+
+# An encrypted box whose container is not mounted must not be re-provisioned, and this check is FIRST
+# because the damage is silent.
+#
+# /opt/controlclaw/keys lives inside the container. On a locked box that path is an empty directory on
+# the plain root, so every read_key below returns nothing and every existence guard in the role misses
+# — and the play would cheerfully regenerate box_key and vm_private_key.pem on the UNENCRYPTED disk.
+# The box would lose the identity every agent in the org has pinned, its .enc stores (and the
+# payload_box copies the control plane holds) would become unopenable, and a fresh plaintext box key
+# would be sitting on the one disk this feature exists to protect — then hidden under the bind mount
+# the next time a partner opened the container. Nothing about that is visible in the output.
+#
+# $STATE is inside the container too, so say() cannot report this. logger is the only channel left.
+if [ -f /var/lib/controlclaw/secure.img ] && ! mountpoint -q /opt/controlclaw/secure; then
+  logger -t cc-reprovision "this box's disk is locked; refusing to re-provision (it would regenerate the box's identity on the plain disk)"
+  echo "cc-reprovision: this box's disk is locked. Open it first (the console offers this, or npx @controlclaw/recover unlock)." >&2
+  exit 3
+fi
 # shellcheck disable=SC1090
 . "$CONF"
 
@@ -125,6 +143,7 @@ CONTROLCLAW_URL="${CONTROLCLAW_URL:-$(read_key controlclaw_url)}"
 vars=$(BOX_ROLE="$ROLE" VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PROXY_IP:-}" \
   ANSIBLE_REPO="$ANSIBLE_REPO" ANSIBLE_BRANCH="${ANSIBLE_BRANCH:-main}" ALLOW_UNVERIFIED="${ALLOW_UNVERIFIED:-false}" \
   SSH_DEBUG="${SSH_DEBUG:-false}" \
+  DISK_ENCRYPTION="${DISK_ENCRYPTION:-false}" LUKS_RECOVERY_PUBKEY="${LUKS_RECOVERY_PUBKEY:-}" \
   SAAS_PUB="$(read_key saas_public_key.pem)" \
   CONFIG_URL="$(read_key config_api_url)" READY_URL="$(read_key ready_api_url)" \
   REGISTER_URL="$(read_key register_api_url)" \
@@ -150,8 +169,13 @@ for key, env in (("ansible_repo_url", "ANSIBLE_REPO"), ("ansible_branch", "ANSIB
 # absent case must NOT fall through to the role default: falling through is what would take SSH away
 # from a dev box halfway through its life. A box pinned before SSH_DEBUG existed reads as false,
 # which is the safe direction and matches what the role would have done anyway.
+# disk_encryption is in `shared` and always non-empty, for the same reason ssh_debug is: falling
+# through to the role default (false) on an encrypted box would make the play skip disk-encryption.yml
+# entirely, which skips the assert that stops the rest of the run writing keys to the plain disk. A box
+# pinned before this existed reads as false, which is correct — it has no container.
 shared = (("saas_public_key", "SAAS_PUB"), ("ready_api_url", "READY_URL"),
-          ("register_api_url", "REGISTER_URL"), ("ssh_debug", "SSH_DEBUG"))
+          ("register_api_url", "REGISTER_URL"), ("ssh_debug", "SSH_DEBUG"),
+          ("disk_encryption", "DISK_ENCRYPTION"), ("luks_recovery_pubkey", "LUKS_RECOVERY_PUBKEY"))
 agent = (("proxy_ip", "PROXY_IP"), ("config_api_url", "CONFIG_URL"),
          ("mitm_box_private_ip", "MITM_IP"), ("mitm_vm_public_key", "MITM_PUB"))
 mitm = (("org_id", "ORG_ID"), ("controlclaw_url", "CONTROLCLAW_URL"),

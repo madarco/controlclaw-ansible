@@ -66,6 +66,11 @@
       ALLOW_UNVERIFIED={{ 'true' if update_allow_unverified | default(false) | bool else 'false' }}
       BOX_ROLE={{ box_role }}
       SSH_DEBUG={{ 'true' if ssh_debug | default(false) | bool else 'false' }}
+      # Same reason as SSH_DEBUG: without this an encrypted box would fall through to the role
+      # default on its first self-update, skip disk-encryption.yml, and with it the assert that stops
+      # the rest of the play writing this box's identity onto the plain disk.
+      DISK_ENCRYPTION={{ 'true' if disk_encryption | default(false) | bool else 'false' }}
+      LUKS_RECOVERY_PUBKEY={{ luks_recovery_pubkey | default('') }}
       {% if box_role == 'mitm' %}
       ORG_ID={{ org_id | default('') }}
       CONTROLCLAW_URL={{ controlclaw_url | default('') }}

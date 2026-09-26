@@ -21,6 +21,22 @@
         }
     }
 
+    # A box whose encrypted disk has not been opened. Separate from /__cc/agent/* on purpose: the
+    # vm-agent is not running then (it waits on cc-secure.service, whose keys are inside the
+    # container), so there is nothing on 3100 to answer. cc-secure-daemon is on 3101 and is the only
+    # thing up.
+    #
+    # Unauthenticated here, and the daemon does not check a bearer either. /disk/status returns a boot
+    # id, a public key, a signature over them and a blob that is ciphertext to everyone but the owner;
+    # /disk/unlock takes a passphrase sealed to this boot's key, which only a holder of the
+    # organization's recovery key can produce — so the ciphertext IS the proof, and a JWT in front of
+    # it would only add a dependency on the control plane being honest, which is the one thing this
+    # path exists not to need. See docs/plans/disk-encryption.md §5.1.
+    handle /__cc/disk/* {
+        uri strip_prefix /__cc/disk
+        reverse_proxy 127.0.0.1:{{ luks_locked_port | default(3101) }}
+    }
+
     # The live browser. noVNC and the VNC server behind it are loopback-only; this is the one way
     # in, and it is gated on a ControlClaw view session.
     #

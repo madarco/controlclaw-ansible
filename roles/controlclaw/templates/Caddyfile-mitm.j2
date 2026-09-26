@@ -29,6 +29,22 @@
         reverse_proxy 127.0.0.1:{{ ingress_port }}
     }
 
+{% if disk_encryption | default(false) | bool %}
+    # A firewall whose encrypted disk has not been opened. This is the box the console tells an owner to
+    # unlock FIRST — open it and every agent follows from its tang within the minute — so it needs a way
+    # in that does not depend on the mitm-agent, whose keys are inside the container.
+    #
+    # It is also the only inbound path this box has that the control plane did not previously have: a
+    # firewall is otherwise unreachable from us by design, and it reports outbound instead. What is
+    # added is two routes that hold no secret (see the agent Caddyfile's comment for why neither needs a
+    # bearer) and exist only while the disk is shut — cc-secure-daemon stops listening the moment it
+    # opens. docs/plans/disk-encryption.md §5.1.
+    handle /__cc/disk/* {
+        uri strip_prefix /__cc/disk
+        reverse_proxy 127.0.0.1:{{ luks_locked_port | default(3101) }}
+    }
+
+{% endif %}
     # Everything else, including /, is a bare 404. No body: a probe learns nothing about whether
     # this box exists, what it runs, or which hook ids are registered.
     handle {

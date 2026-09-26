@@ -1,0 +1,391 @@
+---
+# Encryption at rest for the organization's data: one LUKS2 container per box, opened by the other
+# boxes in the same organization and by nothing else.
+#
+# Full design: controlclaw `docs/plans/disk-encryption.md`. The short version is that this box's
+# container is unlocked over Clevis/Tang by a partner box, each box's tang key database lives on its
+# own encrypted disk, and the only way in when no partner is up is a passphrase sealed to the
+# organization's recovery key. The OS stays plain, so there is no initramfs networking and a locked
+# box still boots, gets its address and can be told to open itself.
+#
+# Ordering: this runs BEFORE vm-agent.yml / mitmbox.yml, because the keys those generate have to be
+# born inside the container. It runs after user.yml (the bind mounts are owned by that account) and
+# after firewall-linux.yml (it adds one UFW rule of its own).
+
+- name: Disk encryption | assert the control plane asked for this
+  ansible.builtin.assert:
+    that:
+      - luks_recovery_pubkey | default('') | length > 0
+    fail_msg: >-
+      disk_encryption is on but no luks_recovery_pubkey was passed. Refusing to make a container that
+      nobody could ever open: the sealed passphrase is the only way in when no partner box is up, and
+      a box encrypted without one is a box whose data is lost the first time the organization's other
+      boxes are all down at once.
+
+# clevis and tang are in `universe`, not `main`. The cloud image enables it and the boxes' mirror
+# carries it, but a role that assumes otherwise fails on a box that will not come back, so be explicit.
+- name: Disk encryption | enable the universe component
+  ansible.builtin.apt_repository:
+    repo: "deb {{ ansible_facts['apt_mirror'] | default('http://archive.ubuntu.com/ubuntu') }} {{ ansible_facts['distribution_release'] }} universe"
+    state: present
+    update_cache: false
+  when: ansible_facts['distribution'] == 'Ubuntu'
+  failed_when: false
+
+# Every apt call on this box waits for the dpkg lock instead of failing on it.
+#
+# Not strictly a disk-encryption concern, and here anyway because this play added apt work and then
+# watched two provisions out of three die on it — `Could not get lock /var/lib/dpkg/lock-` at
+# `Install redsocks` and at `Install python venv`, on a box that was otherwise fine. Provisioning
+# races unattended-upgrades and its own earlier tasks, and a box that dies four seconds into a lock
+# is a box somebody has to rebuild by hand. `lock_timeout` on a single Ansible task fixes only that
+# task; this fixes every apt invocation on the box, including the ones this play does not own and
+# unattended-upgrades itself.
+- name: Disk encryption | apt waits for the dpkg lock rather than failing on it
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99-controlclaw-lock-timeout
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      // Managed by ControlClaw (disk-encryption.yml). Wait up to five minutes for the dpkg lock.
+      DPkg::Lock::Timeout "300";
+
+- name: Disk encryption | install the packages
+  ansible.builtin.apt:
+    name:
+      - cryptsetup-bin
+      - clevis
+      - clevis-luks
+      - tang
+      - jose
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    # Wait for the dpkg lock rather than failing on it. Provisioning races unattended-upgrades and
+    # the other apt tasks in this play, and a box that dies mid-provision because a lock was held for
+    # four seconds is a box somebody has to rebuild by hand. The repo uses the same timeout elsewhere.
+    lock_timeout: 300
+
+# provenance.yml and self-update.yml both write here, but one runs before this file and one after,
+# so create it rather than depend on an ordering that a later edit could change.
+- name: Disk encryption | the box's config directory on the plain root
+  ansible.builtin.file:
+    path: /etc/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Disk encryption | the org's recovery public key (X25519, base64 — not a secret)
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/luks-recovery-pub.b64
+    content: "{{ luks_recovery_pubkey }}"
+    owner: root
+    group: root
+    mode: '0644'
+
+# Public, and a locked box needs it: /opt/controlclaw/keys moves inside the container, so the copy
+# there is unreadable exactly when something has to verify that a request is really the control
+# plane's. This is the one file that leaves KEYS_DIR.
+- name: Disk encryption | keep the SaaS public key on the plain root too
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/saas_public_key.pem
+    content: "{{ saas_public_key }}"
+    owner: root
+    group: root
+    mode: '0644'
+  when: saas_public_key is defined and saas_public_key | length > 0
+
+# vm_id and the control-plane URL, on the PLAIN root. Both are needed while the container is shut —
+# the copies in KEYS_DIR are inside it — and neither is a secret.
+- name: Disk encryption | what the daemon needs while the disk is shut
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/disk.env
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (disk-encryption.yml). Not secret: an id and a URL.
+      VM_ID={{ vm_id }}
+      CONTROLCLAW_URL={{ (controlclaw_url | default('')) or (ready_api_url | default('') | regex_replace('/api/vm-agent/ready$', '')) }}
+  when: vm_id is defined
+
+- name: Disk encryption | install the scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - cc-seal
+    - cc-secure
+    - cc-secure-daemon
+
+# cc-seal is twenty lines of dependency-free Node, and packages/backup-envelope in the controlclaw
+# repo is the other half of the same format. A drift between them would be discovered by an owner
+# who could not open their own disk, so the vector is checked here, on the box, before anything real
+# is sealed. Fail the play rather than seal something the owner cannot open.
+- name: Disk encryption | prove the seal format matches the owner's half
+  ansible.builtin.command: /usr/local/bin/cc-seal --selftest
+  changed_when: false
+
+# tangd serves the key database from INSIDE the container, on loopback only. The gate in
+# cc-secure-daemon is what faces the private network.
+- name: Disk encryption | tangd drop-in directories
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.d"
+    state: directory
+    mode: '0755'
+  loop:
+    - tangd.socket
+    - tangd@.service
+
+- name: Disk encryption | tangd listens on loopback and is NOT started at boot
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/tangd.socket.d/override.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw. A socket that advertises a key database which is not mounted answers
+      # its partner with an error and nothing retries, so this is deliberately not wanted by
+      # sockets.target: cc-secure-daemon starts it after the container is mounted.
+      [Socket]
+      ListenStream=
+      ListenStream=127.0.0.1:{{ luks_tangd_port }}
+      [Install]
+      WantedBy=
+  notify: reload systemd for disk encryption
+
+- name: Disk encryption | tangd reads the key database from inside the container
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/tangd@.service.d/override.conf"
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw.
+      [Service]
+      ExecStart=
+      ExecStart=/usr/libexec/tangd {{ luks_secure_mount }}/tang
+  notify: reload systemd for disk encryption
+
+# STOPPED, not merely disabled, and this is the whole reason tang ever answered on the wrong port.
+#
+# Installing the `tang` package starts tangd.socket immediately, on its packaged `ListenStream=80`,
+# before the drop-in above exists. A `daemon-reload` does not rebind a socket that is already
+# listening, so the later `systemctl start tangd.socket` in cc-secure found it active, did nothing,
+# and left tang answering on :80 — where Caddy wants to be — with nothing on 3921. Every box came up
+# looking healthy, reported its disk as unlocked, and never published a thumbprint, so no partner
+# could ever bind a keyslot to it and the whole mutual-unlock scheme silently did not exist.
+#
+# Stopping it here is safe: cc-secure starts it again once the container is mounted, which is the
+# only moment it has a key database to serve.
+- name: Disk encryption | stop and disable tangd.socket, so the drop-in takes effect
+  ansible.builtin.systemd:
+    name: tangd.socket
+    enabled: false
+    state: stopped
+    daemon_reload: true
+
+- name: Disk encryption | the container manager service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-secure.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw encrypted container
+      Documentation=https://github.com/madarco/controlclaw/blob/main/docs/plans/disk-encryption.md
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=notify
+      # The daemon falls back to `systemd-notify` when Node has no unix_dgram socket, and that is a
+      # CHILD process — which systemd refuses by default ("reception only permitted for main PID").
+      NotifyAccess=all
+      # NOT optional. A Type=notify unit that has not notified is still starting, and the default 90s
+      # would kill the retry loop on its ninth attempt — turning "waits for its partner for as long as
+      # it takes" into "gives up in a minute and a half".
+      TimeoutStartSec=infinity
+      Restart=always
+      RestartSec=5
+      ExecStart=/usr/bin/node /usr/local/bin/cc-secure-daemon
+      Environment=CC_BOX_ROLE={{ box_role }}
+      Environment=CC_SECURE_MOUNT={{ luks_secure_mount }}
+      Environment=CC_SECURE_IMG={{ luks_image_path }}
+      Environment=CC_SECURE_SIZE_GB={{ luks_container_size_gb }}
+      # The SUBNET, not an address: the box finds its own address inside it. A handed-in address was
+      # empty on agents (nothing passes `private_ip`) and was the PUBLIC one on the firewall.
+      Environment=CC_PRIVATE_SUBNET={{ mitm_private_subnet | default('10.0.0.0/16') }}
+      Environment=CC_TANG_GATE_PORT={{ luks_tang_gate_port }}
+      Environment=CC_TANGD_PORT={{ luks_tangd_port }}
+      Environment=CC_LOCKED_PORT={{ luks_locked_port }}
+      # QUOTED, and it has to be: systemd splits an unquoted Environment= value on whitespace, so
+      # without the quotes only the first bind survives and the rest are silently dropped — the agent's
+      # workspace and the CA would sit OUTSIDE the container while everything looked healthy. Found on a
+      # real box, not in review.
+      Environment="CC_SECURE_BINDS={{ luks_binds | join(' ') }}"
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd for disk encryption
+
+- name: Disk encryption | flush handlers so the unit exists before it is used
+  ansible.builtin.meta: flush_handlers
+
+# Create-or-adopt. `cc-secure init` is a no-op when the container already exists, so a re-run (or a
+# cc-reprovision) never reformats a disk — which is the single most destructive thing this file could
+# be made to do by accident.
+- name: Disk encryption | create the container if this box has none
+  ansible.builtin.command:
+    cmd: /usr/local/bin/cc-secure init
+    creates: "{{ luks_image_path }}"
+  environment:
+    CC_SECURE_IMG: "{{ luks_image_path }}"
+    CC_SECURE_MOUNT: "{{ luks_secure_mount }}"
+    CC_SECURE_SIZE_GB: "{{ luks_container_size_gb }}"
+    CC_SECURE_BINDS: "{{ luks_binds | join(' ') }}"
+
+- name: Disk encryption | start the container manager
+  ansible.builtin.systemd:
+    name: cc-secure.service
+    enabled: true
+    state: started
+
+- name: Disk encryption | wait for the container to be mounted
+  ansible.builtin.command: "mountpoint -q {{ luks_secure_mount }}"
+  register: luks_mounted
+  until: luks_mounted.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+
+# THE assert. /opt/controlclaw/keys moves inside the container, so on a locked box that path is an
+# empty directory on the plain root — and the existence guards further down this play (and in
+# cc-reprovision) are file-existence checks, which all miss. A run in that state would regenerate
+# box_key and vm_private_key.pem on the UNENCRYPTED disk: an unopenable set of .enc stores, a broken
+# pin, and a fresh plaintext box key on the one disk this whole feature exists to protect — then
+# hidden under the bind mount on the next successful unlock. Refuse, loudly, rather than proceed.
+- name: Disk encryption | refuse to go on unless the container is really mounted
+  ansible.builtin.assert:
+    that:
+      - luks_mounted.rc == 0
+    fail_msg: >-
+      {{ luks_secure_mount }} is not a mount point. Refusing to continue: the tasks after this one
+      write the box's identity keys into a path that belongs inside the container, and doing that on
+      the plain root would destroy this box's identity silently.
+
+- name: Disk encryption | this box's tang keys, inside the container
+  ansible.builtin.command: /usr/local/bin/cc-secure tang-keygen
+  args:
+    creates: "{{ luks_secure_mount }}/tang"
+  environment:
+    CC_SECURE_MOUNT: "{{ luks_secure_mount }}"
+
+# The gate, not tangd, is what listens here. Per partner IP rather than the whole private subnet:
+# §8.1 is about what the difference buys.
+- name: Disk encryption | allow the tang gate from this org's private subnet
+  community.general.ufw:
+    rule: allow
+    port: "{{ luks_tang_gate_port }}"
+    proto: tcp
+    src: "{{ mitm_private_subnet | default('10.0.0.0/16') }}"
+  when: not ci_test
+
+# "Encryption at rest" leaks if anyone can log in to a running box, because a shell on a running box
+# reads the mounted container. ssh-lockdown.yml already locks root's password and refuses password
+# logins over SSH; the Hetzner console is the other door, and it does not go through sshd. So assert
+# what the whole claim rests on: no account on this box has a usable password.
+# Skipped when ssh_debug is on, which means dev-secured pairs. Such a box has 22 open to the world and
+# a developer's key on it: it is not making the at-rest claim against anybody, and asserting here would
+# only stop the one kind of box this feature is tested on from building at all. Production boxes have
+# ssh_debug false, and ssh-lockdown.yml (which runs earlier) is what locks root's password there.
+- name: Disk encryption | list accounts with a shell
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      awk -F: '$7 !~ /(nologin|false)$/ {print $1}' /etc/passwd
+    executable: /bin/bash
+  register: luks_shell_accounts
+  changed_when: false
+  when: not (ssh_debug | default(false) | bool)
+
+- name: Disk encryption | check none of them can be logged into with a password
+  ansible.builtin.shell:
+    cmd: "passwd -S {{ item | quote }} | awk '{print $2}'"
+  register: luks_pw_status
+  changed_when: false
+  failed_when: false
+  loop: "{{ luks_shell_accounts.stdout_lines | default([]) }}"
+  when: not (ssh_debug | default(false) | bool)
+
+- name: Disk encryption | no account may have a usable password
+  ansible.builtin.assert:
+    that:
+      - luks_pw_status.results | selectattr('stdout', 'equalto', 'P') | list | length == 0
+    fail_msg: >-
+      These accounts have a usable password:
+      {{ luks_pw_status.results | selectattr('stdout', 'equalto', 'P') | map(attribute='item') | list | join(', ') }}.
+      A Hetzner console session is a shell, and a shell on a running box reads the unlocked container,
+      so this would quietly undo encryption at rest. Refusing rather than coming up looking protected.
+    success_msg: no account can be logged into with a password; the console shows a prompt nobody can pass
+  when: not (ssh_debug | default(false) | bool)
+
+# Every service that reads a path inside the container waits for it — as a DROP-IN, not by editing
+# each unit, so the dependency lives next to the thing that explains it and an unencrypted box (which
+# has no cc-secure.service) never acquires it.
+#
+# `Requires=` + `After=` on a Type=notify unit means these QUEUE until the container is open, however
+# long that takes. That is the whole reason cc-secure.service is Type=notify: the obvious alternative,
+# `RequiresMountsFor=`, is a hard dependency on a .mount unit that must fail at boot before the device
+# exists, and it would take all of these down with it and never bring them back.
+#
+# Deliberately NOT in this list: caddy and ssh. Caddy is how the console reaches a locked box to tell
+# it to open, and sshd is how a consent-coded rescue grant gets in. Making either wait for the
+# container would take away the tools for fixing the state they would be waiting on.
+- name: Disk encryption | the units that read the container must wait for it
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.d"
+    state: directory
+    mode: '0755'
+  loop: "{{ luks_dependent_units }}"
+
+- name: Disk encryption | ... which is one drop-in each
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item }}.d/cc-secure.conf"
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (disk-encryption.yml). This unit reads a path inside the encrypted
+      # container, so it waits for cc-secure.service to open it. See docs/plans/disk-encryption.md §5.
+      [Unit]
+      Requires=cc-secure.service
+      After=cc-secure.service
+  loop: "{{ luks_dependent_units }}"
+  notify: reload systemd for disk encryption
+
+- name: Disk encryption | let the agent drive the container's bindings
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-secure
+    owner: root
+    group: root
+    mode: '0440'
+    validate: 'visudo -cf %s'
+    content: |
+      # The agent runs as {{ controlclaw_user }} and drives the container's partner bindings: a new
+      # agent in the org means one more slot, a deleted one means one fewer. Narrow on purpose —
+      # `init`, `open-with` and `umount` are NOT here, so nothing the agent is told to do can format,
+      # unmount or brute-force the disk.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure status
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure list
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure thumbprint
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure bind *
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure unbind *
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure rekey
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure reseal
