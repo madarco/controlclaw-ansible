@@ -34316,8 +34316,25 @@ var ConsentCodes = class {
 
 // src/enc-file.ts
 import { createCipheriv as createCipheriv2, createDecipheriv as createDecipheriv2, randomBytes as randomBytes2 } from "crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync4 } from "fs";
+import { copyFileSync, existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync4 } from "fs";
 import { dirname as dirname2 } from "path";
+
+// src/store-health.ts
+var unreadable = /* @__PURE__ */ new Map();
+function noteStoreUnreadable(store, error48) {
+  unreadable.set(store, { store, error: error48, at: (/* @__PURE__ */ new Date()).toISOString() });
+}
+function noteStoreReadable(store) {
+  unreadable.delete(store);
+}
+function isStoreUnreadable(store) {
+  return unreadable.has(store);
+}
+function unreadableStores() {
+  return [...unreadable.values()].sort((a, b) => a.store.localeCompare(b.store));
+}
+
+// src/enc-file.ts
 var NONCE_BYTES2 = 12;
 var TAG_BYTES2 = 16;
 function encryptJson(value, boxKeyB64, aad12) {
@@ -34341,6 +34358,33 @@ function decryptJson(raw, boxKeyB64, aad12) {
 function loadEncryptedJson(path, boxKeyB64, aad12) {
   if (!existsSync4(path)) return null;
   return decryptJson(readFileSync6(path, "utf8"), boxKeyB64, aad12);
+}
+function loadStoreOrEmpty(store, path, boxKeyB64, aad12, log = console.error) {
+  let parsed;
+  try {
+    parsed = loadEncryptedJson(path, boxKeyB64, aad12);
+  } catch (error48) {
+    noteStoreUnreadable(store, error48.message);
+    log(`[${store}] this firewall cannot read ${path} (${error48.message}); starting empty. The console says so, and the next change reseals it.`);
+    keepUnreadable(path, store, log);
+    return null;
+  }
+  noteStoreReadable(store);
+  return parsed;
+}
+function keepUnreadable(path, store, log) {
+  const kept = `${path}.unreadable`;
+  try {
+    if (!existsSync4(path) || existsSync4(kept)) return;
+    copyFileSync(path, kept);
+    log(`[${store}] kept the unreadable file as ${kept}`);
+  } catch (error48) {
+    log(`[${store}] could not keep a copy of ${path}: ${error48.message}`);
+  }
+}
+function saveStore(store, path, value, boxKeyB64, aad12) {
+  saveEncryptedJson(path, value, boxKeyB64, aad12);
+  noteStoreReadable(store);
 }
 function saveEncryptedJson(path, value, boxKeyB64, aad12) {
   mkdirSync3(dirname2(path), { recursive: true });
@@ -34386,10 +34430,10 @@ function coerce(parsed) {
   return emptyChannelStore();
 }
 function loadChannelStore(path, boxKeyB64, ids2) {
-  return coerce(loadEncryptedJson(path, boxKeyB64, aad2(ids2)));
+  return coerce(loadStoreOrEmpty("channels", path, boxKeyB64, aad2(ids2)));
 }
 function saveChannelStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad2(ids2));
+  saveStore("channels", path, store, boxKeyB64, aad2(ids2));
 }
 
 // src/channels.ts
@@ -34949,11 +34993,11 @@ function emptyDriveStore() {
   return { version: 1, accounts: {}, folders: {}, agents: {} };
 }
 function loadDriveStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad3(ids2));
+  const parsed = loadStoreOrEmpty("drive", path, boxKeyB64, aad3(ids2));
   return parsed && parsed.version === 1 && parsed.accounts && parsed.folders && parsed.agents ? parsed : emptyDriveStore();
 }
 function saveDriveStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad3(ids2));
+  saveStore("drive", path, store, boxKeyB64, aad3(ids2));
 }
 
 // src/google-tokens.ts
@@ -35862,12 +35906,12 @@ function emptyGoogleStore() {
   return { version: 1, accounts: {}, agents: {}, pending: null };
 }
 function loadGoogleStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad4(ids2));
+  const parsed = loadStoreOrEmpty("google", path, boxKeyB64, aad4(ids2));
   if (!parsed || parsed.version !== 1 || !parsed.accounts || !parsed.agents) return emptyGoogleStore();
   return { ...parsed, pending: parsed.pending ?? null };
 }
 function saveGoogleStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad4(ids2));
+  saveStore("google", path, store, boxKeyB64, aad4(ids2));
 }
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 function isValidProjectId(id) {
@@ -36982,19 +37026,13 @@ function aad5(ids2) {
 function emptyWebhookStore() {
   return { version: 1, hooks: {}, pending: {} };
 }
-function loadWebhookStore(path, boxKeyB64, ids2, log = console.log) {
-  let parsed = null;
-  try {
-    parsed = loadEncryptedJson(path, boxKeyB64, aad5(ids2));
-  } catch (error48) {
-    log(`[webhooks] this firewall cannot read ${path} (${error48.message}); starting with no registrations`);
-    return emptyWebhookStore();
-  }
+function loadWebhookStore(path, boxKeyB64, ids2, log = console.error) {
+  const parsed = loadStoreOrEmpty("webhooks", path, boxKeyB64, aad5(ids2), log);
   if (!parsed || parsed.version !== 1 || !parsed.hooks) return emptyWebhookStore();
   return { ...parsed, pending: parsed.pending ?? {} };
 }
 function saveWebhookStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad5(ids2));
+  saveStore("webhooks", path, store, boxKeyB64, aad5(ids2));
 }
 function applySync(store, entries, now2 = Date.now) {
   const listed = new Set(entries.map((e) => e.id));
@@ -37368,11 +37406,11 @@ function withRoles(store) {
   return store;
 }
 function loadLlmStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad6(ids2));
+  const parsed = loadStoreOrEmpty("llm", path, boxKeyB64, aad6(ids2));
   return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? withRoles(parsed) : emptyLlmStore();
 }
 function saveLlmStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad6(ids2));
+  saveStore("llm", path, store, boxKeyB64, aad6(ids2));
 }
 
 // src/llm.ts
@@ -37880,11 +37918,11 @@ function emptySearchStore() {
   return { version: 1, credentialId: null, credential: null, agents: {} };
 }
 function loadSearchStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad7(ids2));
+  const parsed = loadStoreOrEmpty("search", path, boxKeyB64, aad7(ids2));
   return parsed && parsed.version === 1 && parsed.agents ? parsed : emptySearchStore();
 }
 function saveSearchStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad7(ids2));
+  saveStore("search", path, store, boxKeyB64, aad7(ids2));
 }
 
 // src/search.ts
@@ -38135,11 +38173,11 @@ function emptyTailscaleStore() {
   return { version: 1, agents: {} };
 }
 function loadTailscaleStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad8(ids2));
+  const parsed = loadStoreOrEmpty("tailscale", path, boxKeyB64, aad8(ids2));
   return parsed && parsed.version === 1 && parsed.agents ? parsed : emptyTailscaleStore();
 }
 function saveTailscaleStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad8(ids2));
+  saveStore("tailscale", path, store, boxKeyB64, aad8(ids2));
 }
 
 // src/tailscale.ts
@@ -38470,11 +38508,11 @@ function emptyExitStore(now2 = Date.now()) {
   };
 }
 function loadExitStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad9(ids2));
+  const parsed = loadStoreOrEmpty("exit", path, boxKeyB64, aad9(ids2));
   return parsed && parsed.version === 1 ? { ...emptyExitStore(), ...parsed } : emptyExitStore();
 }
 function saveExitStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad9(ids2));
+  saveStore("exit", path, store, boxKeyB64, aad9(ids2));
 }
 
 // src/exit.ts
@@ -39007,11 +39045,11 @@ function emptyConnectorStore() {
   return { version: 1, connections: {}, agents: {} };
 }
 function loadConnectorStore(path, boxKeyB64, ids2) {
-  const parsed = loadEncryptedJson(path, boxKeyB64, aad10(ids2));
+  const parsed = loadStoreOrEmpty("connectors", path, boxKeyB64, aad10(ids2));
   return parsed && parsed.version === 1 && parsed.connections && parsed.agents ? parsed : emptyConnectorStore();
 }
 function saveConnectorStore(path, store, boxKeyB64, ids2) {
-  saveEncryptedJson(path, store, boxKeyB64, aad10(ids2));
+  saveStore("connectors", path, store, boxKeyB64, aad10(ids2));
 }
 function servicesFor(store, agent) {
   const services = /* @__PURE__ */ new Set();
@@ -40098,12 +40136,12 @@ function emptyBackupStore() {
   return { version: 1, keypair: null, recovery: null };
 }
 function loadBackupStore(path, boxKey, ids2) {
-  const loaded2 = loadEncryptedJson(path, boxKey, aad11(ids2));
+  const loaded2 = loadStoreOrEmpty("backup", path, boxKey, aad11(ids2));
   if (!loaded2) return emptyBackupStore();
   return { version: 1, keypair: loaded2.keypair ?? null, recovery: loaded2.recovery ? { ...loaded2.recovery, signingPublicKey: loaded2.recovery.signingPublicKey ?? null } : null };
 }
 function saveBackupStore(path, store, boxKey, ids2) {
-  saveEncryptedJson(path, store, boxKey, aad11(ids2));
+  saveStore("backup", path, store, boxKey, aad11(ids2));
 }
 
 // src/self-backup.ts
@@ -40336,6 +40374,9 @@ var BackupFirewall = class {
   }
   async keypair() {
     if (this.store.keypair) return this.store.keypair;
+    if (isStoreUnreadable("backup")) {
+      throw new Error("this firewall cannot read its backup store, so it will not mint a replacement key over it");
+    }
     const kp = await generateRecipientKeypair();
     this.store = { ...this.store, keypair: kp };
     this.save();
@@ -42030,6 +42071,20 @@ var IncludedCreditWatch = class {
     ];
   }
 };
+
+// src/inventory.ts
+var INVENTORY_CAP = 50;
+var WEBHOOK_INVENTORY_CAP = 100;
+function firewallInventory(channels2, llm2, hooks = null, unreadable2 = isStoreUnreadable) {
+  const out = {};
+  const cs = unreadable2("channels") ? void 0 : channels2?.summary();
+  if (cs && cs.length <= INVENTORY_CAP) out.channels = cs.map((c) => ({ id: c.id, type: c.type, assignedVmId: c.assignedVmId }));
+  const ls = unreadable2("llm") ? void 0 : llm2?.summary().credentials;
+  if (ls && ls.length <= INVENTORY_CAP) out.credentials = ls.map((c) => ({ id: c.id, provider: c.provider }));
+  const ws = unreadable2("webhooks") ? void 0 : hooks?.inventory();
+  if (ws && ws.length <= WEBHOOK_INVENTORY_CAP) out.webhooks = ws;
+  return out.channels || out.credentials || out.webhooks ? out : null;
+}
 
 // ../../node_modules/.pnpm/@ai-sdk+provider@4.0.17/node_modules/@ai-sdk/provider/dist/index.js
 var marker = "vercel.ai.error";
@@ -102055,8 +102110,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "027e8c6" : "unknown",
-  builtAt: true ? "2026-09-26T13:27:27+01:00" : "unknown"
+  commit: true ? "aa299b4" : "unknown",
+  builtAt: true ? "2026-09-26T17:27:39+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -102096,7 +102151,11 @@ async function signReadyToken(vmId, privateKeyPem) {
   return new SignJWT({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
 }
 var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
-async function reportReady() {
+function sshReading(readSsh) {
+  const status = readSsh?.();
+  return status ? { ...status, at: (/* @__PURE__ */ new Date()).toISOString() } : void 0;
+}
+async function reportReady(readSsh) {
   const vmId = readKeyFile("vm_id");
   const readyUrl = readKeyFile("ready_api_url");
   const privateKey = readKeyFile("vm_private_key.pem");
@@ -102111,7 +102170,9 @@ async function reportReady() {
       const res = await fetch(readyUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ software: boxSoftware() })
+        // Absent, not null, when there is nothing to report: the control plane reads an absent
+        // key as "this box is too old to say" and leaves the grant alone.
+        body: JSON.stringify({ software: boxSoftware(), ssh: sshReading(readSsh) })
       });
       if (res.ok) {
         console.log(`[ready] reported ready (attempt ${attempt})`);
@@ -102244,6 +102305,7 @@ var updates = null;
 var backups = null;
 var selfUpdates = null;
 var sshAccess = null;
+var sshLocal = null;
 var aiSettings = null;
 var ai = new AiClient({ settings: () => aiSettings, keyFor: (id) => llm?.tokenFor(id) ?? null });
 async function runSync(boxKey) {
@@ -102307,18 +102369,6 @@ async function maybeMigrate() {
   console.log(`[mitm-agent] migrated to v${record2.version} under a fresh box key`);
   return boxKey;
 }
-var INVENTORY_CAP = 50;
-var WEBHOOK_INVENTORY_CAP = 100;
-function firewallInventory(channels2, llm2, hooks = null) {
-  const out = {};
-  const cs = channels2?.summary();
-  if (cs && cs.length <= INVENTORY_CAP) out.channels = cs.map((c) => ({ id: c.id, type: c.type, assignedVmId: c.assignedVmId }));
-  const ls = llm2?.summary().credentials;
-  if (ls && ls.length <= INVENTORY_CAP) out.credentials = ls.map((c) => ({ id: c.id, provider: c.provider }));
-  const ws = hooks?.inventory();
-  if (ws && ws.length <= WEBHOOK_INVENTORY_CAP) out.webhooks = ws;
-  return out.channels || out.credentials || out.webhooks ? out : null;
-}
 function makeShipper() {
   if (!ACTIVITY_URL || !TRAFFIC_LOG_PATH || !getToken) return null;
   return new ActivityShipper({
@@ -102372,7 +102422,7 @@ async function main() {
       const cs = channels.summary();
       console.log(`[mitm-agent] channel store loaded (${cs.length} connection(s), ${cs.filter((c) => c.assignedVmId).length} assigned, placeholder swap ${CHANNELS_PLACEHOLDER_SWAP ? "on" : "off"})`);
     } catch (err) {
-      console.error(`[mitm-agent] channel store unreadable, channel commands disabled: ${err.message}`);
+      console.error(`[mitm-agent] channels module would not start, channel commands disabled: ${err.message}`);
     }
     try {
       llm = new LlmFirewall({
@@ -102387,7 +102437,7 @@ async function main() {
       const s = llm.summary();
       console.log(`[mitm-agent] llm store loaded (${s.credentials.length} credential(s), ${s.agents} agent(s), keys ${LLM_PLAIN_KEYS ? "plain" : "at the proxy"})`);
     } catch (err) {
-      console.error(`[mitm-agent] llm store unreadable, llm commands disabled: ${err.message}`);
+      console.error(`[mitm-agent] llm module would not start, llm commands disabled: ${err.message}`);
     }
     try {
       drive = new DriveFirewall({
@@ -102402,7 +102452,7 @@ async function main() {
       const ds = drive.summary();
       console.log(`[mitm-agent] drive store loaded (${ds.accounts.length} account(s), ${ds.folders.length} folder(s))`);
     } catch (err) {
-      console.error(`[mitm-agent] drive store unreadable, drive commands disabled: ${err.message}`);
+      console.error(`[mitm-agent] drive module would not start, drive commands disabled: ${err.message}`);
     }
     try {
       webhooks = new WebhookFirewall({
@@ -102419,7 +102469,7 @@ async function main() {
       });
       console.log(`[mitm-agent] webhook store loaded (${webhooks.registrations().length} registration(s))`);
     } catch (err) {
-      console.error(`[mitm-agent] webhook store unreadable, webhook commands disabled: ${err.message}`);
+      console.error(`[mitm-agent] webhooks module would not start, webhook commands disabled: ${err.message}`);
     }
     try {
       google2 = new GoogleFirewall({
@@ -102436,7 +102486,7 @@ async function main() {
         `[mitm-agent] google store loaded (${gs.account ? `${gs.account.accountLabel ?? "an account"}, ${gs.agents.filter((a) => a.granted).length} agent(s) granted` : "no account"})`
       );
     } catch (err) {
-      console.error(`[mitm-agent] google store unreadable, google commands disabled: ${err.message}`);
+      console.error(`[mitm-agent] google module would not start, google commands disabled: ${err.message}`);
     }
     try {
       search = new SearchFirewall({
@@ -102451,7 +102501,7 @@ async function main() {
       const ss = search.summary();
       console.log(`[mitm-agent] search store loaded (${ss.provider ? `${ss.provider} key ${ss.hint ?? "?"}` : "no key"}, ${ss.agents} agent(s))`);
     } catch (err) {
-      console.error(`[mitm-agent] search store unreadable, web search commands disabled: ${err.message}`);
+      console.error(`[mitm-agent] search module would not start, web search commands disabled: ${err.message}`);
     }
     try {
       tailscale = new TailscaleFirewall({
@@ -102467,7 +102517,7 @@ async function main() {
       const ts = tailscale.summary();
       console.log(`[mitm-agent] tailscale store loaded (${ts.length} agent(s) on the tailnet)`);
     } catch (err) {
-      console.error(`[mitm-agent] tailscale store unreadable, tailscale commands disabled: ${err.message}`);
+      console.error(`[mitm-agent] tailscale module would not start, tailscale commands disabled: ${err.message}`);
     }
     try {
       exitFirewall = new ExitFirewall({
@@ -102485,7 +102535,7 @@ async function main() {
       const es = exitFirewall.status();
       console.log(`[mitm-agent] exit store loaded (residential exit ${es?.configured ? `via ${es.provider}, sticky ${es.sticky ? "on" : "off"}` : "not set up"})`);
     } catch (err) {
-      console.error(`[mitm-agent] exit store unreadable, residential exit disabled: ${err.message}`);
+      console.error(`[mitm-agent] exit module would not start, residential exit disabled: ${err.message}`);
     }
     if (CONNECTOR_URL && CONNECTOR_ADMIN_TOKEN && !CONNECTOR_GATE_BIND) {
       console.error("[mitm-agent] CONNECTOR_GATE_BIND/PRIVATE_IP unset: integrations stay off (there is no address to give the agent boxes)");
@@ -102505,7 +102555,7 @@ async function main() {
         const cs = connectors.summary();
         console.log(`[mitm-agent] connector store loaded (${cs.connections} connection(s), ${cs.agents} agent(s), runtime ${CONNECTOR_URL})`);
       } catch (err) {
-        console.error(`[mitm-agent] connector store unreadable, integration commands disabled: ${err.message}`);
+        console.error(`[mitm-agent] connectors module would not start, integration commands disabled: ${err.message}`);
       }
     } else {
       console.log("[mitm-agent] no connector runtime on this box (CONNECTOR_URL unset); integrations are off");
@@ -102558,9 +102608,10 @@ async function main() {
       channelsReady: () => channels !== null
     });
     console.log(`[mitm-agent] self-update ${selfUpdates.supported() ? "available" : "unavailable (this box has no update pin; rebuild only)"}`);
+    sshLocal = new SshLocal({ authorizedKeysPath: SSH_AUTHORIZED_KEYS, statePath: SSH_STATE_PATH });
     sshAccess = new SshFirewall({
       agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
-      local: new SshLocal({ authorizedKeysPath: SSH_AUTHORIZED_KEYS, statePath: SSH_STATE_PATH }),
+      local: sshLocal,
       codeRoutes: () => channels?.codeRoutes() ?? [],
       channelsReady: () => channels !== null
     });
@@ -102789,9 +102840,11 @@ async function main() {
           const backupStatus = backups?.status() ?? null;
           const recoveryRoutes = recoveryTls && recovery ? { enabled: true, port: PORT, certFingerprint: recoveryTls.fingerprint } : { enabled: false, port: PORT, certFingerprint: null };
           const inventory = firewallInventory(channels, llm, webhooks);
+          const stores = unreadableStores();
           return {
             ...features.length ? { features } : {},
             ...inventory ? { inventory } : {},
+            stores,
             ...llm ? { included_ai: llm.includedCredentialId() } : {},
             ...selfUpdates ? { update: selfUpdates.status() } : {},
             ...backupStatus ? { backup: { ...backupStatus, recoveryRoutes } } : {},
@@ -102857,7 +102910,7 @@ async function main() {
       }
     }
     startIngress();
-    void reportReady();
+    void reportReady(() => sshLocal?.status() ?? null);
   });
 }
 function startIngress() {

@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "027e8c6" : "unknown",
-  builtAt: true ? "2026-09-26T13:27:27+01:00" : "unknown"
+  commit: true ? "aa299b4" : "unknown",
+  builtAt: true ? "2026-09-26T17:27:39+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31088,7 +31088,11 @@ function boxSoftware(opts = {}) {
 var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 var readKeyFile2 = (name) => readKeyFile(KEYS_DIR, name);
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function reportReady() {
+function sshReading(readSsh) {
+  const status = readSsh?.();
+  return status ? { ...status, at: (/* @__PURE__ */ new Date()).toISOString() } : void 0;
+}
+async function reportReady(readSsh) {
   const vmId = readKeyFile2("vm_id");
   const readyUrl = readKeyFile2("ready_api_url");
   const privateKey = readKeyFile2("vm_private_key.pem");
@@ -31105,7 +31109,9 @@ async function reportReady() {
       const res = await fetch(readyUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ software: boxSoftware() })
+        // `ssh` is absent, not null, when there is nothing to report: the control plane reads an
+        // absent key as "this box is too old to say" and leaves the grant alone.
+        body: JSON.stringify({ software: boxSoftware(), ssh: sshReading(readSsh) })
       });
       if (res.ok) {
         console.log(`[ready] reported ready to SaaS (attempt ${attempt})`);
@@ -36946,7 +36952,7 @@ try {
   process.exit(1);
 }
 console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redaction`);
-async function bootstrap(client) {
+async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   await registerPublicKey(KEYS_DIR2);
   const caReady = (await ensureMitmCaInstalled(KEYS_DIR2)).trusted;
@@ -36962,7 +36968,7 @@ async function bootstrap(client) {
   if (client && !await client.whenConnected(GATEWAY_READY_TIMEOUT_MS2)) {
     console.warn("[bootstrap] OpenClaw's gateway is still down \u2014 reporting ready without it");
   }
-  await reportReady();
+  await reportReady(readSsh);
 }
 function startSshLoginWatch() {
   const base = saasBaseUrl(KEYS_DIR2);
@@ -37148,7 +37154,7 @@ server.listen(PORT, BIND, () => {
   console.log(`ControlClaw agent listening on ${BIND}:${PORT}`);
   const client = startGatewayBridge();
   startSshLoginWatch();
-  void bootstrap(client).catch((err) => console.error("[bootstrap] failed:", err));
+  void bootstrap(client, () => ssh.status()).catch((err) => console.error("[bootstrap] failed:", err));
   channels = new ChannelsService({
     client,
     credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`,
