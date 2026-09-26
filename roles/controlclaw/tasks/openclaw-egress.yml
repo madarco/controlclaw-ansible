@@ -229,6 +229,51 @@
       }
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
 
+# What a box gets instead when the redirect cannot be put back on a later boot (T-65). Everything
+# that is not the firewall, loopback or the private subnet is refused at once, so a box that lost
+# its route out fails in milliseconds and says so, instead of sending traffic direct to be dropped
+# by the cc-egress Hetzner firewall — which is what made every model call hang for 120 s.
+#
+# Three details are the whole design:
+#
+#   * `ct state established,related accept` FIRST. The output hook sees every packet this box
+#     sends, including the replies of connections that arrived inbound. Without it the rescue
+#     shell's own SYN-ACK is reset and a blackholed box cannot be logged into to fix it — the
+#     state that is meant to be down-but-reachable would be down-and-gone. The redirect ruleset
+#     has no such rule because a nat chain never sees an inbound flow's replies.
+#   * Link-local is accepted for ROOT ONLY. DHCP renewal and cloud-init need it; the agent must
+#     never reach 169.254.169.254, because this box's own user-data is there and it carries
+#     provisioning tokens. Ordinarily the agent never can — link-local is redirected like
+#     everything else and the proxy refuses it — and this is the one ruleset that could have
+#     handed it over by accident, since it has to let root's DHCP through.
+#   * TCP only, exactly mirroring what the redirect captures. Dropping the rest as well would
+#     take DHCP renewal with it, and a box that loses its lease is a worse outcome than the one
+#     this is protecting against; UDP cannot reach the internet anyway, because the Hetzner
+#     firewall allows it only to the firewall box.
+#
+# A filter hook at priority 0 sits behind the nat redirect, so restoring egress later does not
+# have to remove this first: a packet the redirect rewrites to 127.0.0.1 is accepted here.
+- name: Stage the fail-closed nftables ruleset (no redirect means no egress)
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/egress/blackhole.nft
+    mode: '0644'
+    content: |
+      #!/usr/sbin/nft -f
+      add table ip controlclaw_egress_block
+      flush table ip controlclaw_egress_block
+      table ip controlclaw_egress_block {
+        chain output {
+          type filter hook output priority 0; policy accept;
+          ct state established,related accept
+          ip daddr {{ mitm_box_private_ip }} accept
+          ip daddr 127.0.0.0/8 accept
+          meta skuid 0 ip daddr 169.254.0.0/16 accept
+          ip daddr {{ mitm_private_subnet }} accept
+          meta l4proto tcp reject with tcp reset
+        }
+      }
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
 # DNS: redsocks captures by IP, so the box must resolve names first. Point systemd-resolved at the
 # mitm box (which runs dnsmasq). STAGED — the flip takes effect only when cc-enable-egress restarts
 # resolved, so bootstrap keeps the default resolver until the mitm path is confirmed up.
@@ -264,6 +309,264 @@
       systemctl enable --now controlclaw-redsocks
       nft -f /etc/controlclaw/egress/redirect.nft
       systemctl restart systemd-resolved
+      # The marker cc-egress-restore reads on the next boot. Written last, so a run that failed
+      # half way through leaves nothing claiming this box is locked down; written at all, because
+      # nftables rules do not survive a reboot and nothing else knows this box has any.
+      : > /etc/controlclaw/egress/enabled
+      # Drop a fail-closed fallback left by an earlier boot: egress works again, so the block has
+      # nothing left to protect. Putting the two stopped services back is deliberately NOT done
+      # here — see cc-egress-retry. This script also runs on every ordinary agent start, and an
+      # agent restart must not resurrect an OpenClaw the owner stopped from the console.
+      nft delete table ip controlclaw_egress_block 2>/dev/null || true
+
+# --- Putting it all back after a reboot (T-65) ---
+# The redirect above is nftables state, and nftables.service is disabled on these boxes, so a
+# reboot used to come up with no redirect at all: traffic went direct, the cc-egress Hetzner
+# firewall dropped it, and every model call hung for 120 s and timed out. Seen on prod 2026-09-26.
+#
+# A boot-time oneshot rather than re-running it from the vm-agent, because of WHEN each happens.
+# The agent's own activation waits for the org firewall to answer (up to 15 minutes) and runs
+# behind the CA install; OpenClaw starts long before that and would spend the gap failing. This
+# runs before OpenClaw, which is the only ordering that makes the box work on the first try.
+#
+# The marker is what keeps a box that has never been locked down untouched: no marker, nothing to
+# restore, exit 0. That is every box's first boot, and it is the state the whole bootstrap depends
+# on (ansible-pull, apt and npm all need direct egress before the firewall exists).
+#
+# It waits for the FIREWALL, not for the rules. Applying nftables rules needs no network at all,
+# so a blind retry would "succeed" on a box whose private NIC is not up yet and leave the redirect
+# pointing at nothing. Probing the firewall is the same readiness check the vm-agent makes before
+# its own first activation, and it is what makes a slow boot slow rather than broken.
+- name: Deploy cc-egress-restore (put the redirect back on every later boot)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-egress-restore
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # cc-egress-restore — re-apply transparent egress at boot on a box that has been locked down.
+      set -u
+      [ -f /etc/controlclaw/egress/enabled ] || exit 0
+
+      MITM={{ mitm_box_private_ip }}
+      PORT={{ mitm_proxy_port }}
+      ATTEMPTS=15
+      GAP=10
+
+      reachable() { timeout 3 bash -c "exec 3<>/dev/tcp/$MITM/$PORT" 2>/dev/null; }
+
+      for attempt in $(seq 1 $ATTEMPTS); do
+        if reachable && /usr/local/bin/cc-enable-egress; then
+          echo "cc-egress-restore: transparent egress restored (attempt $attempt)"
+          exit 0
+        fi
+        echo "cc-egress-restore: $MITM:$PORT not usable yet (attempt $attempt/$ATTEMPTS)" >&2
+        [ "$attempt" -lt "$ATTEMPTS" ] && sleep $GAP
+      done
+
+      # Fail closed. Direct egress is the one outcome that must not happen here: it is dropped at
+      # the provider anyway, so nothing works, and it takes two minutes per call to find that out.
+      # cc-egress-retry.timer keeps trying afterwards, so this is not where the box gives up.
+      echo "cc-egress-restore: could not restore transparent egress — blocking direct egress" >&2
+      nft -f /etc/controlclaw/egress/blackhole.nft \
+        || echo "cc-egress-restore: the fail-closed ruleset did not apply either" >&2
+      exit 1
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
+# The way out, with nobody watching, and the only thing that puts the stopped services back. The
+# vm-agent cannot be it: its bootstrap installs the firewall's CA before it touches egress, and
+# that fetch goes to the control plane, which the block refuses — so the agent gives up long before
+# it would have run cc-enable-egress.
+#
+# It keys off the restore unit being FAILED, not off the block table being present. Those are not
+# the same thing: if the redirect could not be restored AND blackhole.nft could not be applied
+# either, there is no table, and a retry that looked for one would sit there doing nothing on the
+# one box in the worst state of all — down, unrepaired and with direct egress.
+#
+# A minute is the right cadence for something that is a no-op on every healthy box and only ever
+# runs while a box is already broken.
+- name: Deploy cc-egress-retry (lift the block as soon as the firewall answers)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-egress-retry
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # cc-egress-retry — while the boot-time restore is failed, try again and put the box back.
+      set -u
+      [ -f /etc/controlclaw/egress/enabled ] || exit 0
+      systemctl is-failed --quiet cc-egress-restore.service || exit 0
+      timeout 3 bash -c "exec 3<>/dev/tcp/{{ mitm_box_private_ip }}/{{ mitm_proxy_port }}" 2>/dev/null || exit 0
+      if ! /usr/local/bin/cc-enable-egress; then
+        echo "cc-egress-retry: the firewall answers but egress did not come back" >&2
+        exit 0
+      fi
+      echo "cc-egress-retry: transparent egress restored"
+      # The restore unit is what OpenClaw Requires=, so its failure is what is keeping OpenClaw
+      # down. Clear it and run it again — now that the firewall answers it succeeds in one pass —
+      # and OpenClaw can start. The agent is restarted because it gave up its own bootstrap
+      # against a blocked path and nothing else would make it try again.
+      systemctl reset-failed cc-egress-restore.service || true
+      systemctl start cc-egress-restore.service || true
+      systemctl start --no-block openclaw.service || true
+      systemctl try-restart --no-block controlclaw-agent.service || true
+      # Always 0: a timer that fails is a timer somebody has to go and reset, and this one has to
+      # keep running exactly while the box is in the state it repairs.
+      exit 0
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
+# The marker for boxes that were locked down BEFORE any of this existed. cc-enable-egress writes it
+# from now on, but that ran on their first ready, long before this task did — so without this the
+# first reboot after this lands is exactly the outage it fixes, on every box already in the field.
+#
+# The evidence is the live redirect: a box whose controlclaw_redirect table is loaded right now is
+# a box that was locked down, whatever wrote it. Narrow on purpose — a box that is only *configured*
+# for a firewall is not marked, because marking one whose firewall never came up would blackhole it
+# on its next boot. The remaining case, a locked-down box re-provisioned while its redirect happens
+# to be missing, is covered from the other side: the agent restart at the end of the play runs
+# cc-enable-egress, which writes the marker.
+- name: Mark a box whose redirect is already live as locked down
+  ansible.builtin.shell: |
+    set -e
+    if [ ! -f /etc/controlclaw/egress/enabled ] && nft list table ip controlclaw_redirect >/dev/null 2>&1; then
+      : > /etc/controlclaw/egress/enabled
+      echo created
+    else
+      echo nothing-to-do
+    fi
+  register: cc_egress_marker
+  changed_when: "'created' in cc_egress_marker.stdout"
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
+- name: Create the cc-egress-restore boot unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-egress-restore.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Restore ControlClaw transparent egress after a reboot
+      # network-online, not network.target: the latter is reached before an address is configured,
+      # and this waits for a box on the other end of the private network.
+      Wants=network-online.target
+      After=network-online.target
+      # Before the two things that would otherwise send their first requests into a dropped route.
+      Before=openclaw.service controlclaw-agent.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/cc-egress-restore
+      # The probe loop runs for up to ~3 minutes (15 attempts, a 3 s connect timeout and a 10 s
+      # gap). The default 90 s would kill it half way through and leave the box unblocked and
+      # unredirected, which is the state this exists to prevent.
+      TimeoutStartSec=300
+
+      [Install]
+      WantedBy=multi-user.target
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+  notify: reload systemd
+
+- name: Create the cc-egress-retry unit and its timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ item.content }}"
+  loop:
+    - name: cc-egress-retry.service
+      content: |
+        [Unit]
+        Description=Retry ControlClaw transparent egress while this box is blocked
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/cc-egress-retry
+    - name: cc-egress-retry.timer
+      content: |
+        [Unit]
+        Description=Keep trying to lift a ControlClaw egress block
+        [Timer]
+        OnBootSec=2min
+        OnUnitInactiveSec=1min
+        AccuracySec=10s
+        Unit=cc-egress-retry.service
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+  notify: reload systemd
+
+- name: Restore egress on every boot
+  ansible.builtin.systemd:
+    name: cc-egress-restore.service
+    enabled: true
+    daemon_reload: true
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
+# Started as well as enabled. `enabled` alone only arms it for the NEXT boot, which leaves the
+# window between a re-provision and that boot with no repair path at all — and that window is
+# exactly when a restart of OpenClaw can pull the restore unit in, fail, and block the box.
+- name: Keep retrying if the restore did not take
+  ansible.builtin.systemd:
+    name: cc-egress-retry.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
+# Drop-ins rather than edits to the two units: openclaw.service and controlclaw-agent.service are
+# written by tasks that also run on boxes with no firewall in front of them, and a unit that
+# Requires= something those boxes do not have would not start at all. This file only exists where
+# the restore does.
+#
+# OpenClaw Requires=: an agent that cannot reach anything is worse running than down — down is
+# visible in the console, failing is not. It is also how a fixed box comes back: pressing Start
+# pulls the restore in again, and so does cc-egress-retry once the firewall answers.
+- name: Ensure the two drop-in dirs exist (both units are written later in the play)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /etc/systemd/system/openclaw.service.d
+    - /etc/systemd/system/controlclaw-agent.service.d
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
+- name: Order OpenClaw behind the egress restore
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/openclaw.service.d/egress.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Requires=cc-egress-restore.service
+      After=cc-egress-restore.service
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+  notify: reload systemd
+
+# The agent gets Wants=, not Requires=: a box whose restore failed is one somebody has to be able
+# to look at, and the agent is what the console reaches it through. It cannot repair the box
+# itself — see cc-egress-retry — but it must not be kept down by the failure either.
+- name: Order the vm-agent behind the egress restore
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/controlclaw-agent.service.d/egress.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Wants=cc-egress-restore.service
+      After=cc-egress-restore.service
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+  notify: reload systemd
 
 - name: Deploy cc-perm CLI (self-contained bundle)
   ansible.builtin.copy:

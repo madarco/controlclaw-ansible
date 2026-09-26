@@ -93,6 +93,12 @@
       [Unit]
       Description=Close any ControlClaw rescue shell access left over from before a reboot
       After=network.target
+      # Before the agent, because the agent is what tells the control plane (T-63). It reports its
+      # own view of this box's rescue session when it reports ready, and a report that beat this
+      # unit would say "still open" about a session this unit is about to end — which is exactly
+      # how a grant came to sit "open" in the console for the rest of its window after a reboot.
+      # Naming a unit that does not exist on this box (only one of the two ever does) is a no-op.
+      Before=controlclaw-agent.service controlclaw-mitm-agent.service
       [Service]
       Type=oneshot
       ExecStart=/usr/local/bin/cc-ssh-close
@@ -103,7 +109,9 @@
 - name: Rescue shell access | shut the door on every boot
   # A box that was rebooted mid-grant comes back with its key still in authorized_keys and no
   # timer (timers do not survive a reboot). Closing at boot is the fail-safe: the customer's
-  # window is not extended by a restart.
+  # window is not extended by a restart. The grant is over at that point and does not come back —
+  # the control plane learns it from the agent's next ready report and shows it as closed, rather
+  # than re-opening a door across an event nobody asked for (T-63).
   ansible.builtin.systemd:
     name: cc-ssh-close-at-boot
     enabled: true
