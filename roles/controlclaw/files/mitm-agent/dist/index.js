@@ -41447,23 +41447,22 @@ var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
 var SUDO_TIMEOUT_MS = 3e4;
+var SUPPORT_USER = "ccsupport";
 var MARK = "controlclaw-rescue";
 function fingerprintOf(publicKey) {
   const blob = publicKey.trim().split(/\s+/)[1] ?? "";
   return `SHA256:${createHash3("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
 }
-function stripManagedKeys(content) {
-  const kept = content.split("\n").filter((line) => !line.includes(MARK)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
-  return kept.trim() ? `${kept.replace(/\s+$/, "")}
-` : "";
-}
-var defaultRun = (file2, args, timeoutMs) => new Promise((resolve2, reject) => {
-  execFile(file2, args, { timeout: timeoutMs }, (err, stdout) => err ? reject(err) : resolve2(String(stdout ?? "")));
+var defaultRun = (file2, args, timeoutMs, stdin) => new Promise((resolve2, reject) => {
+  const child = execFile(file2, args, { timeout: timeoutMs }, (err, stdout) => err ? reject(err) : resolve2(String(stdout ?? "")));
+  child.stdin?.on("error", () => void 0);
+  child.stdin?.end(stdin ?? "");
 });
+var OPEN_OK = "key=installed";
 var SshLocal = class {
   constructor(opts) {
     this.opts = opts;
-    this.user = opts.user ?? "controlclaw";
+    this.user = opts.user ?? SUPPORT_USER;
     this.run = opts.run ?? defaultRun;
     this.log = opts.log ?? ((line) => console.log(line));
     this.now = opts.now ?? Date.now;
@@ -41502,39 +41501,29 @@ var SshLocal = class {
       rmSync2(dir, { recursive: true, force: true });
     }
     const endsAt = new Date(this.now() + seconds * 1e3).toISOString();
-    this.install(publicKey, input.grantId, endsAt);
-    await this.run("sudo", ["/usr/local/bin/cc-ssh-open", String(seconds)], SUDO_TIMEOUT_MS);
+    const opened = await this.run("sudo", ["/usr/local/bin/cc-ssh-open", String(seconds)], SUDO_TIMEOUT_MS, `${publicKey}
+`);
+    if (!opened.includes(OPEN_OK)) {
+      await this.run("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS).catch(() => void 0);
+      throw new Error("this firewall is running a cc-ssh-open that predates root support access; re-provision it and try again");
+    }
     const fingerprint2 = fingerprintOf(publicKey);
     this.writeState({ grantId: input.grantId, fingerprint: fingerprint2, endsAt, openedAt: new Date(this.now()).toISOString() });
     this.log(`[ssh] opened on this firewall for ${this.user} until ${endsAt} (${fingerprint2})`);
-    return { user: this.user, fingerprint: fingerprint2, publicKey, privateKey, endsAt, sudo: false };
+    return { user: this.user, fingerprint: fingerprint2, publicKey, privateKey, endsAt, sudo: true };
   }
+  /**
+   * Take root away, take the key out, shut the port. `cc-ssh-close` is the only thing that can do
+   * it now — `ccsupport`'s home is not writable by this process — so a failure propagates rather
+   * than being swallowed. The box's own timer, `cc-ssh-close-at-boot` and the provider's port-22
+   * firewall are what stand behind it.
+   */
   async close() {
     const was = this.readState();
-    this.install(null, null, null);
-    try {
-      await this.run("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
-    } catch (err) {
-      this.log(`[ssh] cc-ssh-close failed, the key is removed anyway: ${err.message}`);
-    }
+    await this.run("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
     rmSync2(this.opts.statePath, { force: true });
     if (was) this.log(`[ssh] closed on this firewall (was ${was.fingerprint})`);
     return { user: this.user, closed: !!was };
-  }
-  install(publicKey, grantId, endsAt) {
-    const path = this.opts.authorizedKeysPath;
-    let current = "";
-    try {
-      current = readFileSync10(path, "utf8");
-    } catch {
-      current = "";
-    }
-    let next = stripManagedKeys(current);
-    if (publicKey) next += `# ${MARK}-${grantId} until ${endsAt}
-${publicKey}
-`;
-    mkdirSync6(dirname5(path), { recursive: true, mode: 448 });
-    writeFileSync7(path, next, { mode: 384 });
   }
   readState() {
     try {
@@ -102110,8 +102099,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "35c55e9" : "unknown",
-  builtAt: true ? "2026-09-26T17:48:28+01:00" : "unknown"
+  commit: true ? "0eefdbc" : "unknown",
+  builtAt: true ? "2026-09-26T19:02:41+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -102269,7 +102258,6 @@ var AI_SCAN_STATE_PATH = process.env.AI_SCAN_STATE_PATH ?? `${TRAFFIC_LOG_PATH}.
 var AI_REVIEW_POLL_MS = parseInt(process.env.AI_REVIEW_POLL_MS ?? "60000", 10);
 var AI_JUDGE_PORT = parseInt(process.env.AI_JUDGE_PORT ?? "3101", 10);
 var SSH_STATE_PATH = process.env.SSH_STATE_PATH ?? "/opt/controlclaw/state/ssh.json";
-var SSH_AUTHORIZED_KEYS = process.env.SSH_AUTHORIZED_KEYS ?? `${process.env.HOME ?? "/home/controlclaw"}/.ssh/authorized_keys`;
 var SSH_LOGIN_CURSOR_PATH = process.env.SSH_LOGIN_CURSOR_PATH ?? "/opt/controlclaw/state/ssh-logins.cursor";
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 var SELF_UPDATE_STATE_PATH = process.env.SELF_UPDATE_STATE_PATH ?? "/opt/controlclaw/state/update.json";
@@ -102608,7 +102596,7 @@ async function main() {
       channelsReady: () => channels !== null
     });
     console.log(`[mitm-agent] self-update ${selfUpdates.supported() ? "available" : "unavailable (this box has no update pin; rebuild only)"}`);
-    sshLocal = new SshLocal({ authorizedKeysPath: SSH_AUTHORIZED_KEYS, statePath: SSH_STATE_PATH });
+    sshLocal = new SshLocal({ statePath: SSH_STATE_PATH });
     sshAccess = new SshFirewall({
       agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
       local: sshLocal,

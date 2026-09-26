@@ -31129,8 +31129,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "35c55e9" : "unknown",
-  builtAt: true ? "2026-09-26T17:48:28+01:00" : "unknown"
+  commit: true ? "0eefdbc" : "unknown",
+  builtAt: true ? "2026-09-26T19:02:41+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -32563,6 +32563,7 @@ var defaultExec = (file, args, timeoutMs, stdin, opts) => new Promise((resolve2,
     } else resolve2({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
   });
   if (child.stdin) {
+    child.stdin.on("error", () => void 0);
     if (stdin !== void 0) child.stdin.end(stdin);
     else child.stdin.end();
   }
@@ -36380,6 +36381,7 @@ var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
 var SUDO_TIMEOUT_MS = 3e4;
+var SUPPORT_USER = "ccsupport";
 function fingerprintOf(publicKey) {
   const blob = publicKey.trim().split(/\s+/)[1] ?? "";
   const digest = createHash2("sha256").update(Buffer.from(blob, "base64")).digest("base64");
@@ -36389,15 +36391,11 @@ var MARK = "controlclaw-rescue";
 function markerFor(grantId) {
   return `${MARK}-${grantId}`;
 }
-function stripManagedKeys(content) {
-  const kept = content.split("\n").filter((line) => !line.includes(MARK)).join("\n").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "");
-  return kept.trim() ? `${kept.replace(/\s+$/, "")}
-` : "";
-}
+var OPEN_OK = "key=installed";
 var SshAccessService = class {
   constructor(opts) {
     this.opts = opts;
-    this.user = opts.user ?? "controlclaw";
+    this.user = opts.user ?? SUPPORT_USER;
     this.exec = opts.exec ?? defaultExec;
     this.log = opts.log ?? ((line) => console.log(line));
     this.now = opts.now ?? Date.now;
@@ -36430,25 +36428,32 @@ var SshAccessService = class {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(input.grantId)) throw new Error("malformed grant id");
     const { publicKey, privateKey } = await this.mint(input.grantId);
     const endsAt = new Date(this.now() + seconds * 1e3).toISOString();
-    this.install(publicKey, input.grantId, endsAt);
-    await this.exec("sudo", ["/usr/local/bin/cc-ssh-open", String(seconds)], SUDO_TIMEOUT_MS);
+    const opened = await this.exec("sudo", ["/usr/local/bin/cc-ssh-open", String(seconds)], SUDO_TIMEOUT_MS, `${publicKey}
+`);
+    if (!opened.stdout.includes(OPEN_OK)) {
+      await this.exec("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS).catch(() => void 0);
+      throw new Error("this box is running a cc-ssh-open that predates root support access; re-provision it and try again");
+    }
     const fingerprint2 = fingerprintOf(publicKey);
     this.writeState({ grantId: input.grantId, fingerprint: fingerprint2, endsAt, openedAt: new Date(this.now()).toISOString() });
     this.log(`[ssh] opened for ${this.user} until ${endsAt} (${fingerprint2})`);
-    return { user: this.user, fingerprint: fingerprint2, publicKey, privateKey, endsAt, sudo: this.opts.sudo };
+    return { user: this.user, fingerprint: fingerprint2, publicKey, privateKey, endsAt, sudo: true };
   }
   /**
-   * Take the key out and shut the port. Safe to call when nothing is open — the console offers
-   * "Close now" whatever the box thinks, and a close that finds nothing should still succeed.
+   * Take root away, take the key out and shut the port. Safe to call when nothing is open — the
+   * console offers "Close now" whatever the box thinks, and a close that finds nothing should
+   * still succeed.
+   *
+   * **`cc-ssh-close` is now the only thing that can revoke, and this reports honestly when it
+   * cannot be run.** Before T-70 this process removed the key itself and the root script was best
+   * effort on top; it cannot any more, because the account holding the key is one it deliberately
+   * cannot write. What stands behind a failure here is the box's own `cc-ssh-close.timer`, the
+   * `cc-ssh-close-at-boot` unit, and the control plane shutting port 22 at the provider — which
+   * it does whatever this answers, so a close that throws still ends the session from outside.
    */
   async close() {
     const was = this.readState();
-    this.install(null, null, null);
-    try {
-      await this.exec("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
-    } catch (err) {
-      this.log(`[ssh] cc-ssh-close failed, the key is removed anyway: ${err.message}`);
-    }
+    await this.exec("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
     rmSync2(this.opts.statePath, { force: true });
     if (was) this.log(`[ssh] closed for ${this.user} (was ${was.fingerprint})`);
     return { user: this.user, closed: !!was };
@@ -36470,22 +36475,6 @@ var SshAccessService = class {
     } finally {
       rmSync2(dir, { recursive: true, force: true });
     }
-  }
-  /** Replace whatever we manage in `authorized_keys` with this key, or with nothing. */
-  install(publicKey, grantId, endsAt) {
-    const path = this.opts.authorizedKeysPath;
-    let current = "";
-    try {
-      current = readFileSync16(path, "utf8");
-    } catch {
-      current = "";
-    }
-    let next = stripManagedKeys(current);
-    if (publicKey) next += `# ${markerFor(grantId)} until ${endsAt}
-${publicKey}
-`;
-    mkdirSync8(dirname10(path), { recursive: true, mode: 448 });
-    writeFileSync10(path, next, { mode: 384 });
   }
   readState() {
     try {
@@ -37117,11 +37106,7 @@ var drive = null;
 var google = null;
 var gmailWatch = null;
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
-var ssh = new SshAccessService({
-  authorizedKeysPath: `${process.env.HOME ?? "/home/controlclaw"}/.ssh/authorized_keys`,
-  statePath: `${STATE_DIR}/ssh.json`,
-  sudo: false
-});
+var ssh = new SshAccessService({ statePath: `${STATE_DIR}/ssh.json` });
 var tailscale = new TailscaleService({});
 var backup = new BackupService({
   home: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw`,
