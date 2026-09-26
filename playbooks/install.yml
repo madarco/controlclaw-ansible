@@ -44,6 +44,30 @@
           Detected OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
           OS Family: {{ ansible_os_family }}
 
+    # BEFORE the first apt call on the box, and unconditionally.
+    #
+    # disk-encryption.yml (T-58) used to write this file, with the right reasoning next to it:
+    # provisioning races unattended-upgrades and its own earlier tasks, and two runs in three died
+    # on `Could not get lock /var/lib/dpkg/lock-` at `Install redsocks` or `Install python venv`.
+    # But that file only runs `when: disk_encryption | bool`, and `disk_encryption` defaults to
+    # false and is not set by the control plane — so on every box built today the fix was skipped
+    # and the failure it describes was still live. Seen twice in a row on a fresh firewall box:
+    # `controlclaw : Install python venv + pip tooling` (exit 2), nothing else wrong with the box.
+    #
+    # Here rather than in the role, because this is the first place early enough to cover
+    # `Update apt cache and upgrade all packages` below — the longest apt call of the run, and the
+    # one most likely to be holding the lock the next task wants.
+    - name: apt waits for the dpkg lock rather than failing on it
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/99-controlclaw-lock-timeout
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          // Managed by ControlClaw. Wait up to five minutes for the dpkg lock.
+          DPkg::Lock::Timeout "300";
+      when: is_debian_family
+
     - name: Update apt cache and upgrade all packages
       ansible.builtin.apt:
         update_cache: true

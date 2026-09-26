@@ -32,24 +32,11 @@
   when: ansible_facts['distribution'] == 'Ubuntu'
   failed_when: false
 
-# Every apt call on this box waits for the dpkg lock instead of failing on it.
-#
-# Not strictly a disk-encryption concern, and here anyway because this play added apt work and then
-# watched two provisions out of three die on it — `Could not get lock /var/lib/dpkg/lock-` at
-# `Install redsocks` and at `Install python venv`, on a box that was otherwise fine. Provisioning
-# races unattended-upgrades and its own earlier tasks, and a box that dies four seconds into a lock
-# is a box somebody has to rebuild by hand. `lock_timeout` on a single Ansible task fixes only that
-# task; this fixes every apt invocation on the box, including the ones this play does not own and
-# unattended-upgrades itself.
-- name: Disk encryption | apt waits for the dpkg lock rather than failing on it
-  ansible.builtin.copy:
-    dest: /etc/apt/apt.conf.d/99-controlclaw-lock-timeout
-    owner: root
-    group: root
-    mode: '0644'
-    content: |
-      // Managed by ControlClaw (disk-encryption.yml). Wait up to five minutes for the dpkg lock.
-      DPkg::Lock::Timeout "300";
+# The dpkg-lock timeout this play used to write lives in playbooks/install.yml now, before the
+# first apt call and on every box rather than only an encrypted one. The reasoning is unchanged
+# and is repeated there; it was simply gated behind `disk_encryption`, which defaults to false, so
+# it never ran. Two copies writing the same path with different comment text would also have made
+# both tasks report `changed` on every run of an encrypted box.
 
 - name: Disk encryption | install the packages
   ansible.builtin.apt:
