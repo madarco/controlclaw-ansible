@@ -14,7 +14,8 @@
     "tsup": "^8.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
-    "@controlclaw/backup-envelope": "workspace:*"
+    "@controlclaw/backup-envelope": "workspace:*",
+    "@controlclaw/origin-guard": "workspace:*"
   },
   "dependencies": {
     "jose": "^6.2.2"

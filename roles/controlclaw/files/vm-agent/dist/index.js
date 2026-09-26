@@ -30584,6 +30584,87 @@ import crypto from "crypto";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { SignJWT, jwtVerify as jwtVerify2 } from "jose";
+
+// ../origin-guard/src/index.ts
+var SAFE_METHODS = /* @__PURE__ */ new Set(["GET", "HEAD", "OPTIONS"]);
+function normalizeOrigin(origin) {
+  if (!origin) return null;
+  const raw = origin.trim();
+  if (!raw || raw === "null") return null;
+  try {
+    const url2 = new URL(raw);
+    if (url2.protocol !== "http:" && url2.protocol !== "https:") return raw;
+    const defaultPort = url2.protocol === "https:" ? "443" : "80";
+    const port = url2.port && url2.port !== defaultPort ? `:${url2.port}` : "";
+    return `${url2.protocol}//${url2.hostname.toLowerCase()}${port}`;
+  } catch {
+    return raw;
+  }
+}
+function isStateChanging(facts) {
+  return facts.isUpgrade || !SAFE_METHODS.has(facts.method.toUpperCase());
+}
+function navigationDest(facts) {
+  if (isStateChanging(facts)) return null;
+  return facts.secFetchMode === "navigate" ? facts.secFetchDest : null;
+}
+function checkOrigin(facts, policy) {
+  if (!facts.credentialed && (policy.uncredentialed ?? "allow") === "allow") return { ok: true };
+  const origin = normalizeOrigin(facts.origin);
+  if (origin === null) {
+    const dest = navigationDest(facts);
+    if (policy.allowTopLevelNavigation && dest === "document") return { ok: true };
+    if (policy.allowFramedNavigation && (dest === "iframe" || dest === "frame")) return { ok: true };
+  }
+  if (facts.secFetchSite === "cross-site") return { ok: false, reason: "cross_site", origin };
+  if (origin !== null) {
+    const allowed = policy.allowed.map((o) => normalizeOrigin(o)).filter((o) => o !== null);
+    return allowed.includes(origin) ? { ok: true } : { ok: false, reason: "bad_origin", origin };
+  }
+  if (isStateChanging(facts)) return { ok: false, reason: "missing_origin", origin: null };
+  return { ok: true };
+}
+function denialMessage(verdict) {
+  if (verdict.reason === "cross_site") return "refused a cross-site request";
+  if (verdict.reason === "missing_origin") return "refused a state-changing request with no Origin";
+  return `refused an unexpected Origin: ${verdict.origin ?? "(none)"}`;
+}
+function one(value) {
+  if (value === void 0) return null;
+  return Array.isArray(value) ? value[0] ?? null : value;
+}
+function nodeRequestFacts(req, methodOverride) {
+  const headers = req.headers;
+  const forwarded = one(headers["x-forwarded-method"]);
+  return {
+    method: (methodOverride ?? forwarded ?? req.method ?? "GET").toUpperCase(),
+    origin: one(headers.origin),
+    secFetchSite: one(headers["sec-fetch-site"]),
+    secFetchMode: one(headers["sec-fetch-mode"]),
+    secFetchDest: one(headers["sec-fetch-dest"]),
+    isUpgrade: (one(headers.upgrade) ?? "").toLowerCase() === "websocket",
+    credentialed: one(headers.cookie) !== null
+  };
+}
+function cookieValues(header2, name) {
+  if (!header2) return [];
+  const out = [];
+  for (const part of header2.split(";")) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf("=");
+    if (eq < 1) continue;
+    if (trimmed.slice(0, eq) !== name) continue;
+    out.push(trimmed.slice(eq + 1));
+  }
+  return out;
+}
+function readUniqueCookie(header2, name) {
+  const values = cookieValues(header2, name);
+  if (values.length === 1) return { value: values[0] ?? null, duplicated: false };
+  return { value: null, duplicated: values.length > 1 };
+}
+
+// src/session.ts
 var SESSION_COOKIE = "__Host-cc_session";
 var SESSION_TTL_SECONDS = 12 * 60 * 60;
 var VIEW_COOKIE = "__Secure-cc_view";
@@ -30610,7 +30691,7 @@ function clearSessionCookie() {
 }
 async function readSession(cookieHeader, vmId) {
   if (!secret || !cookieHeader) return null;
-  const token = parseCookie(cookieHeader, SESSION_COOKIE);
+  const token = uniqueCookie(cookieHeader, SESSION_COOKIE);
   if (!token) return null;
   try {
     const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"] });
@@ -30635,7 +30716,7 @@ function clearViewSessionCookie() {
 }
 async function verifyViewSession(cookieHeader, vmId) {
   if (!secret || !cookieHeader) return false;
-  const token = parseCookie(cookieHeader, VIEW_COOKIE);
+  const token = uniqueCookie(cookieHeader, VIEW_COOKIE);
   if (!token) return false;
   try {
     const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"], audience: VIEW_AUDIENCE });
@@ -30644,12 +30725,10 @@ async function verifyViewSession(cookieHeader, vmId) {
     return false;
   }
 }
-function parseCookie(header2, name) {
-  for (const part of header2.split(";")) {
-    const [k, ...rest] = part.trim().split("=");
-    if (k === name) return rest.join("=");
-  }
-  return null;
+function uniqueCookie(header2, name) {
+  const reading = readUniqueCookie(header2, name);
+  if (reading.duplicated) console.warn(`[session] ${name} arrived more than once \u2014 ignoring it (cookie tossing)`);
+  return reading.value;
 }
 var seenJti = /* @__PURE__ */ new Map();
 function consumeJti(jti, expSeconds) {
@@ -30753,19 +30832,31 @@ function boxOrigin() {
 }
 var origins = null;
 function allowedOrigins() {
-  origins ??= { box: boxOrigin(), console: consoleOrigin() };
+  if (!origins) {
+    origins = { box: boxOrigin(), console: consoleOrigin() };
+    if (!origins.box) console.error("[access] no vm_hostname in KEYS_DIR: this box cannot recognise its own Origin");
+  }
   return origins;
 }
 function frameAncestors() {
   const origin = allowedOrigins().console;
   return origin ? `'self' ${origin}` : "'self'";
 }
-function originAllowed(req) {
-  if (req.headers["sec-fetch-site"] === "cross-site") return false;
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  const { box, console: consoleOrig } = allowedOrigins();
-  return origin === box || origin === consoleOrig;
+var AGENT_POLICY = () => ({ allowed: [allowedOrigins().box], allowTopLevelNavigation: true });
+var VIEW_POLICY = () => {
+  const { box, console: consoleOrigin2 } = allowedOrigins();
+  return { allowed: [box, consoleOrigin2], allowTopLevelNavigation: true, allowFramedNavigation: true };
+};
+var EXCHANGE_POLICY = () => ({ allowed: [allowedOrigins().box], uncredentialed: "check" });
+var LOGOUT_POLICY = () => {
+  const { box, console: consoleOrigin2 } = allowedOrigins();
+  return { allowed: [box, consoleOrigin2], uncredentialed: "check" };
+};
+function originAllowed(req, policy, label) {
+  const verdict = checkOrigin(nodeRequestFacts(req), policy);
+  if (verdict.ok) return true;
+  console.warn(`[access] ${label}: ${denialMessage(verdict)}`);
+  return false;
 }
 function framedHtml(res, status, body) {
   res.writeHead(status, {
@@ -30926,7 +31017,7 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/verify" && req.method === "GET") {
-    if (await verifySession(req.headers.cookie, vmId)) {
+    if (originAllowed(req, AGENT_POLICY(), "/__cc/verify") && await verifySession(req.headers.cookie, vmId)) {
       res.writeHead(200, { "Cache-Control": "no-store" });
       res.end();
     } else {
@@ -30935,6 +31026,10 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/session" && req.method === "POST") {
+    if (!originAllowed(req, EXCHANGE_POLICY(), "/__cc/session")) {
+      json(res, 403, { error: "This request did not come from your agent's own page." });
+      return;
+    }
     const body = await readJsonBody(req, 8192);
     const token = typeof body?.token === "string" ? body.token : "";
     const payload = token ? await verifyLoginToken(token, vmId, "browser-login") : null;
@@ -30963,6 +31058,10 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/view-session" && req.method === "POST") {
+    if (!originAllowed(req, EXCHANGE_POLICY(), "/__cc/view-session")) {
+      json(res, 403, { error: "This request did not come from your agent's own page." });
+      return;
+    }
     const body = await readJsonBody(req, 8192);
     const token = typeof body?.token === "string" ? body.token : "";
     const payload = token ? await verifyLoginToken(token, vmId, "browser-view") : null;
@@ -30978,7 +31077,7 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/verify-view" && req.method === "GET") {
-    if (originAllowed(req) && (await verifyViewSession(req.headers.cookie, vmId) || await verifySession(req.headers.cookie, vmId))) {
+    if (originAllowed(req, VIEW_POLICY(), "/__cc/verify-view") && (await verifyViewSession(req.headers.cookie, vmId) || await verifySession(req.headers.cookie, vmId))) {
       res.writeHead(200, { "Cache-Control": "no-store" });
       res.end();
     } else {
@@ -30987,6 +31086,10 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/logout" && req.method === "POST") {
+    if (!originAllowed(req, LOGOUT_POLICY(), "/__cc/logout")) {
+      json(res, 403, { error: "This request did not come from your agent's own page." });
+      return;
+    }
     json(res, 200, { ok: true }, { "Set-Cookie": [clearSessionCookie(), clearViewSessionCookie()] });
     return;
   }
@@ -31026,8 +31129,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "aa299b4" : "unknown",
-  builtAt: true ? "2026-09-26T17:27:39+01:00" : "unknown"
+  commit: true ? "35c55e9" : "unknown",
+  builtAt: true ? "2026-09-26T17:48:28+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -36105,10 +36208,10 @@ function corsHeaders(req, origins2) {
   };
 }
 function originAllowed2(req, origins2) {
-  if (req.headers["sec-fetch-site"] === "cross-site") return false;
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  return origins2.includes(origin);
+  const verdict = checkOrigin(nodeRequestFacts(req), { allowed: origins2, allowTopLevelNavigation: true });
+  if (verdict.ok) return true;
+  console.warn(`[files] ${denialMessage(verdict)}`);
+  return false;
 }
 function devCorsHeaders(req) {
   const origin = req.headers.origin;
