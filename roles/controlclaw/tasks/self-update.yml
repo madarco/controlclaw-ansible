@@ -39,6 +39,11 @@
 # Everything below the pin itself is here for a blunter reason: it exists nowhere else the box can
 # reach at update time, and a re-run without it does damage rather than nothing.
 #
+#   - every role: ssh_debug. It defaults to false, and false is what locks the box's own SSH down, so
+#     a dev box that was built with it true and then re-provisioned without it would empty root's
+#     authorized_keys and shut UFW's port 22 in the middle of its life — locking the developer out of
+#     a box they were using. Same failure as proxy_ip below: the value exists nowhere else the box
+#     can reach at update time.
 #   - agent box: proxy_ip. firewall-linux.yml re-opens 80/443 to the whole internet when it is
 #     absent, so a re-run that could not recover it would silently undo the inbound firewall.
 #   - firewall box: org_id and controlclaw_url are the two values mitmbox.yml now asserts on,
@@ -60,6 +65,7 @@
       ANSIBLE_BRANCH={{ ansible_branch | default('main') }}
       ALLOW_UNVERIFIED={{ 'true' if update_allow_unverified | default(false) | bool else 'false' }}
       BOX_ROLE={{ box_role }}
+      SSH_DEBUG={{ 'true' if ssh_debug | default(false) | bool else 'false' }}
       {% if box_role == 'mitm' %}
       ORG_ID={{ org_id | default('') }}
       CONTROLCLAW_URL={{ controlclaw_url | default('') }}

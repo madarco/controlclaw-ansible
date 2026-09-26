@@ -45,6 +45,13 @@
   ansible.builtin.include_tasks: firewall-linux.yml
   when: not ci_test
 
+# Right after the firewall, and on every role: the two halves of "no operator access over 22" belong
+# next to each other, and this runs after user.yml so the controlclaw account whose keys it
+# deliberately spares already exists.
+- name: Include SSH lockdown tasks (no operator key, no root login, no passwords)
+  ansible.builtin.include_tasks: ssh-lockdown.yml
+  when: not ci_test
+
 - name: Include Node.js installation tasks
   ansible.builtin.include_tasks: nodejs.yml
   when: box_role != 'proxy'

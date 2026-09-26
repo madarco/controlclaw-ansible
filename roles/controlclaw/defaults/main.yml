@@ -227,9 +227,19 @@ box_role: openclaw
 # the failure looked like a relay problem and was not one.
 controlclaw_uses_docker: "{{ box_role not in ['proxy', 'exit-relay'] }}"
 
-# Open TCP 22 in UFW. Mirrors the Hetzner firewall flag (agent_ssh_debug in Terraform), which
-# is the real gate; this keeps the box consistent if the Hetzner firewall is ever detached.
-ssh_debug: true
+# Open TCP 22 in UFW, and leave the box's own SSH alone. Mirrors the Hetzner firewall flag
+# (agent_ssh_debug in Terraform), which is the first gate; this keeps the box consistent if that
+# firewall is ever detached.
+#
+# FALSE by default, because a box nobody has a key to should not be reachable on 22 by accident. With
+# it false, ssh-lockdown.yml also empties root's authorized_keys, sets PermitRootLogin and
+# PasswordAuthentication to no, and locks root's password. The control plane passes `ssh_debug: true`
+# for dev boxes (AGENT_SSH_DEBUG in apps/saas), and Terraform passes it for the proxy and the relay
+# (var.agent_ssh_debug).
+#
+# A consent-coded rescue grant does NOT need this: `cc-ssh-open` adds its own UFW rule and the key
+# goes to the controlclaw user, which the lockdown deliberately leaves alone. See ssh-access.yml.
+ssh_debug: false
 
 # OpenClaw gateway. Loopback-only by design; Caddy terminates TLS on 443 in front of it and the
 # proxy box is the only allowed source. The systemd unit is named `openclaw` because that is

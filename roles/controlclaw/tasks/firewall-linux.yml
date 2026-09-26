@@ -89,7 +89,9 @@
     - { direction: 'outgoing', policy: 'allow' }
     - { direction: 'routed', policy: 'deny' }
 
-# The Hetzner firewall (Terraform var agent_ssh_debug) is the real SSH gate; this mirrors it.
+# The Hetzner firewall (Terraform var agent_ssh_debug) is the first SSH gate; this mirrors it. With
+# ssh_debug false, ssh-lockdown.yml also makes sure there is no account to log in as, so an
+# accidentally-reachable 22 is not an accidentally-reachable box.
 - name: Allow SSH on port 22 (ssh_debug)
   community.general.ufw:
     rule: allow

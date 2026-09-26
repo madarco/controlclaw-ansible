@@ -1,0 +1,129 @@
+---
+# No operator access over SSH (controlclaw T-56).
+#
+# Runs on EVERY role, and does its work when `ssh_debug` is false — which is now the default. The
+# Hetzner firewall is the first gate on port 22 and UFW the second, but neither is on this box's side
+# of a mistake: a firewall detached by hand, an egress rule set that never got refreshed, or a box
+# that ended up on the wrong firewall all leave 22 reachable. So the box also makes sure there is
+# nothing to log in AS.
+#
+# What this does NOT touch: the `controlclaw` user's own authorized_keys. That is where a
+# consent-coded rescue grant puts the key it minted on the box (ssh-access.yml, and
+# apps/saas/docs/features/shell-access.md in the controlclaw repo), and a grant has to keep working
+# afterwards. `PubkeyAuthentication yes` below is what keeps it working; only root, and passwords, go.
+
+- name: SSH lockdown | the sshd drop-in
+  # 01- so it sorts FIRST inside sshd_config.d. sshd keeps the first value it sees for a keyword and
+  # the Include sits at the top of sshd_config, so a LOWER number wins — a 99- file would lose to
+  # cloud-init's own 50-cloud-init.conf.
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/01-controlclaw-lockdown.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (roles/controlclaw/tasks/ssh-lockdown.yml). Do not edit.
+      # ControlClaw has no key on this box. Root cannot log in and no password is accepted; a rescue
+      # grant logs in as {{ controlclaw_user | default('controlclaw') }} with a key the box minted
+      # itself, which is what PubkeyAuthentication keeps working.
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PubkeyAuthentication yes
+  when: not ssh_debug | bool
+  register: cc_sshd_lockdown
+
+- name: SSH lockdown | take the drop-in back out when ssh_debug is on
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/01-controlclaw-lockdown.conf
+    state: absent
+  when: ssh_debug | bool
+  register: cc_sshd_unlock
+
+# Between writing that file and reloading sshd is the one place this play could lock everybody out
+# for good. `sshd -t` parses the whole config, drop-ins included. If it does not like what we wrote,
+# take the file back out and fail with sshd's own words rather than reload a config that will not
+# start.
+#
+# Only when this run actually touched the config. Otherwise a box whose sshd config was already
+# unhappy for some unrelated reason would fail every `ansible-pull` from here on, with a message
+# blaming a drop-in this run never wrote — and the recovery below would delete a file it did not
+# create.
+- name: SSH lockdown | check sshd accepts the config
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false
+  failed_when: false
+  register: cc_sshd_test
+  when: cc_sshd_lockdown is changed or cc_sshd_unlock is changed
+
+- name: SSH lockdown | undo the drop-in if sshd refused it
+  when:
+    - cc_sshd_test is not skipped
+    - cc_sshd_test.rc != 0
+  block:
+    - name: SSH lockdown | take the drop-in back out
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/01-controlclaw-lockdown.conf
+        state: absent
+    - name: SSH lockdown | say why
+      ansible.builtin.fail:
+        msg: >-
+          sshd refused the config after the ControlClaw lockdown drop-in was written. It has been
+          removed and sshd was NOT reloaded: {{ cc_sshd_test.stderr | default(cc_sshd_test.stdout, true) }}
+
+# Only when sshd is a long-running daemon. Under socket activation (ssh.socket) there is nothing to
+# reload — every connection spawns a fresh sshd that reads the config — and asking systemd to reload
+# an inactive unit is an error, not a no-op.
+- name: SSH lockdown | is sshd a long-running service on this image?
+  ansible.builtin.command: systemctl is-active --quiet ssh.service
+  changed_when: false
+  failed_when: false
+  register: cc_ssh_active
+  when: cc_sshd_lockdown is changed or cc_sshd_unlock is changed
+
+- name: SSH lockdown | apply the config to new connections
+  ansible.builtin.systemd:
+    name: ssh.service
+    state: reloaded
+  when:
+    - cc_sshd_lockdown is changed or cc_sshd_unlock is changed
+    - cc_sshd_test is not skipped and cc_sshd_test.rc == 0
+    - cc_ssh_active.rc == 0
+
+# The rest only makes sense with the door shut. A dev box (ssh_debug true) keeps its root key and its
+# password login, which is the whole point of the flag.
+- name: SSH lockdown | nothing to log in as root with
+  when: not ssh_debug | bool
+  block:
+    - name: SSH lockdown | root's .ssh exists, so the next task has somewhere to write
+      ansible.builtin.file:
+        path: /root/.ssh
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # Truncated rather than deleted: an empty file says "this is meant to be empty", where a missing
+    # one says nothing, and anything that appends a key would recreate it either way.
+    - name: SSH lockdown | empty root's authorized_keys
+      ansible.builtin.copy:
+        dest: /root/.ssh/authorized_keys
+        content: ""
+        owner: root
+        group: root
+        mode: "0600"
+
+    # sshd reads this second file too, and some images ship one. Removed rather than emptied: unlike
+    # authorized_keys, nothing here ever creates it, so its absence is the clearer state.
+    - name: SSH lockdown | and authorized_keys2, which sshd also reads
+      ansible.builtin.file:
+        path: /root/.ssh/authorized_keys2
+        state: absent
+
+    # `password_lock` rather than a `usermod -L` shell line: idempotent, and it reports changed only
+    # the first time. Hetzner generates a root password for any server created with an empty SSH key
+    # list, and this is what takes it away.
+    - name: SSH lockdown | lock root's password
+      ansible.builtin.user:
+        name: root
+        password_lock: true

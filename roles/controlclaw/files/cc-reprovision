@@ -124,6 +124,7 @@ CONTROLCLAW_URL="${CONTROLCLAW_URL:-$(read_key controlclaw_url)}"
 # existence guards, so a re-run cannot regenerate what every agent in the org has pinned.
 vars=$(BOX_ROLE="$ROLE" VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PROXY_IP:-}" \
   ANSIBLE_REPO="$ANSIBLE_REPO" ANSIBLE_BRANCH="${ANSIBLE_BRANCH:-main}" ALLOW_UNVERIFIED="${ALLOW_UNVERIFIED:-false}" \
+  SSH_DEBUG="${SSH_DEBUG:-false}" \
   SAAS_PUB="$(read_key saas_public_key.pem)" \
   CONFIG_URL="$(read_key config_api_url)" READY_URL="$(read_key ready_api_url)" \
   REGISTER_URL="$(read_key register_api_url)" \
@@ -145,8 +146,12 @@ for key, env in (("ansible_repo_url", "ANSIBLE_REPO"), ("ansible_branch", "ANSIB
                  ("update_allow_unverified", "ALLOW_UNVERIFIED")):
     if os.environ.get(env):
         v[key] = os.environ[env]
+# ssh_debug is in `shared` and always non-empty ("false" when the pin has nothing), because here the
+# absent case must NOT fall through to the role default: falling through is what would take SSH away
+# from a dev box halfway through its life. A box pinned before SSH_DEBUG existed reads as false,
+# which is the safe direction and matches what the role would have done anyway.
 shared = (("saas_public_key", "SAAS_PUB"), ("ready_api_url", "READY_URL"),
-          ("register_api_url", "REGISTER_URL"))
+          ("register_api_url", "REGISTER_URL"), ("ssh_debug", "SSH_DEBUG"))
 agent = (("proxy_ip", "PROXY_IP"), ("config_api_url", "CONFIG_URL"),
          ("mitm_box_private_ip", "MITM_IP"), ("mitm_vm_public_key", "MITM_PUB"))
 mitm = (("org_id", "ORG_ID"), ("controlclaw_url", "CONTROLCLAW_URL"),
