@@ -78,7 +78,28 @@
     # Everything else is OpenClaw, gated by the ControlClaw session cookie. On 401 the
     # vm-agent's "open this agent from your console" page is relayed to the browser.
     # The upgrade headers are stripped for the auth call: the check must answer 2xx, never 101.
+    #
+    # /__cc/verify ALSO checks the Origin, and it can only do that with the headers this call
+    # carries (controlclaw T-68). Every agent box and the console share `controlclaw.com`, so the
+    # session cookie's SameSite=Lax stops another *site* and nothing between two boxes: without
+    # that check a page on box A could open `wss://B/` in the browser of somebody signed in to B
+    # and drive B's agent. forward_auth copies the request's headers, which is what puts `Origin`,
+    # `Sec-Fetch-*` and `X-Forwarded-Method` in front of the check. DO NOT add `header_up -Origin`,
+    # `-Sec-Fetch-Site` or `-X-Forwarded-Method` here: the check would go on answering 200 and the
+    # protection would be gone with nothing to show for it.
     handle {
+        # The agent's own UI is never embedded by anyone, including another box. `'self'`, not
+        # `'none'`: OpenClaw may frame its own pages, and blocking that would break the UI to no
+        # end. Each header is set only when the upstream did not send one (`?`), so a CSP OpenClaw
+        # sets for its own reasons is left exactly as it is — X-Frame-Options then still carries
+        # the whole rule, which every browser honours.
+        #
+        # TWO directives, not one block with two `?` fields. A `?` compiles to a response matcher
+        # that requires the field to be absent, and one block gets ONE matcher for all of them: if
+        # OpenClaw sends a CSP, a combined block would skip X-Frame-Options as well and this
+        # response would go out with neither. Verified against caddy:2-alpine, both ways round.
+        header ?X-Frame-Options "SAMEORIGIN"
+        header ?Content-Security-Policy "frame-ancestors 'self'"
         forward_auth 127.0.0.1:3100 {
             uri /__cc/verify
             header_up -Connection

@@ -389,6 +389,14 @@
 # With a hostname, OpenClaw also learns its public origin (Caddy in front on 443), trusts the
 # loopback proxy for forwarded headers, and allows the browser origin for its WebSocket.
 #
+# `controlUi.allowedOrigins` is THIS BOX'S OWN ORIGIN AND NOTHING ELSE, and it has to stay that way
+# (controlclaw T-68). Every agent box and the console are one site under `controlclaw.com`, so a
+# page on another box can reach this gateway's WebSocket with this box's session cookie attached;
+# OpenClaw's own origin check is the last of the three that stand in the way, after the Caddy
+# `forward_auth` to /__cc/verify and the vm-agent's check behind it. Adding the console, a wildcard
+# or a second box here takes one of the three away. The console never talks to the gateway: it
+# links to the box and the browser goes there.
+#
 # The browser block attaches OpenClaw to the Chrome that browser-stream.service already runs, so
 # the window the customer is watching in the console is the one the agent drives. Notes, all
 # verified against OpenClaw 2026.9.5 rather than assumed:
