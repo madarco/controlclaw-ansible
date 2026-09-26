@@ -31026,8 +31026,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "3159819" : "unknown",
-  builtAt: true ? "2026-09-25T21:06:55+01:00" : "unknown"
+  commit: true ? "027e8c6" : "unknown",
+  builtAt: true ? "2026-09-26T13:27:27+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -37011,7 +37011,7 @@ var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
 var ssh = new SshAccessService({
   authorizedKeysPath: `${process.env.HOME ?? "/home/controlclaw"}/.ssh/authorized_keys`,
   statePath: `${STATE_DIR}/ssh.json`,
-  sudo: true
+  sudo: false
 });
 var tailscale = new TailscaleService({});
 var backup = new BackupService({

@@ -615,8 +615,8 @@ var ExitRelay = class {
 // src/index.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "3159819" : "unknown",
-  at: true ? "2026-09-25T21:06:55+01:00" : "unknown"
+  commit: true ? "027e8c6" : "unknown",
+  at: true ? "2026-09-26T13:27:27+01:00" : "unknown"
 };
 function main() {
   const config = loadConfig();

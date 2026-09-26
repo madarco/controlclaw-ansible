@@ -34158,6 +34158,7 @@ function purposeForPath(path) {
   if (path.startsWith("/ssh/")) return "ssh";
   if (path.startsWith("/tailscale/")) return "tailscale";
   if (path.startsWith("/drive/")) return "drive";
+  if (path.startsWith("/google/")) return "google";
   if (path.startsWith("/hooks/")) return "hooks";
   return "channels";
 }
@@ -102054,8 +102055,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "3159819" : "unknown",
-  builtAt: true ? "2026-09-25T21:06:55+01:00" : "unknown"
+  commit: true ? "027e8c6" : "unknown",
+  builtAt: true ? "2026-09-26T13:27:27+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

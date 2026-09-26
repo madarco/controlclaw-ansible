@@ -32,6 +32,10 @@ Implements the security-critical core of the two-box architecture
      client's own TLS bytes reach the site, so its handshake is the browser's real one — and it
      gets host-level logging and byte counts, no credential swap and no AI review. It never falls
      back to this box's IP: every failure closes the connection and logs why.
+  7. Non-routable targets (T-61): no connection ever goes to a link-local, loopback, unspecified
+     or multicast address, whatever a rule, the Host header or the CONNECT target says. Names are
+     resolved first and the connection is pinned to the checked address (`server_connect`), so a
+     name pointing at the metadata service is refused too. Each refusal is a `block` record.
 
 This addon requires `connection_strategy=lazy` (the firewall's systemd unit sets it). With
 mitmproxy's default, `eager`, the destination is connected BEFORE any layer decision is made,
@@ -55,9 +59,11 @@ import base64
 import collections
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
 import urllib.request
 from typing import Any
@@ -199,6 +205,10 @@ AI_RECENT = 20
 
 DEFAULT_LOCATIONS = ["header:authorization", "header:x-api-key", "header:private-token"]
 BLOCK_STATUS = 403
+# The `rule` on a record for a target no rule can allow (link-local, loopback — see check_target).
+NON_ROUTABLE_RULE = "non_routable_target"
+# Prefix of the `server.error` a refused connection carries; the HTTP flow's error repeats it.
+NON_ROUTABLE_REFUSAL = "refused by the firewall:"
 PERMISSION_STATUS = 451
 
 
@@ -1469,12 +1479,185 @@ def _refuse_residential_http(flow: http.HTTPFlow, host: str, why: str) -> None:
     _log_once(flow, rec)
 
 
+# ---- Targets the firewall never connects to (T-61) ----
+# An agent box sends everything to this proxy, so a request for 169.254.169.254 (the cloud metadata
+# service) used to be fetched by the FIREWALL box, from its own metadata: the agent got the
+# firewall's user-data. Link-local, loopback, unspecified and multicast addresses mean "this
+# machine" or "this link" — on this box they are the firewall's own services and metadata, never
+# something an agent may reach. No rule can allow them. Private ranges (10/8, 172.16/12,
+# 192.168/16) are not in this list: they are real, if internal, destinations.
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def non_routable_kind(ip: str) -> str | None:
+    """Why `ip` is a target the firewall refuses, or None if it may be connected to. Also looks
+    through the IPv6 forms that carry an IPv4 address (`::ffff:169.254.169.254`, NAT64)."""
+    try:
+        addr = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        elif addr in _NAT64:
+            addr = ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    if addr.is_link_local:
+        return "link-local"
+    if addr.is_loopback:
+        return "loopback"
+    if addr.is_unspecified:
+        return "unspecified"
+    if addr.is_multicast:
+        return "multicast"
+    return None
+
+
+async def _resolve(host: str, port: int | None) -> list[str]:
+    """Every address `host` resolves to; an IP literal is its own answer."""
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return [host]
+    except ValueError:
+        pass
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port or 0, type=socket.SOCK_STREAM)
+    out: list[str] = []
+    for info in infos:
+        ip = str(info[4][0])
+        if ip not in out:
+            out.append(ip)
+    return out
+
+
+async def check_target(host: str, port: int | None, strict: bool) -> tuple[str | None, str | None]:
+    """Resolve `host` and refuse it if ANY address is non-routable, so a name that points at the
+    metadata address is refused like the address itself. Returns (address to connect to, refusal).
+    With `strict`, a name that does not resolve is refused too: the caller is about to connect, and
+    connecting would resolve again — the answer we checked must be the one that is used."""
+    host = (host or "").strip().strip("[]")
+    if not host:
+        return None, None
+    try:
+        ips = await _resolve(host, port)
+    except (OSError, UnicodeError) as exc:
+        if strict:
+            return None, f"could not resolve {host[:60]}: {exc}"[:200]
+        return None, None
+    for ip in ips:
+        kind = non_routable_kind(ip)
+        if kind:
+            shown = host if host == ip else f"{host} ({ip})"
+            return None, f"{shown[:120]} is a {kind} address; the firewall never connects there"
+    if not ips:
+        return None, (f"could not resolve {host[:60]}" if strict else None)
+    # Prefer IPv4, as most of these boxes route it; any address in the list passed the check.
+    return next((ip for ip in ips if ":" not in ip), ips[0]), None
+
+
+def _non_routable_record(vm_id: str | None, host: str, port: int | None, why: str, flow_id: str | None = None) -> dict[str, Any]:
+    return {
+        "flow_id": flow_id or "nr_" + hashlib.sha256(f"{time.time()}{host}{port}".encode()).hexdigest()[:24],
+        "ts": time.time(), "tenant": TENANT, "vm_id": vm_id,
+        "host": host, "port": port, "effect": "block", "rule": NON_ROUTABLE_RULE, "error": why[:200],
+    }
+
+
+async def _refuse_non_routable_http(flow: http.HTTPFlow) -> bool:
+    """Refuse an HTTP request whose connection would go to a non-routable address, before any rule
+    runs. Checks where the connection actually goes (the CONNECT target, or the request's own
+    authority), never the Host header, which decides nothing about the socket."""
+    server = getattr(flow, "server_conn", None)
+    if server is not None and getattr(server, "connected", False):
+        return False  # an open connection was checked when it was made
+    targets: list[tuple[str, int | None]] = []
+    addr = getattr(server, "address", None)
+    if addr and not getattr(server, "via", None):
+        targets.append((str(addr[0]), addr[1]))
+    targets.append((flow.request.host, flow.request.port))
+    for host, port in targets:
+        _, why = await check_target(host, port, strict=False)
+        if why:
+            flow.response = http.Response.make(
+                BLOCK_STATUS,
+                json.dumps({"error": "non_routable_target", "host": host, "reason": why, "tenant": TENANT}),
+                {"Content-Type": "application/json"},
+            )
+            flow.metadata["cc_effect"] = "block"
+            flow.metadata["cc_rule"] = NON_ROUTABLE_RULE
+            rec = _http_record(flow, "block")
+            rec.update({"status": BLOCK_STATUS, "port": port, "error": why[:200]})
+            _log_once(flow, rec)
+            log.warning(f"[mitm] refused {host}:{port}: {why}")
+            return True
+    return False
+
+
+async def server_connect(data) -> None:
+    """The last word before ANY upstream socket opens — intercepted HTTP(S), passed-through TLS,
+    tunnels, residential upstreams. Resolves the destination, refuses it when any address is
+    non-routable, and pins the connection to the address that was checked, so a name cannot answer
+    differently the second time (DNS rebinding). Setting `server.error` is mitmproxy's own way to
+    kill a connection before it is made."""
+    server = getattr(data, "server", None)
+    addr = getattr(server, "address", None)
+    if not addr:
+        return
+    host, port = str(addr[0]), addr[1]
+    try:
+        ip, why = await check_target(host, port, strict=True)
+    except Exception as exc:  # noqa: BLE001 — a failed check refuses; it never lets through
+        ip, why = None, f"could not check {host[:60]}: {exc}"[:200]
+    if why:
+        server.error = f"{NON_ROUTABLE_REFUSAL} {why}"
+        client = getattr(data, "client", None)
+        vm_id = vm_id_for_ip(_peer_ip(getattr(client, "peername", None)))
+        sni = getattr(client, "sni", None) or host
+        _log(_non_routable_record(vm_id, sni, port, why))
+        log.warning(f"[mitm] refused connection to {host}:{port}: {why}")
+        return
+    if ip and ip != host:
+        # Keep the name for TLS: this is what mitmproxy's tls_start_server would pick itself.
+        if getattr(server, "sni", None) is None:
+            server.sni = getattr(getattr(data, "client", None), "sni", None) or host
+        # Pinned only for the connect. `server_connected` puts the name back, because mitmproxy
+        # reuses an open upstream connection only when its address equals the next request's
+        # (name, port): left as an IP, every request would open a new connection.
+        _pinned[server.id] = addr
+        server.address = (ip, port)
+
+
+# server.id -> the (name, port) a connection had before `server_connect` pinned it to an IP.
+_pinned: dict[str, Any] = {}
+
+
+def _unpin(data) -> None:
+    server = getattr(data, "server", None)
+    original = _pinned.pop(getattr(server, "id", None), None)
+    if original is not None:
+        # `Server.__setattr__` refuses an address change once the connection is open, to stop an
+        # addon moving a live connection somewhere else. This one does not move it: the socket is
+        # already connected to the checked IP, and only the label used for reuse changes back.
+        # Pinned mitmproxy (12.2.2); test_non_routable.py fails if this stops working.
+        object.__setattr__(server, "address", original)
+
+
+def server_connected(data) -> None:
+    """The socket is open to the checked IP; give the connection its name back (see server_connect)."""
+    _unpin(data)
+
+
+def server_connect_error(data) -> None:
+    _unpin(data)
+
+
 async def request(flow: http.HTTPFlow) -> None:
     host = flow.request.pretty_host
     method = flow.request.method
     path = flow.request.path
     vm_id = flow_vm_id(flow)  # which VM (by source IP) this request belongs to; None if unknown
     flow.metadata["cc_vm_id"] = vm_id
+
+    if await _refuse_non_routable_http(flow):
+        return
 
     rule = match_rule(host, method, path, vm_id)
     effect = (rule or {}).get("effect", "allow")
@@ -1672,6 +1855,8 @@ def error(flow: http.HTTPFlow) -> None:
         return
     if not getattr(flow, "request", None):
         return
+    if NON_ROUTABLE_REFUSAL in str(getattr(flow.error, "msg", "") or ""):
+        return  # `server_connect` refused the connection and already wrote the block record
     rec = _allow_record(flow)
     rec["error"] = str(getattr(flow.error, "msg", "") or "upstream error")[:200]
     start = flow.request.timestamp_start
