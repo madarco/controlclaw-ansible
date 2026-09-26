@@ -49,6 +49,18 @@
 # unhappy for some unrelated reason would fail every `ansible-pull` from here on, with a message
 # blaming a drop-in this run never wrote — and the recovery below would delete a file it did not
 # create.
+# sshd -t refuses to run without its privilege separation directory, and on Ubuntu 24.04 ssh is
+# socket-activated: until the first connection nothing creates /run/sshd. Without this the check
+# fails on a fresh box and stops the whole play (the proxy came up with no HAProxy, 2026-09-26).
+- name: SSH lockdown | sshd's privilege separation directory exists, so the check can run
+  ansible.builtin.file:
+    path: /run/sshd
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: cc_sshd_lockdown is changed or cc_sshd_unlock is changed
+
 - name: SSH lockdown | check sshd accepts the config
   ansible.builtin.command: /usr/sbin/sshd -t
   changed_when: false
