@@ -1,70 +1,74 @@
 ---
-# Linux-specific Tailscale installation (Debian/Ubuntu)
+# Tailscale on an agent box (Debian/Ubuntu).
+#
+# Owner access over the owner's own tailnet (controlclaw PR #85, apps/saas/docs/features/tailscale.md)
+# needs three things on EVERY agent box, whatever `tailscale_enabled` says: the package, the
+# cc-tailscale root helper, and the sudoers line that lets the vm-agent run that helper. The box
+# joins later, when the owner asks from the console, and the helper starts tailscaled then.
+#
+# `tailscale_enabled` only decides whether tailscaled runs from provisioning (the old path, with a
+# key handed over at build time). With it off, the daemon is installed but stopped and disabled: an
+# unjoined tailscaled has nothing to do, and a stopped one sends nothing anywhere.
+#
+# Until 2026-09-27 main.yml included this whole file only when `tailscale_enabled` was true, which
+# the console never sets, so no box had the helper and every join failed with
+# "sudo: a password is required".
+#
+# Egress: nothing here widens it. On a first provision the box is not confined yet (the vm-agent
+# confines it as the last step), so the downloads below go out directly. On an in-place update they
+# go through the org proxy like every other download the role makes. tailscaled itself reaches
+# `*.tailscale.com` only once the org firewall has recorded a join for this box (mitm-proxy/addon.py,
+# TAILSCALE_HOSTS).
 
-- name: Add Tailscale GPG key
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      DIST="{{ ansible_distribution | lower }}"
-      RELEASE="{{ ansible_distribution_release }}"
-      curl -fsSL "https://pkgs.tailscale.com/stable/${DIST}/${RELEASE}.noarmor.gpg" | \
-        tee /usr/share/keyrings/tailscale-archive-keyring.gpg > /dev/null
-    creates: /usr/share/keyrings/tailscale-archive-keyring.gpg
-    executable: /bin/bash
+- name: Tailscale | Add the package signing key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    owner: root
+    group: root
+    mode: "0644"
+  register: tailscale_keyring
 
-- name: Add Tailscale repository
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      DIST="{{ ansible_distribution | lower }}"
-      RELEASE="{{ ansible_distribution_release }}"
-      curl -fsSL "https://pkgs.tailscale.com/stable/${DIST}/${RELEASE}.tailscale-keyring.list" | \
-        tee /etc/apt/sources.list.d/tailscale.list > /dev/null
-    creates: /etc/apt/sources.list.d/tailscale.list
-    executable: /bin/bash
+- name: Tailscale | Add the package repository
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.tailscale-keyring.list"
+    dest: /etc/apt/sources.list.d/tailscale.list
+    owner: root
+    group: root
+    mode: "0644"
+  register: tailscale_repo
 
-- name: Update apt cache after adding Tailscale repo
-  ansible.builtin.apt:
-    update_cache: true
-
-- name: Install Tailscale
+- name: Tailscale | Install the package
   ansible.builtin.apt:
     name: tailscale
     state: present
+    update_cache: "{{ tailscale_keyring is changed or tailscale_repo is changed }}"
+  register: tailscale_pkg
 
-- name: Enable Tailscale service
+# The Debian package enables and starts tailscaled on install. Undo that only on the run that
+# installed it, so a box whose owner has already joined keeps its running daemon on every update.
+- name: Tailscale | Leave a freshly installed tailscaled stopped until the owner joins
+  ansible.builtin.systemd:
+    name: tailscaled
+    enabled: false
+    state: stopped
+  when:
+    - tailscale_pkg is changed
+    - not tailscale_enabled | bool
+    - not ci_test
+
+- name: Tailscale | Run tailscaled from provisioning (tailscale_enabled)
   ansible.builtin.systemd:
     name: tailscaled
     enabled: true
     state: started
+  when:
+    - tailscale_enabled | bool
+    - not ci_test
 
-- name: Check if Tailscale is already connected
-  ansible.builtin.command: tailscale status --json
-  register: tailscale_status
-  changed_when: false
-  failed_when: false
-
-- name: Display Tailscale auth URL if not connected
-  ansible.builtin.debug:
-    msg:
-      - "============================================"
-      - "Tailscale installed but not connected yet"
-      - "============================================"
-      - ""
-      - "To connect this machine to your Tailnet:"
-      - "Run: sudo tailscale up"
-      - ""
-      - "For unattended installation, use an auth key:"
-      - "sudo tailscale up --authkey tskey-auth-xxxxx"
-      - ""
-      - "Get auth key from: https://login.tailscale.com/admin/settings/keys"
-  when: tailscale_status.rc != 0
-
-# Owner access over the owner's own tailnet (controlclaw PR #85, apps/saas/docs/features/tailscale.md).
-# Both tasks run whatever `tailscale_enabled` says: that flag is about joining at provisioning; this
-# is about joining later, when the owner asks. The helper is the only privileged Tailscale surface
-# on the box: a fixed verb set, the auth key on stdin, never an argument.
-- name: Install the cc-tailscale root helper
+# The helper is the only privileged Tailscale surface on the box: a fixed verb set, the auth key on
+# stdin, never an argument. It starts tailscaled on `up` and stops it again on `logout`.
+- name: Tailscale | Install the cc-tailscale root helper
   ansible.builtin.copy:
     src: cc-tailscale
     dest: /usr/local/bin/cc-tailscale
@@ -72,7 +76,7 @@
     group: root
     mode: "0755"
 
-- name: Allow the controlclaw user to run exactly that helper
+- name: Tailscale | Allow the controlclaw user to run exactly that helper
   ansible.builtin.copy:
     dest: /etc/sudoers.d/controlclaw-tailscale
     owner: root
@@ -81,4 +85,3 @@
     validate: "visudo -cf %s"
     content: |
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-tailscale
-

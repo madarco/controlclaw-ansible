@@ -64,14 +64,9 @@
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable openclaw
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 
-      # Tailscale - diagnostics + connect/disconnect
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale status
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale up *
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale down
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale ip *
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale version
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale ping *
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/tailscale whois *
+      # Tailscale - none here. The one privileged Tailscale surface is cc-tailscale, granted in
+      # /etc/sudoers.d/controlclaw-tailscale by tailscale-linux.yml. The `tailscale up *` line
+      # that used to sit here let the box user join any tailnet with any flags, MagicDNS included.
 
       # Journal access - the two ControlClaw-managed units only
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u openclaw *

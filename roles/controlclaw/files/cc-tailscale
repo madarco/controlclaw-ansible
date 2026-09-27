@@ -8,6 +8,10 @@
 #   cc-tailscale logout
 #   cc-tailscale status
 #
+# tailscaled is installed on every agent box but runs only while the box is on a tailnet: `up`
+# starts it, `logout` stops it again, and `status` reports a stopped daemon as `Stopped` rather than
+# failing, so the console can say "not signed in" instead of showing an error.
+#
 # The key is read from stdin and written to a 0600 file under /run for the length of
 # `tailscale up --auth-key=file:…`, then deleted. It is never an argument: `ps` on this box must
 # not show the owner's Tailscale key to the agent running on it.
@@ -38,10 +42,18 @@ case "${1:-}" in
     "$TAILSCALE" "$@"
     ;;
   logout)
-    "$TAILSCALE" logout
-    "$TAILSCALE" down || true
+    # Nothing to sign out of while the daemon is stopped: the box has never joined, or already left.
+    if systemctl is-active --quiet tailscaled; then
+      "$TAILSCALE" logout
+      "$TAILSCALE" down || true
+    fi
+    systemctl disable --now tailscaled >/dev/null 2>&1 || true
     ;;
   status)
+    if ! systemctl is-active --quiet tailscaled; then
+      echo '{"BackendState":"Stopped"}'
+      exit 0
+    fi
     # Non-zero when the box is not up yet, and the JSON is still on stdout; the vm-agent reads it.
     "$TAILSCALE" status --json || true
     ;;

@@ -30,12 +30,16 @@
 - name: Include system tools installation tasks
   ansible.builtin.include_tasks: system-tools.yml
 
-- name: Include Tailscale installation tasks
-  ansible.builtin.include_tasks: tailscale-linux.yml
-  when: tailscale_enabled | bool
-
 - name: Include user creation tasks
   ansible.builtin.include_tasks: user.yml
+
+# Every agent box, whatever tailscale_enabled says: the console's owner access over Tailscale needs
+# the package, the cc-tailscale helper and its sudoers line on the box before anyone asks to join.
+# tailscale_enabled only decides whether tailscaled runs from provisioning (see the file's header).
+# Firewall, proxy and relay boxes never join a tailnet, unless tailscale_enabled asks for it.
+- name: Include Tailscale installation tasks
+  ansible.builtin.include_tasks: tailscale-linux.yml
+  when: box_role == 'openclaw' or tailscale_enabled | bool
 
 - name: Include Docker installation tasks
   ansible.builtin.include_tasks: docker-linux.yml
