@@ -1,0 +1,187 @@
+---
+# Refuse the cloud metadata service to everything on this box but root (T-61).
+#
+# 169.254.169.254 hands out this box's own user-data, for the life of the server, and user-data is how
+# a box is provisioned. What is in it depends on the role, and so does what this guard is worth:
+#
+#   * openclaw / mitm — a bootstrap token (single-use, spent at /register, 6 h TTL), the
+#     provisioning-progress token and the script carrying it, the LUKS recovery PUBLIC key, and on an
+#     UNSECURED box the box's own private key. Nothing that outlives provisioning except that last
+#     one, so here the guard closes a read rather than protecting a live credential.
+#   * proxy — the read-only Hetzner token the route builder uses. HAProxy's workers drop to the
+#     `haproxy` user, so this is the one box where a non-root compromise of an internet-facing daemon
+#     would otherwise read a credential that has to be rotated by hand.
+#   * exit-relay — ControlClaw's Apify proxy password, the exit token secret and the metering secret.
+#     The relay itself runs as root on purpose (it reads a 0600 Let's Encrypt key), so the guard does
+#     not stand between that daemon and those secrets; it stands between anything else non-root on the
+#     box and them. Cheap, and worth having where the secrets are this live.
+#
+# T-61 came in from the other end. An agent's request for 169.254.169.254 was redirected like the rest
+# of its TCP, so it arrived at the org firewall, which resolved link-local on ITS side of the wire and
+# answered with the FIREWALL box's user-data. The proxy refuses link-local, loopback, unspecified and
+# multicast targets now (controlclaw #140) and logs the refusal as `non_routable_target`, so that path
+# is closed and visible. This is the other half: the request has to fail when it never reaches the
+# proxy at all.
+#
+# Why not just exempt link-local from the redirect, which is the obvious one-line fix. Because then
+# the request succeeds locally and the agent reads its OWN user-data instead of the firewall's — a
+# smaller leak, not no leak, and a silent one where the redirect gives a logged 403.
+#
+# The two coexist by hook priority, and it is load-bearing: the nat output chain runs at -100 and has
+# rewritten the destination to 127.0.0.1 before this filter chain at 0 sees the packet, so a
+# redirected request is not matched here and still reaches redsocks. What this chain sees is only
+# link-local the redirect did not capture — a box before its first lockdown, a box whose table was
+# flushed by hand, a role with no redirect at all. Verified on a real Hetzner box both ways round.
+#
+# Three things the ruleset covers that a naive version does not:
+#
+#   * The `forward` hook, not just `output`. `controlclaw` is in the `docker` group, and container
+#     traffic is forwarded rather than socketed locally, so an output-only chain leaves
+#     `docker run --rm alpine wget -qO- 169.254.169.254/hetzner/v1/metadata` working. Measured, then
+#     closed. Docker-group membership is root-equivalent anyway, so this is not a boundary — it is
+#     the difference between one command and a deliberate escalation.
+#   * `fe80::a9fe:a9fe`, Hetzner's IPv6 metadata address. Boxes are created with `enable_ipv6: false`
+#     and neighbour discovery for it FAILS on a box with public IPv4 (measured), so today this rule
+#     never fires. It is here so the IPv4-only assumption is not the thing holding the guard up.
+#     Scoped to that one /128, so neighbour discovery and the router's own fe80 address are untouched.
+#   * Root is exempt, because DHCP renewal and cloud-init need link-local. That is the same trade the
+#     fail-closed ruleset in openclaw-egress.yml already makes, and it is the limit of the guard: on an
+#     agent box `controlclaw` can reach root through `cc-ssh-open` (docs/infrastructure.md §4.4). It
+#     closes the ordinary read, in the kernel, without depending on a userspace allowlist a hop away.
+#
+# `reject` rather than `drop` wherever there is something to answer: a caller gets a refusal in a
+# millisecond instead of hanging for its connect timeout. Non-TCP out of `output` is dropped, because
+# there is nothing to reset and no non-TCP route to a metadata service.
+
+- name: Ensure /etc/controlclaw exists
+  ansible.builtin.file:
+    path: /etc/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# Explicit, although ufw already pulls it in: this guard is the one thing on the box with no fallback
+# if `nft` is missing, and a box that silently skipped it looks exactly like one that has it.
+- name: Ensure nftables is installed
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+  when: not ci_test
+
+- name: Stage the metadata guard ruleset
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/metadata-guard.nft
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      #!/usr/sbin/nft -f
+      add table inet controlclaw_metadata
+      flush table inet controlclaw_metadata
+      table inet controlclaw_metadata {
+        chain verdict {
+          meta skuid 0 accept
+          meta l4proto tcp reject with tcp reset
+          drop
+        }
+        chain output {
+          type filter hook output priority 0; policy accept;
+          ip daddr 169.254.0.0/16 jump verdict
+          ip6 daddr fe80::a9fe:a9fe jump verdict
+        }
+        chain forward {
+          type filter hook forward priority -10; policy accept;
+          ip daddr 169.254.0.0/16 reject
+          ip6 daddr fe80::a9fe:a9fe reject
+        }
+      }
+
+- name: Deploy cc-metadata-guard (root-owned, fixed action)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-metadata-guard
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/sh
+      set -e
+      nft -f /etc/controlclaw/metadata-guard.nft
+
+# nftables rules do not survive a reboot and nftables.service is disabled on these boxes, so without
+# a unit of its own the guard would be gone from the first reboot onwards. Unlike the redirect it has
+# no marker to be gated on: there is no state in which a box wants its agent reading metadata.
+#
+# This is Ubuntu's own `ufw.service`, verbatim apart from the ExecStart, and that is deliberate.
+# `Before=network-pre.target` is what systemd.special(7) says a firewall unit should do, and it is
+# what makes the guard first without naming anything: every service on every one of these boxes is
+# `After=network.target` or `After=network-online.target`, and both of those come after
+# network-pre.target. A `Before=` list of the units that run as {{ controlclaw_user }} would have to
+# be kept in step with openclaw.yml, mitmbox.yml, vm-agent.yml, browser-stream.yml, gog.yml,
+# rclone.yml, connector.yml, proxy.yml and exit-relay.yml, and the day it fell behind would be a
+# reboot with a daemon up and the table not loaded.
+#
+# No ConditionPathExists: a missing ruleset has to be a failed unit somebody can see, not a skip that
+# reports success.
+- name: Deploy cc-metadata-guard.service
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-metadata-guard.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Refuse the cloud metadata service to everything but root
+      Documentation=https://github.com/madarco/controlclaw/blob/main/docs/ops/t61-metadata-rotation.md
+      DefaultDependencies=no
+      Before=network-pre.target shutdown.target
+      Conflicts=shutdown.target
+      Wants=network-pre.target local-fs.target
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/cc-metadata-guard
+
+      [Install]
+      WantedBy=multi-user.target
+
+# Ordering is already guaranteed above; this is about what happens when the guard FAILS. OpenClaw is
+# the untrusted code on the box, so it fails closed with it — the same choice, in the same shape, as
+# `openclaw.service.d/egress.conf` makes for cc-egress-restore.
+#
+# Only OpenClaw. The vm-agent is how the console reaches a broken box, mitmproxy is an org's only
+# route out, and neither should be held down by a guard whose subject on those boxes is user-data that
+# holds nothing usable. They still get the ordering, and a failed guard is a failed unit in the
+# journal and in `systemctl --failed`.
+- name: Ensure the OpenClaw drop-in dir exists (the unit is written later in the play)
+  ansible.builtin.file:
+    path: /etc/systemd/system/openclaw.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: box_role == 'openclaw'
+
+- name: Fail OpenClaw closed if the metadata guard could not be applied
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/openclaw.service.d/metadata-guard.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Requires=cc-metadata-guard.service
+      After=cc-metadata-guard.service
+  when: box_role == 'openclaw'
+
+# Now, not on the next boot: the play itself runs as root, so nothing it still has to do is affected,
+# and a box provisioned today should not be unguarded until somebody reboots it.
+- name: Enable and apply the metadata guard
+  ansible.builtin.systemd:
+    name: cc-metadata-guard.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: not ci_test

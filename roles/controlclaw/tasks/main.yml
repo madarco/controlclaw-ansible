@@ -52,6 +52,15 @@
   ansible.builtin.include_tasks: ssh-lockdown.yml
   when: not ci_test
 
+# Right after the firewall, and on EVERY role: the cloud metadata service hands out this box's own
+# user-data, and only root has a reason to read it (T-61). Every role, because the two whose user-data
+# holds a credential that would have to be rotated by hand are `proxy` (the read-only Hetzner token)
+# and `exit-relay` (the Apify password, the token secret, the metering secret) — the two it would be
+# most tempting to leave out. See the header of metadata-guard.yml for what it is worth on each, and
+# for why this is a guard rather than an exemption in the redirect.
+- name: Refuse the cloud metadata service to everything but root
+  ansible.builtin.include_tasks: metadata-guard.yml
+
 - name: Include Node.js installation tasks
   ansible.builtin.include_tasks: nodejs.yml
   when: box_role != 'proxy'
