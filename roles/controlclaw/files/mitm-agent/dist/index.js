@@ -34979,6 +34979,7 @@ function isServiceAccountSecret(s) {
   return "privateKey" in s;
 }
 var DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive";
+var DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$/;
 function isValidFolderName(name25) {
   return NAME_RE.test(name25) && !name25.endsWith(" ");
@@ -35241,12 +35242,17 @@ async function probeOne(token, url2, fetchImpl) {
 
 // src/drive-tokens.ts
 var ASSERTION_TTL_SEC = 3600;
+function scopeForBorrowed(account) {
+  if (account?.driveScope === "full") return DRIVE_WRITE_SCOPE;
+  if (account?.driveScope === "readonly") return DRIVE_READ_SCOPE;
+  return null;
+}
 var ServiceAccountTokenSource = class {
   constructor(fetchImpl = fetch) {
     this.fetchImpl = fetchImpl;
   }
   async mint(account, now2) {
-    if (!isServiceAccountSecret(account.secret)) return { ok: false, permanent: true, reason: "This connection is not a service account." };
+    if (!account.secret || !isServiceAccountSecret(account.secret)) return { ok: false, permanent: true, reason: "This connection is not a service account." };
     const sa = account.secret;
     let assertion;
     try {
@@ -35274,13 +35280,14 @@ var OAuthTokenSource = class {
     this.fetchImpl = fetchImpl;
   }
   async mint(account, now2) {
-    if (isServiceAccountSecret(account.secret)) return { ok: false, permanent: true, reason: "This connection is not an OAuth account." };
+    if (!account.secret || isServiceAccountSecret(account.secret)) return { ok: false, permanent: true, reason: "This connection is not an OAuth account." };
     if (!account.oauth) return { ok: false, permanent: true, reason: "This connection has no token endpoint." };
+    const secret = account.secret;
     let answer;
     try {
       answer = await postForm(this.fetchImpl, account.oauth.tokenEndpoint, {
         grant_type: "refresh_token",
-        refresh_token: account.secret.refresh,
+        refresh_token: secret.refresh,
         client_id: account.oauth.clientId,
         client_secret: account.oauth.clientSecret
       });
@@ -35297,7 +35304,7 @@ var OAuthTokenSource = class {
       ok: true,
       token,
       expires: now2 + expiresIn * 1e3,
-      ...rotated && rotated !== account.secret.refresh ? { secret: { refresh: rotated } } : {}
+      ...rotated && rotated !== secret.refresh ? { secret: { refresh: rotated } } : {}
     };
   }
 };
@@ -35360,6 +35367,7 @@ x\r
   }
 }
 function tokenSourceFor(account, fetchImpl = fetch) {
+  if (account.kind === "google_account") throw new Error("a google_account Drive connection has no token source; it borrows the Google account's token");
   return account.kind === "service_account" ? new ServiceAccountTokenSource(fetchImpl) : new OAuthTokenSource(fetchImpl);
 }
 
@@ -35381,19 +35389,33 @@ function isKind2(v) {
 function modeLabel(mode) {
   return mode === "rw" ? "read and write" : "read-only";
 }
+function whyWritesFail(kind, reason) {
+  const quota = /storage quota|storageQuotaExceeded/i.test(reason);
+  if (kind === "service_account") {
+    return "A service account has no storage of its own, so it can only write to a folder on a shared drive, or with domain-wide delegation. Mount it read-only instead.";
+  }
+  return quota ? "That is Google's storage-quota rule, which means the token is not acting as an account that owns storage. Mount it read-only instead." : "That account owns storage, so a folder in its own My Drive can be written. A folder somebody else shared read-only cannot, and neither can one under Computers in Drive for desktop \u2014 Google refuses new files in those through the API whoever asks. Check the sharing in Drive, or mount it read-only.";
+}
 function agentList(agents) {
   const names = agents.map((a) => a.name).filter(Boolean);
   if (names.length === 0) return "no agent yet";
   if (names.length === 1) return names[0];
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
+function sourceLabel(account) {
+  const label = account?.accountLabel;
+  if (account?.kind === "google_account") {
+    return `using the Google account you connected${label ? ` (${label})` : ""}`;
+  }
+  return `using a service account key${label ? ` (${label})` : ""}`;
+}
 function summarize2(p) {
   const f = p.folder;
   switch (p.kind) {
     case "connect_account":
-      return `Connect Google Drive (${p.account?.accountLabel ?? "a Google account"})`;
+      return `Connect Google Drive folders ${sourceLabel(p.account)}`;
     case "replace_account":
-      return `Reconnect Google Drive (${p.account?.accountLabel ?? "a Google account"})`;
+      return `Reconnect Google Drive folders ${sourceLabel(p.account)}`;
     case "forget_account":
       return "Disconnect Google Drive and unmount every folder";
     case "add_folder":
@@ -35431,7 +35453,7 @@ function parseProposal2(payload) {
   if (!changeId || !isKind2(kind)) throw new Error("malformed drive.propose payload");
   const acc = payload.account;
   const oauth = acc?.oauth;
-  const accKind = acc?.kind === "oauth" ? "oauth" : acc?.kind === "service_account" ? "service_account" : null;
+  const accKind = acc?.kind === "oauth" || acc?.kind === "service_account" || acc?.kind === "google_account" ? acc.kind : null;
   const accScope = str3(acc?.scope);
   const account = accKind && accScope ? {
     kind: accKind,
@@ -35491,28 +35513,107 @@ var DriveFirewall = class {
       const folders = this.foldersFor(vmId);
       if (folders.length === 0) continue;
       const account = this.store.accounts[folders[0].accountId];
-      if (!account?.access || account.failed) continue;
+      if (!account) continue;
+      const token = this.tokenOf(account);
+      if (!token) continue;
       out.push({
         placeholder: this.store.agents[vmId].placeholder,
         match_domain: "www.googleapis.com",
-        secret: account.access.token,
+        secret: token,
         locations: ["header:authorization"],
         vm_id: vmId
       });
     }
     return out;
   }
-  /** What the console may see: no secret, no access token. */
+  // ---- borrowing the org Google account (T-78) ----
+  /** The org Google account, or null when there is none to borrow or its module would not start. */
+  borrowed() {
+    return this.opts.googleAccount?.() ?? null;
+  }
+  /**
+   * The token to swap in for this account right now, or null when there is none.
+   *
+   * The one place the two credential models meet. A `google_account` connection reads the Google
+   * module's live token — there is no copy here to go stale — while the other kinds read what they
+   * minted. `failed` is still honoured for both: a Drive connection whose own mint was refused for
+   * good is dead whatever the Google account is doing.
+   */
+  tokenOf(account) {
+    if (account.failed) return null;
+    if (account.kind !== "google_account") return account.access?.token ?? null;
+    return this.borrowed()?.token ?? null;
+  }
+  /**
+   * Why a borrowed connection cannot be used, in the words the console shows, or null when it can.
+   *
+   * Said as a sentence rather than a flag because each reason has a different fix and the person
+   * reading it is on a different page from the one that fixes it.
+   */
+  borrowedProblem() {
+    const g = this.borrowed();
+    if (!g) return "This organisation has no Google account connected, so there is no Drive access to use. Connect one on the Google page, with Drive ticked.";
+    if (g.failed) return g.failed;
+    if (!g.token) return "Your Google account has no working token right now. The Google page says why.";
+    if (g.driveScope === null) return "Your Google account was connected without Drive access. Reconnect it on the Google page with Drive ticked.";
+    if (g.driveScope === "file") {
+      return 'Your Google account grants Drive as "Only its own files", which means the agents can only see files they created \u2014 an existing folder would mount empty. Reconnect it with Drive on "Read only" or "Full".';
+    }
+    return null;
+  }
+  /**
+   * The widest scope a borrowed connection may be stored with, or null when it may not be stored.
+   * Google decides this, not us: the scope on the account row has to be one consent actually granted
+   * or every mount would be a lie about what it can do.
+   */
+  borrowedScope() {
+    return scopeForBorrowed(this.borrowed());
+  }
+  /**
+   * What this connection can actually do **right now**, which for a borrowed account is not always
+   * what was stored.
+   *
+   * A Google account reconnected with Drive on "Read only" narrows a connection that was stored with
+   * the write scope, and nothing writes to `drive.enc` when it happens. `borrowedProblem()` does not
+   * catch it, deliberately: read-only is still a working connection and the folders should stay up.
+   * But everything downstream — what the console says, what rclone is told, whether a folder mounts
+   * read-write — has to follow the narrower of the two, or the box collects 403s on every write with
+   * the page reporting write access.
+   */
+  effectiveScope(account) {
+    if (account.kind !== "google_account") return account.scope;
+    const granted = this.borrowedScope();
+    if (!granted) return account.scope;
+    return granted === DRIVE_READ_SCOPE ? DRIVE_READ_SCOPE : account.scope;
+  }
+  /** Read-write folders this connection cannot serve right now, so callers can say so once. */
+  narrowedToReadOnly(account) {
+    return account.scope === DRIVE_WRITE_SCOPE && this.effectiveScope(account) === DRIVE_READ_SCOPE;
+  }
+  /**
+   * What the console may see: no secret, no access token.
+   *
+   * For a borrowed connection `connected` and `failed` are **derived from the Google account** on
+   * every read rather than stored, so a Google account that expired, was disconnected or came back
+   * needs nothing reconciled here — this answer simply changes.
+   */
   summary() {
     return {
-      accounts: Object.entries(this.store.accounts).map(([id, a]) => ({
-        id,
-        kind: a.kind,
-        accountLabel: a.accountLabel,
-        scope: a.scope,
-        connected: !!a.access && !a.failed,
-        failed: a.failed
-      })),
+      accounts: Object.entries(this.store.accounts).map(([id, a]) => {
+        const problem = a.kind === "google_account" ? this.borrowedProblem() : null;
+        return {
+          id,
+          kind: a.kind,
+          // The Google account's own address, as that module read it back off the `id_token`. Kept
+          // fresh here rather than frozen at connect time: reconnecting Google can change it.
+          accountLabel: a.kind === "google_account" ? this.borrowed()?.accountLabel ?? a.accountLabel : a.accountLabel,
+          // The EFFECTIVE scope, so a Google account reconnected with less does not leave the console
+          // saying "Connected, with write access" over mounts that can no longer write.
+          scope: this.effectiveScope(a),
+          connected: !!this.tokenOf(a),
+          failed: a.failed ?? problem ?? (this.narrowedToReadOnly(a) ? 'Your Google account now grants Drive as "Read only", so the folders you mounted read-write are mounted read-only. Reconnect it on the Google page with Drive on "Full" to get writes back.' : null)
+        };
+      }),
       folders: Object.entries(this.store.folders).map(([id, f]) => ({ id, folderId: f.folderId, name: f.name, mode: f.mode, agents: [...f.agents] }))
     };
   }
@@ -35621,7 +35722,17 @@ var DriveFirewall = class {
     }
     if (p.kind === "connect_account" || p.kind === "replace_account") {
       if (!p.account) throw new Error("the proposal is missing the account");
-      if (!p.secret) throw new Error("no secret in the proposal");
+      if (p.account.kind === "google_account") {
+        if (p.secret) throw new Error("a Google-account connection must not carry a secret");
+        const problem = this.borrowedProblem();
+        if (problem) throw new Error(problem);
+        const allowed = this.borrowedScope();
+        if (p.account.scope !== allowed && !(allowed === DRIVE_WRITE_SCOPE && p.account.scope === DRIVE_READ_SCOPE)) {
+          throw new Error("Your Google account does not grant that much of Drive. Reconnect it with more access, or connect Drive folders read-only.");
+        }
+      } else if (!p.secret) {
+        throw new Error("no secret in the proposal");
+      }
       if (p.account.kind === "oauth" && !p.account.oauth) throw new Error("an OAuth connection needs its token endpoint, client id and client secret");
       if (p.account.scope !== DRIVE_WRITE_SCOPE) {
         const writable = Object.values(this.store.folders).filter((f) => f.mode === "rw");
@@ -35637,6 +35748,10 @@ var DriveFirewall = class {
       if (!existing) throw new Error("Connect a Google account before adding folders.");
       if ((p.folder?.mode ?? "ro") === "rw" && existing.account.scope !== DRIVE_WRITE_SCOPE) {
         throw new Error("This Google connection is read-only. Reconnect it with write access to make a folder writable.");
+      }
+      if (existing.account.kind === "google_account") {
+        const problem = this.borrowedProblem();
+        if (problem) throw new Error(problem);
       }
     }
     if (p.kind === "add_folder" || p.kind === "edit_folder") {
@@ -35677,17 +35792,24 @@ var DriveFirewall = class {
       placeholder: agent?.placeholder ?? null,
       // rclone writes this into its config. It changes nothing about what the box can do — the
       // grant is on the token the proxy swaps in — but it keeps the config honest.
-      scope: account?.scope ?? DRIVE_WRITE_SCOPE,
+      scope: account ? this.effectiveScope(account) : DRIVE_WRITE_SCOPE,
       // False when the organisation has no working Google connection: the box reports the mounts
-      // as unconfigured instead of starting them to collect 401s.
-      connected: !!account?.access && !account.failed,
+      // as unconfigured instead of starting them to collect 401s. For a borrowed connection that
+      // follows the Google account, which is why `onGoogleAccountChanged` re-pushes.
+      connected: !!account && !!this.tokenOf(account),
       defaults: {
         exportFormats: DRIVE_EXPORT_FORMATS,
         skipGdocs: DRIVE_SKIP_GDOCS,
         vfsCacheMaxSize: DRIVE_VFS_CACHE_MAX_SIZE,
         vfsCacheMinFreeSpace: DRIVE_VFS_CACHE_MIN_FREE_SPACE
       },
-      mounts: folders.map((f) => ({ name: f.name, folderId: f.folderId, mode: f.mode }))
+      // A folder stored read-write is pushed read-only while the credential cannot write, so the box
+      // refuses the write itself instead of letting every save reach Google and come back 403.
+      mounts: folders.map((f) => ({
+        name: f.name,
+        folderId: f.folderId,
+        mode: account && this.narrowedToReadOnly(account) ? "ro" : f.mode
+      }))
     };
   }
   async pushAgents(vmIds) {
@@ -35709,27 +35831,39 @@ var DriveFirewall = class {
     switch (p.kind) {
       case "connect_account":
       case "replace_account": {
-        if (!p.account || !p.secret) throw new Error("the proposal is missing the account or its secret");
+        if (!p.account) throw new Error("the proposal is missing the account");
         const id = p.accountId ?? "account";
         const existing = this.theAccount();
+        const borrowing = p.account.kind === "google_account";
+        if (!borrowing && !p.secret) throw new Error("the proposal is missing the account or its secret");
         const account = {
           kind: p.account.kind,
-          accountLabel: p.account.accountLabel,
+          accountLabel: borrowing ? this.borrowed()?.accountLabel ?? p.account.accountLabel : p.account.accountLabel,
           scope: p.account.scope,
           ...p.account.oauth ? { oauth: p.account.oauth } : {},
-          secret: p.secret,
+          secret: borrowing ? null : p.secret,
           access: null,
           failed: null,
           updatedAt: new Date(this.now()).toISOString()
         };
-        const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
-        if (!minted.ok) throw new Error(`Google refused this connection: ${minted.reason}`);
-        const reachable = await probeDrive(minted.token, this.fetchImpl);
-        if (!reachable.ok && reachable.permanent) throw new Error(`The key works, but Drive does not answer for it: ${reachable.reason}`);
+        let token;
+        if (borrowing) {
+          const live = this.borrowed()?.token;
+          if (!live) throw new Error(this.borrowedProblem() ?? "Your Google account has no working token right now.");
+          token = live;
+        } else {
+          const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
+          if (!minted.ok) throw new Error(`Google refused this connection: ${minted.reason}`);
+          account.access = { token: minted.token, expires: minted.expires };
+          if (minted.secret) account.secret = minted.secret;
+          if (minted.accountLabel !== void 0 && minted.accountLabel !== null) account.accountLabel = minted.accountLabel;
+          token = minted.token;
+        }
+        const reachable = await probeDrive(token, this.fetchImpl);
+        if (!reachable.ok && reachable.permanent) {
+          throw new Error(borrowing ? `Drive does not answer for your Google account: ${reachable.reason}` : `The key works, but Drive does not answer for it: ${reachable.reason}`);
+        }
         if (!reachable.ok) this.log(`[drive] Drive did not answer the check (${reachable.reason}); storing the connection anyway`);
-        account.access = { token: minted.token, expires: minted.expires };
-        if (minted.secret) account.secret = minted.secret;
-        if (minted.accountLabel !== void 0 && minted.accountLabel !== null) account.accountLabel = minted.accountLabel;
         this.store.accounts = { [id]: account };
         for (const f of Object.values(this.store.folders)) f.accountId = id;
         this.save();
@@ -35737,7 +35871,7 @@ var DriveFirewall = class {
         const targets = Object.keys(this.store.agents).filter((vmId) => this.foldersFor(vmId).length > 0);
         const failed = await this.pushAgents(targets);
         this.log(`[drive] connected ${account.kind} ${account.accountLabel ?? ""} (${existing ? "replaced" : "new"})`);
-        return { accountId: id, accountLabel: account.accountLabel, applied: targets.filter((v) => !failed.some((f) => f.vmId === v)), failed };
+        return { accountId: id, kind: account.kind, accountLabel: account.accountLabel, applied: targets.filter((v) => !failed.some((f) => f.vmId === v)), failed };
       }
       case "forget_account": {
         const before = Object.keys(this.store.agents).filter((vmId) => this.foldersFor(vmId).length > 0);
@@ -35817,21 +35951,48 @@ var DriveFirewall = class {
   async assertWritable(folder, account) {
     if (folder.mode !== "rw") return;
     if (account.failed) throw new Error("This Google connection is not working. Connect the account again, then add the folder.");
-    let token = account.access && account.access.expires - this.now() > 6e4 ? account.access.token : null;
-    if (!token) {
-      const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
-      if (!minted.ok) throw new Error(`Google would not give this connection a token: ${minted.reason}`);
-      const id = Object.entries(this.store.accounts).find(([, a]) => a === account)?.[0];
-      if (id) this.record(id, account, minted);
-      else account.access = { token: minted.token, expires: minted.expires };
-      token = minted.token;
+    let token;
+    if (account.kind === "google_account") {
+      const problem = this.borrowedProblem();
+      if (problem) throw new Error(problem);
+      token = this.borrowed().token;
+    } else {
+      const stored = account.access && account.access.expires - this.now() > 6e4 ? account.access.token : null;
+      if (stored) token = stored;
+      else {
+        const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
+        if (!minted.ok) throw new Error(`Google would not give this connection a token: ${minted.reason}`);
+        const id = Object.entries(this.store.accounts).find(([, a]) => a === account)?.[0];
+        if (id) this.record(id, account, minted);
+        else account.access = { token: minted.token, expires: minted.expires };
+        token = minted.token;
+      }
     }
     const can = await probeFolderWrite(token, folder.folderId, this.fetchImpl);
-    if (!can.ok) {
-      throw new Error(
-        `${folder.name} cannot be mounted read-write. ${can.reason} A service account has no storage of its own, so it can only write to a folder on a shared drive, or with domain-wide delegation. Mount it read-only instead.`
-      );
-    }
+    if (!can.ok) throw new Error(`${folder.name} cannot be mounted read-write. ${can.reason} ${whyWritesFail(account.kind, can.reason)}`);
+  }
+  /**
+   * The org Google account moved (T-78). Re-push the mount set to every agent that borrows it, so
+   * the box's `connected` flag follows the account rather than staying at whatever it was when the
+   * folder was added.
+   *
+   * Compared on a fingerprint, not called blindly: `google.ts` fires `onCredentialsChanged` on every
+   * hourly token refresh, and re-pushing the whole mount set to every box once an hour would be
+   * churn for a payload that did not change. Only the parts that appear in `applyBody` count.
+   */
+  async onGoogleAccountChanged() {
+    const borrowers = Object.values(this.store.accounts).some((a) => a.kind === "google_account");
+    if (!borrowers) return;
+    const g = this.borrowed();
+    const stamp = `${g?.token ? "live" : "dead"}|${g?.driveScope ?? "none"}|${g?.accountLabel ?? ""}`;
+    if (stamp === this.store.borrowedStamp) return;
+    this.store.borrowedStamp = stamp;
+    this.save();
+    const targets = Object.keys(this.store.agents).filter((vmId) => this.foldersFor(vmId).length > 0);
+    if (targets.length === 0) return;
+    this.log(`[drive] the Google account changed (${stamp}); re-applying ${targets.length} agent(s)`);
+    const failed = await this.pushAgents(targets);
+    if (failed.length) this.log(`[drive] could not re-apply on ${failed.map((f) => f.vmId).join(", ")}: ${failed[0].error}`);
   }
   agentsOf(folderRowId) {
     return [...this.store.folders[folderRowId]?.agents ?? []];
@@ -35858,6 +36019,7 @@ var DriveFirewall = class {
       let changed = false;
       for (const [id, account] of Object.entries(this.store.accounts)) {
         if (account.failed) continue;
+        if (account.kind === "google_account") continue;
         if (account.access && account.access.expires - this.now() > DRIVE_REFRESH_AHEAD_MS) continue;
         const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
         if (this.store.accounts[id] !== account) {
@@ -36057,6 +36219,32 @@ var GoogleFirewall = class {
       locations: ["header:authorization"],
       vm_id: vmId
     }));
+  }
+  /**
+   * What the Drive folders module needs to borrow this account's Drive access (T-78).
+   *
+   * This is the ONE place the token crosses between the two modules, and it stays a read: nothing
+   * is copied into `drive.enc`, so there is one refresh loop, one copy of the refresh token and no
+   * second thing to expire. `drive.credentials()` calls this on every proxy sync, which is already
+   * triggered by this module's own refresh through `onCredentialsChanged`.
+   *
+   * `driveScope` is read out of the scopes **consent actually granted**, not out of `driveScope` or
+   * `services`, because those two record what was asked for. Google is the authority on what the
+   * token can do, and the widest scope present is what it can do. Returns null for an account with
+   * no Drive scope at all, which is the case the console has to explain rather than work around.
+   */
+  driveAccess() {
+    const entry = this.theAccount();
+    if (!entry) return null;
+    const a = entry.account;
+    const scopes = new Set(a.scopes);
+    const driveScope = scopes.has("https://www.googleapis.com/auth/drive") ? "full" : scopes.has("https://www.googleapis.com/auth/drive.readonly") ? "readonly" : scopes.has("https://www.googleapis.com/auth/drive.file") ? "file" : null;
+    return {
+      accountLabel: a.accountLabel,
+      token: a.access && !a.failed ? a.access.token : null,
+      driveScope,
+      failed: a.failed
+    };
   }
   /** What the console may see: no secret, no access token, no client secret. */
   summary() {
@@ -102188,8 +102376,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ec01d42" : "unknown",
-  builtAt: true ? "2026-09-27T23:51:56+01:00" : "unknown"
+  commit: true ? "edadaad" : "unknown",
+  builtAt: true ? "2026-09-28T00:01:41+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -102544,6 +102732,10 @@ async function main() {
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
         codeRoutes: () => channels?.codeRoutes() ?? [],
         channelsReady: () => channels !== null,
+        // Lazy on purpose: `google` is built a few lines below this, so a direct reference would be
+        // undefined for ever. Same late binding as `webhooks.gmailAccount`. A Drive connection that
+        // borrows the org Google account (T-78) reads its live token through here and keeps no copy.
+        googleAccount: () => google2?.driveAccess() ?? null,
         onCredentialsChanged: () => runSync(boxKey)
       });
       const ds = drive.summary();
@@ -102576,7 +102768,18 @@ async function main() {
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
         codeRoutes: () => channels?.codeRoutes() ?? [],
         channelsReady: () => channels !== null,
-        onCredentialsChanged: () => runSync(boxKey)
+        // Re-syncing the proxy is not enough for Drive: a folder that borrows this account also has
+        // a `connected` flag on its agent boxes, and the box decides whether to start its mounts
+        // from that. `onGoogleAccountChanged` compares a fingerprint first, so the hourly token
+        // refresh that also lands here does not re-push anything.
+        onCredentialsChanged: async () => {
+          await runSync(boxKey);
+          try {
+            await drive?.onGoogleAccountChanged();
+          } catch (err) {
+            console.error(`[drive] could not re-apply after a Google account change: ${err.message}`);
+          }
+        }
       });
       const gs = google2.summary();
       console.log(
@@ -102973,8 +103176,12 @@ async function main() {
     }
     if (drive) {
       const d = drive;
-      setInterval(() => void d.refreshDue().catch((e) => console.error("[drive] token:", e.message)), DRIVE_TOKEN_POLL_MS);
-      void d.refreshDue().catch((e) => console.error("[drive] token:", e.message));
+      const tick = async () => {
+        await d.refreshDue();
+        await d.onGoogleAccountChanged();
+      };
+      setInterval(() => void tick().catch((e) => console.error("[drive] token:", e.message)), DRIVE_TOKEN_POLL_MS);
+      void tick().catch((e) => console.error("[drive] token:", e.message));
     }
     if (google2) {
       const g = google2;
