@@ -39723,6 +39723,8 @@ function createConnectorGate(opts) {
 
 // src/update.ts
 var SCOPE_PREFIX2 = "update:";
+var UPDATE_WINDOW_MS = 60 * 6e4;
+var UPDATE_POLL_MS = 3e4;
 function str9(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
@@ -39741,10 +39743,85 @@ var UpdateFirewall = class {
   constructor(opts) {
     this.opts = opts;
     this.log = opts.log ?? ((l) => console.log(l));
+    this.now = opts.now ?? Date.now;
     this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode });
   }
   codes;
   log;
+  now;
+  open = /* @__PURE__ */ new Map();
+  timer = null;
+  /**
+   * The boxes updating right now, as vm id → the window's deadline in epoch seconds (the proxy
+   * compares it with `time.time()`). Only this process opens a window, and only once the update was
+   * confirmed, so the control plane cannot open one.
+   */
+  windows() {
+    const out = {};
+    const now2 = this.now();
+    for (const [vmId, w] of this.open) if (w.until > now2) out[vmId] = Math.floor(w.until / 1e3);
+    return out;
+  }
+  async openWindow(target) {
+    const openedAt = this.now();
+    this.open.set(target.vmId, { target, openedAt, until: openedAt + UPDATE_WINDOW_MS, sawRunning: false });
+    try {
+      await this.opts.onWindowsChanged?.();
+    } catch (err) {
+      this.open.delete(target.vmId);
+      throw new Error("Your firewall could not prepare for the update. Try again shortly.", { cause: err });
+    }
+    const pollMs = this.opts.pollMs ?? UPDATE_POLL_MS;
+    if (pollMs > 0 && !this.timer) {
+      this.timer = setInterval(() => void this.pollWindows(), pollMs);
+      this.timer.unref?.();
+    }
+  }
+  async closeWindow(vmId, why) {
+    if (!this.open.delete(vmId)) return;
+    this.log(`[update] window closed for ${vmId} (${why})`);
+    if (this.open.size === 0 && this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    try {
+      await this.opts.onWindowsChanged?.();
+    } catch (err) {
+      this.log(`[update] could not resync after closing the window for ${vmId}: ${err.message}`);
+    }
+  }
+  /**
+   * Ask each updating box how its run is going, and close the window once the run has finished.
+   *
+   * The box answers from a state file, and until cc-reprovision writes its first phase that file
+   * still holds the previous run's `done` or `failed`. So a finished phase only counts once this
+   * window has seen the run in progress, or when it was written after the window opened. A box that
+   * does not answer (it restarts its own agent part way through the run) keeps its window until the
+   * deadline.
+   */
+  async pollWindows() {
+    const now2 = this.now();
+    for (const [vmId, w] of [...this.open]) {
+      if (w.until <= now2) {
+        await this.closeWindow(vmId, "deadline");
+        continue;
+      }
+      let status;
+      try {
+        status = await this.opts.agent.get(w.target, "/update");
+      } catch {
+        continue;
+      }
+      const phase = typeof status?.phase === "string" ? status.phase : "";
+      if (phase === "resolving" || phase === "installing" || phase === "running") {
+        w.sawRunning = true;
+        continue;
+      }
+      if (phase !== "done" && phase !== "failed") continue;
+      const at = typeof status?.at === "string" ? Date.parse(status.at) : NaN;
+      if (w.sawRunning || Number.isFinite(at) && at > w.openedAt) await this.closeWindow(vmId, `run ${phase}`);
+    }
+  }
   handlers() {
     return {
       "update.propose": (p) => this.propose(p),
@@ -39760,7 +39837,14 @@ var UpdateFirewall = class {
     return { vmId: p.agent.vmId, hostname: p.agent.hostname };
   }
   async apply(p) {
-    const r = await this.opts.agent.post(this.target(p), "/update", {});
+    await this.openWindow(this.target(p));
+    let r;
+    try {
+      r = await this.opts.agent.post(this.target(p), "/update", {});
+    } catch (err) {
+      await this.closeWindow(p.agent.vmId, "the box did not start the run");
+      throw err;
+    }
     this.log(`[update] started on ${p.agent.name}`);
     return { vmId: p.agent.vmId, phase: r?.status?.phase ?? "resolving" };
   }
@@ -102104,8 +102188,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e900af8" : "unknown",
-  builtAt: true ? "2026-09-27T20:29:49+01:00" : "unknown"
+  commit: true ? "ec01d42" : "unknown",
+  builtAt: true ? "2026-09-27T23:51:56+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -102284,6 +102368,7 @@ function die(msg) {
 var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http") || FIREWALL_URL.startsWith("http");
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 var identities = [];
+var lastProxyConfig = null;
 var channels = null;
 var llm = null;
 var drive = null;
@@ -102325,6 +102410,7 @@ async function runSync(boxKey) {
     const joined = new Set(tailscale.enabledVmIds());
     cfg.identities = (cfg.identities ?? []).map((i) => ({ ...i, tailscale: joined.has(String(i.vm_id)) }));
   }
+  cfg.identities = withUpdateWindows(cfg.identities);
   if (channels) {
     cfg.credentials = [...cfg.credentials ?? [], ...channels.credentials()];
   }
@@ -102342,9 +102428,27 @@ async function runSync(boxKey) {
     cfg.credentials = [...cfg.credentials ?? [], ...search.credentials()];
   }
   writeProxyConfig(PROXY_CONFIG_DIR, cfg);
+  lastProxyConfig = cfg;
   console.log(
     `[mitm-agent] synced v${record2?.version ?? 0}: ${(cfg.credentials ?? []).length} creds, ${(cfg.rules ?? []).length} rules, ${(cfg.identities ?? []).length} identities, ai review ${aiSettings ? `on (${aiSettings.provider}/${aiSettings.model})` : "off"}, residential exit ${cfg.exit?.enabled ? "on" : "off"}`
   );
+}
+function withUpdateWindows(identities2) {
+  const open = updates?.windows() ?? {};
+  return (identities2 ?? []).map(({ update_until: _ignored, ...i }) => {
+    const until = open[String(i.vm_id)];
+    return until ? { ...i, update_until: until } : i;
+  });
+}
+async function publishUpdateWindows(boxKey) {
+  try {
+    await runSync(boxKey);
+  } catch (err) {
+    if (!lastProxyConfig) throw err;
+    console.error(`[mitm-agent] sync failed (${err.message}); writing the update windows into the last config`);
+    lastProxyConfig = { ...lastProxyConfig, identities: withUpdateWindows(lastProxyConfig.identities) };
+    writeProxyConfig(PROXY_CONFIG_DIR, lastProxyConfig);
+  }
 }
 async function maybeMigrate() {
   if (!MIGRATE_FROM_URL || !MASTER_PASSWORD) return loadOrCreateBoxKey(BOX_KEY_PATH);
@@ -102592,7 +102696,9 @@ async function main() {
     updates = new UpdateFirewall({
       agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
       codeRoutes: () => channels?.codeRoutes() ?? [],
-      channelsReady: () => channels !== null
+      channelsReady: () => channels !== null,
+      // The proxy has to know a box is updating before the run's first download.
+      onWindowsChanged: () => publishUpdateWindows(boxKey)
     });
     selfUpdates = new FirewallUpdate({
       service: new SelfUpdateService({ statePath: SELF_UPDATE_STATE_PATH, confPath: SELF_UPDATE_CONF_PATH }),

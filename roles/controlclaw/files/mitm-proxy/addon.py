@@ -186,6 +186,28 @@ PASSTHROUGH_HOSTS = tuple(h for h in (CONTROL_PLANE_HOST, BACKUP_HOST) if h)
 # DERP over 443. See the doc for what that means for the owner.
 TAILSCALE_HOSTS = ("*.tailscale.com",)
 
+# The package hosts an agent box's own Ansible role downloads from (apt mirrors, NodeSource, npm,
+# pkgs.tailscale.com, downloads.rclone.org, ...), allowed for a box only while it runs a confirmed
+# update (apps/saas/docs/features/agent-updates.md). An update re-runs the role on a box that is
+# already confined to this proxy, so under a deny-by-default policy it would fail at its first
+# download without this.
+#
+#   * The list comes from the role, which writes it into this unit's environment. The control plane
+#     does not send it and no org rule can change it.
+#   * Exact host names only. A wildcard entry is dropped, so a typo in the role cannot turn into
+#     "everything under .com". `*.tailscale.com` in particular stays with TAILSCALE_HOSTS above.
+#   * The window is per box and has a deadline: the mitm-agent writes `update_until` (epoch seconds)
+#     into that box's identity entry when the person confirms the update, and clears it when the run
+#     finishes. The proxy checks the deadline itself, so a window cannot outlive it.
+#   * The request goes to the name it asked for (see `request`), not to whatever IP the box
+#     connected to, and it gets no credential swap and no AI review. It is logged like any other
+#     request, with rule UPDATE_RULE, so the owner sees it in Activity as update traffic.
+UPDATE_RULE = "agent_update"
+UPDATE_HOSTS = tuple(
+    h for h in (p.strip().lower() for p in os.environ.get("MITM_UPDATE_HOSTS", "").split(","))
+    if h and "*" not in h and "." in h
+)
+
 # Dev escape hatches. Every MITM_DEV_* flag is refused unless MITM_ALLOW_DEV_FLAGS=1, which only
 # the smoke-test compose files set; the production systemd unit pins them all to 0. This makes
 # "dev flags are off on secured boxes" a property of the proxy binary, not of a checklist.
@@ -346,6 +368,25 @@ def tailscale_allowed(vm_id: str | None) -> bool:
         if ent.get("vm_id") == vm_id:
             return ent.get("tailscale") is True
     return False
+
+
+def update_window_open(vm_id: str | None) -> bool:
+    """True while THIS box runs a confirmed update: its identity entry carries an `update_until`
+    deadline (epoch seconds, written by the mitm-agent) that has not passed."""
+    if not vm_id:
+        return False
+    for ent in _identities.get():
+        if ent.get("vm_id") == vm_id:
+            try:
+                return float(ent.get("update_until") or 0) > time.time()
+            except (TypeError, ValueError):
+                return False
+    return False
+
+
+def update_traffic(host: str, vm_id: str | None) -> bool:
+    """A request the update window allows: an exact UPDATE_HOSTS name, from a box that is updating."""
+    return bool(UPDATE_HOSTS) and (host or "").lower() in UPDATE_HOSTS and update_window_open(vm_id)
 
 
 def flow_vm_id(flow) -> str | None:
@@ -1657,6 +1698,18 @@ async def request(flow: http.HTTPFlow) -> None:
     flow.metadata["cc_vm_id"] = vm_id
 
     if await _refuse_non_routable_http(flow):
+        return
+
+    # A box running a confirmed update may fetch from the role's package hosts, whatever the org's
+    # rules say (see UPDATE_HOSTS). Over TLS the name the client handshook with must be the same
+    # host, and the request is sent to that name rather than to the address the box connected to,
+    # so a `Host:` header cannot borrow the allowance for some other server. No swap, no AI review.
+    sni = (getattr(flow.client_conn, "sni", None) or "").lower()
+    if update_traffic(host, vm_id) and (not sni or sni == host.lower()):
+        if flow.request.host != host:
+            flow.request.host = host
+        flow.metadata["cc_effect"] = "allow"
+        flow.metadata["cc_rule"] = UPDATE_RULE
         return
 
     rule = match_rule(host, method, path, vm_id)
