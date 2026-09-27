@@ -30611,11 +30611,9 @@ function navigationDest(facts) {
 function checkOrigin(facts, policy) {
   if (!facts.credentialed && (policy.uncredentialed ?? "allow") === "allow") return { ok: true };
   const origin = normalizeOrigin(facts.origin);
-  if (origin === null) {
-    const dest = navigationDest(facts);
-    if (policy.allowTopLevelNavigation && dest === "document") return { ok: true };
-    if (policy.allowFramedNavigation && (dest === "iframe" || dest === "frame")) return { ok: true };
-  }
+  const dest = navigationDest(facts);
+  if (policy.allowTopLevelNavigation && dest === "document") return { ok: true };
+  if (origin === null && policy.allowFramedNavigation && (dest === "iframe" || dest === "frame")) return { ok: true };
   if (facts.secFetchSite === "cross-site") return { ok: false, reason: "cross_site", origin };
   if (origin !== null) {
     const allowed = policy.allowed.map((o) => normalizeOrigin(o)).filter((o) => o !== null);
@@ -31129,8 +31127,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0eefdbc" : "unknown",
-  builtAt: true ? "2026-09-26T19:02:41+01:00" : "unknown"
+  commit: true ? "63bc520" : "unknown",
+  builtAt: true ? "2026-09-27T01:05:32+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
