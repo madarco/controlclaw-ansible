@@ -31168,8 +31168,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "1eebdc1" : "unknown",
-  builtAt: true ? "2026-09-27T17:50:59+01:00" : "unknown"
+  commit: true ? "bc915b6" : "unknown",
+  builtAt: true ? "2026-09-27T23:01:44+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -36659,6 +36659,25 @@ var CLI_TIMEOUT_MS4 = 2e4;
 var JOIN_SETTLE_TRIES = 10;
 var JOIN_SETTLE_DELAY_MS = 1500;
 var sleep5 = (ms) => new Promise((r) => setTimeout(r, ms));
+var TAILSCALE_UNSUPPORTED_MESSAGE = "This agent was built before Tailscale support. Update the agent (or rebuild it) to use Tailscale.";
+var TailscaleUnsupportedError = class extends Error {
+  unsupported = true;
+  constructor() {
+    super(TAILSCALE_UNSUPPORTED_MESSAGE);
+    this.name = "TailscaleUnsupportedError";
+  }
+};
+function isTailscaleUnsupported(err) {
+  return err instanceof Error && err.unsupported === true;
+}
+var UNSUPPORTED_RE = /a password is required|a terminal is required|command not found|\/tailscale: not found|tailscale: No such file/i;
+function looksUnsupported(err) {
+  const e = err;
+  if (e.code === "ENOENT") return true;
+  return UNSUPPORTED_RE.test(`${e.stderr ?? ""}
+${e.stdout ?? ""}
+${e.message ?? ""}`);
+}
 var HOSTNAME_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i;
 function str6(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
@@ -36689,9 +36708,10 @@ var TailscaleService = class {
   async apply(input) {
     if (!HOSTNAME_RE.test(input.hostname)) throw new Error("that hostname is not one a tailnet will accept");
     try {
-      await this.exec("sudo", [this.helper(), "up", input.hostname, input.ssh ? "ssh1" : "ssh0"], UP_TIMEOUT_MS, `${input.authKey}
+      await this.exec("sudo", ["-n", this.helper(), "up", input.hostname, input.ssh ? "ssh1" : "ssh0"], UP_TIMEOUT_MS, `${input.authKey}
 `);
     } catch (err) {
+      if (looksUnsupported(err)) throw new TailscaleUnsupportedError();
       throw new Error(`Tailscale could not join the network: ${execFailureLine(err)}`);
     }
     let status = await this.status();
@@ -36708,8 +36728,9 @@ var TailscaleService = class {
   /** Leave the tailnet. Needs no key, which is why the console can offer it unconditionally. */
   async logout() {
     try {
-      await this.exec("sudo", [this.helper(), "logout"], CLI_TIMEOUT_MS4);
+      await this.exec("sudo", ["-n", this.helper(), "logout"], CLI_TIMEOUT_MS4);
     } catch (err) {
+      if (looksUnsupported(err)) throw new TailscaleUnsupportedError();
       throw new Error(`Tailscale could not leave the network: ${execFailureLine(err)}`);
     }
     this.log("[tailscale] left the tailnet");
@@ -36723,9 +36744,10 @@ var TailscaleService = class {
   async status() {
     let raw;
     try {
-      raw = (await this.exec("sudo", [this.helper(), "status"], CLI_TIMEOUT_MS4)).stdout;
+      raw = (await this.exec("sudo", ["-n", this.helper(), "status"], CLI_TIMEOUT_MS4)).stdout;
     } catch (err) {
-      return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message: execFailureLine(err) };
+      const message = looksUnsupported(err) ? TAILSCALE_UNSUPPORTED_MESSAGE : execFailureLine(err);
+      return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message };
     }
     let parsed;
     try {
@@ -36748,7 +36770,9 @@ var TailscaleService = class {
       ip: null,
       ssh: false,
       backendState,
-      message: backendState === "NeedsLogin" ? "This box is not signed in to a tailnet." : health(parsed.Health)
+      // `Stopped` is what the helper reports while tailscaled is installed but not running, which
+      // is how every box sits until its owner joins it (tailscale-linux.yml in the Ansible role).
+      message: backendState === "NeedsLogin" || backendState === "Stopped" ? "This box is not signed in to a tailnet." : health(parsed.Health)
     };
   }
 };
@@ -36796,6 +36820,10 @@ async function handleTailscale(req, res, url2, service) {
     }
     sendJson(res, 404, { error: "Not found" });
   } catch (err) {
+    if (isTailscaleUnsupported(err)) {
+      sendJson(res, 409, { ok: false, code: "tailscale_unsupported", error: err.message });
+      return;
+    }
     sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });
   }
 }
