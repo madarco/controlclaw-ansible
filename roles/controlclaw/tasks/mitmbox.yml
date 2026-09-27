@@ -310,6 +310,9 @@
       Environment=MITM_CONTROL_PLANE_HOST={{ controlclaw_url | urlsplit('hostname') }}
       # The backup object store: passed through uninspected, same mechanism (defaults/main.yml).
       Environment=MITM_BACKUP_HOST={{ controlclaw_backup_host }}
+      # The package hosts an agent box may reach while it runs a confirmed update, and only then
+      # (agent_update_hosts in defaults/main.yml). Inspected and logged like any other request.
+      Environment=MITM_UPDATE_HOSTS={{ agent_update_hosts | join(',') }}
       # The org's residential exit, written by the mitm-agent from its encrypted store
       # (apps/saas/docs/features/residential-exit.md). An org without one gets
       # `{"enabled": false}` here and every residential rule fails closed.

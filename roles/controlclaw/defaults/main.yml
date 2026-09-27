@@ -280,6 +280,41 @@ org_id: ""                           # org this box serves
 # this firewall. See apps/saas/docs/features/backups.md.
 controlclaw_backup_host: "controlclaw-backups.s3.eu-west-1.amazonaws.com"
 
+# The hosts THIS ROLE downloads from when it re-runs on an agent box during an in-place update
+# (cc-reprovision). The box is confined to the org proxy by then, so under a deny-by-default policy
+# every download would be refused. The firewall allows these hosts for a box only while that box runs
+# a confirmed update, and logs each request as update traffic (controlclaw
+# apps/saas/docs/features/agent-updates.md, MITM_UPDATE_HOSTS in packages/mitm-proxy/addon.py).
+#
+# Exact host names only: the proxy drops wildcard entries. A first provision needs none of this, since
+# the box is not confined until vm-agent-start.yml, the last step of the play.
+#
+# Adding a download to the role means adding its host here, and the new list reaches a firewall only
+# when that firewall is updated. Keep it to hosts the role itself fetches from. Tailscale's own
+# control and relay hosts are NOT here: those are allowed per box, after the owner joins it to a
+# tailnet (TAILSCALE_HOSTS in the proxy).
+agent_update_hosts:
+  # cc-reprovision: the commit to install (api.github.com) and the clone itself (github.com)
+  - github.com
+  - api.github.com
+  # gog.yml: a GitHub release download redirects to one of these
+  - objects.githubusercontent.com
+  - release-assets.githubusercontent.com
+  # apt: the Ubuntu mirror of the Hetzner image, and the upstream ones the role names
+  - mirror.hetzner.com
+  - archive.ubuntu.com
+  - security.ubuntu.com
+  # nodejs.yml, docker-linux.yml, browser-stream.yml (Chrome), caddy.yml, tailscale-linux.yml
+  - deb.nodesource.com
+  - download.docker.com
+  - dl.google.com
+  - dl.cloudsmith.io
+  - pkgs.tailscale.com
+  # rclone.yml
+  - downloads.rclone.org
+  # openclaw.yml, openclaw-search.yml, nodejs.yml (pnpm), vm-agent.yml (pnpm install)
+  - registry.npmjs.org
+
 # App integrations: the OpenConnector runtime on the firewall (tasks/connector.yml). Version and
 # digest must match apps/saas/app/(integrations)/lib/connector-catalog.ts in the control plane.
 connector_image: "ghcr.io/oomol-lab/open-connector"

@@ -16,7 +16,8 @@
 #
 # Egress: nothing here widens it. On a first provision the box is not confined yet (the vm-agent
 # confines it as the last step), so the downloads below go out directly. On an in-place update they
-# go through the org proxy like every other download the role makes. tailscaled itself reaches
+# go through the org proxy like every other download the role makes, which allows pkgs.tailscale.com
+# for the length of the update (agent_update_hosts in defaults/main.yml). tailscaled itself reaches
 # `*.tailscale.com` only once the org firewall has recorded a join for this box (mitm-proxy/addon.py,
 # TAILSCALE_HOSTS).
 
