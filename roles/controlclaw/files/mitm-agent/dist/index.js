@@ -35195,7 +35195,11 @@ var SERVICE_PROBES = {
   gmail: { url: "https://gmail.googleapis.com/gmail/v1/users/me/profile", api: "Gmail API" },
   calendar: { url: "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1", api: "Calendar API" },
   drive: { url: "https://www.googleapis.com/drive/v3/files?pageSize=1&fields=files(id)", api: "Drive API" },
-  contacts: { url: "https://people.googleapis.com/v1/people/me?personFields=names", api: "People API" },
+  // The account's own contacts, not `people/me`: reading the signed-in person needs the `profile`
+  // scope, which a connection never asks for, so `people/me` refused every Contacts grant with
+  // "Request requires one of the following scopes: [profile]". `connections.list` needs `contacts`
+  // or `contacts.readonly`, and Contacts has one access level, which asks for `contacts`.
+  contacts: { url: "https://people.googleapis.com/v1/people/me/connections?personFields=names&pageSize=1", api: "People API" },
   // Both reach a document through Drive, and neither has a call that needs no id. So a connection
   // with Sheets or Docs ticked and the Drive API switched off IS refused here, by design — it would
   // otherwise be refused on the agent's first command instead. The setup doc says so.
@@ -37746,7 +37750,7 @@ var LlmFirewall = class {
         await this.opts.agent.post(this.target(vmId), "/llm/apply", body, call);
         this.rememberPushed(vmId, body);
       } catch (err) {
-        failed.push({ vmId, error: err.message });
+        failed.push({ vmId, error: err.message, ...isAgentTimeout(err) ? { timedOut: true } : {} });
       }
     }
     this.save();
@@ -102100,8 +102104,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "1eebdc1" : "unknown",
-  builtAt: true ? "2026-09-27T17:50:59+01:00" : "unknown"
+  commit: true ? "e900af8" : "unknown",
+  builtAt: true ? "2026-09-27T20:29:49+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
