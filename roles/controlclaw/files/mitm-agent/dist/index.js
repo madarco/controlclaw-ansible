@@ -34134,6 +34134,7 @@ var AGENT_PATH_PREFIX = "/__cc/agent";
 var TIMEOUT_MS = 25e3;
 var BACKUP_TIMEOUT_MS = 60 * 6e4;
 var APPROVE_TIMEOUT_MS = 7e4;
+var LLM_PUSH_TIMEOUT_MS = 9e4;
 function isAgentTimeout(err) {
   return err instanceof Error && err.timedOut === true;
 }
@@ -34174,9 +34175,9 @@ function makeAgentClient(opts) {
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
   const backupTimeoutMs = opts.backupTimeoutMs ?? BACKUP_TIMEOUT_MS;
   const approveTimeoutMs = opts.approveTimeoutMs ?? APPROVE_TIMEOUT_MS;
-  async function request(agent, method, path, body) {
+  async function request(agent, method, path, body, call) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutFor(path, { timeoutMs, backupTimeoutMs, approveTimeoutMs }));
+    const timer = setTimeout(() => controller.abort(), call?.timeoutMs ?? timeoutFor(path, { timeoutMs, backupTimeoutMs, approveTimeoutMs }));
     try {
       const res = await fetchImpl(`https://${agent.hostname}${AGENT_PATH_PREFIX}${path}`, {
         method,
@@ -34207,7 +34208,7 @@ function makeAgentClient(opts) {
     }
   }
   return {
-    post: (agent, path, body) => request(agent, "POST", path, body),
+    post: (agent, path, body, call) => request(agent, "POST", path, body, call),
     get: (agent, path) => request(agent, "GET", path)
   };
 }
@@ -37656,7 +37657,7 @@ var LlmFirewall = class {
     const refreshed = this.refreshCredential(payload.refresh);
     this.save();
     if (refreshed) await this.opts.onCredentialsChanged?.();
-    const failed = await this.pushAgents([vmId], []);
+    const failed = await this.pushAgents([vmId], [], { timeoutMs: LLM_PUSH_TIMEOUT_MS });
     this.log(`[llm] re-applied ${agent.bindings.length} provider(s) on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
     return {
       ok: failed.length === 0,
@@ -37737,12 +37738,12 @@ var LlmFirewall = class {
     const fallback = bindings.find((b) => b !== primary && b.role === "secondary");
     return { model: { primary: primary?.model ?? null, fallbacks: fallback ? [fallback.model] : [] }, credentials, remove, ...this.memoryFor(vmId, bindings) };
   }
-  async pushAgents(vmIds, remove) {
+  async pushAgents(vmIds, remove, call) {
     const failed = [];
     for (const vmId of vmIds) {
       const body = this.applyBody(vmId, remove);
       try {
-        await this.opts.agent.post(this.target(vmId), "/llm/apply", body);
+        await this.opts.agent.post(this.target(vmId), "/llm/apply", body, call);
         this.rememberPushed(vmId, body);
       } catch (err) {
         failed.push({ vmId, error: err.message });
@@ -102099,8 +102100,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "63bc520" : "unknown",
-  builtAt: true ? "2026-09-27T01:05:32+01:00" : "unknown"
+  commit: true ? "1eebdc1" : "unknown",
+  builtAt: true ? "2026-09-27T17:50:59+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

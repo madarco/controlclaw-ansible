@@ -30604,16 +30604,19 @@ function normalizeOrigin(origin) {
 function isStateChanging(facts) {
   return facts.isUpgrade || !SAFE_METHODS.has(facts.method.toUpperCase());
 }
-function navigationDest(facts) {
-  if (isStateChanging(facts)) return null;
-  return facts.secFetchMode === "navigate" ? facts.secFetchDest : null;
+var EMBEDDED_DESTS = /* @__PURE__ */ new Set(["iframe", "frame", "fencedframe", "embed", "object"]);
+function navigationKind(facts) {
+  if (isStateChanging(facts) || facts.secFetchMode !== "navigate") return null;
+  return EMBEDDED_DESTS.has(facts.secFetchDest ?? "") ? "framed" : "top-level";
 }
 function checkOrigin(facts, policy) {
   if (!facts.credentialed && (policy.uncredentialed ?? "allow") === "allow") return { ok: true };
   const origin = normalizeOrigin(facts.origin);
-  const dest = navigationDest(facts);
-  if (policy.allowTopLevelNavigation && dest === "document") return { ok: true };
-  if (origin === null && policy.allowFramedNavigation && (dest === "iframe" || dest === "frame")) return { ok: true };
+  const navigation = navigationKind(facts);
+  if (policy.allowTopLevelNavigation && navigation === "top-level") return { ok: true };
+  if (origin === null && policy.allowFramedNavigation && navigation === "framed" && (facts.secFetchDest === "iframe" || facts.secFetchDest === "frame")) {
+    return { ok: true };
+  }
   if (facts.secFetchSite === "cross-site") return { ok: false, reason: "cross_site", origin };
   if (origin !== null) {
     const allowed = policy.allowed.map((o) => normalizeOrigin(o)).filter((o) => o !== null);
@@ -30777,7 +30780,12 @@ function sendJson(res, status, body, extraHeaders = {}) {
 }
 
 // src/routes/access.ts
-var DASHBOARD_TIMEOUT_MS = 2e4;
+var DASHBOARD_BUDGET_MS = 4e4;
+var DASHBOARD_RETRY_WAIT_MS = 3e3;
+var DASHBOARD_MIN_ATTEMPT_MS = 5e3;
+function openclawBin() {
+  return process.env.OPENCLAW_BIN ?? "/usr/bin/openclaw";
+}
 var NOVNC_URL = "/__cc/novnc/vnc_lite.html?path=__cc/novnc/websockify&scale=1";
 function keysDir() {
   return process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
@@ -30888,6 +30896,7 @@ h1{font-size:1.2rem;margin:0 0 .25rem;letter-spacing:-.01em}
 .err{display:none;margin-top:1.25rem;padding:.9rem 1rem;border-radius:12px;background:color-mix(in srgb,var(--bad) 10%,transparent);color:var(--bad);font-size:14px}
 .err.show{display:block}
 a.btn{display:inline-block;margin-top:1.25rem;padding:.55rem .9rem;border-radius:10px;background:var(--brand);color:#fff;text-decoration:none;font-weight:600;font-size:14px}
+a.btn.alt{margin-left:.5rem;background:transparent;color:var(--brand);border:1px solid var(--line)}
 p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink2)}
 .foot{margin-top:1.5rem;font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:.4rem}
 `;
@@ -30911,13 +30920,16 @@ function loginPage(hostname) {
   <li id="s3"><span class="dot"></span>Loading OpenClaw</li>
 </ol>
 <div class="err" id="err"></div>
-<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>`,
+<p class="note" id="note" style="display:none"></p>
+<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>
+<a class="btn alt" id="anyway" href="/" style="display:none">Continue anyway</a>`,
     `
 (async () => {
   const $ = (id) => document.getElementById(id);
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const step = (n) => { for (let i = 1; i <= 3; i++) { const el = $('s' + i); el.className = i < n ? 'done' : i === n ? 'active' : ''; } };
   const fail = (msg) => { $('h').textContent = 'Could not open the agent'; for (let i = 1; i <= 3; i++) $('s' + i).className = ''; $('err').textContent = msg; $('err').className = 'err show'; $('back').style.display = 'inline-block'; };
+  const notPaired = (next) => { $('h').textContent = 'Your agent is still starting'; $('s1').className = 'done'; $('s2').className = ''; $('s3').className = ''; $('note').textContent = 'This browser could not be paired with OpenClaw yet. Wait a minute, then click Open again in your ControlClaw console.'; $('note').style.display = 'block'; $('back').style.display = 'inline-block'; $('anyway').href = next || '/'; $('anyway').style.display = 'inline-block'; };
   const t = new URLSearchParams(location.hash.slice(1)).get('t');
   history.replaceState(null, '', location.pathname);
   if (!t) { fail('This page only works from the Open button in your ControlClaw console.'); return; }
@@ -30931,6 +30943,7 @@ function loginPage(hostname) {
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
+  if (d.paired === false) { notPaired(d.next); return; }
   await wait(450);
   step(3); await wait(350);
   location.replace(d.next || '/');
@@ -30977,32 +30990,53 @@ function browserPage(hostname) {
 })();`
   );
 }
-function dashboardBootstrapUrl(hostname) {
+function parseDashboardOutput(stdout, hostname, err) {
+  let out = null;
+  try {
+    out = stdout.trim() ? JSON.parse(stdout) : null;
+  } catch {
+    out = null;
+  }
+  if (out?.browserUrl) {
+    try {
+      const params = new URLSearchParams(new URL(out.browserUrl).hash.slice(1));
+      if (params.get("bootstrapToken")) {
+        params.set("gatewayUrl", `wss://${hostname}`);
+        return { url: `/#${params.toString()}` };
+      }
+    } catch {
+    }
+    return { reason: "the pairing link had no bootstrap token", retryable: false };
+  }
+  if (err?.code === "ENOENT") return { reason: "the OpenClaw CLI is not installed", retryable: false };
+  if (err?.killed) return { reason: "the OpenClaw CLI did not answer in time", retryable: false };
+  if (out?.ok === false) return { reason: out.reason || "OpenClaw could not issue a pairing link", retryable: true };
+  return { reason: err ? `the OpenClaw CLI failed: ${err.message.split("\n")[0]}` : "the OpenClaw CLI printed nothing usable", retryable: false };
+}
+function runDashboard(hostname, timeoutMs) {
   return new Promise((resolve2) => {
     execFile(
-      "/usr/bin/openclaw",
+      openclawBin(),
       ["dashboard", "--json", "--no-open"],
-      { timeout: DASHBOARD_TIMEOUT_MS, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } },
-      (err, stdout) => {
-        if (err) {
-          console.error("[access] openclaw dashboard failed:", err.message);
-          return resolve2(null);
-        }
-        try {
-          const out = JSON.parse(stdout);
-          if (!out.browserUrl) return resolve2(null);
-          const fragment = new URL(out.browserUrl).hash.slice(1);
-          const params = new URLSearchParams(fragment);
-          if (!params.get("bootstrapToken")) return resolve2(null);
-          params.set("gatewayUrl", `wss://${hostname}`);
-          resolve2(`/#${params.toString()}`);
-        } catch (e) {
-          console.error("[access] could not parse dashboard output:", e.message);
-          resolve2(null);
-        }
-      }
+      { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } },
+      (err, stdout) => resolve2(parseDashboardOutput(String(stdout ?? ""), hostname, err))
     );
   });
+}
+async function dashboardBootstrapUrl(hostname, opts = {}) {
+  const run3 = opts.run ?? runDashboard;
+  const deadline = Date.now() + (opts.budgetMs ?? DASHBOARD_BUDGET_MS);
+  let last = { reason: "no time left to ask OpenClaw", retryable: false };
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const left = deadline - Date.now();
+    if (left < DASHBOARD_MIN_ATTEMPT_MS) break;
+    last = await run3(hostname, left);
+    if ("url" in last) return last;
+    console.error(`[access] openclaw dashboard failed (attempt ${attempt}): ${last.reason}`);
+    if (!last.retryable || attempt === 2) break;
+    await new Promise((r) => setTimeout(r, opts.retryWaitMs ?? DASHBOARD_RETRY_WAIT_MS));
+  }
+  return last;
 }
 async function handleAccess(req, res, pathname) {
   const vmId = readKey("vm_id");
@@ -31041,14 +31075,21 @@ async function handleAccess(req, res, pathname) {
     }
     const hostname = readKey("vm_hostname");
     let next = "/";
-    if (hostname) next = await dashboardBootstrapUrl(hostname) ?? next;
-    if (next === "/") {
+    let paired = false;
+    if (hostname) {
+      const bootstrap2 = await dashboardBootstrapUrl(hostname);
+      if ("url" in bootstrap2) {
+        next = bootstrap2.url;
+        paired = true;
+      }
+    }
+    if (!paired) {
       const gatewayToken = readKey("openclaw_gateway_token");
       if (gatewayToken) next = `/#token=${encodeURIComponent(gatewayToken)}`;
     }
     const session = await issueSession(vmId, { canWrite: payload.canWrite === true });
     const install = installId(readKey("openclaw_gateway_token"), vmId);
-    json(res, 200, { next, install }, { "Set-Cookie": sessionCookie(session) });
+    json(res, 200, { next, install, paired }, { "Set-Cookie": sessionCookie(session) });
     return;
   }
   if (pathname === "/__cc/browser" && req.method === "GET") {
@@ -31127,8 +31168,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "63bc520" : "unknown",
-  builtAt: true ? "2026-09-27T01:05:32+01:00" : "unknown"
+  commit: true ? "1eebdc1" : "unknown",
+  builtAt: true ? "2026-09-27T17:50:59+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
