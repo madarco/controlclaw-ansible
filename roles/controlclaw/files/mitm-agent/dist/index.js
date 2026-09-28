@@ -35461,6 +35461,11 @@ function scopeForBorrowed(account) {
   if (account?.driveScope === "readonly") return DRIVE_READ_SCOPE;
   return null;
 }
+function mintRefusal(answer) {
+  const code = str2(answer.body.error) ?? "";
+  const rateLimited = answer.status === 429 || /rate_?limit/i.test(code);
+  return { ok: false, permanent: isPermanentRefusal(answer.status, answer.body), reason: reasonOf(answer.body, answer.status), ...rateLimited ? { rateLimited } : {} };
+}
 var ServiceAccountTokenSource = class {
   constructor(fetchImpl = fetch) {
     this.fetchImpl = fetchImpl;
@@ -35482,9 +35487,7 @@ var ServiceAccountTokenSource = class {
       return { ok: false, permanent: false, reason: err.message };
     }
     const token = str2(answer.body.access_token);
-    if (answer.status !== 200 || !token) {
-      return { ok: false, permanent: isPermanentRefusal(answer.status, answer.body), reason: reasonOf(answer.body, answer.status) };
-    }
+    if (answer.status !== 200 || !token) return mintRefusal(answer);
     const expiresIn = typeof answer.body.expires_in === "number" ? answer.body.expires_in : 3600;
     return { ok: true, token, expires: now2 + expiresIn * 1e3, accountLabel: sa.clientEmail };
   }
@@ -35510,7 +35513,7 @@ var OAuthTokenSource = class {
     }
     const token = str2(answer.body.access_token);
     if (answer.status !== 200 || !token) {
-      return { ok: false, permanent: isPermanentRefusal(answer.status, answer.body), reason: reasonOf(answer.body, answer.status) };
+      return mintRefusal(answer);
     }
     const expiresIn = typeof answer.body.expires_in === "number" ? answer.body.expires_in : 3600;
     const rotated = str2(answer.body.refresh_token);
@@ -35532,7 +35535,8 @@ async function probeDrive(token, fetchImpl = fetch) {
     });
     if (res.ok) return { ok: true };
     const body = await res.json().catch(() => ({}));
-    const message2 = body.error?.message ?? `Drive answered ${res.status}`;
+    if (classifyDriveError(res.status, body) === "rate_limited") return { ok: false, permanent: false, reason: "Google is limiting requests right now." };
+    const message2 = googleMessage(body) ?? `Drive answered ${res.status}`;
     return { ok: false, permanent: isPermanentApiRefusal(res.status, body), reason: ensureSentence(message2.split(" If you enabled")[0].trim()) };
   } catch (err) {
     return { ok: false, permanent: false, reason: err.name === "AbortError" ? "Google did not answer in time." : err.message };
@@ -35540,9 +35544,64 @@ async function probeDrive(token, fetchImpl = fetch) {
     clearTimeout(timer);
   }
 }
-async function probeFolderWrite(token, folderId, fetchImpl = fetch) {
+var RATE_LIMIT_REASONS = /* @__PURE__ */ new Set(["userRateLimitExceeded", "rateLimitExceeded", "dailyLimitExceeded", "quotaExceeded"]);
+var NO_ACCESS_REASONS = /* @__PURE__ */ new Set([
+  "insufficientFilePermissions",
+  "insufficientPermissions",
+  "forbidden",
+  "notFound",
+  "cannotAddParent",
+  "domainPolicy",
+  "appNotAuthorizedToFile"
+]);
+function googleMessage(body) {
+  const e = body.error;
+  return e && typeof e === "object" ? str2(e.message) : null;
+}
+function classifyDriveError(status, body) {
+  const e = body.error;
+  const shaped = e && typeof e === "object" ? e : void 0;
+  const reasons = Array.isArray(shaped?.errors) ? shaped.errors.map((x) => x && typeof x.reason === "string" ? x.reason : "") : [];
+  const grpc = typeof shaped?.status === "string" ? shaped.status : "";
+  const message2 = googleMessage(body) ?? "";
+  if (status === 429 || reasons.some((r) => RATE_LIMIT_REASONS.has(r))) return "rate_limited";
+  if (reasons.includes("storageQuotaExceeded") || /storage quota/i.test(message2)) return "storage_quota";
+  if (grpc === "RESOURCE_EXHAUSTED") return "rate_limited";
+  if (reasons.length === 0 && !grpc && /rate limit exceeded/i.test(message2)) return "rate_limited";
+  if (reasons.some((r) => NO_ACCESS_REASONS.has(r)) || grpc === "PERMISSION_DENIED" || grpc === "NOT_FOUND") return "no_access";
+  if (status === 403 || status === 404) return "no_access";
+  return "other";
+}
+function retryAfterMs(header, now2) {
+  if (!header) return null;
+  const trimmed = header.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1e3;
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? null : Math.max(0, at - now2);
+}
+var WRITE_CHECK_BUDGET_MS = 2e4;
+var WRITE_CHECK_TRIES = 3;
+var WRITE_CHECK_BACKOFF_MS = 2e3;
+var MIN_ATTEMPT_MS = 2e3;
+var realSleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+async function probeFolderWrite(token, folderId, fetchImpl = fetch, opts = {}) {
+  const sleep3 = opts.sleep ?? realSleep;
+  const clock = opts.now ?? Date.now;
+  const random = opts.random ?? Math.random;
+  const deadline = clock() + (opts.budgetMs ?? WRITE_CHECK_BUDGET_MS);
+  for (let attempt = 1; ; attempt++) {
+    const left = deadline - clock();
+    const answer = await writeOnce(token, folderId, fetchImpl, Math.min(GOOGLE_TIMEOUT_MS, Math.max(left, MIN_ATTEMPT_MS)), clock);
+    if (answer.result.ok || !answer.result.transient || attempt >= WRITE_CHECK_TRIES) return answer.result;
+    const backoff = WRITE_CHECK_BACKOFF_MS * 3 ** (attempt - 1) * (0.5 + random());
+    const wait = Math.max(backoff, answer.retryAfter ?? 0);
+    if (clock() + wait + MIN_ATTEMPT_MS > deadline) return answer.result;
+    await sleep3(wait);
+  }
+}
+async function writeOnce(token, folderId, fetchImpl, timeoutMs, clock) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GOOGLE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const boundary = "cc-write-check";
     const metadata = JSON.stringify({ name: ".controlclaw-write-check", parents: [folderId] });
@@ -35562,20 +35621,27 @@ x\r
     });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const message2 = body.error?.message ?? `Drive refused the write with ${res.status}.`;
-      return { ok: false, reason: ensureSentence(message2.split(" Leverage shared drives")[0].trim()) };
+      const kind = classifyDriveError(res.status, body);
+      const message2 = googleMessage(body) ?? `Drive refused the write with ${res.status}.`;
+      return {
+        // A 5xx is Google having a bad moment, not an answer about the folder: retried like a throttle.
+        result: { ok: false, kind, transient: kind === "rate_limited" || res.status >= 500, reason: ensureSentence(message2.split(" Leverage shared drives")[0].trim()) },
+        retryAfter: retryAfterMs(res.headers.get("retry-after"), clock())
+      };
     }
-    if (!body.id) {
-      return { ok: false, reason: `Drive answered ${res.status} without creating the file.` };
+    const id = str2(body.id);
+    if (!id) {
+      return { result: { ok: false, kind: "other", transient: false, reason: `Drive answered ${res.status} without creating the file.` }, retryAfter: null };
     }
-    void fetchImpl(`https://www.googleapis.com/drive/v3/files/${body.id}?supportsAllDrives=true`, {
+    void fetchImpl(`https://www.googleapis.com/drive/v3/files/${id}?supportsAllDrives=true`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS)
     }).catch(() => void 0);
-    return { ok: true };
+    return { result: { ok: true }, retryAfter: null };
   } catch (err) {
-    return { ok: false, reason: err.name === "AbortError" ? "Google did not answer in time." : err.message };
+    const reason = err.name === "AbortError" ? "Google did not answer in time." : err.message;
+    return { result: { ok: false, kind: "other", transient: true, reason }, retryAfter: null };
   } finally {
     clearTimeout(timer);
   }
@@ -35603,13 +35669,29 @@ function isKind2(v) {
 function modeLabel(mode) {
   return mode === "rw" ? "read and write" : "read-only";
 }
-function whyWritesFail(kind, reason) {
-  const quota = /storage quota|storageQuotaExceeded/i.test(reason);
+function whyWritesFail(kind, refusal, accountLabel) {
+  if (refusal === "rate_limited" || refusal === "other") return "";
+  const who2 = accountLabel ?? (kind === "service_account" ? "the service account" : "your Google account");
   if (kind === "service_account") {
-    return "A service account has no storage of its own, so it can only write to a folder on a shared drive, or with domain-wide delegation. Mount it read-only instead.";
+    const storage = "A service account has no storage of its own, so it can only write to a folder on a shared drive, or with domain-wide delegation.";
+    return refusal === "storage_quota" ? `${storage} Mount it read-only instead.` : `Share the folder with ${who2} as Editor. ${storage} Otherwise mount it read-only.`;
   }
-  return quota ? "That is Google's storage-quota rule, which means the token is not acting as an account that owns storage. Mount it read-only instead." : "That account owns storage, so a folder in its own My Drive can be written. A folder somebody else shared read-only cannot, and neither can one under Computers in Drive for desktop \u2014 Google refuses new files in those through the API whoever asks. Check the sharing in Drive, or mount it read-only.";
+  if (refusal === "storage_quota") {
+    return "That is Google's storage-quota rule, which means the token is not acting as an account that owns storage. Mount it read-only instead.";
+  }
+  return `${who2} owns storage, so a folder in its own My Drive can be written. A folder somebody else owns can be written only if it is shared with ${who2} as Editor: shared as Viewer or Commenter it cannot, and neither can one under Computers in Drive for desktop, where Google refuses new files through the API whoever asks. Check the sharing in Drive, or mount it read-only.`;
 }
+function rateLimitedMessage(accountLabel, hint) {
+  const who2 = accountLabel ?? "your Google connection";
+  return `Google is limiting requests from ${who2} right now. Try again in a few minutes${hint ? `, or ${hint}` : ""}.`;
+}
+function labelOf(account) {
+  if (account.accountLabel) return account.accountLabel;
+  return account.secret && isServiceAccountSecret(account.secret) ? account.secret.clientEmail : null;
+}
+var DriveTransientError = class extends Error {
+  transient = true;
+};
 function agentList(agents) {
   const names = agents.map((a) => a.name).filter(Boolean);
   if (names.length === 0) return "no agent yet";
@@ -35881,8 +35963,9 @@ var DriveFirewall = class {
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
       this.codes.drop(SCOPE2);
-      const applied = await this.apply(p);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+      const applied = await this.applyOrTransient(p, data);
+      if ("outcome" in applied) return applied.outcome;
+      return { ok: true, status: "applied", data: { ...data, ...applied.data, tofu: true } };
     }
     const sent = await this.codes.send(SCOPE2, p, "your organization's Google Drive folders", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
@@ -35897,8 +35980,22 @@ var DriveFirewall = class {
     const v = this.codes.verify(SCOPE2, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
-    const applied = await this.apply(v.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize2(v.proposal), sentVia: v.sentVia, tofu: false } };
+    const applied = await this.applyOrTransient(v.proposal, data);
+    if ("outcome" in applied) return applied.outcome;
+    return { ok: true, status: "applied", data: { ...data, ...applied.data, summary: summarize2(v.proposal), sentVia: v.sentVia, tofu: false } };
+  }
+  /**
+   * `apply`, with a throttle or a timeout reported as a failed change marked `transient` rather than
+   * thrown. Any other error is thrown as before and the command runner reports it.
+   */
+  async applyOrTransient(p, data) {
+    try {
+      return { data: await this.apply(p) };
+    } catch (err) {
+      if (!(err instanceof DriveTransientError)) throw err;
+      this.log(`[drive] ${p.kind} not applied, try again later: ${err.message}`);
+      return { outcome: { ok: false, status: "failed", message: err.message, data: { ...data, transient: true } } };
+    }
   }
   async cancel(payload) {
     const changeId = str3(payload.changeId);
@@ -36067,7 +36164,10 @@ var DriveFirewall = class {
           token = live;
         } else {
           const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
-          if (!minted.ok) throw new Error(`Google refused this connection: ${minted.reason}`);
+          if (!minted.ok) {
+            if (minted.rateLimited) throw new DriveTransientError(rateLimitedMessage(labelOf(account), null));
+            throw new Error(`Google refused this connection: ${minted.reason}`);
+          }
           account.access = { token: minted.token, expires: minted.expires };
           if (minted.secret) account.secret = minted.secret;
           if (minted.accountLabel !== void 0 && minted.accountLabel !== null) account.accountLabel = minted.accountLabel;
@@ -36101,7 +36201,7 @@ var DriveFirewall = class {
         if (!p.folder) throw new Error("the proposal is missing the folder");
         const account = this.theAccount();
         if (!account) throw new Error("Connect a Google account before adding folders.");
-        await this.assertWritable(p.folder, account.account);
+        await this.assertWritable(p.folder, account.account, true);
         const before = this.agentsOf(p.folder.id);
         const kept = this.store.folders[p.folder.id]?.agents ?? [];
         for (const a of p.agents) this.agentOf(a);
@@ -36121,7 +36221,7 @@ var DriveFirewall = class {
         if (!f) throw new Error("That folder is not set up on the firewall. Add it again.");
         if (p.folder.mode === "rw" && f.mode !== "rw") {
           const account = this.theAccount();
-          if (account) await this.assertWritable(p.folder, account.account);
+          if (account) await this.assertWritable(p.folder, account.account, false);
         }
         const before = [...f.agents];
         f.name = p.folder.name;
@@ -36162,8 +36262,9 @@ var DriveFirewall = class {
    * Editor permission is not enough — see `probeFolderWrite`. Read-only folders are not probed:
    * nothing about them can fail this way, and the probe would create a file to prove it.
    */
-  async assertWritable(folder, account) {
+  async assertWritable(folder, account, adding) {
     if (folder.mode !== "rw") return;
+    const readOnlyHint = adding ? "add the folder read-only" : "keep the folder read-only";
     if (account.failed) throw new Error("This Google connection is not working. Connect the account again, then add the folder.");
     let token;
     if (account.kind === "google_account") {
@@ -36175,6 +36276,7 @@ var DriveFirewall = class {
       if (stored) token = stored;
       else {
         const minted = await tokenSourceFor(account, this.fetchImpl).mint(account, this.now());
+        if (!minted.ok && minted.rateLimited) throw new DriveTransientError(rateLimitedMessage(labelOf(account), readOnlyHint));
         if (!minted.ok) throw new Error(`Google would not give this connection a token: ${minted.reason}`);
         const id = Object.entries(this.store.accounts).find(([, a]) => a === account)?.[0];
         if (id) this.record(id, account, minted);
@@ -36182,8 +36284,13 @@ var DriveFirewall = class {
         token = minted.token;
       }
     }
-    const can = await probeFolderWrite(token, folder.folderId, this.fetchImpl);
-    if (!can.ok) throw new Error(`${folder.name} cannot be mounted read-write. ${can.reason} ${whyWritesFail(account.kind, can.reason)}`);
+    const can = await probeFolderWrite(token, folder.folderId, this.fetchImpl, this.opts.writeCheck);
+    if (can.ok) return;
+    const label = account.kind === "google_account" ? this.borrowed()?.accountLabel ?? account.accountLabel : labelOf(account);
+    if (can.kind === "rate_limited") throw new DriveTransientError(rateLimitedMessage(label, readOnlyHint));
+    if (can.transient) throw new DriveTransientError(`${folder.name} could not be checked for writing. ${can.reason} Try again in a few minutes, or ${readOnlyHint}.`);
+    const why = whyWritesFail(account.kind, can.kind, label);
+    throw new Error(`${folder.name} cannot be mounted read-write. ${can.reason}${why ? ` ${why}` : ""}`);
   }
   /**
    * The org Google account moved (T-78). Re-push the mount set to every agent that borrows it, so
@@ -67037,9 +67144,9 @@ function getRetryDelayInMs({
   const headers = APICallError.isInstance(error48) ? error48.responseHeaders : APICallError.isInstance(error48.cause) ? error48.cause.responseHeaders : void 0;
   if (!headers) return exponentialBackoffDelay;
   let ms;
-  const retryAfterMs = headers["retry-after-ms"];
-  if (retryAfterMs) {
-    const timeoutMs = parseFloat(retryAfterMs);
+  const retryAfterMs2 = headers["retry-after-ms"];
+  if (retryAfterMs2) {
+    const timeoutMs = parseFloat(retryAfterMs2);
     if (!Number.isNaN(timeoutMs)) {
       ms = timeoutMs;
     }
@@ -102592,8 +102699,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "cebef37" : "unknown",
-  builtAt: true ? "2026-09-28T11:24:36+01:00" : "unknown"
+  commit: true ? "8eb3aa9" : "unknown",
+  builtAt: true ? "2026-09-28T14:14:36+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
