@@ -34128,13 +34128,40 @@ var FirewallControl = class {
   }
 };
 
+// src/channels.ts
+import { randomUUID } from "crypto";
+
 // src/agent-client.ts
 import { readFileSync as readFileSync5 } from "fs";
+
+// src/budgets.ts
+var COMMAND_BUDGET_MS = 1e5;
+var AGENT_CALL_MS = 25e3;
+var CHANNELS_APPLY_MS = 45e3;
+var CONFIRM_APPLY_MS = 3e4;
+var CONFIRM_POLL_MS = 2e3;
+var CONFIRM_MIN_MS = 5e3;
+var CONFIG_WRITE_MS = 9e4;
+var APPROVE_MS = 7e4;
+var LLM_PUSH_MS = 9e4;
+var BACKUP_MS = 60 * 6e4;
+function deadline(startedAt, now2 = Date.now) {
+  const at = startedAt + COMMAND_BUDGET_MS;
+  return {
+    at,
+    /** Milliseconds left, never negative. */
+    left: () => Math.max(0, at - now2()),
+    /** `ms`, or whatever is left of the budget if that is less. */
+    within: (ms) => Math.min(ms, Math.max(0, at - now2()))
+  };
+}
+
+// src/agent-client.ts
 var AGENT_PATH_PREFIX = "/__cc/agent";
-var TIMEOUT_MS = 25e3;
-var BACKUP_TIMEOUT_MS = 60 * 6e4;
-var APPROVE_TIMEOUT_MS = 7e4;
-var LLM_PUSH_TIMEOUT_MS = 9e4;
+var TIMEOUT_MS = AGENT_CALL_MS;
+var BACKUP_TIMEOUT_MS = BACKUP_MS;
+var APPROVE_TIMEOUT_MS = APPROVE_MS;
+var LLM_PUSH_TIMEOUT_MS = LLM_PUSH_MS;
 function isAgentTimeout(err) {
   return err instanceof Error && err.timedOut === true;
 }
@@ -34148,6 +34175,8 @@ var AgentTimeoutError = class extends Error {
 function timeoutFor(path, opts) {
   if (path.startsWith("/backup/")) return opts.backupTimeoutMs;
   if (path === "/channels/pairings/approve") return opts.approveTimeoutMs;
+  if (path === "/channels/apply") return CHANNELS_APPLY_MS;
+  if (path === "/search/apply" || path === "/connectors/apply") return CONFIG_WRITE_MS;
   return opts.timeoutMs;
 }
 function purposeForPath(path) {
@@ -34209,7 +34238,7 @@ function makeAgentClient(opts) {
   }
   return {
     post: (agent, path, body, call) => request(agent, "POST", path, body, call),
-    get: (agent, path) => request(agent, "GET", path)
+    get: (agent, path, call) => request(agent, "GET", path, void 0, call)
   };
 }
 
@@ -34900,6 +34929,7 @@ var ChannelsFirewall = class {
   }
   // ---- commands ----
   async propose(payload) {
+    const dl = deadline(this.now(), this.now);
     const p = parseProposal(payload);
     this.noteAgent(p.agent);
     const summary = summarize(p);
@@ -34907,7 +34937,7 @@ var ChannelsFirewall = class {
     const routes = this.codeRoutes();
     if (routes.length === 0) {
       this.codes.drop(SCOPE);
-      const applied = await this.apply(p);
+      const applied = await this.apply(p, dl);
       return this.outcome({ ...data, ...applied, tofu: true });
     }
     const sent = await this.codes.send(SCOPE, p, "your organization's channels", summary, routes);
@@ -34920,6 +34950,7 @@ var ChannelsFirewall = class {
     };
   }
   async confirm(payload) {
+    const dl = deadline(this.now(), this.now);
     const changeId = str(payload.changeId);
     const code = str(payload.code)?.replace(/\s+/g, "") ?? "";
     if (!changeId) throw new Error("malformed channels.confirm payload");
@@ -34927,7 +34958,7 @@ var ChannelsFirewall = class {
     const v = this.codes.verify(SCOPE, changeId, code);
     if (v.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v.attemptsLeft } };
-    const applied = await this.apply(v.proposal);
+    const applied = await this.apply(v.proposal, dl);
     return this.outcome({ ...data, ...applied, summary: summarize(v.proposal), sentVia: v.sentVia, tofu: false });
   }
   /**
@@ -34938,12 +34969,8 @@ var ChannelsFirewall = class {
    */
   outcome(data) {
     if (data.unconfirmed !== true) return { ok: true, status: "applied", data };
-    return {
-      ok: true,
-      status: "unconfirmed",
-      message: "The agent has not confirmed this yet. If it approved them, it will show here within a minute.",
-      data
-    };
+    const message2 = data.unconfirmedWhat === "apply" ? "Your agent is taking longer than usual to finish this. It usually lands within a minute, and this page will show it when it does." : data.unconfirmedWhat === "remove" ? "Your agent has not confirmed the removal yet. The connection is off your firewall either way." : "The agent has not confirmed this yet. If it approved them, it will show here within a minute.";
+    return { ok: true, status: "unconfirmed", message: message2, data };
   }
   async cancel(payload) {
     const changeId = str(payload.changeId);
@@ -34957,25 +34984,31 @@ var ChannelsFirewall = class {
     const mine = Object.entries(this.store.connections).filter(([, c]) => c.assignedVmId === vmId);
     if (mine.length === 0) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
     this.save();
-    const target = this.target(vmId);
+    const dl = deadline(this.now(), this.now);
     const applied = [];
+    const unconfirmed = [];
     const failed = [];
     for (const [id, c] of mine) {
       try {
-        await this.opts.agent.post(target, "/channels/apply", this.applyBody(id, c));
-        applied.push(id);
+        const outcome = await this.applyOn(vmId, id, c, null, dl);
+        if (outcome === "applied") applied.push(id);
+        else unconfirmed.push(id);
       } catch (err) {
         failed.push({ connectionId: id, type: c.type, error: err.message });
       }
     }
     const name25 = this.store.agents[vmId]?.name ?? vmId;
-    this.log(`[channels] re-applied ${applied.length} connection(s) on ${name25}${failed.length ? `, ${failed.length} failed` : ""}`);
+    this.log(
+      `[channels] re-applied ${applied.length} connection(s) on ${name25}${unconfirmed.length ? `, ${unconfirmed.length} unconfirmed` : ""}${failed.length ? `, ${failed.length} failed` : ""}`
+    );
     this.report(await this.reconcile(vmId));
     return {
       ok: failed.length === 0,
       status: failed.length ? "failed" : "applied",
       message: failed.map((f) => `${f.type}: ${f.error}`).join("; "),
-      data: { vmId, applied, failed }
+      // `unconfirmed` is kept apart from both: the console must not mark these active on our word,
+      // and must not mark them failed either. Its own live read of the box settles them.
+      data: { vmId, applied, unconfirmed, failed }
     };
   }
   // ---- applying ----
@@ -34988,11 +35021,81 @@ var ChannelsFirewall = class {
     if (c.secrets.appToken) swapped.appToken = placeholderFor(c.type, connectionId, "app");
     return { type: c.type, secrets: swapped };
   }
-  async applyOn(vmId, connectionId, c, hostname3) {
-    await this.opts.agent.post(this.target(vmId, hostname3), "/channels/apply", this.applyBody(connectionId, c));
+  /**
+   * Write one channel to a box and find out how it ended — which is not the same as hearing back.
+   *
+   * Turning a channel on restarts OpenClaw's gateway inside the config patch: 33 s measured on
+   * production. Anything on this path can therefore stop listening before the box stops working —
+   * the box's own inline wait, this HTTP call, a firewall restart — and every one of those used
+   * to be reported to the customer as a failure. On production (org JHM, agent ea-test,
+   * 2026-09-28) that marked the org's first Telegram bot failed while the box was running it.
+   *
+   * So the write carries an id, and when the answer does not arrive the box is asked how that id
+   * ended. Only a box that says it failed, or a refusal that arrives in time, is a failure.
+   * Everything else is `unconfirmed`, which the console shows as still settling and the next live
+   * read repairs.
+   */
+  async applyOn(vmId, connectionId, c, hostname3, dl) {
+    return this.writeOn(this.target(vmId, hostname3), c.type, this.applyBody(connectionId, c), dl);
   }
-  async removeOn(vmId, type, hostname3) {
-    await this.opts.agent.post(this.target(vmId, hostname3), "/channels/apply", { type, remove: true });
+  async removeOn(vmId, type, hostname3, dl) {
+    return this.writeOn(this.target(vmId, hostname3), type, { type, remove: true }, dl);
+  }
+  async writeOn(target, type, body, dl) {
+    const applyId = this.opts.makeApplyId?.() ?? randomUUID();
+    try {
+      const opts = dl ? { timeoutMs: Math.min(CHANNELS_APPLY_MS, Math.max(CONFIRM_MIN_MS, dl.left() - CONFIRM_MIN_MS)) } : void 0;
+      const r = await this.opts.agent.post(target, "/channels/apply", { ...body, applyId }, opts);
+      if (r.status !== "pending") return "applied";
+      this.log(`[channels] ${type} on ${target.vmId} is still being written; asking the box how it ends`);
+    } catch (err) {
+      if (!isAgentTimeout(err)) throw err;
+      this.log(`[channels] ${target.vmId} did not answer the ${type} write in time; asking the box how it ended`);
+    }
+    return this.confirmApply(target, type, applyId, dl);
+  }
+  /**
+   * Ask a box how the write named by `applyId` ended, until it says or the budget runs out.
+   *
+   * The budget is bounded twice: by `CONFIRM_APPLY_MS` and by the command's own deadline, so a
+   * change that makes two writes (an `assign` leaves one box before joining another) cannot spend
+   * more than the control plane will wait for the whole command.
+   */
+  async confirmApply(target, type, applyId, dl) {
+    const budget = dl ? dl.within(CONFIRM_APPLY_MS) : CONFIRM_APPLY_MS;
+    const until = this.now() + budget;
+    const attempts = Math.max(1, Math.ceil(budget / CONFIRM_POLL_MS));
+    for (let asked = 0; asked < attempts; asked++) {
+      if (asked > 0) {
+        if (this.now() >= until) break;
+        await this.sleep(Math.min(CONFIRM_POLL_MS, Math.max(0, until - this.now())));
+      }
+      const left = until - this.now();
+      if (left <= 0) break;
+      let status;
+      try {
+        status = await this.opts.agent.get(target, "/channels/status", { timeoutMs: Math.min(AGENT_CALL_MS, left) });
+      } catch (err) {
+        this.log(`[channels] could not read ${target.vmId} to confirm the ${type} write: ${err.message}`);
+        continue;
+      }
+      const channel = (status.channels ?? {})[type];
+      const record2 = channel?.lastApply;
+      if (!record2 || record2.id !== applyId) {
+        this.log(`[channels] ${target.vmId} has no record of the ${type} write ${applyId}`);
+        return "unconfirmed";
+      }
+      if (record2.state === "applied") {
+        this.log(`[channels] ${target.vmId} confirms the ${type} write landed`);
+        return "applied";
+      }
+      if (record2.state === "failed") throw new Error(typeof record2.error === "string" && record2.error ? record2.error : `the agent could not apply ${type}`);
+    }
+    this.log(`[channels] ${target.vmId} had not finished the ${type} write inside the budget`);
+    return "unconfirmed";
+  }
+  sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
   }
   /**
    * Take a connection off the agent it is on. One consumer per token, so this runs before the
@@ -35000,19 +35103,21 @@ var ChannelsFirewall = class {
    * gone: an agent the control plane no longer lists cannot be talked to, and refusing would
    * strand the connection on a machine that does not exist.
    */
-  async leave(vmId, type, hostname3) {
+  async leave(vmId, type, hostname3, dl) {
     try {
-      await this.removeOn(vmId, type, hostname3);
+      return await this.removeOn(vmId, type, hostname3, dl);
     } catch (err) {
       const known = this.opts.identities().some((i) => i.vm_id === vmId);
       if (known) throw err;
       this.log(`[channels] ${vmId} is gone; leaving ${type} behind: ${err.message}`);
       delete this.store.agents[vmId];
+      return "applied";
     }
   }
-  async apply(p) {
+  async apply(p, dl = deadline(this.now(), this.now)) {
     const mode = this.opts.placeholderSwap && p.type !== "whatsapp" ? "placeholder" : "plain";
     const stamp = new Date(this.now()).toISOString();
+    const unsure = (outcome) => outcome === "unconfirmed" ? { unconfirmed: true, unconfirmedWhat: "apply" } : {};
     switch (p.kind) {
       case "add": {
         if (!p.secret?.botToken) throw new Error("no token in the proposal");
@@ -35033,8 +35138,8 @@ var ChannelsFirewall = class {
         this.store.connections[p.connectionId] = c;
         this.save();
         await this.opts.onCredentialsChanged?.();
-        if (p.agent) await this.applyOn(p.agent.vmId, p.connectionId, c, p.agent.hostname);
-        return { mode, vmId: p.agent?.vmId ?? null };
+        const outcome = p.agent ? await this.applyOn(p.agent.vmId, p.connectionId, c, p.agent.hostname, dl) : "applied";
+        return { mode, vmId: p.agent?.vmId ?? null, ...unsure(outcome) };
       }
       case "replace": {
         if (!p.secret?.botToken) throw new Error("no token in the proposal");
@@ -35046,8 +35151,8 @@ var ChannelsFirewall = class {
         c.updatedAt = stamp;
         this.save();
         await this.opts.onCredentialsChanged?.();
-        if (c.assignedVmId) await this.applyOn(c.assignedVmId, p.connectionId, c);
-        return { mode, vmId: c.assignedVmId };
+        const outcome = c.assignedVmId ? await this.applyOn(c.assignedVmId, p.connectionId, c, null, dl) : "applied";
+        return { mode, vmId: c.assignedVmId, ...unsure(outcome) };
       }
       case "remove": {
         const c = this.store.connections[p.connectionId];
@@ -35055,33 +35160,33 @@ var ChannelsFirewall = class {
           this.log(`[channels] ${p.type} ${p.connectionId} is not on the firewall; nothing to remove`);
           return { vmId: null, missing: true };
         }
-        if (c.assignedVmId) await this.leave(c.assignedVmId, c.type);
+        const outcome = c.assignedVmId ? await this.leave(c.assignedVmId, c.type, null, dl) : "applied";
         delete this.store.connections[p.connectionId];
         this.save();
         await this.opts.onCredentialsChanged?.();
-        return { vmId: null };
+        return { vmId: null, ...outcome === "unconfirmed" ? { unconfirmed: true, unconfirmedWhat: "remove" } : {} };
       }
       case "assign": {
         const c = this.connection(p.connectionId);
         if (!p.agent) throw new Error("no agent in the proposal");
         const leaving = p.from?.vmId ?? c.assignedVmId;
-        if (leaving && leaving !== p.agent.vmId) await this.leave(leaving, c.type, p.from?.hostname);
+        if (leaving && leaving !== p.agent.vmId) await this.leave(leaving, c.type, p.from?.hostname, dl);
         c.assignedVmId = p.agent.vmId;
         c.updatedAt = stamp;
         this.save();
         await this.opts.onCredentialsChanged?.();
-        await this.applyOn(p.agent.vmId, p.connectionId, c, p.agent.hostname);
-        return { mode, vmId: p.agent.vmId };
+        const outcome = await this.applyOn(p.agent.vmId, p.connectionId, c, p.agent.hostname, dl);
+        return { mode, vmId: p.agent.vmId, ...unsure(outcome) };
       }
       case "unassign": {
         const c = this.connection(p.connectionId);
         const leaving = c.assignedVmId;
-        if (leaving) await this.leave(leaving, c.type);
+        const outcome = leaving ? await this.leave(leaving, c.type, null, dl) : "applied";
         c.assignedVmId = null;
         c.updatedAt = stamp;
         this.save();
         await this.opts.onCredentialsChanged?.();
-        return { vmId: null };
+        return { vmId: null, ...outcome === "unconfirmed" ? { unconfirmed: true, unconfirmedWhat: "remove" } : {} };
       }
       case "approve_pairing": {
         if (!p.pairing) throw new Error("no pairing in the proposal");
@@ -35588,14 +35693,14 @@ async function probeFolderWrite(token, folderId, fetchImpl = fetch, opts = {}) {
   const sleep3 = opts.sleep ?? realSleep;
   const clock = opts.now ?? Date.now;
   const random = opts.random ?? Math.random;
-  const deadline = clock() + (opts.budgetMs ?? WRITE_CHECK_BUDGET_MS);
+  const deadline2 = clock() + (opts.budgetMs ?? WRITE_CHECK_BUDGET_MS);
   for (let attempt = 1; ; attempt++) {
-    const left = deadline - clock();
+    const left = deadline2 - clock();
     const answer = await writeOnce(token, folderId, fetchImpl, Math.min(GOOGLE_TIMEOUT_MS, Math.max(left, MIN_ATTEMPT_MS)), clock);
     if (answer.result.ok || !answer.result.transient || attempt >= WRITE_CHECK_TRIES) return answer.result;
     const backoff = WRITE_CHECK_BACKOFF_MS * 3 ** (attempt - 1) * (0.5 + random());
     const wait = Math.max(backoff, answer.retryAfter ?? 0);
-    if (clock() + wait + MIN_ATTEMPT_MS > deadline) return answer.result;
+    if (clock() + wait + MIN_ATTEMPT_MS > deadline2) return answer.result;
     await sleep3(wait);
   }
 }
@@ -102699,8 +102804,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8eb3aa9" : "unknown",
-  builtAt: true ? "2026-09-28T14:14:36+01:00" : "unknown"
+  commit: true ? "e963a4e" : "unknown",
+  builtAt: true ? "2026-09-28T14:37:56+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

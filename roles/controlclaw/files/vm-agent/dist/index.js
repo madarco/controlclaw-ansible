@@ -30929,7 +30929,7 @@ function loginPage(hostname) {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const step = (n) => { for (let i = 1; i <= 3; i++) { const el = $('s' + i); el.className = i < n ? 'done' : i === n ? 'active' : ''; } };
   const fail = (msg) => { $('h').textContent = 'Could not open the agent'; for (let i = 1; i <= 3; i++) $('s' + i).className = ''; $('err').textContent = msg; $('err').className = 'err show'; $('back').style.display = 'inline-block'; };
-  const notPaired = (next) => { $('h').textContent = 'Your agent is still starting'; $('s1').className = 'done'; $('s2').className = ''; $('s3').className = ''; $('note').textContent = 'This browser could not be paired with OpenClaw yet. Wait a minute, then click Open again in your ControlClaw console.'; $('note').style.display = 'block'; $('back').style.display = 'inline-block'; $('anyway').href = next || '/'; $('anyway').style.display = 'inline-block'; };
+  const notPaired = (next, why) => { $('h').textContent = "Couldn't pair this browser"; $('s1').className = 'done'; $('s2').className = ''; $('s3').className = ''; $('note').textContent = (why ? 'The agent is running, but ' + why + '. ' : '') + 'Continue anyway opens OpenClaw, which will ask you to approve this browser. Or click Open again in your ControlClaw console.'; $('note').style.display = 'block'; $('back').style.display = 'inline-block'; $('anyway').href = next || '/'; $('anyway').style.display = 'inline-block'; };
   const t = new URLSearchParams(location.hash.slice(1)).get('t');
   history.replaceState(null, '', location.pathname);
   if (!t) { fail('This page only works from the Open button in your ControlClaw console.'); return; }
@@ -30943,7 +30943,7 @@ function loginPage(hostname) {
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.paired === false) { notPaired(d.next); return; }
+  if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
   step(3); await wait(350);
   location.replace(d.next || '/');
@@ -31009,7 +31009,7 @@ function parseDashboardOutput(stdout, hostname, err) {
     return { reason: "the pairing link had no bootstrap token", retryable: false };
   }
   if (err?.code === "ENOENT") return { reason: "the OpenClaw CLI is not installed", retryable: false };
-  if (err?.killed) return { reason: "the OpenClaw CLI did not answer in time", retryable: false };
+  if (err?.killed) return { reason: "the OpenClaw CLI did not answer in time", retryable: true };
   if (out?.ok === false) return { reason: out.reason || "OpenClaw could not issue a pairing link", retryable: true };
   return { reason: err ? `the OpenClaw CLI failed: ${err.message.split("\n")[0]}` : "the OpenClaw CLI printed nothing usable", retryable: false };
 }
@@ -31024,6 +31024,14 @@ function runDashboard(hostname, timeoutMs) {
   });
 }
 async function dashboardBootstrapUrl(hostname, opts = {}) {
+  const inFlight = dashboardInFlight.get(hostname);
+  if (inFlight) return inFlight;
+  const attempt = dashboardAttempt(hostname, opts).finally(() => dashboardInFlight.delete(hostname));
+  dashboardInFlight.set(hostname, attempt);
+  return attempt;
+}
+var dashboardInFlight = /* @__PURE__ */ new Map();
+async function dashboardAttempt(hostname, opts) {
   const run3 = opts.run ?? runDashboard;
   const deadline = Date.now() + (opts.budgetMs ?? DASHBOARD_BUDGET_MS);
   let last = { reason: "no time left to ask OpenClaw", retryable: false };
@@ -31076,12 +31084,17 @@ async function handleAccess(req, res, pathname) {
     const hostname = readKey("vm_hostname");
     let next = "/";
     let paired = false;
+    let pairError = null;
     if (hostname) {
       const bootstrap2 = await dashboardBootstrapUrl(hostname);
       if ("url" in bootstrap2) {
         next = bootstrap2.url;
         paired = true;
+      } else {
+        pairError = bootstrap2.reason;
       }
+    } else {
+      pairError = "this box does not know its own hostname";
     }
     if (!paired) {
       const gatewayToken = readKey("openclaw_gateway_token");
@@ -31089,7 +31102,7 @@ async function handleAccess(req, res, pathname) {
     }
     const session = await issueSession(vmId, { canWrite: payload.canWrite === true });
     const install = installId(readKey("openclaw_gateway_token"), vmId);
-    json(res, 200, { next, install, paired }, { "Set-Cookie": sessionCookie(session) });
+    json(res, 200, { next, install, paired, pairError }, { "Set-Cookie": sessionCookie(session) });
     return;
   }
   if (pathname === "/__cc/browser" && req.method === "GET") {
@@ -31168,8 +31181,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8eb3aa9" : "unknown",
-  builtAt: true ? "2026-09-28T14:14:36+01:00" : "unknown"
+  commit: true ? "e963a4e" : "unknown",
+  builtAt: true ? "2026-09-28T14:37:56+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31511,9 +31524,25 @@ function handleHealth(res) {
 
 // src/routes/openclaw.ts
 import { execSync as execSync2 } from "child_process";
+
+// src/budgets.ts
+var GATEWAY_READ_MS = 1e4;
+var CONFIG_PATCH_MS = 2e4;
+var CONFIG_PATCH_RESTART_MS = 45e3;
+var APPLY_INLINE_WAIT_MS = 25e3;
+var APPLY_RECORD_TTL_MS = 10 * 6e4;
+var CHANNELS_STATUS_MS = 8e3;
+var SERVICE_ACTION_MS = 3e4;
+var TAILSCALE_STATUS_MS = 2e4;
+var GOOGLE_VERSION_MS = 1e4;
+function patchRestartsGateway(patch) {
+  return Object.hasOwn(patch, "channels") || Object.hasOwn(patch, "plugins") || Object.hasOwn(patch, "models");
+}
+
+// src/routes/openclaw.ts
 var SERVICE = "openclaw";
 var EXEC_TIMEOUT_MS = 5e3;
-var ACTION_TIMEOUT_MS = 3e4;
+var ACTION_TIMEOUT_MS = SERVICE_ACTION_MS;
 function runIsActive() {
   try {
     return execSync2(`systemctl is-active ${SERVICE}`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }).trim();
@@ -32728,6 +32757,112 @@ function readAllowList(opts) {
     }
   }
 }
+function readPendingPairings(opts) {
+  if (opts.channels.length === 0) return { pairings: [], error: null, canonical: false };
+  if (!existsSync5(opts.dbPath)) return { pairings: [], error: null, canonical: false };
+  let db;
+  try {
+    db = (opts.open ?? defaultOpener)(opts.dbPath);
+  } catch (err) {
+    const message = err.message;
+    opts.log?.(`[channels] could not open OpenClaw's state database: ${message}`);
+    return { pairings: [], canonical: false, error: pairingFailure(message) };
+  }
+  try {
+    const pairings = [];
+    for (const channel of opts.channels) {
+      let rows;
+      try {
+        rows = db.prepare("SELECT request_id, code, created_at, meta_json FROM channel_pairing_requests WHERE channel_key = ? ORDER BY created_at").all(channel);
+      } catch (err) {
+        const message = err.message;
+        if (/no such table/i.test(message)) return { pairings: [], error: null, canonical: false };
+        throw err;
+      }
+      for (const row of rows) {
+        const senderId = text(row.request_id);
+        const code = text(row.code);
+        if (!senderId || !code) continue;
+        pairings.push({ channel, senderId, code, label: labelFromMeta(row.meta_json), createdAt: textStamp(row.created_at) });
+        if (pairings.length >= ENTRY_CAP) return { pairings, error: null, canonical: true };
+      }
+    }
+    return { pairings, error: null, canonical: true };
+  } catch (err) {
+    const message = err.message;
+    opts.log?.(`[channels] could not read OpenClaw's pending pairings: ${message}`);
+    return { pairings: [], canonical: false, error: pairingFailure(message) };
+  } finally {
+    try {
+      db.close();
+    } catch {
+    }
+  }
+}
+function textStamp(v) {
+  if (typeof v === "number" || typeof v === "bigint") return stamp(v);
+  const raw = text(v);
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) return stamp(Number(raw));
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+function pairingFailure(message) {
+  if (looksBusy(message)) return { busy: true, message: "The agent is busy right now, so who is waiting could not be read." };
+  if (looksUnopenable(message)) return { busy: false, message: "Your agent's pairing list could not be opened. Restarting the agent clears this." };
+  return { busy: false, message: "Your agent's pairing list could not be read." };
+}
+
+// src/once.ts
+var Once = class {
+  ttlMs;
+  errorTtlMs;
+  now;
+  entries = /* @__PURE__ */ new Map();
+  /** Runs still going, so a second caller joins instead of starting another process. */
+  inFlight = /* @__PURE__ */ new Map();
+  constructor(opts) {
+    this.ttlMs = opts.ttlMs;
+    this.errorTtlMs = opts.errorTtlMs ?? Math.max(1, Math.round(opts.ttlMs / 4));
+    this.now = opts.now ?? Date.now;
+  }
+  /**
+   * The cached answer for `key`, the run already in flight for it, or a new run.
+   *
+   * `run` is never called twice concurrently for one key. Note that the SAME promise is handed to
+   * every caller, so a rejection reaches all of them — which is what they asked for.
+   */
+  get(key, run3) {
+    const cached = this.entries.get(key);
+    if (cached && this.now() - cached.at < (cached.ok ? this.ttlMs : this.errorTtlMs)) return cached.value;
+    const running = this.inFlight.get(key);
+    if (running) return running;
+    const started = this.now();
+    const value = (async () => run3())();
+    const tracked = value.then(
+      (v) => {
+        this.settle(key, started, true, value);
+        return v;
+      },
+      (err) => {
+        this.settle(key, started, false, value);
+        throw err;
+      }
+    );
+    this.inFlight.set(key, tracked);
+    tracked.catch(() => void 0);
+    return tracked;
+  }
+  settle(key, started, ok, value) {
+    this.inFlight.delete(key);
+    this.entries.set(key, { at: started, ok, value });
+  }
+  /** Drop what is cached, so the next caller runs again. Does not touch a run in flight. */
+  forget(key) {
+    if (key === void 0) this.entries.clear();
+    else this.entries.delete(key);
+  }
+};
 
 // src/channels.ts
 var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
@@ -32816,11 +32951,13 @@ var ChannelsService = class {
     this.log = opts.log ?? ((line) => console.log(line));
     this.now = opts.now ?? Date.now;
     this.state = readChannelState(opts.statePath);
+    const fresh = opts.pairingsCacheMs ?? PAIRINGS_CACHE_MS;
+    this.pairingsOnce = new Once({ ttlMs: fresh, errorTtlMs: Math.min(PAIRINGS_ERROR_CACHE_MS, fresh), now: this.now });
   }
   exec;
   log;
   now;
-  pairingsCache = null;
+  pairingsOnce;
   /** Who this box has approved, as it saw it. Loaded once; written on every approval. */
   state;
   /** OpenClaw's own allow list, briefly reused; see `ALLOWED_CACHE_MS`. */
@@ -32831,6 +32968,8 @@ var ChannelsService = class {
   installing = /* @__PURE__ */ new Map();
   /** Serialises our own config writes; the installer writes the same file from underneath us. */
   patchChain = Promise.resolve();
+  /** How the last write per channel ended, for a firewall that stopped listening. See `ChannelApplyRecord`. */
+  applies = /* @__PURE__ */ new Map();
   waLogin = {
     state: "idle",
     qrDataUrl: null,
@@ -33009,10 +33148,21 @@ var ChannelsService = class {
    */
   async pairingsRead(types) {
     const key = [...types].sort().join(",");
-    const cached = this.pairingsCache;
-    const fresh = this.opts.pairingsCacheMs ?? PAIRINGS_CACHE_MS;
-    const ttl = cached?.error ? Math.min(PAIRINGS_ERROR_CACHE_MS, fresh) : fresh;
-    if (cached && cached.key === key && this.now() - cached.at < ttl) return { pairings: cached.value, error: cached.error };
+    if (key === "") return { pairings: [], error: null };
+    return this.pairingsOnce.get(key, () => this.readPairings(types));
+  }
+  async readPairings(types) {
+    const fromDb = this.opts.stateDbPath ? readPendingPairings({ dbPath: this.opts.stateDbPath, channels: types, open: this.opts.sqliteOpen, log: this.log }) : null;
+    if (fromDb?.canonical) {
+      const out2 = fromDb.pairings.map((p) => ({ type: p.channel, code: p.code, senderId: p.senderId, label: p.label, createdAt: p.createdAt }));
+      this.mergeLegacyFiles(out2);
+      return { pairings: out2, error: null };
+    }
+    if (fromDb?.error) {
+      const out2 = [];
+      this.mergeLegacyFiles(out2);
+      return { pairings: out2, error: fromDb.error };
+    }
     const failures = [];
     const fromCli = await Promise.all(
       types.map(async (type) => {
@@ -33022,12 +33172,14 @@ var ChannelsService = class {
       })
     );
     const out = fromCli.flat();
+    this.mergeLegacyFiles(out);
+    return { pairings: out, error: failures.find((f) => !f.busy) ?? failures[0] ?? null };
+  }
+  /** Whatever an OpenClaw older than 2026.9 left in `<channel>-pairing.json`, without duplicates. */
+  mergeLegacyFiles(out) {
     for (const legacy of this.pairingsFromFiles()) {
       if (!out.some((p) => p.type === legacy.type && p.senderId === legacy.senderId)) out.push(legacy);
     }
-    const error = failures.find((f) => !f.busy) ?? failures[0] ?? null;
-    this.pairingsCache = { at: this.now(), key, value: out, error };
-    return { pairings: out, error };
   }
   /**
    * One channel's pending requests, retried: right after a `config.patch` the gateway is
@@ -33083,7 +33235,7 @@ var ChannelsService = class {
   async status() {
     const channels2 = {};
     if (this.opts.client?.connected) {
-      const payload = await this.gateway().call("channels.status", { probe: false }, 15e3);
+      const payload = await this.gateway().call("channels.status", { probe: false }, CHANNELS_STATUS_MS);
       for (const type of CHANNEL_TYPES) {
         const s = payload.channels?.[type];
         if (!s) continue;
@@ -33103,6 +33255,11 @@ var ChannelsService = class {
     for (const [type, setup] of this.setup) {
       channels2[type] = { configured: false, running: false, connected: false, lastError: null, ...channels2[type], setup };
     }
+    for (const type of CHANNEL_TYPES) {
+      const record = this.applyRecord(type);
+      if (!record) continue;
+      channels2[type] = { configured: false, running: false, connected: false, lastError: null, ...channels2[type], lastApply: record };
+    }
     const wa = this.whatsappLogin();
     const configured = Object.keys(channels2).filter((t) => channels2[t]?.configured);
     const read = await this.pairingsRead(configured);
@@ -33118,14 +33275,82 @@ var ChannelsService = class {
    * description of the work left, which is what `reconcile()` reads after a restart.
    */
   async apply(input) {
+    this.gateway();
     const block = channelBlock(input);
     const patch = { channels: { [input.type]: block } };
-    await this.patchConfig(patch);
     const what = block ? `applied ${input.type}` : `removed ${input.type}`;
-    this.log(`[channels] ${what}`);
-    if (!block) this.forgetApproved(input.type);
-    if (block) void this.ensurePlugin(input.type);
-    return { ok: true, message: what };
+    const id = input.applyId ?? randomUUID();
+    const type = input.type;
+    this.noteApply(type, { id, state: "pending", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
+    const write = this.patchConfig(patch).then(
+      () => {
+        this.noteApply(type, { id, state: "applied", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
+        this.log(`[channels] ${what}`);
+        if (!block) this.forgetApproved(type);
+        if (block) void this.ensurePlugin(type);
+        return true;
+      },
+      (err) => {
+        this.noteApply(type, { id, state: "failed", what: block ? "apply" : "remove", error: err.message, at: new Date(this.now()).toISOString() });
+        this.log(`[channels] could not ${block ? "apply" : "remove"} ${type}: ${err.message}`);
+        return false;
+      }
+    );
+    void write;
+    const finished = await this.waitFor(write, this.opts.applyInlineWaitMs ?? APPLY_INLINE_WAIT_MS);
+    if (finished === null) {
+      this.log(`[channels] ${type} is still being written (${id}); the firewall will read the outcome back`);
+      return { ok: true, status: "pending", applyId: id, message: `${block ? "Applying" : "Removing"} ${type} on this agent\u2026` };
+    }
+    if (!finished) throw new Error(this.applies.get(type)?.error ?? `could not ${block ? "apply" : "remove"} ${type}`);
+    return { ok: true, status: "applied", applyId: id, message: what };
+  }
+  /** `p`'s value if it settles inside `ms`, otherwise null. Never rejects: `p` reports its own end. */
+  waitFor(p, ms) {
+    return new Promise((resolve2) => {
+      const timer = setTimeout(() => resolve2(null), ms);
+      timer.unref?.();
+      void p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve2(v);
+        },
+        () => {
+          clearTimeout(timer);
+          resolve2(null);
+        }
+      );
+    });
+  }
+  /**
+   * The last write on a channel, as the firewall should read it, or null once it is too old to be
+   * anybody's answer.
+   *
+   * A `pending` record is reported as pending however long it has been there. It is tempting to
+   * call an old one failed, and wrong: `patchConfig` serialises writes, so a patch queued behind a
+   * restarting one has not started yet and its stamp says nothing about its progress. Guessing
+   * there is the same mistake one level down — and there is no need, because the firewall's
+   * confirm has a deadline of its own and settles as `unconfirmed`, which is honest.
+   *
+   * Pruned here rather than only on write: once writes stop, `noteApply` never runs again, and a
+   * record kept forever makes `status()` invent an entry for a channel OpenClaw does not report.
+   */
+  applyRecord(type) {
+    const record = this.applies.get(type);
+    if (!record) return null;
+    if (record.state !== "pending" && this.now() - Date.parse(record.at) >= APPLY_RECORD_TTL_MS) {
+      this.applies.delete(type);
+      return null;
+    }
+    return record;
+  }
+  /** Record one apply's state, dropping records too old to be anybody's answer. */
+  noteApply(type, record) {
+    const cutoff = this.now() - APPLY_RECORD_TTL_MS;
+    for (const [t, r] of this.applies) {
+      if (r.state !== "pending" && Date.parse(r.at) < cutoff) this.applies.delete(t);
+    }
+    this.applies.set(type, record);
   }
   /**
    * One config write at a time, with a single retry when OpenClaw says the file moved under us —
@@ -33149,14 +33374,15 @@ var ChannelsService = class {
   }
   async writeConfig(patch) {
     const gw = this.gateway();
-    const snapshot = await gw.call("config.get", {}, 1e4);
+    const snapshot = await gw.call("config.get", {}, GATEWAY_READ_MS);
     const baseHash = snapshot.hash;
     if (!baseHash) throw new Error("OpenClaw returned no config hash");
-    await gw.call("config.patch", { raw: JSON.stringify(patch), baseHash }, 2e4);
+    const budget = patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS;
+    await gw.call("config.patch", { raw: JSON.stringify(patch), baseHash }, budget);
   }
   /** The live config, for deciding whether a channel's plugin is already there. */
   async config() {
-    const snapshot = await this.gateway().call("config.get", {}, 1e4);
+    const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
     const cfg = snapshot.parsed ?? snapshot.config;
     return cfg ?? {};
   }
@@ -33335,7 +33561,7 @@ var ChannelsService = class {
       this.log(`[channels] ${input.type} sender ${known.senderId} was already approved with this code`);
       return { ok: true, senderId: known.senderId, alreadyApproved: true };
     }
-    const before = (this.pairingsCache?.value ?? []).find((p) => p.type === input.type && p.code === input.code) ?? await this.lookupPairing(input.type, input.code);
+    const before = this.pairingFromStore(input.type, input.code) ?? await this.lookupPairing(input.type, input.code);
     const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
     let approvedId = null;
     try {
@@ -33346,11 +33572,18 @@ var ChannelsService = class {
       const detail = (e.stderr || e.stdout || e.message || "").trim().split("\n").pop() ?? "";
       throw new Error(detail.includes("No pending pairing") ? "That pairing request is gone. Ask the person to message the bot again." : `pairing approve failed: ${detail}`);
     }
-    this.pairingsCache = null;
+    this.pairingsOnce.forget();
     const senderId = before?.senderId ?? approvedId;
     if (senderId) this.recordApproved(input.type, senderId, input.code);
     this.log(`[channels] approved ${input.type} sender ${senderId ?? "?"}`);
     return { ok: true, senderId };
+  }
+  /** One code in OpenClaw's own pairing store. Never the CLI: `lookupPairing` is that fallback. */
+  pairingFromStore(type, code) {
+    if (!this.opts.stateDbPath) return void 0;
+    const read = readPendingPairings({ dbPath: this.opts.stateDbPath, channels: [type], open: this.opts.sqliteOpen, log: this.log });
+    const row = read.pairings.find((p) => p.code === code);
+    return row ? { type, code: row.code, senderId: row.senderId, label: row.label, createdAt: row.createdAt } : void 0;
   }
   /** One listing, short and optional: it only tells us whose code this is. */
   async lookupPairing(type, code) {
@@ -33487,18 +33720,19 @@ async function handleChannels(req, res, pathname, service) {
     if (pathname === "/channels/apply") {
       if (!isType(body.type)) return sendJson(res, 400, { ok: false, error: "type must be telegram, slack or whatsapp" });
       const secrets2 = body.secrets ?? {};
+      const applyId = typeof body.applyId === "string" && /^[\w.:-]{1,64}$/.test(body.applyId) ? body.applyId : void 0;
       let input;
-      if (body.remove === true) input = { type: body.type, remove: true };
+      if (body.remove === true) input = { applyId, type: body.type, remove: true };
       else if (body.type === "telegram") {
         if (typeof secrets2.botToken !== "string") return sendJson(res, 400, { ok: false, error: "botToken required" });
-        input = { type: "telegram", secrets: { botToken: secrets2.botToken } };
+        input = { applyId, type: "telegram", secrets: { botToken: secrets2.botToken } };
       } else if (body.type === "slack") {
         if (typeof secrets2.botToken !== "string" || typeof secrets2.appToken !== "string")
           return sendJson(res, 400, { ok: false, error: "botToken and appToken required" });
-        input = { type: "slack", secrets: { botToken: secrets2.botToken, appToken: secrets2.appToken } };
+        input = { applyId, type: "slack", secrets: { botToken: secrets2.botToken, appToken: secrets2.appToken } };
       } else {
         const settings = body.settings ?? {};
-        input = { type: "whatsapp", settings: { personal: settings.personal === true, self: typeof settings.self === "string" ? settings.self : null } };
+        input = { applyId, type: "whatsapp", settings: { personal: settings.personal === true, self: typeof settings.self === "string" ? settings.self : null } };
       }
       sendJson(res, 200, await service.apply(input));
       return;
@@ -33600,7 +33834,7 @@ var LlmService = class {
     return this.opts.openclawBin ?? "/usr/bin/openclaw";
   }
   async config() {
-    const snapshot = await this.gateway().call("config.get", {}, 1e4);
+    const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
     const hash = str3(snapshot.hash);
     if (!hash) throw new Error("OpenClaw returned no config hash");
     const config = snapshot.parsed ?? snapshot.config ?? {};
@@ -33608,7 +33842,7 @@ var LlmService = class {
   }
   async patchConfig(patch, baseHash) {
     const hash = baseHash ?? (await this.config()).hash;
-    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash: hash }, 2e4);
+    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash: hash }, patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS);
   }
   /** Make OpenClaw match the desired state. Applies what it can and reports each failure by name. */
   async apply(input) {
@@ -33962,14 +34196,14 @@ var SearchService = class _SearchService {
     return this.opts.openclawBin ?? "/usr/bin/openclaw";
   }
   async config() {
-    const snapshot = await this.gateway().call("config.get", {}, 1e4);
+    const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
     const hash = str4(snapshot.hash);
     if (!hash) throw new Error("OpenClaw returned no config hash");
     const config = snapshot.parsed ?? snapshot.config ?? {};
     return { hash, config: config && typeof config === "object" ? config : {} };
   }
   async patchConfig(patch, baseHash) {
-    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash }, 2e4);
+    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash }, CONFIG_PATCH_RESTART_MS);
   }
   /**
    * Plugin ids this box HAS, from `openclaw plugins list --json`. Empty when it cannot say.
@@ -34227,15 +34461,15 @@ var ConnectorsService = class {
     }
   }
   async writeMcp(entry) {
-    const snapshot = await this.gateway().call("config.get", {}, 1e4);
+    const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
     const hash = typeof snapshot.hash === "string" ? snapshot.hash : null;
     if (!hash) throw new Error("OpenClaw returned no config hash");
-    await this.gateway().call("config.patch", { raw: JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: entry } }), baseHash: hash }, 2e4);
+    await this.gateway().call("config.patch", { raw: JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: entry } }), baseHash: hash }, CONFIG_PATCH_RESTART_MS);
   }
   async status() {
     let configured = false;
     try {
-      const snapshot = await this.gateway().call("config.get", {}, 1e4);
+      const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
       const config = snapshot.parsed ?? snapshot.config ?? {};
       configured = !!config.mcpServers?.[MCP_SERVER_NAME];
     } catch (err) {
@@ -34700,7 +34934,7 @@ var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 var SERVICES = ["gmail", "calendar", "drive", "contacts", "sheets", "docs"];
 var LABEL_RE = /^[^\s<>"'\\]{3,254}$/;
-var VERSION_TIMEOUT_MS = 1e4;
+var VERSION_TIMEOUT_MS = GOOGLE_VERSION_MS;
 function parseApply5(body) {
   const rawPlaceholder = body.placeholder;
   if (rawPlaceholder !== null && typeof rawPlaceholder !== "string") return "placeholder must be a string or null";
@@ -36845,7 +37079,7 @@ var SshLoginWatcher = class {
 
 // src/tailscale.ts
 var UP_TIMEOUT_MS = 12e4;
-var CLI_TIMEOUT_MS4 = 2e4;
+var CLI_TIMEOUT_MS4 = TAILSCALE_STATUS_MS;
 var JOIN_SETTLE_TRIES = 10;
 var JOIN_SETTLE_DELAY_MS = 1500;
 var sleep5 = (ms) => new Promise((r) => setTimeout(r, ms));
