@@ -31168,8 +31168,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "bc915b6" : "unknown",
-  builtAt: true ? "2026-09-27T23:01:44+01:00" : "unknown"
+  commit: true ? "cebef37" : "unknown",
+  builtAt: true ? "2026-09-28T11:24:36+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -31617,8 +31617,8 @@ function setRedactionSecrets(values) {
   secrets = values.filter((v) => v.length >= MIN_SECRET_LENGTH);
   secretRe = secrets.length ? new RegExp(secrets.map(escapeRegExp).join("|"), "g") : null;
 }
-function redact(text) {
-  let out = text;
+function redact(text2) {
+  let out = text2;
   if (secretRe) out = out.replace(secretRe, "[redacted]");
   out = out.replace(PARAM_RE, (_m, k) => `${k}=[redacted]`);
   out = out.replace(BEARER_RE, "Bearer [redacted]");
@@ -31727,10 +31727,10 @@ function readFileTail(lines) {
     const start = Math.max(0, size - TAIL_BYTES);
     const buf = Buffer.alloc(size - start);
     readSync(fd, buf, 0, buf.length, start);
-    let text = buf.toString("utf-8");
-    if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+    let text2 = buf.toString("utf-8");
+    if (start > 0) text2 = text2.slice(text2.indexOf("\n") + 1);
     const out = [];
-    for (const line of text.split("\n")) {
+    for (const line of text2.split("\n")) {
       if (!line.trim()) continue;
       const mapped = mapFileRecord(line);
       if (mapped) out.push(mapped);
@@ -32338,8 +32338,8 @@ var LIST_METHODS = Object.keys(APPROVAL_FAMILIES).map((family) => [
   `${family}.approval.list`
 ]);
 var CONTROL_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f]/g;
-function sanitizeTitle(text) {
-  const flat = redact(text).replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
+function sanitizeTitle(text2) {
+  const flat = redact(text2).replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
   return flat.length > TITLE_MAX ? `${flat.slice(0, TITLE_MAX - 1)}\u2026` : flat;
 }
 function str(v) {
@@ -32585,7 +32585,7 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname3 } from "path";
 import { randomUUID } from "crypto";
 
@@ -32609,8 +32609,124 @@ var defaultExec = (file, args, timeoutMs, stdin, opts) => new Promise((resolve2,
 });
 function execFailureLine(err) {
   const e = err;
-  const text = (e.stderr || e.stdout || e.message || "").replace(/\x1b\[[0-9;]*m/g, "").trim();
-  return text.split("\n").filter((l) => l.trim()).pop() ?? "command failed";
+  const text2 = (e.stderr || e.stdout || e.message || "").replace(/\x1b\[[0-9;]*m/g, "").trim();
+  return text2.split("\n").filter((l) => l.trim()).pop() ?? "command failed";
+}
+
+// src/openclaw-allow.ts
+import { existsSync as existsSync5 } from "fs";
+import { createRequire } from "module";
+var ENTRY_CAP = 200;
+var requireBuiltin = createRequire(import.meta.url);
+function nodeSqlite() {
+  try {
+    return requireBuiltin("node:sqlite");
+  } catch {
+    return null;
+  }
+}
+var defaultOpener = (path) => {
+  const sqlite = nodeSqlite();
+  if (!sqlite) throw new Error("this Node build has no node:sqlite");
+  const db = new sqlite.DatabaseSync(path, { readOnly: true });
+  try {
+    db.exec("PRAGMA busy_timeout = 2000;");
+  } catch {
+  }
+  return db;
+};
+function looksBusy(message) {
+  return /\b(EBUSY|EAGAIN|SQLITE_BUSY|SQLITE_PROTOCOL)\b|database is locked|database table is locked|locking protocol/i.test(message);
+}
+function looksUnopenable(message) {
+  return /\b(SQLITE_CANTOPEN|SQLITE_READONLY_CANTINIT|SQLITE_READONLY_RECOVERY)\b|unable to open database file/i.test(message);
+}
+function failure(message) {
+  if (looksBusy(message)) return { busy: true, message: "The agent is busy right now, so who it has allowed could not be read." };
+  if (looksUnopenable(message)) {
+    return { busy: false, message: "Your agent's own list could not be opened. Restarting the agent clears this." };
+  }
+  return { busy: false, message: "Your agent's own list could not be read." };
+}
+function isSender(entry) {
+  return entry !== "*" && !entry.startsWith("accessGroup:");
+}
+function text(v) {
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+function stamp(v) {
+  const n = typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : Number.NaN;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const ms = n < 1e11 ? n * 1e3 : n;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+function labelFromMeta(metaJson) {
+  const raw = text(metaJson);
+  if (!raw) return null;
+  let meta;
+  try {
+    meta = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!meta || typeof meta !== "object") return null;
+  return text(meta.name) ?? text(meta.displayName) ?? text(meta.username) ?? text(meta.title) ?? null;
+}
+function readAllowList(opts) {
+  if (opts.channels.length === 0) return { senders: [], error: null, canonical: false };
+  if (!existsSync5(opts.dbPath)) return { senders: [], error: null, canonical: false };
+  let db;
+  try {
+    db = (opts.open ?? defaultOpener)(opts.dbPath);
+  } catch (err) {
+    const message = err.message;
+    opts.log?.(`[channels] could not open OpenClaw's state database: ${message}`);
+    return { senders: [], canonical: false, error: failure(message) };
+  }
+  try {
+    const senders = [];
+    for (const channel of opts.channels) {
+      let rows;
+      let requests = [];
+      try {
+        rows = db.prepare("SELECT account_id, entry, updated_at FROM channel_pairing_allow_entries WHERE channel_key = ? ORDER BY account_id, sort_order, entry").all(channel);
+      } catch (err) {
+        const message = err.message;
+        if (/no such table/i.test(message)) return { senders: [], error: null, canonical: false };
+        throw err;
+      }
+      if (rows.length > 0) {
+        try {
+          requests = db.prepare("SELECT request_id, meta_json FROM channel_pairing_requests WHERE channel_key = ?").all(channel);
+        } catch {
+        }
+      }
+      for (const row of rows) {
+        const entry = text(row.entry);
+        if (!entry || !isSender(entry)) continue;
+        const request = requests.find((r) => text(r.request_id) === entry);
+        senders.push({
+          channel,
+          accountId: text(row.account_id) ?? "default",
+          senderId: entry,
+          label: request ? labelFromMeta(request.meta_json) : null,
+          at: stamp(row.updated_at)
+        });
+        if (senders.length >= ENTRY_CAP) return { senders, error: null, canonical: true };
+      }
+    }
+    return { senders, error: null, canonical: true };
+  } catch (err) {
+    const message = err.message;
+    opts.log?.(`[channels] could not read OpenClaw's allow list: ${message}`);
+    return { senders: [], canonical: false, error: failure(message) };
+  } finally {
+    try {
+      db.close();
+    } catch {
+    }
+  }
 }
 
 // src/channels.ts
@@ -32631,6 +32747,7 @@ var GATEWAY_READY_TIMEOUT_MS = 9e4;
 var GATEWAY_POLL_MS = 500;
 var PAIRINGS_CACHE_MS = 4e3;
 var PAIRINGS_ERROR_CACHE_MS = 1500;
+var ALLOWED_CACHE_MS = 5e3;
 var WA_QR_TIMEOUT_MS = 12e4;
 var WA_QR_STALE_MS = 15e4;
 var WA_INSTALL_STALE_MS = 15 * 6e4;
@@ -32649,13 +32766,13 @@ function toPairing(type, r) {
   const label = str2(meta.name) ?? str2(meta.displayName) ?? str2(meta.username) ?? str2(meta.title) ?? str2(r.label) ?? null;
   return { type, code, senderId, label, createdAt: str2(r.createdAt) };
 }
-function looksBusy(message) {
+function looksBusy2(message) {
   return /\b(EBUSY|EAGAIN|ECONNREFUSED|SQLITE_BUSY)\b|database is locked|gateway (is )?(not running|unavailable|starting|restarting)|connection refused|socket hang up/i.test(
     message
   );
 }
 function readChannelState(path) {
-  if (!path || !existsSync5(path)) return { version: 1, seededAt: null, approved: [] };
+  if (!path || !existsSync6(path)) return { version: 1, seededAt: null, approved: [] };
   try {
     const parsed = JSON.parse(readFileSync10(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
@@ -32706,6 +32823,8 @@ var ChannelsService = class {
   pairingsCache = null;
   /** Who this box has approved, as it saw it. Loaded once; written on every approval. */
   state;
+  /** OpenClaw's own allow list, briefly reused; see `ALLOWED_CACHE_MS`. */
+  allowedCache = null;
   /** Per-channel plugin-install progress, surfaced through `status()`. In memory only. */
   setup = /* @__PURE__ */ new Map();
   /** Single-flight per channel, so a repeated apply or a `channels.push` fan-out installs once. */
@@ -32728,6 +32847,73 @@ var ChannelsService = class {
   async approved() {
     await this.seed();
     return this.state.approved;
+  }
+  /**
+   * Who OpenClaw itself will talk to, which is NOT who this box approved.
+   *
+   * The two lists exist separately on purpose. `approved()` is what this box did — the approvals the
+   * firewall asked for — and the firewall trusts it, because the box only records a sender once
+   * OpenClaw accepted the pairing code the firewall passed down. This one is OpenClaw's own DM allow
+   * list, and the agent can write to it by itself: the owner pastes a pairing code into the chat and
+   * the assistant runs `openclaw pairing approve`. Nobody but OpenClaw ever hears about that, which
+   * leaves a box where people can talk to the agent and nobody can receive a confirmation code.
+   *
+   * So this is reported, never merged: the firewall shows it as a suggestion and an owner adds each
+   * sender under the normal consent rule (`docs/security-design.md`). A compromised agent can put an
+   * attacker in this table; it must not thereby be able to confirm anything.
+   *
+   * Two sources, because two OpenClaw generations: the SQLite pairing store (2026.9 and later) and
+   * the config `channels.<type>.allowFrom` array an older gateway used. Both are advisory, so a
+   * failure on either side is reported rather than thrown.
+   *
+   * One thing it deliberately does NOT do is mirror `forgetApproved`. When a channel leaves this box
+   * we drop the approvals we made, because whatever is put there next is a different bot; OpenClaw's
+   * table is keyed by channel and not by token, so it keeps those senders — and they really can
+   * still message the new bot. Reporting them is therefore honest, and confirming any of them is
+   * still a decision the owner has to make.
+   */
+  async allowedByAgent() {
+    const cached = this.allowedCache;
+    if (cached && this.now() - cached.at < ALLOWED_CACHE_MS) return cached.value;
+    const fromDb = this.opts.stateDbPath ? readAllowList({ dbPath: this.opts.stateDbPath, channels: CHANNEL_TYPES, open: this.opts.sqliteOpen, log: this.log }) : { senders: [], error: null, canonical: false };
+    const senders = [];
+    for (const s of fromDb.senders) {
+      if (!CHANNEL_TYPES.includes(s.channel)) continue;
+      senders.push({ type: s.channel, senderId: s.senderId, label: s.label, accountId: s.accountId, at: s.at });
+    }
+    if (!fromDb.canonical && !fromDb.error) {
+      for (const old of await this.allowedFromConfig()) {
+        if (!senders.some((x) => x.type === old.type && x.senderId === old.senderId)) senders.push(old);
+      }
+    }
+    const value = { senders, error: fromDb.error };
+    this.allowedCache = { at: this.now(), value };
+    return value;
+  }
+  /**
+   * `channels.<type>.allowFrom` — where an OpenClaw older than the SQLite pairing store kept the
+   * same list. Best effort: a gateway that will not answer costs us this half and nothing else,
+   * because on any OpenClaw that has the SQLite store the canonical read above already has it.
+   */
+  async allowedFromConfig() {
+    let config;
+    try {
+      config = await this.config();
+    } catch {
+      return [];
+    }
+    const channels2 = config.channels ?? {};
+    const out = [];
+    for (const type of CHANNEL_TYPES) {
+      const raw = channels2[type]?.allowFrom;
+      for (const entry of Array.isArray(raw) ? raw : []) {
+        const senderId = str2(entry);
+        if (!senderId || senderId === "*" || senderId.startsWith("accessGroup:")) continue;
+        if (out.some((o) => o.type === type && o.senderId === senderId)) continue;
+        out.push({ type, senderId, label: null, accountId: "default", at: null });
+      }
+    }
+    return out;
   }
   recordApproved(type, senderId, code) {
     const at = new Date(this.now()).toISOString();
@@ -32864,7 +33050,7 @@ var ChannelsService = class {
         last = execFailureLine(err);
       }
     }
-    const busy = !this.opts.client?.connected || looksBusy(last);
+    const busy = !this.opts.client?.connected || looksBusy2(last);
     this.log(`[channels] pairing list ${type} failed after ${LIST_ATTEMPTS} tries: ${last}`);
     return {
       pairings: [],
@@ -33017,7 +33203,7 @@ var ChannelsService = class {
     this.log(`[channels] installing ${pkg}`);
     try {
       const ca = this.opts.mitmCaPath;
-      const env2 = ca && existsSync5(ca) ? { NODE_EXTRA_CA_CERTS: ca } : void 0;
+      const env2 = ca && existsSync6(ca) ? { NODE_EXTRA_CA_CERTS: ca } : void 0;
       await this.exec(this.bin(), ["plugins", "install", `npm:${pkg}`], PLUGIN_INSTALL_TIMEOUT_MS, void 0, {
         maxBuffer: PLUGIN_INSTALL_MAX_BUFFER,
         env: env2
@@ -33278,7 +33464,11 @@ async function handleChannels(req, res, pathname, service) {
     }
     if (pathname === "/channels/approved" && req.method === "GET") {
       if (!mitm) return sendJson(res, 403, { error: "who this agent has approved is the org firewall's to read" });
-      sendJson(res, 200, { approved: await service.approved() });
+      const allowedByAgent = await service.allowedByAgent().catch((err) => ({
+        senders: [],
+        error: { busy: false, message: `The agent's own allow list could not be read: ${err.message}` }
+      }));
+      sendJson(res, 200, { approved: await service.approved(), allowedByAgent });
       return;
     }
     if (pathname === "/channels/whatsapp/login" && req.method === "GET") {
@@ -33338,7 +33528,7 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname4 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
@@ -33376,7 +33566,7 @@ function readMemory(config) {
   return { provider: str3(search2?.provider), model: str3(search2?.model), baseUrl: str3(remote?.baseUrl), apiKey: str3(remote?.apiKey), dreaming: dreaming !== false };
 }
 function readReindexFailure(path) {
-  if (!path || !existsSync6(path)) return null;
+  if (!path || !existsSync7(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync11(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
@@ -33518,7 +33708,7 @@ var LlmService = class {
     this.reindexing = true;
     this.writeReindexFailure("the memory index rebuild did not finish");
     const ca = this.opts.mitmCaPath;
-    const env2 = ca && existsSync6(ca) ? { NODE_EXTRA_CA_CERTS: ca } : void 0;
+    const env2 = ca && existsSync7(ca) ? { NODE_EXTRA_CA_CERTS: ca } : void 0;
     void this.exec(this.bin(), ["memory", "index", "--force"], REINDEX_TIMEOUT_MS, void 0, { env: env2 }).then(() => {
       this.writeReindexFailure(null);
       this.log("[llm] memory index rebuilt for the new embedding provider");
@@ -33964,7 +34154,7 @@ async function handleSearch(req, res, url2, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, unlinkSync, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, unlinkSync, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname5 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -34117,7 +34307,7 @@ var ConnectorsService = class {
   }
 };
 function readState(path) {
-  if (!existsSync7(path)) return { gateway: null, connections: [], updatedAt: "" };
+  if (!existsSync8(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
     const parsed = JSON.parse(readFileSync12(path, "utf8"));
     return {
@@ -34152,7 +34342,7 @@ function writeCliEnv(path, relayUrl, token) {
 }
 function removeFile(path) {
   try {
-    if (existsSync7(path)) unlinkSync(path);
+    if (existsSync8(path)) unlinkSync(path);
   } catch {
   }
 }
@@ -34227,7 +34417,7 @@ async function handleConnectors(req, res, url2, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
 import { dirname as dirname6 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -34457,7 +34647,7 @@ var DriveService = class {
   }
   /** Whether this box has Drive support installed at all (an older box does not). */
   supported() {
-    return existsSync8(this.applyScript);
+    return existsSync9(this.applyScript);
   }
 };
 
@@ -34504,7 +34694,7 @@ async function handleDrive(req, res, url2, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync6, rmSync, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync6, rmSync, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname7 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -34553,7 +34743,7 @@ var GoogleService = class {
   gogBin;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync9(this.gogBin);
+    return existsSync10(this.gogBin);
   }
   /**
    * Make the box match the desired state. One atomic write, or one removal.
@@ -34609,7 +34799,7 @@ var GoogleService = class {
       gogVersion: await this.version(),
       // The file, not the remembered state: this is the question the console is really asking, and
       // a state file that outlived its env file would answer it wrongly.
-      hasPlaceholder: existsSync9(this.opts.envPath),
+      hasPlaceholder: existsSync10(this.opts.envPath),
       connected: applied?.connected ?? false,
       services: applied?.services ?? [],
       projectId: applied?.projectId ?? null,
@@ -36580,8 +36770,8 @@ var MAX_BUFFERED = 500;
 function parseSshdLine(line) {
   const m = /Accepted publickey for (\S+) from (\S+) port \d+ ssh2:\s+\S+\s+(SHA256:\S+)/.exec(line);
   if (!m) return null;
-  const stamp = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z)?)/.exec(line);
-  const at = stamp ? Date.parse(stamp[1].replace(/([+-]\d{2})(\d{2})$/, "$1:$2")) : NaN;
+  const stamp2 = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z)?)/.exec(line);
+  const at = stamp2 ? Date.parse(stamp2[1].replace(/([+-]\d{2})(\d{2})$/, "$1:$2")) : NaN;
   return { user: m[1], fromIp: m[2], fingerprint: m[3], at: Number.isFinite(at) ? at : null };
 }
 function journal(cursorPath) {
@@ -36833,7 +37023,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile5 } from "child_process";
-import { existsSync as existsSync10, mkdirSync as mkdirSync9, readFileSync as readFileSync17, rmSync as rmSync3, writeFileSync as writeFileSync11 } from "fs";
+import { existsSync as existsSync11, mkdirSync as mkdirSync9, readFileSync as readFileSync17, rmSync as rmSync3, writeFileSync as writeFileSync11 } from "fs";
 import { dirname as dirname11 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile5);
@@ -36874,7 +37064,7 @@ var GmailWatchService = class {
   unit;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync10(this.gogBin);
+    return existsSync11(this.gogBin);
   }
   /**
    * Write the watcher's configuration and (re)start it.
@@ -37314,6 +37504,8 @@ server.listen(PORT, BIND, () => {
     client,
     credentialsDir: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/credentials`,
     statePath: `${STATE_DIR}/channels.json`,
+    // OpenClaw's own state database, read read-only for its DM allow list (`openclaw-allow.ts`).
+    stateDbPath: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/state/openclaw.sqlite`,
     restartService: () => runAction("restart"),
     mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt`
   });

@@ -34230,6 +34230,15 @@ ${summary}
 Code: ${pretty}
 Expires in 10 minutes. If you did not ask for this, ignore it and check your ControlClaw console.`;
 }
+function noRecipients(agentAllowed) {
+  const lead = "Nobody is set to get confirmation codes.";
+  const where = "Add somebody on the Firewall page.";
+  const some = agentAllowed === void 0 ? where : agentAllowed === 0 ? "Connect a channel, then add somebody on the Firewall page." : `${agentAllowed} ${agentAllowed === 1 ? "person" : "people"} the agent approved can be added on the Firewall page.`;
+  return {
+    message: `${lead} ${some}`,
+    data: { noRecipients: true, ...agentAllowed === void 0 ? {} : { agentAllowed } }
+  };
+}
 function sha256(s) {
   return createHash("sha256").update(s).digest("hex");
 }
@@ -34443,8 +34452,19 @@ var NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
 var DEV_TARGET = { vmId: "dev", hostname: "dev" };
 var PENDING_APPROVAL_TTL_MS = 15 * 6e4;
 var RECONCILE_INTERVAL_MS = 6e4;
+var AGENT_ALLOWED_INTERVAL_MS = 5 * 6e4;
+var AGENT_ALLOWED_CAP = 50;
+var APPROVED_CAP = 200;
+var DECLINED_CAP = 200;
 function named(type, label) {
   return label ? `${NAMES[type]} ${label}` : NAMES[type];
+}
+function readFailureMessage(err) {
+  return isAgentTimeout(err) ? "The agent did not answer in time, so who it has allowed could not be read." : "Your agent could not be reached, so who it has allowed could not be read.";
+}
+function who(sender) {
+  if (!sender) return "?";
+  return sender.label ? `${sender.label} (${sender.id})` : sender.id;
 }
 function summarize(p) {
   const name25 = NAMES[p.type];
@@ -34463,6 +34483,10 @@ function summarize(p) {
       return `Disable ${what}${on}`;
     case "approve_pairing":
       return `Approve ${name25} sender ${p.pairing?.label ? `${p.pairing.label} (${p.pairing.senderId})` : p.pairing?.senderId ?? "?"}`;
+    case "add_sender":
+      return `Let ${name25} ${who(p.sender)} receive confirmation codes`;
+    case "remove_sender":
+      return `Stop sending confirmation codes to ${name25} ${who(p.sender)}`;
     case "whatsapp_login":
       if (p.from) return `Move WhatsApp to ${p.agent?.name ?? "another agent"} (needs a new QR scan)`;
       return `${p.settings?.personal ? "Connect WhatsApp by QR (personal number)" : "Connect WhatsApp by QR"}${on}`;
@@ -34472,7 +34496,7 @@ function placeholderFor(type, connectionId, which = "bot") {
   return `__cc_${type}_${which}_${connectionId.replace(/[^A-Za-z0-9_]/g, "_")}`;
 }
 function isKind(v) {
-  return v === "add" || v === "replace" || v === "remove" || v === "assign" || v === "unassign" || v === "approve_pairing" || v === "whatsapp_login";
+  return v === "add" || v === "replace" || v === "remove" || v === "assign" || v === "unassign" || v === "approve_pairing" || v === "whatsapp_login" || v === "add_sender" || v === "remove_sender";
 }
 function isType(v) {
   return v === "telegram" || v === "slack" || v === "whatsapp";
@@ -34493,6 +34517,7 @@ function parseProposal(payload) {
     throw new Error("malformed channels.propose payload");
   }
   const pairing = payload.pairing;
+  const sender = payload.sender;
   const settings = payload.settings;
   const secret = payload.secret;
   const from = payload.from;
@@ -34506,9 +34531,26 @@ function parseProposal(payload) {
     agent: parseAgent(payload.agent),
     ...from && str(from.vmId) ? { from: { vmId: String(from.vmId), hostname: str(from.hostname) } } : {},
     ...pairing && str(pairing.code) && str(pairing.senderId) ? { pairing: { code: String(pairing.code), senderId: String(pairing.senderId), label: str(pairing.label) } } : {},
+    ...sender && str(sender.id) ? { sender: { id: String(sender.id), label: str(sender.label) } } : {},
     ...settings ? { settings: { personal: typeof settings.personal === "boolean" ? settings.personal : void 0 } } : {},
     ...secret ? { secret: { botToken: str(secret.botToken) ?? void 0, appToken: str(secret.appToken) ?? void 0 } } : {}
   };
+}
+function parseAgentAllowed(payload) {
+  const raw = payload.allowedByAgent;
+  if (!raw) return { senders: null, error: null };
+  const list = Array.isArray(raw.senders) ? raw.senders : [];
+  const senders = [];
+  for (const a of list) {
+    const senderId = str(a.senderId);
+    if (!isType(a.type) || !senderId) continue;
+    if (senders.some((x) => x.type === a.type && x.senderId === senderId)) continue;
+    senders.push({ type: a.type, senderId, label: str(a.label), at: str(a.at) });
+    if (senders.length >= AGENT_ALLOWED_CAP) break;
+  }
+  const err = raw.error;
+  const message2 = err ? str(err.message) : null;
+  return { senders, error: message2 ? { busy: err.busy === true, message: message2 } : null };
 }
 function parseApproved(payload) {
   const raw = Array.isArray(payload.approved) ? payload.approved : [];
@@ -34537,6 +34579,13 @@ var ChannelsFirewall = class {
   reports = [];
   /** Reconcile passes run one after another; see `reconcile`. */
   reconciling = Promise.resolve();
+  /**
+   * OpenClaw's own allow list per agent, as last read (`AGENT_ALLOWED_INTERVAL_MS`). A vmId that is
+   * absent here has never been read, which the beat reports as "do not know" rather than as empty.
+   */
+  agentAllowed = /* @__PURE__ */ new Map();
+  /** One refresh at a time, for the same reason `reconcile` serialises. */
+  refreshing = Promise.resolve();
   /**
    * Every assigned connection someone is approved on, as code routes: the LLM firewall sends its
    * codes through the same people, since an org-level change has no single agent of its own.
@@ -34574,9 +34623,50 @@ var ChannelsFirewall = class {
    * organization costs no requests at all.
    */
   async tick() {
+    await this.refreshAgentAllowed();
     if (this.reconcileTargets().size === 0) return;
     const recorded = await this.reconcile();
     this.report(recorded);
+  }
+  /**
+   * Re-read OpenClaw's allow list off every agent that carries a connection, at most once per
+   * `AGENT_ALLOWED_INTERVAL_MS` per agent. Advisory data, so a box that will not answer keeps its
+   * last answer (with the read's error on it) rather than being reported as empty.
+   */
+  async refreshAgentAllowed(force = false) {
+    const run = this.refreshing.then(
+      () => this.refreshAgentAllowedOnce(force),
+      () => this.refreshAgentAllowedOnce(force)
+    );
+    this.refreshing = run.catch(() => void 0);
+    await run;
+  }
+  async refreshAgentAllowedOnce(force) {
+    const vmIds = /* @__PURE__ */ new Set();
+    for (const c of Object.values(this.store.connections)) if (c.assignedVmId) vmIds.add(c.assignedVmId);
+    for (const vmId of vmIds) {
+      const last = this.agentAllowed.get(vmId);
+      if (!force && last && this.now() - last.at < AGENT_ALLOWED_INTERVAL_MS) continue;
+      await this.readAgentAllowed(vmId);
+    }
+    for (const vmId of [...this.agentAllowed.keys()]) if (!vmIds.has(vmId)) this.agentAllowed.delete(vmId);
+  }
+  /** One box's allow list, cached. Returns what the cache now holds, whether or not the read worked. */
+  async readAgentAllowed(vmId) {
+    let payload;
+    try {
+      payload = await this.opts.agent.get(this.target(vmId), "/channels/approved");
+    } catch (err) {
+      this.log(`[channels] could not read what ${vmId} has allowed: ${err.message}`);
+      const last = this.agentAllowed.get(vmId);
+      const kept = { senders: last?.senders ?? null, error: { busy: isAgentTimeout(err), message: readFailureMessage(err) }, at: this.now() };
+      this.agentAllowed.set(vmId, kept);
+      return kept;
+    }
+    const read = parseAgentAllowed(payload);
+    const value = { ...read, at: this.now() };
+    this.agentAllowed.set(vmId, value);
+    return value;
   }
   handlers() {
     return {
@@ -34605,6 +34695,74 @@ var ChannelsFirewall = class {
       }
     }
     return out;
+  }
+  /**
+   * "Who gets confirmation codes", for the beat (T-83).
+   *
+   * Two lists, deliberately apart. `approved` is the firewall's own: these people, and only these,
+   * are sent a six-digit code when something needs confirming — an empty one is an organization
+   * that cannot confirm anything, which is the state this card exists to make visible. `allowed` is
+   * what the agent boxes say OpenClaw will talk to, which is a suggestion the owner can act on and
+   * nothing more (`docs/security-design.md`).
+   *
+   * `allowed` is `undefined`, not `[]`, until a box has actually been read: absent means "not
+   * known", and an empty list would otherwise tell an owner there is nobody to add when there may
+   * well be. `approved` is always sent — empty is the answer that matters there.
+   */
+  codeRecipients() {
+    const approved = [];
+    const allowed = [];
+    let allowedError;
+    let read = false;
+    for (const [id, c] of Object.entries(this.store.connections)) {
+      const agentName = c.assignedVmId ? this.store.agents[c.assignedVmId]?.name ?? c.assignedVmId : null;
+      for (const sndr of c.approvedSenders) {
+        if (approved.length >= APPROVED_CAP) break;
+        approved.push({
+          connectionId: id,
+          type: c.type,
+          connectionLabel: c.label,
+          senderId: sndr.id,
+          senderLabel: sndr.label,
+          at: sndr.at,
+          vmId: c.assignedVmId,
+          agentName
+        });
+      }
+      if (!c.assignedVmId) continue;
+      const fromBox = this.agentAllowed.get(c.assignedVmId);
+      if (!fromBox) continue;
+      if (fromBox.error && !allowedError) allowedError = fromBox.error;
+      if (!fromBox.senders) continue;
+      read = true;
+      for (const a of fromBox.senders) {
+        if (a.type !== c.type) continue;
+        if (c.approvedSenders.some((x) => x.id === a.senderId)) continue;
+        if (allowed.length >= AGENT_ALLOWED_CAP) break;
+        allowed.push({
+          connectionId: id,
+          type: c.type,
+          connectionLabel: c.label,
+          senderId: a.senderId,
+          senderLabel: a.label,
+          at: a.at,
+          vmId: c.assignedVmId,
+          agentName: agentName ?? c.assignedVmId
+        });
+      }
+    }
+    return { approved, ...read ? { allowed } : {}, ...allowedError ? { allowedError } : {} };
+  }
+  /**
+   * How many people the agents have allowed but nobody has confirmed. The number the refusal a
+   * change gets when there is no recipient puts in front of the owner, so it has somewhere to send
+   * them (`consent-codes.ts` → `noRecipients`).
+   *
+   * `undefined`, not 0, when no agent box has been read: "I have not asked" is not "there is nobody
+   * to add", and the refusal says something different for each.
+   */
+  agentAllowedCount() {
+    return this.codeRecipients().allowed?.length;
   }
   /** What the console may see: no secrets. */
   summary() {
@@ -34692,6 +34850,7 @@ var ChannelsFirewall = class {
         for (const a of approved) {
           if (a.type !== c.type) continue;
           if (c.approvedSenders.some((s) => s.id === a.senderId)) continue;
+          if (c.declinedSenders?.includes(a.senderId)) continue;
           const pending = (c.pendingApprovals ?? []).find((pa) => a.code !== null && pa.code === a.code || pa.senderId === a.senderId);
           added.push({ type: c.type, id: a.senderId, label: pending?.label ?? null, at: a.at });
         }
@@ -34727,6 +34886,12 @@ var ChannelsFirewall = class {
         }
       });
     }
+  }
+  /** Let a sender be repaired by the reconcile again: they have just been added back on purpose. */
+  undecline(c, senderId) {
+    const kept = (c.declinedSenders ?? []).filter((x) => x !== senderId);
+    if (kept.length) c.declinedSenders = kept;
+    else delete c.declinedSenders;
   }
   notePendingApproval(c, pairing, at) {
     const pending = { senderId: pairing.senderId, label: pairing.label, code: pairing.code, at };
@@ -34940,11 +35105,60 @@ var ChannelsFirewall = class {
         const id = str(r.senderId) ?? p.pairing.senderId;
         const sender = { type: c.type, id, label: p.pairing.label, at: stamp };
         if (!c.approvedSenders.some((s) => s.id === sender.id)) c.approvedSenders.push(sender);
+        this.undecline(c, sender.id);
         const kept = (c.pendingApprovals ?? []).filter((pa) => pa.code !== p.pairing.code && pa.senderId !== sender.id);
         if (kept.length) c.pendingApprovals = kept;
         else delete c.pendingApprovals;
         this.save();
         return { approvedSender: `${sender.type}:${sender.label ?? sender.id}`, vmId, ...r.alreadyApproved === true ? { alreadyApproved: true } : {} };
+      }
+      case "add_sender": {
+        if (!p.sender) throw new Error("no sender in the proposal");
+        const c = this.connection(p.connectionId);
+        const vmId = c.assignedVmId;
+        if (!vmId) throw new Error("This connection is not on an agent, so nobody can be added on it.");
+        await this.refreshAgentAllowed(true);
+        const fromBox = this.agentAllowed.get(vmId);
+        if (!fromBox || fromBox.error || !fromBox.senders) {
+          throw new Error(
+            fromBox?.error?.busy ? "The agent is busy right now, so who it has allowed could not be checked. Try again shortly." : !fromBox?.error && fromBox ? "This agent is too old to say who it has allowed. Update it, then try again." : "The agent could not be asked who it has allowed, so nothing was changed."
+          );
+        }
+        const still = fromBox.senders.find((a) => a.type === c.type && a.senderId === p.sender.id);
+        if (!still) {
+          throw new Error(`${NAMES[c.type]} ${p.sender.id} is no longer on the agent's own list, so nothing was changed.`);
+        }
+        if (c.approvedSenders.some((x) => x.id === p.sender.id)) {
+          this.log(`[channels] ${c.type} ${p.sender.id} already gets the codes; nothing to add`);
+          return { vmId, senderId: p.sender.id, alreadyApproved: true };
+        }
+        const sender = { type: c.type, id: p.sender.id, label: still.label ?? p.sender.label, at: stamp };
+        c.approvedSenders.push(sender);
+        this.undecline(c, p.sender.id);
+        c.updatedAt = stamp;
+        this.save();
+        this.log(`[channels] ${c.type} ${sender.id} now gets confirmation codes`);
+        return { vmId, senderId: sender.id, approvedSender: `${sender.type}:${sender.label ?? sender.id}` };
+      }
+      case "remove_sender": {
+        if (!p.sender) throw new Error("no sender in the proposal");
+        const c = this.connection(p.connectionId);
+        const before = c.approvedSenders.length;
+        c.approvedSenders = c.approvedSenders.filter((x) => x.id !== p.sender.id);
+        c.declinedSenders = [...(c.declinedSenders ?? []).filter((x) => x !== p.sender.id), p.sender.id].slice(-DECLINED_CAP);
+        const keptPending = (c.pendingApprovals ?? []).filter((pa) => pa.senderId !== p.sender.id);
+        if (keptPending.length) c.pendingApprovals = keptPending;
+        else delete c.pendingApprovals;
+        if (c.approvedSenders.length === before) {
+          this.save();
+          this.log(`[channels] ${c.type} ${p.sender.id} was not a code recipient; nothing to remove`);
+          return { vmId: c.assignedVmId, senderId: p.sender.id, missing: true };
+        }
+        c.updatedAt = stamp;
+        this.save();
+        const tofuNow = this.codeRoutes().length === 0;
+        this.log(`[channels] ${c.type} ${p.sender.id} no longer gets confirmation codes${tofuNow ? " (nobody left)" : ""}`);
+        return { vmId: c.assignedVmId, senderId: p.sender.id, ...tofuNow ? { noRecipientsLeft: true } : {} };
       }
       case "whatsapp_login": {
         if (!p.agent) throw new Error("no agent in the proposal");
@@ -38762,12 +38976,12 @@ function renderTemplate(template, values) {
   return out.replace(PLACEHOLDERS, (_m, name25) => placeholderValue(name25, values));
 }
 function summarize8(p, current) {
-  const who = p.usernameHint ? ` (${p.usernameHint})` : "";
+  const who2 = p.usernameHint ? ` (${p.usernameHint})` : "";
   switch (p.kind) {
     case "add":
-      return `Send some sites out through ${p.providerName}${who} instead of your firewall`;
+      return `Send some sites out through ${p.providerName}${who2} instead of your firewall`;
     case "replace":
-      return `Replace the ${p.providerName} credential${who}`;
+      return `Replace the ${p.providerName} credential${who2}`;
     case "remove":
       return "Stop sending any traffic out through a residential exit";
     case "settings":
@@ -41548,11 +41762,12 @@ var FirewallUpdate = class {
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
       this.codes.drop(SCOPE9);
+      const no = noRecipients(this.opts.agentAllowedCount?.());
       return {
         ok: false,
         status: "failed",
-        message: "Connect a channel and approve yourself before updating your firewall.",
-        data
+        message: `${no.message} Your firewall cannot be updated until then.`,
+        data: { ...data, ...no.data }
       };
     }
     const sent = await this.codes.send(SCOPE9, { changeId }, this.boxName, summary, routes);
@@ -41661,11 +41876,12 @@ var SshFirewall = class {
     const routes = this.opts.codeRoutes();
     if (routes.length === 0) {
       this.codes.drop(this.scope(p));
+      const no = noRecipients(this.opts.agentAllowedCount?.());
       return {
         ok: false,
         status: "failed",
-        message: "Connect a channel and approve yourself before letting support in. There is no first-use shortcut for this one.",
-        data
+        message: `${no.message} Letting support in has no first-use shortcut.`,
+        data: { ...data, ...no.data }
       };
     }
     const sent = await this.codes.send(this.scope(p), p, p.agent?.name ?? this.boxName, summary, routes);
@@ -102376,8 +102592,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "edadaad" : "unknown",
-  builtAt: true ? "2026-09-28T00:01:41+01:00" : "unknown"
+  commit: true ? "cebef37" : "unknown",
+  builtAt: true ? "2026-09-28T11:24:36+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -102907,7 +103123,8 @@ async function main() {
       service: new SelfUpdateService({ statePath: SELF_UPDATE_STATE_PATH, confPath: SELF_UPDATE_CONF_PATH }),
       agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
       codeRoutes: () => channels?.codeRoutes() ?? [],
-      channelsReady: () => channels !== null
+      channelsReady: () => channels !== null,
+      agentAllowedCount: () => channels?.agentAllowedCount()
     });
     console.log(`[mitm-agent] self-update ${selfUpdates.supported() ? "available" : "unavailable (this box has no update pin; rebuild only)"}`);
     sshLocal = new SshLocal({ statePath: SSH_STATE_PATH });
@@ -102915,7 +103132,8 @@ async function main() {
       agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
       local: sshLocal,
       codeRoutes: () => channels?.codeRoutes() ?? [],
-      channelsReady: () => channels !== null
+      channelsReady: () => channels !== null,
+      agentAllowedCount: () => channels?.agentAllowedCount()
     });
   }
   try {
@@ -103143,9 +103361,11 @@ async function main() {
           const recoveryRoutes = recoveryTls && recovery ? { enabled: true, port: PORT, certFingerprint: recoveryTls.fingerprint } : { enabled: false, port: PORT, certFingerprint: null };
           const inventory = firewallInventory(channels, llm, webhooks);
           const stores = unreadableStores();
+          const codeRecipients = stores.some((u) => u.store === "channels") ? null : channels?.codeRecipients() ?? null;
           return {
             ...features.length ? { features } : {},
             ...inventory ? { inventory } : {},
+            ...codeRecipients ? { code_recipients: codeRecipients } : {},
             stores,
             ...llm ? { included_ai: llm.includedCredentialId() } : {},
             ...selfUpdates ? { update: selfUpdates.status() } : {},

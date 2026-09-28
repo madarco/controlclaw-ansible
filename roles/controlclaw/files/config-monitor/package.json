@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
+    "typecheck": "tsc --noEmit -p .",
     "build": "tsup src/index.ts --format esm --target node22 --clean",
     "test": "tsx --test test/*.test.ts"
   },
