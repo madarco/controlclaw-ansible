@@ -31181,8 +31181,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e963a4e" : "unknown",
-  builtAt: true ? "2026-09-28T14:37:56+01:00" : "unknown"
+  commit: true ? "0785f74" : "unknown",
+  builtAt: true ? "2026-09-28T18:15:09+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -32893,6 +32893,35 @@ function bool(v) {
 function str2(v) {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
+function selfNumber(v) {
+  if (typeof v === "string") return str2(v);
+  if (!v || typeof v !== "object") return null;
+  const s = v;
+  return str2(s.e164) ?? str2(s.jid);
+}
+function channelAccount(type, payload) {
+  const list = payload.channelAccounts?.[type];
+  if (!Array.isArray(list)) return null;
+  const accounts = list.filter((a) => !!a && typeof a === "object");
+  const defaultId = str2(payload.channelDefaultAccountId?.[type]);
+  const byDefault = defaultId ? accounts.find((a) => a.accountId === defaultId) : void 0;
+  if (byDefault) return byDefault;
+  const enabled = accounts.filter((a) => a.enabled !== false);
+  return enabled.find((a) => a.connected === true) ?? enabled[0] ?? null;
+}
+function channelStatusFrom(type, payload) {
+  const s = payload.channels?.[type];
+  if (!s) return null;
+  const account = channelAccount(type, payload);
+  const entry = {
+    configured: bool(s.configured),
+    running: bool(s.running),
+    connected: typeof s.connected === "boolean" ? s.connected : bool(account?.connected),
+    lastError: str2(s.lastError) ?? str2(account?.lastError)
+  };
+  if (type === "whatsapp") entry.self = selfNumber(s.self) ?? selfNumber(account?.self);
+  return entry;
+}
 function toPairing(type, r) {
   const senderId = str2(r.id) ?? str2(r.senderId);
   const code = str2(r.code);
@@ -33237,19 +33266,8 @@ var ChannelsService = class {
     if (this.opts.client?.connected) {
       const payload = await this.gateway().call("channels.status", { probe: false }, CHANNELS_STATUS_MS);
       for (const type of CHANNEL_TYPES) {
-        const s = payload.channels?.[type];
-        if (!s) continue;
-        const entry = {
-          configured: bool(s.configured),
-          running: bool(s.running),
-          connected: bool(s.connected),
-          lastError: str2(s.lastError)
-        };
-        if (type === "whatsapp") {
-          const self2 = s.self;
-          entry.self = self2?.e164 ?? self2?.jid ?? null;
-        }
-        channels2[type] = entry;
+        const entry = channelStatusFrom(type, payload);
+        if (entry) channels2[type] = entry;
       }
     }
     for (const [type, setup] of this.setup) {
