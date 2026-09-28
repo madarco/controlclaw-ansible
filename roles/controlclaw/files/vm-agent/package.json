@@ -11,14 +11,17 @@
     "test": "tsx src/gmail-watch.test.ts && tsx --test src/*.test.ts src/routes/*.test.ts && tsx src/channels.test.ts && tsx src/openclaw-allow.test.ts && tsx src/llm.test.ts && tsx src/search.test.ts && tsx src/tailscale.test.ts && tsx src/connectors.test.ts && tsx src/drive.test.ts && tsx src/google.test.ts && tsx src/backup.test.ts && tsx src/ssh.test.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "tsup": "^8.0.0",
-    "tsx": "^4.0.0",
-    "typescript": "^5.0.0",
     "@controlclaw/backup-envelope": "workspace:*",
-    "@controlclaw/origin-guard": "workspace:*"
+    "@controlclaw/origin-guard": "workspace:*",
+    "@types/node": "^24.19.0",
+    "tsup": "^8.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.0.0"
   },
   "dependencies": {
-    "jose": "^6.2.2"
+    "jose": "^6.2.12"
+  },
+  "engines": {
+    "node": ">=24.16.0"
   }
 }

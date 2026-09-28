@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "cc-perm": "dist/index.js" },
+  "bin": {
+    "cc-perm": "dist/index.js"
+  },
   "main": "dist/index.js",
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
@@ -11,12 +13,15 @@
     "dev": "tsx src/index.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.19.0",
     "tsup": "^8.0.0",
-    "tsx": "^4.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "jose": "^6.2.2"
+    "jose": "^6.2.12"
+  },
+  "engines": {
+    "node": ">=24.16.0"
   }
 }
