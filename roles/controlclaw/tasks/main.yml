@@ -131,7 +131,15 @@
   # Firewall boxes too, since inbound webhooks arrive there and need a real certificate for the
   # org's firewall hostname (controlclaw docs/plans/webhooks.md). They get Caddyfile-mitm.j2,
   # which serves one path prefix and a bare 404 for everything else.
-  when: box_role in ['openclaw', 'mitm'] and vm_hostname is defined
+  #
+  # NOT gated on vm_hostname. caddy.yml is written to be included without one: its header says
+  # "the install half runs always (so the base image carries the package); the config half needs
+  # vm_hostname", every config task inside it already carries `when: vm_hostname is defined`, and
+  # it has a "Stop and disable Caddy until configured" task for exactly this case. Gating the
+  # include here defeated all of that — a base-image build passes no hostname, so the image carried
+  # no Caddy at all and every box installed it at boot. Real boxes always have a hostname, so this
+  # changes nothing for them.
+  when: box_role in ['openclaw', 'mitm']
 
 # The firewall's identity is checked HERE, before anything writes, and not only inside
 # mitmbox.yml. self-update.yml runs first and rewrites /etc/controlclaw/update.conf, which is one
