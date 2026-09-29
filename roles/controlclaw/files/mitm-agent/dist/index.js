@@ -851,20 +851,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a2, b2) {
   return (a2 & 15) + (a2 >> 6 | a2 >> 3 & 8) << 4 | (b2 & 15) + (b2 >> 6 | b2 >> 3 & 8);
 }
-function writeHexToUInt8(buf, str14) {
-  const size = str14.length >> 1;
+function writeHexToUInt8(buf, str15) {
+  const size = str15.length >> 1;
   for (let i2 = 0; i2 < size; i2++) {
     const index = i2 << 1;
-    buf[i2] = hexCharCodesToInt(str14.charCodeAt(index), str14.charCodeAt(index + 1));
+    buf[i2] = hexCharCodesToInt(str15.charCodeAt(index), str15.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str14, buf) {
-  if (str14.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str15, buf) {
+  if (str15.length !== buf.length * 2) {
     return false;
   }
   for (let i2 = 0; i2 < buf.length; i2++) {
     const strIndex = i2 << 1;
-    if (buf[i2] !== hexCharCodesToInt(str14.charCodeAt(strIndex), str14.charCodeAt(strIndex + 1))) {
+    if (buf[i2] !== hexCharCodesToInt(str15.charCodeAt(strIndex), str15.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -2281,9 +2281,9 @@ var checkFailed = "check_failed";
 function invalidDuration() {
   throw new TypeError("Invalid time period format");
 }
-function secs(str14) {
-  typeof str14 != "string" && invalidDuration();
-  const matched = REGEX.exec(str14);
+function secs(str15) {
+  typeof str15 != "string" && invalidDuration();
+  const matched = REGEX.exec(str15);
   (!matched || matched[4] && matched[1]) && invalidDuration();
   const value = parseFloat(matched[2]), numericDate2 = Math.round(value * multipliers[matched[3][0].toLowerCase()]);
   return Number.isFinite(numericDate2) || invalidDuration(), matched[1] === "-" || matched[4] === "ago" ? -numericDate2 : numericDate2;
@@ -2900,6 +2900,7 @@ var CONFIRM_MIN_MS = 5e3;
 var CONFIG_WRITE_MS = 9e4;
 var APPROVE_MS = 7e4;
 var LLM_PUSH_MS = 9e4;
+var DEVICE_APPROVE_MS = 6e4;
 var BACKUP_MS = 60 * 6e4;
 function deadline(startedAt, now2 = Date.now) {
   const at2 = startedAt + COMMAND_BUDGET_MS;
@@ -2946,6 +2947,7 @@ function purposeForPath(path) {
   if (path.startsWith("/drive/")) return "drive";
   if (path.startsWith("/google/")) return "google";
   if (path.startsWith("/hooks/")) return "hooks";
+  if (path === "/devices" || path.startsWith("/devices/")) return "devices";
   return "channels";
 }
 function makeAgentTokenSigner(keysDir, boxId) {
@@ -7697,6 +7699,105 @@ var TailscaleFirewall = class {
   }
 };
 
+// src/mac-devices.ts
+var SCOPE_PREFIX2 = "devices:";
+function str7(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function summarize8(p2) {
+  const what = p2.targetLabel ?? "an unnamed device";
+  switch (p2.kind) {
+    case "approve":
+      return `Let ${what} control ${p2.agent.name}`;
+    case "reject":
+      return `Refuse ${what} access to ${p2.agent.name}`;
+    case "remove":
+      return `Cut ${what} off from ${p2.agent.name}`;
+  }
+}
+function parseProposal7(payload) {
+  const changeId = str7(payload.changeId);
+  const kind = payload.kind === "approve" || payload.kind === "reject" || payload.kind === "remove" ? payload.kind : null;
+  const targetId = str7(payload.targetId);
+  const agent = payload.agent ?? {};
+  const vmId = str7(agent.vmId);
+  const hostname3 = str7(agent.hostname);
+  if (!changeId || !kind || !targetId || !vmId || !hostname3) throw new Error("malformed devices.propose payload");
+  return {
+    changeId,
+    kind,
+    targetId,
+    targetLabel: str7(payload.targetLabel),
+    agent: { vmId, name: str7(agent.name) ?? vmId, hostname: hostname3 }
+  };
+}
+var DevicesFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
+  }
+  codes;
+  log;
+  handlers() {
+    return {
+      "devices.propose": (p2) => this.propose(p2),
+      "devices.confirm": (p2) => this.confirm(p2),
+      "devices.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /** One pending change per box, not per org: two agents can be dealt with at once. */
+  scope(vmId) {
+    return `${SCOPE_PREFIX2}${vmId}`;
+  }
+  target(p2) {
+    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
+  }
+  async apply(p2) {
+    const path = p2.kind === "approve" ? "/devices/approve" : p2.kind === "reject" ? "/devices/reject" : "/devices/remove";
+    const body = p2.kind === "remove" ? { deviceId: p2.targetId } : { requestId: p2.targetId };
+    const r2 = await this.opts.agent.post(this.target(p2), path, body, { timeoutMs: DEVICE_APPROVE_MS });
+    this.log(`[devices] ${p2.kind} ${p2.targetId} on ${p2.agent.name}`);
+    return { vmId: p2.agent.vmId, targetId: p2.targetId, deviceId: str7(r2.deviceId) };
+  }
+  async propose(payload) {
+    const p2 = parseProposal7(payload);
+    const summary = summarize8(p2);
+    const data = { changeId: p2.changeId, summary };
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(this.scope(p2.agent.vmId));
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(this.scope(p2.agent.vmId), p2, p2.agent.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[devices] code sent for ${p2.kind} on ${p2.agent.name} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str7(payload.changeId);
+    const vmId = str7(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed devices.confirm payload");
+    const code = str7(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(this.scope(vmId), changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize8(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str7(payload.changeId);
+    const vmId = str7(payload.vmId);
+    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
 // src/exit.ts
 import { createHmac as createHmac2, randomBytes as randomBytes7 } from "crypto";
 
@@ -7895,7 +7996,7 @@ var SCOPE7 = "org";
 var CHECK_INTERVAL_MS = 15 * 6e4;
 var DEFAULT_CAP_BYTES = 5 * 1024 ** 3;
 var COUNTED_IDS_KEPT = 2e4;
-function str7(v2) {
+function str8(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 function num(v2) {
@@ -7910,8 +8011,8 @@ function isScheme(v2) {
 function templatesOf(v2) {
   if (!v2 || typeof v2 !== "object") return null;
   const t2 = v2;
-  const u2 = str7(t2.usernameTemplate);
-  const p2 = str7(t2.passwordTemplate);
+  const u2 = str8(t2.usernameTemplate);
+  const p2 = str8(t2.passwordTemplate);
   return u2 && p2 ? { usernameTemplate: u2, passwordTemplate: p2 } : null;
 }
 function normalizeCountry(v2) {
@@ -7943,7 +8044,7 @@ function renderTemplate(template, values) {
   });
   return out.replace(PLACEHOLDERS, (_m, name25) => placeholderValue(name25, values));
 }
-function summarize8(p2, current) {
+function summarize9(p2, current) {
   const who2 = p2.usernameHint ? ` (${p2.usernameHint})` : "";
   switch (p2.kind) {
     case "add":
@@ -7959,26 +8060,26 @@ function summarize8(p2, current) {
       return p2.sticky ? "Give each agent its own residential IP" : "Stop giving each agent its own residential IP";
   }
 }
-function parseProposal7(payload) {
-  const changeId = str7(payload.changeId);
+function parseProposal8(payload) {
+  const changeId = str8(payload.changeId);
   if (!changeId || !isKind6(payload.kind)) throw new Error("malformed exit.propose payload");
   const kind = payload.kind;
   const port = num(payload.port);
-  const provider = str7(payload.provider) ?? "custom";
+  const provider = str8(payload.provider) ?? "custom";
   if (kind === "add" || kind === "replace") {
-    if (!str7(payload.host) || !port || !isScheme(payload.scheme)) throw new Error("malformed exit.propose payload");
+    if (!str8(payload.host) || !port || !isScheme(payload.scheme)) throw new Error("malformed exit.propose payload");
   }
   return {
     changeId,
     kind,
     provider,
-    providerName: str7(payload.providerName) ?? provider,
+    providerName: str8(payload.providerName) ?? provider,
     scheme: isScheme(payload.scheme) ? payload.scheme : "http",
-    host: str7(payload.host) ?? "",
+    host: str8(payload.host) ?? "",
     port: port ?? 0,
-    usernameTemplate: str7(payload.usernameTemplate) ?? "{username}",
-    passwordTemplate: str7(payload.passwordTemplate) ?? "{password}",
-    usernameHint: str7(payload.usernameHint),
+    usernameTemplate: str8(payload.usernameTemplate) ?? "{username}",
+    passwordTemplate: str8(payload.passwordTemplate) ?? "{password}",
+    usernameHint: str8(payload.usernameHint),
     sticky: payload.sticky === true,
     // An absent key and an explicit `undefined` mean the same thing — say nothing about the cap.
     // Only `null` removes it. (Over the wire only the absent form can occur, but the two must not
@@ -7992,8 +8093,8 @@ function parseProposal7(payload) {
     // already carries: a settings change must move the credential's shape only when it is ABOUT
     // that, not because the two happen to share a field name.
     ...templatesOf(payload.templates) ? { templates: templatesOf(payload.templates) } : {},
-    ...str7(payload.username) ? { username: String(payload.username) } : {},
-    ...str7(payload.password) ? { password: String(payload.password) } : {}
+    ...str8(payload.username) ? { username: String(payload.username) } : {},
+    ...str8(payload.password) ? { password: String(payload.password) } : {}
   };
 }
 var ExitFirewall = class {
@@ -8246,8 +8347,8 @@ var ExitFirewall = class {
     };
   }
   async propose(payload) {
-    const p2 = parseProposal7(payload);
-    const summary = summarize8(p2, { country: this.store.country });
+    const p2 = parseProposal8(payload);
+    const summary = summarize9(p2, { country: this.store.country });
     const data = { changeId: p2.changeId, summary };
     if (!this.opts.channelsReady()) {
       return { ok: false, status: "failed", data, message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly." };
@@ -8264,19 +8365,19 @@ var ExitFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str7(payload.changeId);
+    const changeId = str8(payload.changeId);
     if (!changeId) throw new Error("malformed exit.confirm payload");
-    const code = str7(payload.code) ?? "";
+    const code = str8(payload.code) ?? "";
     const data = { changeId };
     const v2 = this.codes.verify(SCOPE7, changeId, code);
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const summary = summarize8(v2.proposal, { country: this.store.country });
+    const summary = summarize9(v2.proposal, { country: this.store.country });
     const applied = await this.apply(v2.proposal);
     return { ok: true, status: "applied", data: { ...data, ...applied, summary, sentVia: v2.sentVia, tofu: false } };
   }
   async cancel(payload) {
-    const changeId = str7(payload.changeId);
+    const changeId = str8(payload.changeId);
     this.codes.cancel(SCOPE7, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -8438,7 +8539,7 @@ function servicesFor(store, agent) {
 // src/connectors.ts
 var SCOPE8 = "org";
 var OAUTH_PENDING_MS = 15 * 6e4;
-function str8(v2) {
+function str9(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 function strMap(v2, max = 20) {
@@ -8455,8 +8556,8 @@ function isKind7(v2) {
 }
 var SERVICE_RE = /^[a-z0-9][a-z0-9_]{0,60}$/;
 function parseConnectorProposal(payload) {
-  const changeId = str8(payload.changeId);
-  const service = str8(payload.service);
+  const changeId = str9(payload.changeId);
+  const service = str9(payload.service);
   if (!changeId || !service || !SERVICE_RE.test(service) || !isKind7(payload.kind)) throw new Error("malformed connectors.propose payload");
   const agents = Array.isArray(payload.agents) ? payload.agents : [];
   const secret = payload.secret;
@@ -8464,18 +8565,18 @@ function parseConnectorProposal(payload) {
     changeId,
     kind: payload.kind,
     service,
-    serviceName: str8(payload.serviceName) ?? service,
-    connectionId: str8(payload.connectionId),
-    label: str8(payload.label),
+    serviceName: str9(payload.serviceName) ?? service,
+    connectionId: str9(payload.connectionId),
+    label: str9(payload.label),
     extra: strMap(payload.extra),
-    clientId: str8(payload.clientId),
+    clientId: str9(payload.clientId),
     authorizationOptionIds: Array.isArray(payload.authorizationOptionIds) ? payload.authorizationOptionIds.filter((s2) => typeof s2 === "string" && s2.length > 0).slice(0, 40) : [],
-    agents: agents.filter((a2) => str8(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str8(a2.name) ?? String(a2.vmId), hostname: str8(a2.hostname), privateIp: str8(a2.privateIp) })),
+    agents: agents.filter((a2) => str9(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str9(a2.name) ?? String(a2.vmId), hostname: str9(a2.hostname), privateIp: str9(a2.privateIp) })),
     ...secret ? {
       secret: {
-        ...str8(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {},
+        ...str9(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {},
         ...secret.values ? { values: strMap(secret.values, 30) } : {},
-        ...str8(secret.clientSecret) ? { clientSecret: String(secret.clientSecret) } : {},
+        ...str9(secret.clientSecret) ? { clientSecret: String(secret.clientSecret) } : {},
         ...secret.extraSecret ? { extraSecret: strMap(secret.extraSecret, 20) } : {}
       }
     } : {}
@@ -8543,10 +8644,10 @@ var ConnectorsFirewall = class {
   }
   // ---- reads ----
   async read(payload) {
-    const kind = str8(payload.kind);
+    const kind = str9(payload.kind);
     try {
       if (kind === "setup") {
-        const service = str8(payload.service);
+        const service = str9(payload.service);
         if (!service || !SERVICE_RE.test(service)) throw new Error("connectors.read setup needs a service");
         const setup = await this.opts.runtime.setup(service);
         return { ok: true, status: "done", data: { kind, service, auth: setup.auth ?? [], oauthClient: setup.oauthClient ?? null } };
@@ -8620,8 +8721,8 @@ var ConnectorsFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str8(payload.changeId);
-    const code = str8(payload.code) ?? "";
+    const changeId = str9(payload.changeId);
+    const code = str9(payload.code) ?? "";
     if (!changeId) throw new Error("malformed connectors.confirm payload");
     const data = { changeId };
     const v2 = this.codes.verify(SCOPE8, changeId, code);
@@ -8635,7 +8736,7 @@ var ConnectorsFirewall = class {
     }
   }
   async cancel(payload) {
-    const changeId = str8(payload.changeId);
+    const changeId = str9(payload.changeId);
     this.codes.cancel(SCOPE8, changeId);
     for (const [state, pending] of this.pendingOauth) if (pending.proposal.changeId === changeId) this.pendingOauth.delete(state);
     return { ok: true, status: "cancelled", data: { changeId } };
@@ -8763,9 +8864,9 @@ var ConnectorsFirewall = class {
    * replays it on loopback, and reads the outcome from the runtime's own request record.
    */
   async callback(payload) {
-    const state = str8(payload.state);
-    const code = str8(payload.code);
-    const error62 = str8(payload.error);
+    const state = str9(payload.state);
+    const code = str9(payload.code);
+    const error62 = str9(payload.error);
     if (!state) throw new Error("malformed connectors.callback payload");
     this.forgetStaleOauth();
     const pending = this.pendingOauth.get(state);
@@ -8886,7 +8987,7 @@ var ConnectorsFirewall = class {
    * and no MCP entry had been pushed.
    */
   async push(payload) {
-    const vmId = str8(payload.vmId);
+    const vmId = str9(payload.vmId);
     if (!vmId) throw new Error("malformed connectors.push payload");
     const a2 = this.store.agents[vmId];
     if (!a2 || a2.connections.length === 0) {
@@ -8897,9 +8998,9 @@ var ConnectorsFirewall = class {
         data: { vmId, applied: [], failed: [], held: 0 }
       };
     }
-    if (str8(payload.hostname)) a2.hostname = String(payload.hostname);
-    if (str8(payload.name)) a2.name = String(payload.name);
-    if (str8(payload.privateIp)) a2.privateIp = String(payload.privateIp);
+    if (str9(payload.hostname)) a2.hostname = String(payload.hostname);
+    if (str9(payload.name)) a2.name = String(payload.name);
+    if (str9(payload.privateIp)) a2.privateIp = String(payload.privateIp);
     this.save();
     const pushed = await this.pushAgents([vmId]);
     return {
@@ -8915,7 +9016,7 @@ var ConnectorsFirewall = class {
    * the insecure outcome.
    */
   async forget(payload) {
-    const vmId = str8(payload.vmId);
+    const vmId = str9(payload.vmId);
     if (!vmId) throw new Error("malformed connectors.forget payload");
     const a2 = this.store.agents[vmId];
     if (!a2) return { ok: true, status: "applied", data: { vmId, revoked: false } };
@@ -9092,22 +9193,22 @@ function createConnectorGate(opts) {
 }
 
 // src/update.ts
-var SCOPE_PREFIX2 = "update:";
+var SCOPE_PREFIX3 = "update:";
 var UPDATE_WINDOW_MS = 60 * 6e4;
 var UPDATE_POLL_MS = 3e4;
-function str9(v2) {
+function str10(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
-function summarize9(p2) {
+function summarize10(p2) {
   return `Update the software on ${p2.agent.name}`;
 }
-function parseProposal8(payload) {
-  const changeId = str9(payload.changeId);
+function parseProposal9(payload) {
+  const changeId = str10(payload.changeId);
   const agent = payload.agent ?? {};
-  const vmId = str9(agent.vmId);
-  const hostname3 = str9(agent.hostname);
+  const vmId = str10(agent.vmId);
+  const hostname3 = str10(agent.hostname);
   if (!changeId || !vmId || !hostname3) throw new Error("malformed update.propose payload");
-  return { changeId, agent: { vmId, name: str9(agent.name) ?? vmId, hostname: hostname3 } };
+  return { changeId, agent: { vmId, name: str10(agent.name) ?? vmId, hostname: hostname3 } };
 }
 var UpdateFirewall = class {
   constructor(opts) {
@@ -9201,7 +9302,7 @@ var UpdateFirewall = class {
   }
   /** One pending update per box, not per org: updating two agents at once is legitimate. */
   scope(vmId) {
-    return `${SCOPE_PREFIX2}${vmId}`;
+    return `${SCOPE_PREFIX3}${vmId}`;
   }
   target(p2) {
     return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
@@ -9219,8 +9320,8 @@ var UpdateFirewall = class {
     return { vmId: p2.agent.vmId, phase: r2?.status?.phase ?? "resolving" };
   }
   async propose(payload) {
-    const p2 = parseProposal8(payload);
-    const summary = summarize9(p2);
+    const p2 = parseProposal9(payload);
+    const summary = summarize10(p2);
     const data = { changeId: p2.changeId, summary };
     const routes = this.opts.codeRoutes();
     if (!this.opts.channelsReady()) {
@@ -9242,20 +9343,20 @@ var UpdateFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str9(payload.changeId);
-    const vmId = str9(payload.vmId);
+    const changeId = str10(payload.changeId);
+    const vmId = str10(payload.vmId);
     if (!changeId || !vmId) throw new Error("malformed update.confirm payload");
-    const code = str9(payload.code) ?? "";
+    const code = str10(payload.code) ?? "";
     const data = { changeId };
     const v2 = this.codes.verify(this.scope(vmId), changeId, code);
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
     const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize9(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize10(v2.proposal), sentVia: v2.sentVia, tofu: false } };
   }
   async cancel(payload) {
-    const changeId = str9(payload.changeId);
-    const vmId = str9(payload.vmId);
+    const changeId = str10(payload.changeId);
+    const vmId = str10(payload.vmId);
     if (vmId) this.codes.cancel(this.scope(vmId), changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -13110,14 +13211,14 @@ var RESTORE_PREFIX = "backup-restore:";
 var RECOVERY_SCOPE = "backup-recovery:org";
 var SELF_RESTORE_SCOPE = "backup-firewall-restore:self";
 var KINDS = /* @__PURE__ */ new Set(["workspace", "state"]);
-function str10(v2) {
+function str11(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 function isPublicKey(v2) {
   return v2.length === 44 && /^[A-Za-z0-9+/]{43}=$/.test(v2);
 }
 function httpsUrl(v2) {
-  const s2 = str10(v2);
+  const s2 = str11(v2);
   if (!s2 || s2.length > 4096) return null;
   try {
     return new URL(s2).protocol === "https:" ? s2 : null;
@@ -13286,10 +13387,10 @@ var BackupFirewall = class {
   }
   parseAgent(payload) {
     const a2 = payload.agent ?? {};
-    const vmId = str10(a2.vmId);
-    const hostname3 = str10(a2.hostname);
+    const vmId = str11(a2.vmId);
+    const hostname3 = str11(a2.hostname);
     if (!vmId || !hostname3) throw new Error("malformed backup payload: the agent is not named");
-    return { vmId, name: str10(a2.name) ?? vmId, hostname: hostname3 };
+    return { vmId, name: str11(a2.name) ?? vmId, hostname: hostname3 };
   }
   // ---- taking one ----
   /**
@@ -13298,7 +13399,7 @@ var BackupFirewall = class {
    * one blob can never be served in place of the other.
    */
   async run(payload) {
-    const backupId = str10(payload.backupId);
+    const backupId = str11(payload.backupId);
     if (!backupId) throw new Error("malformed backup.run payload: no backupId");
     const agent = this.parseAgent(payload);
     const uploads = payload.uploads ?? {};
@@ -13351,7 +13452,7 @@ var BackupFirewall = class {
   }
   /** This box's own state. Wrapped to the recovery key only — its own key is one of the files. */
   async runSelf(payload) {
-    const backupId = str10(payload.backupId);
+    const backupId = str11(payload.backupId);
     const uploadUrl = httpsUrl(payload.uploadUrl);
     if (!backupId || !uploadUrl) throw new Error("malformed backup.firewall-run payload");
     if (!this.opts.selfBackup) return { ok: false, status: "unavailable", message: "This firewall cannot back itself up.", data: { backupId } };
@@ -13390,13 +13491,13 @@ var BackupFirewall = class {
   }
   // ---- putting one back ----
   parseRestore(payload) {
-    const changeId = str10(payload.changeId);
-    const backupId = str10(payload.backupId);
-    const kind = str10(payload.kind);
-    const header = str10(payload.header);
-    const manifestHash2 = str10(payload.manifestHash);
+    const changeId = str11(payload.changeId);
+    const backupId = str11(payload.backupId);
+    const kind = str11(payload.kind);
+    const header = str11(payload.header);
+    const manifestHash2 = str11(payload.manifestHash);
     const downloadUrl = httpsUrl(payload.downloadUrl);
-    const wrapped = str10(payload.wrapped);
+    const wrapped = str11(payload.wrapped);
     if (!changeId || !backupId || !kind || !KINDS.has(kind) || !header || !manifestHash2 || !downloadUrl || !wrapped) {
       throw new Error("malformed backup.restore.propose payload");
     }
@@ -13409,7 +13510,7 @@ var BackupFirewall = class {
       manifestHash: manifestHash2,
       downloadUrl,
       wrapped,
-      takenAt: str10(payload.takenAt)
+      takenAt: str11(payload.takenAt)
     };
   }
   /**
@@ -13483,31 +13584,31 @@ var BackupFirewall = class {
     return `${RESTORE_PREFIX}${vmId}`;
   }
   async confirmRestore(payload) {
-    const changeId = str10(payload.changeId);
-    const vmId = str10(payload.vmId);
+    const changeId = str11(payload.changeId);
+    const vmId = str11(payload.vmId);
     if (!changeId || !vmId) throw new Error("malformed backup.restore.confirm payload");
     const data = { changeId };
-    const v2 = this.restoreCodes.verify(this.scopeFor(vmId), changeId, str10(payload.code) ?? "");
+    const v2 = this.restoreCodes.verify(this.scopeFor(vmId), changeId, str11(payload.code) ?? "");
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No restore is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
     const applied = await this.applyRestore(v2.proposal);
     return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeRestore(v2.proposal), sentVia: v2.sentVia, tofu: false } };
   }
   async cancelRestore(payload) {
-    const changeId = str10(payload.changeId);
-    const vmId = str10(payload.vmId);
+    const changeId = str11(payload.changeId);
+    const vmId = str11(payload.vmId);
     if (vmId) this.restoreCodes.cancel(this.scopeFor(vmId), changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   // ---- the recovery key ----
   async proposeRecovery(payload) {
-    const changeId = str10(payload.changeId);
-    const publicKey = str10(payload.publicKey);
+    const changeId = str11(payload.changeId);
+    const publicKey = str11(payload.publicKey);
     if (!changeId || !publicKey) throw new Error("malformed backup.recovery.propose payload");
     if (!isPublicKey(publicKey)) {
       return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
     }
-    const signingPublicKey = str10(payload.signingPublicKey);
+    const signingPublicKey = str11(payload.signingPublicKey);
     if (signingPublicKey && !isPublicKey(signingPublicKey)) {
       return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
     }
@@ -13577,8 +13678,8 @@ var BackupFirewall = class {
    * the control plane could lie about, which is why the box prints what it was given.
    */
   async rebindRecovery(payload) {
-    const publicKey = str10(payload.publicKey);
-    const signingPublicKey = str10(payload.signingPublicKey);
+    const publicKey = str11(payload.publicKey);
+    const signingPublicKey = str11(payload.signingPublicKey);
     if (!publicKey || !signingPublicKey || !isPublicKey(publicKey) || !isPublicKey(signingPublicKey)) {
       return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: {} };
     }
@@ -13606,10 +13707,10 @@ var BackupFirewall = class {
     };
   }
   async confirmRecovery(payload) {
-    const changeId = str10(payload.changeId);
+    const changeId = str11(payload.changeId);
     if (!changeId) throw new Error("malformed backup.recovery.confirm payload");
     const data = { changeId };
-    const v2 = this.recoveryCodes.verify(RECOVERY_SCOPE, changeId, str10(payload.code) ?? "");
+    const v2 = this.recoveryCodes.verify(RECOVERY_SCOPE, changeId, str11(payload.code) ?? "");
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No recovery key is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
     const own2 = await this.keypair();
@@ -13629,23 +13730,23 @@ var BackupFirewall = class {
     };
   }
   async cancelRecovery(payload) {
-    const changeId = str10(payload.changeId);
+    const changeId = str11(payload.changeId);
     this.recoveryCodes.cancel(RECOVERY_SCOPE, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   // ---- putting this firewall back from its own backup ----
   parseSelfRestore(payload) {
-    const changeId = str10(payload.changeId);
-    const backupId = str10(payload.backupId);
-    const sourceBoxId = str10(payload.sourceBoxId);
-    const header = str10(payload.header);
-    const manifestHash2 = str10(payload.manifestHash);
+    const changeId = str11(payload.changeId);
+    const backupId = str11(payload.backupId);
+    const sourceBoxId = str11(payload.sourceBoxId);
+    const header = str11(payload.header);
+    const manifestHash2 = str11(payload.manifestHash);
     const downloadUrl = httpsUrl(payload.downloadUrl);
-    const wrapped = str10(payload.wrappedKey);
+    const wrapped = str11(payload.wrappedKey);
     if (!changeId || !backupId || !sourceBoxId || !header || !manifestHash2 || !downloadUrl || !wrapped) {
       throw new Error("malformed backup.firewall-restore payload");
     }
-    return { changeId, backupId, sourceBoxId, header, manifestHash: manifestHash2, downloadUrl, wrapped, takenAt: str10(payload.takenAt) };
+    return { changeId, backupId, sourceBoxId, header, manifestHash: manifestHash2, downloadUrl, wrapped, takenAt: str11(payload.takenAt) };
   }
   /**
    * Unseal the data key and hand the whole job to `self-restore.ts`. The unwrap happens HERE,
@@ -13709,10 +13810,10 @@ var BackupFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirmSelfRestore(payload) {
-    const changeId = str10(payload.changeId);
+    const changeId = str11(payload.changeId);
     if (!changeId) throw new Error("malformed backup.firewall-restore.confirm payload");
     const data = { changeId };
-    const v2 = this.selfRestoreCodes.verify(SELF_RESTORE_SCOPE, changeId, str10(payload.code) ?? "");
+    const v2 = this.selfRestoreCodes.verify(SELF_RESTORE_SCOPE, changeId, str11(payload.code) ?? "");
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No firewall restore is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
     const own2 = await this.keypair();
@@ -13720,7 +13821,7 @@ var BackupFirewall = class {
     return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeSelfRestore(v2.proposal, own2.fingerprint), sentVia: v2.sentVia, tofu: false } };
   }
   async cancelSelfRestore(payload) {
-    const changeId = str10(payload.changeId);
+    const changeId = str11(payload.changeId);
     this.selfRestoreCodes.cancel(SELF_RESTORE_SCOPE, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -14092,12 +14193,12 @@ var SelfUpdateService = class {
 };
 
 // src/firewall-update.ts
-var SCOPE_PREFIX3 = "firewall-update:";
-var SCOPE9 = `${SCOPE_PREFIX3}self`;
-function str11(v2) {
+var SCOPE_PREFIX4 = "firewall-update:";
+var SCOPE9 = `${SCOPE_PREFIX4}self`;
+function str12(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
-function summarize10() {
+function summarize11() {
   return "Update the software on your firewall";
 }
 var FirewallUpdate = class {
@@ -14132,9 +14233,9 @@ var FirewallUpdate = class {
     return { phase: status.phase };
   }
   async propose(payload) {
-    const changeId = str11(payload.changeId);
+    const changeId = str12(payload.changeId);
     if (!changeId) throw new Error("malformed firewall-update.propose payload");
-    const summary = summarize10();
+    const summary = summarize11();
     const data = { changeId, summary };
     if (!this.opts.service.pinned()) {
       return {
@@ -14169,27 +14270,27 @@ var FirewallUpdate = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str11(payload.changeId);
+    const changeId = str12(payload.changeId);
     if (!changeId) throw new Error("malformed firewall-update.confirm payload");
-    const code = str11(payload.code) ?? "";
+    const code = str12(payload.code) ?? "";
     const data = { changeId };
     const v2 = this.codes.verify(SCOPE9, changeId, code);
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
     const applied = this.apply();
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize10(), sentVia: v2.sentVia, tofu: false } };
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize11(), sentVia: v2.sentVia, tofu: false } };
   }
   async cancel(payload) {
-    const changeId = str11(payload.changeId);
+    const changeId = str12(payload.changeId);
     this.codes.cancel(SCOPE9, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
 };
 
 // src/ssh.ts
-var SCOPE_PREFIX4 = "ssh:";
+var SCOPE_PREFIX5 = "ssh:";
 var SELF = "self";
-function str12(v2) {
+function str13(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 function hours(seconds) {
@@ -14197,19 +14298,19 @@ function hours(seconds) {
   if (h2 >= 24 && h2 % 24 === 0) return `${h2 / 24} day${h2 === 24 ? "" : "s"}`;
   return `${h2} hour${h2 === 1 ? "" : "s"}`;
 }
-function summarize11(p2, boxName) {
+function summarize12(p2, boxName) {
   return `Let ControlClaw support open a shell on ${p2.agent?.name ?? boxName} for ${hours(p2.seconds)}`;
 }
-function parseProposal9(payload) {
-  const changeId = str12(payload.changeId);
+function parseProposal10(payload) {
+  const changeId = str13(payload.changeId);
   const seconds = typeof payload.seconds === "number" ? Math.round(payload.seconds) : 0;
   if (!changeId || !Number.isFinite(seconds) || seconds <= 0) throw new Error("malformed ssh.propose payload");
   const raw = payload.agent;
   if (!raw) return { changeId, seconds, agent: null };
-  const vmId = str12(raw.vmId);
-  const hostname3 = str12(raw.hostname);
+  const vmId = str13(raw.vmId);
+  const hostname3 = str13(raw.hostname);
   if (!vmId || !hostname3) throw new Error("malformed ssh.propose payload");
-  return { changeId, seconds, agent: { vmId, name: str12(raw.name) ?? vmId, hostname: hostname3 } };
+  return { changeId, seconds, agent: { vmId, name: str13(raw.name) ?? vmId, hostname: hostname3 } };
 }
 var SshFirewall = class {
   constructor(opts) {
@@ -14231,7 +14332,7 @@ var SshFirewall = class {
   }
   /** One pending grant per box: opening one on the firewall and one on an agent is legitimate. */
   scope(p2) {
-    return `${SCOPE_PREFIX4}${p2.agent?.vmId ?? SELF}`;
+    return `${SCOPE_PREFIX5}${p2.agent?.vmId ?? SELF}`;
   }
   target(p2) {
     return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
@@ -14255,8 +14356,8 @@ var SshFirewall = class {
     return this.opts.agent.post({ vmId: p2.agent.vmId, hostname: p2.agent.hostname }, "/ssh/close", {});
   }
   async propose(payload) {
-    const p2 = parseProposal9(payload);
-    const summary = summarize11(p2, this.boxName);
+    const p2 = parseProposal10(payload);
+    const summary = summarize12(p2, this.boxName);
     const data = { changeId: p2.changeId, summary };
     if (!this.opts.channelsReady()) {
       return {
@@ -14283,12 +14384,12 @@ var SshFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str12(payload.changeId);
+    const changeId = str13(payload.changeId);
     if (!changeId) throw new Error("malformed ssh.confirm payload");
-    const vmId = str12(payload.vmId);
-    const code = str12(payload.code) ?? "";
+    const vmId = str13(payload.vmId);
+    const code = str13(payload.code) ?? "";
     const data = { changeId };
-    const v2 = this.codes.verify(`${SCOPE_PREFIX4}${vmId ?? SELF}`, changeId, code);
+    const v2 = this.codes.verify(`${SCOPE_PREFIX5}${vmId ?? SELF}`, changeId, code);
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No shell access is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
     const opened = await this.openOn(v2.proposal);
@@ -14297,13 +14398,13 @@ var SshFirewall = class {
       status: "opened",
       // `privateKey` rides in here and is taken out of the result by the control plane before
       // anything is written down (`app/(ssh)/lib/ssh-access.server.ts`). It is not logged here.
-      data: { ...data, ...opened, summary: summarize11(v2.proposal, this.boxName), sentVia: v2.sentVia, vmId: v2.proposal.agent?.vmId ?? null }
+      data: { ...data, ...opened, summary: summarize12(v2.proposal, this.boxName), sentVia: v2.sentVia, vmId: v2.proposal.agent?.vmId ?? null }
     };
   }
   async cancel(payload) {
-    const changeId = str12(payload.changeId);
-    const vmId = str12(payload.vmId);
-    this.codes.cancel(`${SCOPE_PREFIX4}${vmId ?? SELF}`, changeId);
+    const changeId = str13(payload.changeId);
+    const vmId = str13(payload.vmId);
+    this.codes.cancel(`${SCOPE_PREFIX5}${vmId ?? SELF}`, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
   /**
@@ -14313,10 +14414,10 @@ var SshFirewall = class {
    * does what it says.
    */
   async close(payload) {
-    const changeId = str12(payload.changeId);
+    const changeId = str13(payload.changeId);
     const raw = payload.agent;
-    const agent = raw && str12(raw.vmId) && str12(raw.hostname) ? { vmId: str12(raw.vmId), hostname: str12(raw.hostname) } : null;
-    this.codes.drop(`${SCOPE_PREFIX4}${agent?.vmId ?? SELF}`);
+    const agent = raw && str13(raw.vmId) && str13(raw.hostname) ? { vmId: str13(raw.vmId), hostname: str13(raw.hostname) } : null;
+    this.codes.drop(`${SCOPE_PREFIX5}${agent?.vmId ?? SELF}`);
     const closed = await this.closeOn({ agent });
     this.log(`[ssh] closed on ${agent?.vmId ?? "this firewall"}`);
     return { ok: true, status: "closed", data: { changeId, ...closed, vmId: agent?.vmId ?? null } };
@@ -16204,14 +16305,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str14 = "";
+  let str15 = "";
   for (let i2 = 0; i2 < length; i2++) {
-    str14 += chars[Math.floor(Math.random() * chars.length)];
+    str15 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str14;
+  return str15;
 }
-function esc(str14) {
-  return JSON.stringify(str14);
+function esc(str15) {
+  return JSON.stringify(str15);
 }
 function slugify(input2) {
   return input2.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -16325,8 +16426,8 @@ var primitiveTypes = /* @__PURE__ */ new Set([
   "symbol",
   "undefined"
 ]);
-function escapeRegex(str14) {
-  return str14.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str15) {
+  return str15.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -16580,13 +16681,13 @@ function getSizableOrigin(input2) {
   return "unknown";
 }
 var highSurrogate = /[\uD800-\uDBFF]/;
-function codePointLength(str14) {
-  const units = str14.length;
-  if (!highSurrogate.test(str14))
+function codePointLength(str15) {
+  const units = str15.length;
+  if (!highSurrogate.test(str15))
     return units;
   let count = units;
   for (let i2 = 0; i2 < units - 1; i2++) {
-    if ((str14.charCodeAt(i2) & 64512) === 55296 && (str14.charCodeAt(i2 + 1) & 64512) === 56320) {
+    if ((str15.charCodeAt(i2) & 64512) === 55296 && (str15.charCodeAt(i2 + 1) & 64512) === 56320) {
       count--;
       i2++;
     }
@@ -48292,8 +48393,8 @@ async function hashCanonical(value) {
   return toBase64url(new Uint8Array(digest));
 }
 var encoder22 = new TextEncoder();
-function fromBase64url(str14) {
-  return convertBase64ToUint8Array(str14);
+function fromBase64url(str15) {
+  return convertBase64ToUint8Array(str15);
 }
 async function importKey(secret) {
   const keyData = typeof secret === "string" ? encoder22.encode(secret) : secret;
@@ -81594,7 +81695,7 @@ var MAX_FIREWALL_ARCHIVE_BYTES = 32 * 1024 * 1024;
 var MAX_AGENT_ARCHIVE_BYTES = 6 * 1024 * 1024 * 1024;
 var STAGED_TTL_MS = 60 * 6e4;
 var RECOVERY_PATH_PREFIX = "/recovery/";
-function str13(v2) {
+function str14(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 var RecoveryRoutes = class {
@@ -81660,7 +81761,7 @@ var RecoveryRoutes = class {
     };
     if (req.method !== "POST") return reply(405, { error: "Use POST." });
     const keys = this.opts.recoveryKeys();
-    const signature = str13(req.headers["x-cc-recovery-signature"]);
+    const signature = str14(req.headers["x-cc-recovery-signature"]);
     const timestamp = Number(req.headers["x-cc-recovery-timestamp"] ?? NaN);
     const locked = this.lockedUntil - this.now();
     if (!signature || !Number.isFinite(timestamp)) {
@@ -81815,14 +81916,14 @@ var RecoveryRoutes = class {
     const service = this.opts.selfRestore;
     if (!service) throw new Error("This firewall cannot put itself back.");
     const head = body.head;
-    const backupId = str13(head.backupId);
-    const sourceBoxId = str13(head.sourceBoxId);
-    const header = str13(head.header);
-    const manifestHash2 = str13(head.manifestHash);
-    const sealed = str13(head.dataKeySealedToFirewall);
+    const backupId = str14(head.backupId);
+    const sourceBoxId = str14(head.sourceBoxId);
+    const header = str14(head.header);
+    const manifestHash2 = str14(head.manifestHash);
+    const sealed = str14(head.dataKeySealedToFirewall);
     if (!backupId || !sourceBoxId || !header || !manifestHash2 || !sealed) throw new Error("This request does not name a backup to put back.");
     const dataKey = await this.openDataKey(sealed);
-    const given = str13(head.archiveUrl);
+    const given = str14(head.archiveUrl);
     const archive = given ? void 0 : this.requireInline(body.tail);
     const r2 = await service.run({
       backupId,
@@ -81842,12 +81943,12 @@ var RecoveryRoutes = class {
    */
   async agentRestore(body) {
     const head = body.head;
-    const backupId = str13(head.backupId);
-    const kind = str13(head.kind);
-    const header = str13(head.header);
-    const manifestHash2 = str13(head.manifestHash);
-    const sealed = str13(head.dataKeySealedToFirewall);
-    const agentName = str13(head.agent);
+    const backupId = str14(head.backupId);
+    const kind = str14(head.kind);
+    const header = str14(head.header);
+    const manifestHash2 = str14(head.manifestHash);
+    const sealed = str14(head.dataKeySealedToFirewall);
+    const agentName = str14(head.agent);
     if (!backupId || !header || !manifestHash2 || !sealed || !agentName) throw new Error("This request does not name a backup to restore.");
     if (kind !== "workspace" && kind !== "state") throw new Error(`A ${kind ?? "missing"} archive is not something an agent can be restored from.`);
     const target = this.resolveAgent(agentName);
@@ -81914,7 +82015,7 @@ var RecoveryRoutes = class {
    * machines involved, and nothing about it depends on the object store being reachable.
    */
   stagedUrl(head, tailPath) {
-    const given = str13(head.archiveUrl);
+    const given = str14(head.archiveUrl);
     if (given) return { url: this.checkedUrl(given), token: null };
     if (!tailPath || !existsSync11(tailPath) || statSync3(tailPath).size === 0) throw new Error("No archive arrived, and no address was given for one.");
     if (!this.opts.staging.baseUrl) {
@@ -82019,8 +82120,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "1bd005d" : "unknown",
-  builtAt: true ? "2026-09-28T18:58:00+01:00" : "unknown"
+  commit: true ? "73f7916" : "unknown",
+  builtAt: true ? "2026-09-29T12:08:57+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -82207,6 +82308,7 @@ var google2 = null;
 var webhooks = null;
 var search = null;
 var tailscale = null;
+var macDevices = null;
 var exitFirewall = null;
 var includedCredit = new IncludedCreditWatch();
 var connectors = null;
@@ -82462,6 +82564,11 @@ async function main() {
     } catch (err) {
       console.error(`[mitm-agent] tailscale module would not start, tailscale commands disabled: ${err.message}`);
     }
+    macDevices = new DevicesFirewall({
+      agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+      codeRoutes: () => channels?.codeRoutes() ?? [],
+      channelsReady: () => channels !== null
+    });
     try {
       exitFirewall = new ExitFirewall({
         storePath: EXIT_STORE_PATH,
@@ -82740,6 +82847,7 @@ async function main() {
           ...webhooks?.handlers() ?? {},
           ...search?.handlers() ?? {},
           ...tailscale?.handlers() ?? {},
+          ...macDevices?.handlers() ?? {},
           ...exitFirewall?.handlers() ?? {},
           ...connectors?.handlers() ?? {},
           ...updates?.handlers() ?? {},
@@ -82778,6 +82886,7 @@ async function main() {
           if (llm) features.push("included_ai");
           if (search) features.push("web_search");
           if (tailscale) features.push("tailscale");
+          if (macDevices) features.push("devices");
           if (drive) features.push("drive_folders");
           if (google2) features.push("google_account");
           if (connectors) features.push("connectors");

@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "1bd005d" : "unknown",
-  builtAt: true ? "2026-09-28T18:58:00+01:00" : "unknown"
+  commit: true ? "73f7916" : "unknown",
+  builtAt: true ? "2026-09-29T12:08:57+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -1037,6 +1037,11 @@ var GOOGLE_VERSION_MS = 1e4;
 function patchRestartsGateway(patch) {
   return Object.hasOwn(patch, "channels") || Object.hasOwn(patch, "plugins") || Object.hasOwn(patch, "models");
 }
+var DEVICES_LIST_MS = GATEWAY_READ_MS;
+var DEVICES_LIST_CLI_MS = 8e3;
+var DEVICES_LIST_TOTAL_MS = 18e3;
+var DEVICES_ACTION_MS = CONFIG_PATCH_MS;
+var DEVICES_ACTION_CLI_MS = 45e3;
 
 // src/routes/openclaw.ts
 var SERVICE = "openclaw";
@@ -1392,15 +1397,15 @@ function parseLines(url2) {
 async function handleLogs(url2, res) {
   const lines = parseLines(url2);
   const fromFile = readFileTail(lines);
-  const [gateway, journal2, service] = await Promise.all([
+  const [gateway2, journal2, service] = await Promise.all([
     fromFile ? Promise.resolve({ lines: fromFile.lines, warning: null }) : readCliSnapshot(lines),
     readJournal(),
     readServiceState()
   ]);
   const ts = (l2) => Date.parse(l2.time) || 0;
-  const merged = [...gateway.lines, ...journal2].sort((a2, b2) => ts(a2) - ts(b2)).slice(-lines);
+  const merged = [...gateway2.lines, ...journal2].sort((a2, b2) => ts(a2) - ts(b2)).slice(-lines);
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-  res.end(JSON.stringify({ service, lines: merged, ...gateway.warning ? { warning: gateway.warning } : {} }));
+  res.end(JSON.stringify({ service, lines: merged, ...gateway2.warning ? { warning: gateway2.warning } : {} }));
 }
 async function handleLogStream(req, res) {
   res.writeHead(200, {
@@ -2320,6 +2325,8 @@ var Once = class {
   entries = /* @__PURE__ */ new Map();
   /** Runs still going, so a second caller joins instead of starting another process. */
   inFlight = /* @__PURE__ */ new Map();
+  /** Bumped by `invalidate`, so a run that started before it cannot cache what it found. */
+  epoch = /* @__PURE__ */ new Map();
   constructor(opts) {
     this.ttlMs = opts.ttlMs;
     this.errorTtlMs = opts.errorTtlMs ?? Math.max(1, Math.round(opts.ttlMs / 4));
@@ -2337,14 +2344,15 @@ var Once = class {
     const running = this.inFlight.get(key);
     if (running) return running;
     const started = this.now();
+    const epoch = this.epoch.get(key) ?? 0;
     const value = (async () => run3())();
     const tracked = value.then(
       (v2) => {
-        this.settle(key, started, true, value);
+        this.settle(key, started, true, value, epoch);
         return v2;
       },
       (err) => {
-        this.settle(key, started, false, value);
+        this.settle(key, started, false, value, epoch);
         throw err;
       }
     );
@@ -2352,14 +2360,29 @@ var Once = class {
     tracked.catch(() => void 0);
     return tracked;
   }
-  settle(key, started, ok, value) {
+  settle(key, started, ok, value, epoch) {
     this.inFlight.delete(key);
+    if ((this.epoch.get(key) ?? 0) !== epoch) return;
     this.entries.set(key, { at: started, ok, value });
   }
   /** Drop what is cached, so the next caller runs again. Does not touch a run in flight. */
   forget(key) {
     if (key === void 0) this.entries.clear();
     else this.entries.delete(key);
+  }
+  /**
+   * Like `forget`, but a run already in flight may not cache its answer either.
+   *
+   * `forget` alone is not enough after a WRITE. A read that started just before the write settles
+   * just after it, and `settle` puts that pre-write snapshot back for the whole TTL — so a device
+   * the owner has just approved goes on reading as pending for the next few seconds, which is
+   * exactly what dropping the cache was meant to prevent. The epoch is bumped here and checked in
+   * `settle`, so an answer fetched before the write is handed to whoever asked for it and then
+   * thrown away instead of being kept.
+   */
+  invalidate(key) {
+    this.entries.delete(key);
+    this.epoch.set(key, (this.epoch.get(key) ?? 0) + 1);
   }
 };
 
@@ -4104,11 +4127,11 @@ var ID_RE2 = /^[A-Za-z0-9:._-]{1,128}$/;
 var MAX_CONNECTIONS = 100;
 function parseApply3(body) {
   if (body.remove === true) return { remove: true };
-  const gateway = body.gateway;
-  if (!gateway || typeof gateway.url !== "string" || typeof gateway.token !== "string" || !gateway.token) return "gateway.url and gateway.token are required";
+  const gateway2 = body.gateway;
+  if (!gateway2 || typeof gateway2.url !== "string" || typeof gateway2.token !== "string" || !gateway2.token) return "gateway.url and gateway.token are required";
   let url2;
   try {
-    url2 = new URL(gateway.url);
+    url2 = new URL(gateway2.url);
   } catch {
     return "gateway.url is not a URL";
   }
@@ -4128,7 +4151,7 @@ function parseApply3(body) {
       accountLabel: typeof c2.accountLabel === "string" ? c2.accountLabel.slice(0, 200) : null
     });
   }
-  return { gateway: { url: gateway.url, token: gateway.token }, connections };
+  return { gateway: { url: gateway2.url, token: gateway2.token }, connections };
 }
 async function handleConnectors(req, res, url2, service) {
   const write = req.method === "POST";
@@ -4315,12 +4338,12 @@ var DriveService = class {
       const body = await res.json();
       const c2 = body.diskCache;
       if (!c2) return null;
-      const num = (v2) => typeof v2 === "number" ? v2 : 0;
+      const num2 = (v2) => typeof v2 === "number" ? v2 : 0;
       return {
-        bytesUsed: num(c2.bytesUsed),
-        uploadsQueued: num(c2.uploadsQueued),
-        uploadsInProgress: num(c2.uploadsInProgress),
-        erroredFiles: num(c2.erroredFiles),
+        bytesUsed: num2(c2.bytesUsed),
+        uploadsQueued: num2(c2.uploadsQueued),
+        uploadsInProgress: num2(c2.uploadsInProgress),
+        erroredFiles: num2(c2.erroredFiles),
         outOfSpace: c2.outOfSpace === true
       };
     } catch {
@@ -9751,16 +9774,16 @@ async function dispatch(req, res, url2, service, cors, session) {
   if (JSON_OPS.has(path) && req.method === "POST") {
     const body = await readJsonBody(req, 8192);
     if (!body) throw new FilesError(400, "bad_body", "That request was not understood.");
-    const str7 = (v2) => typeof v2 === "string" ? v2 : "";
+    const str8 = (v2) => typeof v2 === "string" ? v2 : "";
     if (path === "/files/mkdir") {
-      sendJson(res, 200, await service.mkdir(str7(body.path)), cors);
+      sendJson(res, 200, await service.mkdir(str8(body.path)), cors);
       return;
     }
     if (path === "/files/rename") {
-      sendJson(res, 200, await service.rename(str7(body.from), str7(body.to)), cors);
+      sendJson(res, 200, await service.rename(str8(body.from), str8(body.to)), cors);
       return;
     }
-    sendJson(res, 200, await service.delete(str7(body.path), body.recursive === true || body.recursive === 1), cors);
+    sendJson(res, 200, await service.delete(str8(body.path), body.recursive === true || body.recursive === 1), cors);
     return;
   }
   sendJson(res, 404, { error: "Not found", code: "not_found" }, cors);
@@ -10194,6 +10217,233 @@ async function handleTailscale(req, res, url2, service) {
   }
 }
 
+// src/devices.ts
+var LIST_CACHE_MS = 4e3;
+var LIST_ERROR_CACHE_MS = 2e3;
+var CLI_ATTEMPTS = 3;
+var CLI_RETRY_MS = [400, 1200];
+var LIST_KEY = "devices";
+function wait(ms) {
+  return new Promise((r2) => setTimeout(r2, ms));
+}
+function str7(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function num(v2) {
+  return typeof v2 === "number" && Number.isFinite(v2) ? v2 : null;
+}
+function strings(v2) {
+  return Array.isArray(v2) ? v2.filter((s2) => typeof s2 === "string") : [];
+}
+function looksBusy3(message) {
+  return /\b(EBUSY|EAGAIN|ECONNREFUSED|SQLITE_BUSY)\b|database is locked|gateway (is )?(not (running|connected)|unavailable|starting|restarting)|connection refused|socket hang up|disconnected/i.test(
+    message
+  );
+}
+function toPending(r2) {
+  const requestId = str7(r2.requestId);
+  const deviceId = str7(r2.deviceId);
+  if (!requestId || !deviceId) return null;
+  return {
+    requestId,
+    deviceId,
+    displayName: str7(r2.displayName),
+    platform: str7(r2.platform),
+    deviceFamily: str7(r2.deviceFamily),
+    clientId: str7(r2.clientId),
+    clientMode: str7(r2.clientMode),
+    role: str7(r2.role),
+    scopes: strings(r2.scopes),
+    remoteIp: str7(r2.remoteIp),
+    at: num(r2.ts) ?? num(r2.refreshedAtMs)
+  };
+}
+function toPaired(r2) {
+  const deviceId = str7(r2.deviceId);
+  if (!deviceId) return null;
+  return {
+    deviceId,
+    displayName: str7(r2.displayName),
+    label: str7(r2.operatorLabel),
+    platform: str7(r2.platform),
+    deviceFamily: str7(r2.deviceFamily),
+    clientId: str7(r2.clientId),
+    clientMode: str7(r2.clientMode),
+    role: str7(r2.role),
+    scopes: strings(r2.scopes),
+    approvedVia: str7(r2.approvedVia),
+    browserOrigin: str7(r2.browserOrigin),
+    connected: r2.connected === true,
+    approvedAt: num(r2.approvedAtMs) ?? num(r2.createdAtMs),
+    lastSeenAt: num(r2.lastSeenAtMs)
+  };
+}
+function parseList(payload) {
+  const p2 = payload ?? {};
+  const pending = (Array.isArray(p2.pending) ? p2.pending : []).map((r2) => toPending(r2 ?? {})).filter((d2) => d2 !== null);
+  const paired = (Array.isArray(p2.paired) ? p2.paired : []).map((r2) => toPaired(r2 ?? {})).filter((d2) => d2 !== null);
+  return { pending, paired };
+}
+var DevicesService = class {
+  constructor(opts = {}) {
+    this.opts = opts;
+    this.exec = opts.execImpl ?? defaultExec;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+    const fresh = opts.listCacheMs ?? LIST_CACHE_MS;
+    this.listOnce = new Once({ ttlMs: fresh, errorTtlMs: Math.min(LIST_ERROR_CACHE_MS, fresh), now: this.now });
+  }
+  exec;
+  log;
+  now;
+  listOnce;
+  get client() {
+    return this.opts.client?.() ?? null;
+  }
+  /** Pending and paired devices, single-flighted and reused for a few seconds. */
+  async list() {
+    return this.listOnce.get(LIST_KEY, () => this.readList());
+  }
+  async approve(requestId) {
+    const r2 = await this.callBoth("device.pair.approve", { requestId }, ["approve", requestId]);
+    this.listOnce.invalidate(LIST_KEY);
+    const deviceId = str7(r2.deviceId) ?? str7(r2.device?.deviceId);
+    this.log(`[devices] approved request ${requestId}${deviceId ? ` as device ${deviceId}` : ""}`);
+    return { ok: true, deviceId };
+  }
+  async reject(requestId) {
+    await this.callBoth("device.pair.reject", { requestId }, ["reject", requestId]);
+    this.listOnce.invalidate(LIST_KEY);
+    this.log(`[devices] rejected request ${requestId}`);
+    return { ok: true };
+  }
+  async remove(deviceId) {
+    await this.callBoth("device.pair.remove", { deviceId }, ["remove", deviceId]);
+    this.listOnce.invalidate(LIST_KEY);
+    this.log(`[devices] removed device ${deviceId}`);
+    return { ok: true };
+  }
+  /**
+   * One write, over the socket when it is up and through the CLI when it is not. A write is never
+   * retried: `device.pair.approve` is not idempotent (the request is consumed), so a second
+   * attempt after an ambiguous failure could approve a device whose first approval actually
+   * landed. The caller sees the error and the next listing says what really happened.
+   */
+  async callBoth(method, params, argv) {
+    const client = this.client;
+    if (client?.connected) return client.call(method, params, DEVICES_ACTION_MS);
+    return this.cli(argv, DEVICES_ACTION_CLI_MS, 1);
+  }
+  async readList() {
+    const deadline = this.now() + DEVICES_LIST_TOTAL_MS;
+    const left = () => deadline - this.now();
+    const client = this.client;
+    let last = "";
+    let bridgeFailed = false;
+    if (client?.connected) {
+      try {
+        const payload = await client.call("device.pair.list", {}, Math.min(DEVICES_LIST_MS, left()));
+        return { ...parseList(payload), error: null };
+      } catch (err) {
+        bridgeFailed = true;
+        last = err instanceof Error ? err.message : String(err);
+        this.log(`[devices] device.pair.list over the bridge failed: ${last}`);
+      }
+    }
+    let tries = 0;
+    for (let attempt = 0; attempt < CLI_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const backoff = CLI_RETRY_MS[attempt - 1] ?? 1e3;
+        if (left() <= backoff) break;
+        await wait(backoff);
+      }
+      const budget = Math.min(DEVICES_LIST_CLI_MS, left());
+      if (budget <= 0) break;
+      tries++;
+      try {
+        return { ...parseList(await this.cli(["list"], budget, 1)), error: null };
+      } catch (err) {
+        last = err instanceof Error ? err.message : String(err);
+      }
+    }
+    const busy = bridgeFailed || looksBusy3(last);
+    this.log(`[devices] listing failed after ${tries} ${tries === 1 ? "try" : "tries"}: ${last}`);
+    return {
+      pending: [],
+      paired: [],
+      error: busy ? { busy: true, message: "The agent is busy right now, so its paired devices could not be read." } : { busy: false, message: `The agent could not list its paired devices: ${last}` }
+    };
+  }
+  /** `openclaw devices <argv> --json`, parsed. `attempts` is 1 for writes; see `callBoth`. */
+  async cli(argv, timeoutMs, attempts) {
+    const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
+    let last = new Error("command failed");
+    for (let i2 = 0; i2 < attempts; i2++) {
+      try {
+        const { stdout } = await this.exec(bin, ["devices", ...argv, "--json"], timeoutMs);
+        const start = stdout.indexOf("{");
+        if (start < 0) throw new Error("the openclaw CLI printed no JSON");
+        return JSON.parse(stdout.slice(start));
+      } catch (err) {
+        last = new Error(execFailureLine(err));
+      }
+    }
+    throw last;
+  }
+};
+
+// src/routes/devices.ts
+var ID_RE3 = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+function idOf(body, field) {
+  const v2 = body[field];
+  return typeof v2 === "string" && ID_RE3.test(v2) ? v2 : null;
+}
+async function handleDevices(req, res, url2, service) {
+  const write = req.method === "POST";
+  const auth = write ? await verifyMitmRequest(req, "devices") : await verifyMitmRequest(req, "devices") ?? await verifyRequest(req);
+  if (!auth) {
+    sendJson(res, 401, { error: write ? "device approvals must come from the org firewall" : "Unauthorized" });
+    return;
+  }
+  try {
+    if (url2.pathname === "/devices" && req.method === "GET") {
+      sendJson(res, 200, await service.list());
+      return;
+    }
+    if (!write) {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+    const body = await readJsonBody(req);
+    if (!body) {
+      sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
+      return;
+    }
+    if (url2.pathname === "/devices/approve" || url2.pathname === "/devices/reject") {
+      const requestId = idOf(body, "requestId");
+      if (!requestId) {
+        sendJson(res, 400, { ok: false, error: "requestId required" });
+        return;
+      }
+      const r2 = url2.pathname.endsWith("approve") ? await service.approve(requestId) : await service.reject(requestId);
+      sendJson(res, 200, r2);
+      return;
+    }
+    if (url2.pathname === "/devices/remove") {
+      const deviceId = idOf(body, "deviceId");
+      if (!deviceId) {
+        sendJson(res, 400, { ok: false, error: "deviceId required" });
+        return;
+      }
+      sendJson(res, 200, await service.remove(deviceId));
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 // src/routes/hooks.ts
 import { request as httpRequest2 } from "http";
 
@@ -10538,6 +10788,8 @@ var connectors = null;
 var drive = null;
 var google = null;
 var gmailWatch = null;
+var gateway = null;
+var devices = new DevicesService({ client: () => gateway });
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
 var ssh = new SshAccessService({ statePath: `${STATE_DIR}/ssh.json` });
 var tailscale = new TailscaleService({});
@@ -10625,6 +10877,10 @@ var server = createServer2(async (req, res) => {
     await handleTailscale(req, res, url2, tailscale);
     return;
   }
+  if (url2.pathname === "/devices" || url2.pathname.startsWith("/devices/")) {
+    await handleDevices(req, res, url2, devices);
+    return;
+  }
   if (url2.pathname.startsWith("/hooks/")) {
     await handleHooks(req, res, url2, gmailWatch);
     return;
@@ -10674,6 +10930,7 @@ var server = createServer2(async (req, res) => {
 server.listen(PORT, BIND, () => {
   console.log(`ControlClaw agent listening on ${BIND}:${PORT}`);
   const client = startGatewayBridge();
+  gateway = client;
   startSshLoginWatch();
   void bootstrap(client, () => ssh.status()).catch((err) => console.error("[bootstrap] failed:", err));
   channels = new ChannelsService({
