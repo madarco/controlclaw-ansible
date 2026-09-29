@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d892638" : "unknown",
-  builtAt: true ? "2026-09-29T12:37:07+01:00" : "unknown"
+  commit: true ? "dc309d3" : "unknown",
+  builtAt: true ? "2026-09-29T13:22:31+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -1087,6 +1087,9 @@ function runAction(action) {
     const message = err.stderr?.toString().trim() || (err instanceof Error ? err.message : "systemctl failed");
     return { ok: false, error: message };
   }
+}
+function isOpenClawActive() {
+  return runIsActive() === "active";
 }
 function handleAction(res, action) {
   const result = runAction(action);
@@ -10703,6 +10706,40 @@ async function handleHooks(req, res, url2, gmail = null) {
   }
 }
 
+// src/routes/kill.ts
+async function handleKill(req, res, url2) {
+  const auth = await verifyMitmRequest(req, "kill");
+  if (!auth) {
+    sendJson(res, 401, { error: "an emergency stop must come from the org firewall" });
+    return;
+  }
+  if (url2.pathname === "/kill/status" && req.method === "GET") {
+    sendJson(res, 200, { ok: true, active: isOpenClawActive() });
+    return;
+  }
+  if (url2.pathname !== "/kill/apply" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  const body = await readJsonBody(req);
+  if (!body || typeof body.locked !== "boolean") {
+    sendJson(res, 400, { ok: false, error: "locked must be a boolean" });
+    return;
+  }
+  const locked = body.locked;
+  const result = runAction(locked ? "stop" : "start");
+  const active = isOpenClawActive();
+  const answer = {
+    // The truth, not the ask: a stop that "succeeded" while the unit is still active is a failure
+    // the firewall has to see, because the console is about to tell somebody their agent is off.
+    ok: result.ok && active === !locked,
+    locked,
+    active,
+    message: result.ok ? "" : result.error ?? "systemctl failed"
+  };
+  sendJson(res, answer.ok ? 200 : 500, answer);
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -10891,6 +10928,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/hooks/")) {
     await handleHooks(req, res, url2, gmailWatch);
+    return;
+  }
+  if (url2.pathname.startsWith("/kill/")) {
+    await handleKill(req, res, url2);
     return;
   }
   if (url2.pathname.startsWith("/files/")) {

@@ -203,6 +203,35 @@ TAILSCALE_HOSTS = ("*.tailscale.com",)
 #     connected to, and it gets no credential swap and no AI review. It is logged like any other
 #     request, with rule UPDATE_RULE, so the owner sees it in Activity as update traffic.
 UPDATE_RULE = "agent_update"
+# What a refusal under the emergency stop is called in the traffic log, so Activity can say why a
+# box went quiet rather than showing a wall of ordinary policy blocks.
+KILL_RULE = "kill_switch"
+
+# The one thing a stopped box may still do (apps/saas/docs/features/kill-switch.md).
+#
+# Lifting the emergency stop needs a six-digit code, and the only way the firewall can put text in
+# front of a person is to ask an agent to send it on one of its own channels — which the stop has
+# just turned off and cut off. Without this the switch is one-way: proven on a real pair, where a
+# release answered "Could not reach you on any connected channel" and the owner had no way back.
+#
+# So the firewall opens a window on ONE agent (`code_until` in its identity entry, epoch seconds,
+# exactly like `update_until`) and these hosts, and nothing else, are allowed for it while the code
+# is alive. It is ten minutes, one agent, the channel providers' own APIs: enough to carry six
+# digits, not enough to reach a model or the web, so the agent still cannot DO anything.
+#
+# A built-in like TAILSCALE_HOSTS rather than an env var: the hosts are the providers' own and
+# there is nothing here for a deployment to configure, so this cannot be pointed somewhere else
+# without a change to this file. Exact names and one wildcard per provider, from the channel types
+# the product supports (telegram, slack, whatsapp).
+CODE_RULE = "kill_switch_code"
+CHANNEL_HOSTS = (
+    "api.telegram.org",
+    "slack.com",
+    "*.slack.com",
+    "graph.facebook.com",
+    "*.whatsapp.net",
+    "web.whatsapp.com",
+)
 UPDATE_HOSTS = tuple(
     h for h in (p.strip().lower() for p in os.environ.get("MITM_UPDATE_HOSTS", "").split(","))
     if h and "*" not in h and "." in h
@@ -370,6 +399,49 @@ def tailscale_allowed(vm_id: str | None) -> bool:
     return False
 
 
+def kill_switched(vm_id: str | None) -> bool:
+    """True when this box is under an emergency stop (`apps/saas/docs/features/kill-switch.md`).
+
+    The flag rides the identity map, like `tailscale`, and is written by the mitm-agent out of its
+    OWN encrypted store — never from the control plane's answer, which has its `locked` stripped on
+    every sync. So a compromised control plane can neither cut an agent off nor, far more
+    importantly, let one back out.
+
+    A connection whose source IP is not in the map resolves to `vm_id = None`. That is deliberately
+    NOT treated as locked: an org-wide stop locks every entry the map has, and a connection from
+    outside it is something the ordinary rules already have to judge. Making it lock instead would
+    mean a stop on one agent broke the firewall box's own traffic.
+    """
+    if not vm_id:
+        return False
+    for ent in _identities.get():
+        if ent.get("vm_id") == vm_id:
+            return ent.get("locked") is True
+    return False
+
+
+def code_window_open(vm_id: str | None) -> bool:
+    """True while THIS box is carrying a confirmation code out of a locked organisation: its
+    identity entry has a `code_until` deadline (epoch seconds) that has not passed. Written by the
+    mitm-agent when a release asks for a code, and cleared the moment the code is used, refused or
+    runs out. See CHANNEL_HOSTS."""
+    if not vm_id:
+        return False
+    for ent in _identities.get():
+        if ent.get("vm_id") == vm_id:
+            try:
+                return float(ent.get("code_until") or 0) > time.time()
+            except (TypeError, ValueError):
+                return False
+    return False
+
+
+def code_traffic(host: str, vm_id: str | None) -> bool:
+    """A request the code window allows: a channel provider's own host, from the one box the
+    firewall opened the window for."""
+    return code_window_open(vm_id) and any(host_matches(h, (host or "").lower()) for h in CHANNEL_HOSTS)
+
+
 def update_window_open(vm_id: str | None) -> bool:
     """True while THIS box runs a confirmed update: its identity entry carries an `update_until`
     deadline (epoch seconds, written by the mitm-agent) that has not passed."""
@@ -459,6 +531,10 @@ def tunnel_match(host: str, port: int | None, vm_id: str | None = None) -> dict[
     destination NOT covered by a tunnel rule (and not HTTP/TLS) is dropped (see `tcp_start`).
     """
     if not host and port is None:
+        return None
+    # An emergency stop outranks every rule the organisation wrote, and a tunnel is the one effect
+    # that would otherwise leave the box without ever consulting a rule again.
+    if kill_switched(vm_id):
         return None
     for rule in _rules.get():
         if rule.get("effect") != "tunnel":
@@ -558,6 +634,10 @@ def residential_rule(host: str, port: int | None, vm_id: str | None = None) -> d
     when the answer is not knowable here.
     """
     if not host:
+        return None
+    # Same as `tunnel_match`: a relayed flow never reaches the HTTP hook, so the stop has to be
+    # applied before the stack is built or a locked box would keep its residential exit.
+    if kill_switched(vm_id):
         return None
     candidates = [r for r in _rules.get() if _connection_matches(r, host, port, vm_id)]
     if not candidates:
@@ -1252,6 +1332,15 @@ def tls_clienthello(data) -> None:
             # flow out of THIS box's IP — the one outcome a residential rule must never produce.
             log.error(f"[mitm] residential rule reached tls_clienthello for {sni}; refusing to pass through")
             return
+        if kill_switched(vm_id):
+            # Under an emergency stop the ONLY destination that still passes through is the
+            # control plane: the vm-agent's own channel rides it, and so does the relay an owner
+            # uses to unlock a box's disk. Everything else — the backup store, Tailscale, every
+            # `tunnel` rule the organisation wrote — is intercepted and refused below, because a
+            # passed-through connection is one this proxy never sees again.
+            if CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, sni):
+                data.ignore_connection = True
+            return
         if (
             any(host_matches(h, sni) for h in PASSTHROUGH_HOSTS)
             or (tailscale_allowed(vm_id) and any(host_matches(h, sni) for h in TAILSCALE_HOSTS))
@@ -1700,11 +1789,43 @@ async def request(flow: http.HTTPFlow) -> None:
     if await _refuse_non_routable_http(flow):
         return
 
+    # The emergency stop, before anything that could let a request past
+    # (`apps/saas/docs/features/kill-switch.md`). It sits above the update window on purpose: a box
+    # that was mid-update when somebody pressed Stop must not keep its allowance to fetch packages.
+    # The control plane is the single exception, for the vm-agent's own channel and the disk-unlock
+    # relay — and it is matched by name here as well as by SNI in `tls_clienthello`, so a `Host:`
+    # header cannot borrow it for somewhere else.
+    # Read once, here, because three of the checks below compare it with the `Host:` header: the
+    # code window, the emergency stop's control-plane exception and the update window.
+    sni = (getattr(flow.client_conn, "sni", None) or "").lower()
+
+    # The code window, checked before the refusal below and nowhere else: over TLS the name the
+    # client handshook with has to be the same host, so a `Host:` header cannot borrow it, and the
+    # request is sent to that name rather than to whatever address the box connected to.
+    if kill_switched(vm_id) and code_traffic(host, vm_id) and (not sni or sni == host.lower()):
+        if flow.request.host != host:
+            flow.request.host = host
+        flow.metadata["cc_effect"] = "allow"
+        flow.metadata["cc_rule"] = CODE_RULE
+        return
+
+    if kill_switched(vm_id) and not (CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, host)):
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = KILL_RULE
+        flow.response = http.Response.make(
+            BLOCK_STATUS,
+            json.dumps({"error": "blocked_by_kill_switch", "host": host, "tenant": TENANT}),
+            {"Content-Type": "application/json"},
+        )
+        rec = _http_record(flow, "block")
+        rec["status"] = BLOCK_STATUS
+        _log_once(flow, rec)
+        return
+
     # A box running a confirmed update may fetch from the role's package hosts, whatever the org's
     # rules say (see UPDATE_HOSTS). Over TLS the name the client handshook with must be the same
     # host, and the request is sent to that name rather than to the address the box connected to,
     # so a `Host:` header cannot borrow the allowance for some other server. No swap, no AI review.
-    sni = (getattr(flow.client_conn, "sni", None) or "").lower()
     if update_traffic(host, vm_id) and (not sni or sni == host.lower()):
         if flow.request.host != host:
             flow.request.host = host
