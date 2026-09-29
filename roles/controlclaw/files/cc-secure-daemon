@@ -74,6 +74,19 @@ const DISK_ENV = "/etc/controlclaw/disk.env";
 const AUDIT_CURSOR = "/etc/controlclaw/disk-audit.cursor";
 /** How often to report and reconcile. Cheap, and it is what makes an added or deleted agent land. */
 const REPORT_EVERY_MS = 60_000;
+/**
+ * Bounds on the beat the control plane may ask for (`nextReportMs` in the report's reply).
+ *
+ * A box that has just been created is not in its partner's list yet, so the partner turns its first
+ * request away and the owner sees "Disk pairing … waited for it to finish setting up". Only the
+ * control plane knows a box was just made, so it is the one that asks for a faster beat — for as
+ * long as anything in the organization is new, and no longer.
+ *
+ * Clamped rather than trusted: this is the one field in the reply that costs anything, and a control
+ * plane that asked for 10 ms would turn every box in every organization into a hot loop against
+ * itself. The floor keeps that bounded; the ceiling keeps a bad value from stopping a box reporting.
+ */
+const REPORT_MIN_MS = 5_000, REPORT_MAX_MS = 5 * 60_000;
 const IDENTITY_KEY = "/etc/controlclaw/unlock_identity.key";
 const IDENTITY_PUB = "/etc/controlclaw/unlock_identity.pub";
 /** One successful disk-open per partner per this long. Counts successes only — see gate(). */
@@ -451,7 +464,11 @@ async function reportLoop(ident) {
     try { status = JSON.parse(sh(["status"])); } catch { /* report what little we know */ }
     const res = await report(ident, status);
     if (res?.partners && status.mounted) reconcile(res.partners);
-    await new Promise((r) => setTimeout(r, REPORT_EVERY_MS));
+    // The control plane may ask us back sooner while something in the organization is new. An
+    // unreachable control plane, or one too old to say, keeps the ordinary beat.
+    const asked = Number(res?.nextReportMs);
+    const wait = Number.isFinite(asked) ? Math.min(Math.max(asked, REPORT_MIN_MS), REPORT_MAX_MS) : REPORT_EVERY_MS;
+    await new Promise((r) => setTimeout(r, wait));
   }
 }
 

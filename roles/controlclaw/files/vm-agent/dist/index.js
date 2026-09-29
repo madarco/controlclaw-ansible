@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "429b425" : "unknown",
-  builtAt: true ? "2026-09-29T12:34:48+01:00" : "unknown"
+  commit: true ? "d892638" : "unknown",
+  builtAt: true ? "2026-09-29T12:37:07+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -870,7 +870,7 @@ function readFile2(path) {
   }
 }
 var sleep3 = (ms) => new Promise((r2) => setTimeout(r2, ms));
-async function ensureMitmCaInstalled(keysDir2, maxAttempts = 60) {
+async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
   const mitmIp = readFile2(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
     return { trusted: true, installed: false, message: "This box is not behind a firewall proxy." };
@@ -925,7 +925,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 60) {
       console.warn(`[mitm-ca] attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
       last = err.message;
     }
-    if (attempt < maxAttempts) await sleep3(Math.min(3e3 * attempt, 15e3));
+    if (attempt < maxAttempts) await sleep3(Math.min(1e3 * attempt, 1e4));
   }
   console.error("[mitm-ca] gave up waiting for a trusted mitm CA");
   return { trusted: false, installed: false, message: last };
@@ -964,23 +964,31 @@ function probe(host, port, timeoutMs = 3e3) {
 async function enableTransparentEgress(keysDir2) {
   const mitmIp = readFile3(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) return true;
-  const maxAttempts = 60;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (await probe(mitmIp, MITM_PROXY_PORT)) {
-      try {
-        execFileSync2("sudo", ["/usr/local/bin/cc-enable-egress"], { stdio: "inherit" });
-        console.log("[egress] transparent egress activated (redirect + DNS \u2192 mitm box)");
-        return true;
-      } catch (err) {
-        console.error(`[egress] cc-enable-egress failed: ${err.message}`);
-        return false;
-      }
+  if (await waitForMitmProxy(mitmIp)) {
+    try {
+      execFileSync2("sudo", ["/usr/local/bin/cc-enable-egress"], { stdio: "inherit" });
+      console.log("[egress] transparent egress activated (redirect + DNS \u2192 mitm box)");
+      return true;
+    } catch (err) {
+      console.error(`[egress] cc-enable-egress failed: ${err.message}`);
+      return false;
     }
-    console.log(`[egress] attempt ${attempt}/${maxAttempts}: mitm proxy ${mitmIp}:${MITM_PROXY_PORT} not reachable yet`);
-    await sleep4(Math.min(3e3 * attempt, 15e3));
   }
   console.error("[egress] gave up waiting for the mitm proxy \u2014 NOT activating egress");
   return false;
+}
+function waitForMitmProxy(mitmIp) {
+  return (async () => {
+    const maxAttempts = 90;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (await probe(mitmIp, MITM_PROXY_PORT)) return true;
+      if (attempt % 10 === 0 || attempt <= 3) {
+        console.log(`[egress] attempt ${attempt}/${maxAttempts}: mitm proxy ${mitmIp}:${MITM_PROXY_PORT} not reachable yet`);
+      }
+      await sleep4(Math.min(1e3 * attempt, 1e4));
+    }
+    return false;
+  })();
 }
 
 // src/routes/health.ts
