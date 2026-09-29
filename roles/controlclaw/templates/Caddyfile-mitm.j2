@@ -11,8 +11,13 @@
 # directory listing, no OpenClaw, no noVNC — none of those exist on this box.
 {
     email {{ caddy_acme_email }}
-    # Pinned so a Let's Encrypt failure never silently falls back to another issuer.
-    acme_ca https://acme-v02.api.letsencrypt.org/directory
+    # Issuers are explicit and tried in this order: Let's Encrypt, then ZeroSSL. Every box still
+    # gets a certificate of its own for its own name, with its own key. The second issuer exists
+    # because Let's Encrypt allows 50 new certificates per registered domain per week, and on
+    # 2026-09-29 test boxes on the production domain used that up: every new box after it had no
+    # certificate at all. ZeroSSL's ACME endpoint gets its account binding from the email above.
+    cert_issuer acme https://acme-v02.api.letsencrypt.org/directory
+    cert_issuer acme https://acme.zerossl.com/v2/DV90
     # Nothing on this box needs Caddy's admin API, and it listens on loopback by default. A
     # firewall box holds the org's secrets; it does not get a second control surface.
     admin off
