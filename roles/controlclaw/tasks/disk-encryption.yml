@@ -109,6 +109,11 @@
     - cc-seal
     - cc-secure
     - cc-secure-daemon
+  # Copying these does NOT put them in use: cc-secure-daemon is a long-running process, and nothing
+  # here restarted it. A fix to the daemon therefore reached a box's disk on update and its memory
+  # only on the next reboot — which, for a fix to the thing that survives reboots, is the wrong way
+  # round. See the restart task below.
+  register: luks_scripts
 
 # cc-seal is twenty lines of dependency-free Node, and packages/backup-envelope in the controlclaw
 # repo is the other half of the same format. A drift between them would be discovered by an owner
@@ -168,14 +173,41 @@
 # looking healthy, reported its disk as unlocked, and never published a thumbprint, so no partner
 # could ever bind a keyslot to it and the whole mutual-unlock scheme silently did not exist.
 #
-# Stopping it here is safe: cc-secure starts it again once the container is mounted, which is the
-# only moment it has a key database to serve.
+# What is NOT safe is doing it unconditionally, and that is the whole of T-97.
+#
+# The line that used to be here said stopping was safe "because cc-secure starts it again once the
+# container is mounted". True of a first provision, false of every re-run. On a re-run the container
+# is already mounted, so cc-secure.service is already active, the `state: started` task below is a
+# no-op, and the daemon's one-shot `finish()` — the only caller of `cc-secure mount`, which is the
+# only thing on this box that starts tangd.socket — never runs again. Tang stayed stopped for the
+# life of the box, and nothing said so: it stays up, unlocked, reporting, healthy in the console, and
+# silently unable to open its partner. The symptom appears when the PARTNER reboots, which on a
+# long-lived box is days later and looks like an unrelated fault.
+#
+# So ask first. The case this task exists for is a socket that is ALREADY LISTENING on the packaged
+# port, which a daemon-reload will not rebind; a socket already on the right port is left alone.
+# `ss`, not `systemctl show -p Listen`. That property reports the unit's LOADED configuration, so
+# after the drop-in above plus a daemon-reload it reads 127.0.0.1:<port> whether or not the running
+# socket is still bound to the packaged port — which is precisely the state this task exists to
+# clear, and it would have been skipped. Ask the kernel instead.
+- name: Disk encryption | is tangd already listening where the drop-in puts it?
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      test "$(systemctl show tangd.socket -p ActiveState --value)" = active \
+        && ss -lntH 'sport = :{{ luks_tangd_port }}' | grep -q '127\.0\.0\.1'
+    executable: /bin/bash
+  register: luks_tangd_placed
+  changed_when: false
+  failed_when: false
+
 - name: Disk encryption | stop and disable tangd.socket, so the drop-in takes effect
   ansible.builtin.systemd:
     name: tangd.socket
     enabled: false
     state: stopped
     daemon_reload: true
+  when: luks_tangd_placed.rc != 0
 
 - name: Disk encryption | the container manager service
   ansible.builtin.copy:
@@ -232,6 +264,7 @@
   ansible.builtin.command:
     cmd: /usr/local/bin/cc-secure init
     creates: "{{ luks_image_path }}"
+  register: luks_init
   environment:
     CC_SECURE_IMG: "{{ luks_image_path }}"
     CC_SECURE_MOUNT: "{{ luks_secure_mount }}"
@@ -267,12 +300,71 @@
       write the box's identity keys into a path that belongs inside the container, and doing that on
       the plain root would destroy this box's identity silently.
 
+# Put a changed daemon into use, which is the other half of "copying a file is not deploying it".
+#
+# Only when its code actually changed, and only on a box that already had a container: a run that
+# created one has just started the daemon with the new code anyway, and restarting it again would
+# cost every dependent service a second bounce for nothing.
+#
+# The restart is what an update costs here. `Requires=` means systemd bounces the units that read
+# the container with it, which on a firewall is a moment of the org's egress — the same moment a
+# re-provision already spends restarting the agent.
+- name: Disk encryption | put a changed container manager into use
+  ansible.builtin.systemd:
+    name: cc-secure.service
+    state: restarted
+  when:
+    - luks_scripts is changed
+    - luks_init is not changed
+
 - name: Disk encryption | this box's tang keys, inside the container
   ansible.builtin.command: /usr/local/bin/cc-secure tang-keygen
   args:
     creates: "{{ luks_secure_mount }}/tang"
   environment:
     CC_SECURE_MOUNT: "{{ luks_secure_mount }}"
+
+# Leave this box serving tang, whatever state the run found it in.
+#
+# `cc-secure mount` is idempotent — it re-checks the bind mounts, re-applies the modes tangd has to
+# traverse to reach the key database, and starts tangd.socket. Until this task existed its only
+# caller was the daemon's one-shot `finish()`, so any run that stopped the socket on an already-open
+# box left it stopped until that box next rebooted. The condition above means it is rarely needed;
+# this is here so that "rarely" does not have to be "never".
+- name: Disk encryption | tang serves this box's key database again
+  ansible.builtin.command: /usr/local/bin/cc-secure mount
+  changed_when: false
+  environment:
+    CC_SECURE_MOUNT: "{{ luks_secure_mount }}"
+    CC_SECURE_IMG: "{{ luks_image_path }}"
+    CC_SECURE_TANGD_PORT: "{{ luks_tangd_port }}"
+    CC_SECURE_BINDS: "{{ luks_binds | join(' ') }}"
+
+# And prove it, because this is the failure that hides.
+#
+# A box whose tang does not answer reports its disk as unlocked, heartbeats normally and looks
+# healthy in every place an owner or an operator can look. The only symptom is a partner that does
+# not come back from a reboot, hours or days later. A run that would leave the box in that state
+# should fail here, while somebody is watching it.
+- name: Disk encryption | wait for tang to answer on loopback
+  ansible.builtin.command: "curl -sf --max-time 3 http://127.0.0.1:{{ luks_tangd_port }}/adv"
+  register: luks_adv
+  until: luks_adv.rc == 0 and (luks_adv.stdout | default('') | length) > 0
+  retries: 10
+  delay: 2
+  changed_when: false
+  ignore_errors: true
+
+- name: Disk encryption | a box whose tang is dead cannot open its partner
+  ansible.builtin.assert:
+    that:
+      - luks_adv.rc | default(1) == 0
+      - (luks_adv.stdout | default('') | length) > 0
+    fail_msg: >-
+      tangd is not answering on 127.0.0.1:{{ luks_tangd_port }}, so this box publishes no thumbprint.
+      No partner can bind a keyslot to it, and any box it is supposed to open will not come back from
+      its next reboot. Check `systemctl status tangd.socket` and `cc-secure mount` on this box.
+    success_msg: tang answers on loopback; this box can be bound to and can open its partner
 
 # The gate, not tangd, is what listens here. Per partner IP rather than the whole private subnet:
 # §8.1 is about what the difference buys.

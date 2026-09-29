@@ -111,6 +111,32 @@ const SH_ENV = {
 };
 const sh = (args, opts) => execFileSync(CC_SECURE, args, { encoding: "utf8", env: SH_ENV, ...opts });
 
+/**
+ * The same, without stopping the world — and everything on the report beat has to use it.
+ *
+ * `execFileSync` blocks this process's event loop for as long as the child runs, and that includes
+ * the tang gate: while a synchronous `cc-secure` call is in flight this box accepts no connection at
+ * all, so a partner asking to be opened simply waits in the listen backlog.
+ *
+ * That was survivable for `status` and fatal for `bind`. `clevis luks bind` fetches the partner's
+ * advertisement with `curl -sfg` and **no timeout**, so a bind blocks this gate for as long as the
+ * partner takes to answer — and the partner, running the same beat, is usually inside its own bind,
+ * blocking its gate against us. Both boxes then wait on each other indefinitely: measured on a live
+ * pair at over four minutes with no end, three connections queued on each gate, neither box able to
+ * bind and neither able to open the other (T-97).
+ *
+ * A timeout on top, because a child that never exits must not stall the report loop either. Killing
+ * a bind is safe: `cc-secure bind` adds the new slot before it removes any stale one, so an
+ * interrupted run leaves the box exactly as openable as it was.
+ */
+const SH_TIMEOUT_MS = 120_000;
+const shAsync = (args, opts) =>
+  new Promise((resolve, reject) => {
+    execFile(CC_SECURE, args, { encoding: "utf8", env: SH_ENV, timeout: SH_TIMEOUT_MS, ...opts }, (err, stdout) =>
+      err ? reject(err) : resolve(stdout),
+    );
+  });
+
 // ---------------------------------------------------------------- systemd notify (no library)
 function notify(state) {
   const path = process.env.NOTIFY_SOCKET;
@@ -254,6 +280,24 @@ async function partnerAlreadyUp(ip) {
 
 const lastOpened = new Map();
 
+/**
+ * What the gate records when tangd is not there to take a forwarded request.
+ *
+ * It is deliberately not "refused": this box did not turn its partner away, it failed to answer. The
+ * owner's Activity page is the only place the difference is visible, and until T-97 it showed the
+ * opposite — four green "Disk opened" lines for an agent that never opened.
+ */
+const TANG_DOWN = "this box's tang is not answering, so nothing was forwarded";
+let tangDownAt = 0;
+/** Log it, at most once a minute: a stuck partner retries, and one line per retry buries the first. */
+function tangIsDown(what) {
+  if (Date.now() - tangDownAt < 60_000) return;
+  tangDownAt = Date.now();
+  log(`ERROR: ${what} arrived but nothing is listening on 127.0.0.1:${TANGD_PORT};` +
+      " this box publishes no thumbprint and cannot open its partner. Trying to start tang again.");
+  shAsync(["mount"], { stdio: "inherit" }).catch((e) => log(`could not restart tang: ${e.message}`));
+}
+
 // ---------------------------------------------------------------- the tang gate
 /**
  * The gate in front of tangd.
@@ -283,17 +327,33 @@ function serveGate() {
   const server = net.createServer((sock) => {
     const ip = sock.remoteAddress?.replace(/^::ffff:/, "") || "";
     const refuse = (why) => { audit({ event: "tang.refused", ip, why }); sock.end(); };
-    const forward = (first) => {
+    /**
+     * Hand this connection to tangd, first chunk and all.
+     *
+     * `onUp` runs only once tangd has actually accepted the connection, which is what the caller
+     * uses to decide whether anything happened. A tangd that is not listening is not a refusal by
+     * this box and not an open either: it is this box being broken, and saying so is the difference
+     * between an owner reading "Disk opened for agent-1" four times and reading the truth.
+     */
+    const forward = (first, onUp, onDown) => {
       const up = net.connect({ host: "127.0.0.1", port: TANGD_PORT }, () => {
         up.write(first);
+        // RESUMES the socket, which is why it was paused. `sock.once("data")` leaves the stream
+        // flowing, so every byte that arrives between that first chunk and this pipe is emitted to
+        // nobody and dropped — and on the recovery path there is an `await` of up to 1.2s in
+        // between. A clevis POST whose body lands in a second segment reached tangd truncated.
         sock.pipe(up);
         up.pipe(sock);
+        onUp?.();
       });
       const bye = () => { sock.destroy(); up.destroy(); };
-      sock.once("error", bye); up.once("error", bye);
+      sock.once("error", bye);
+      up.once("error", (e) => { onDown?.(e); bye(); });
     };
 
     sock.once("data", async (first) => {
+      // Nothing more may be read off this socket until it is piped: see forward().
+      sock.pause();
       const known = partners().find((p) => p.ip === ip);
       if (!known) return refuse("not a partner of this organization");
 
@@ -305,7 +365,7 @@ function serveGate() {
         // An advertisement, or anything else tangd knows how to refuse. Reading it is how a partner
         // binds a keyslot, so it must work while that partner is up and running.
         audit({ event: "tang.adv", ip, name: known.name || null });
-        return forward(first);
+        return forward(first, null, () => tangIsDown("an advertisement"));
       }
 
       // From here down it is a request to OPEN THIS BOX'S DISK.
@@ -314,11 +374,22 @@ function serveGate() {
       }
       const last = lastOpened.get(ip) || 0;
       if (Date.now() - last < RECOVERY_COOLDOWN_MS) return refuse("one disk open per partner per ten minutes");
-      // Only a real recovery costs budget. Counting attempts would be self-defeating: the retry loop
-      // tries every 10s, so one refusal for an unrelated reason would cost ten minutes.
-      lastOpened.set(ip, Date.now());
-      audit({ event: "tang.opened", ip, name: known.name || null });
-      forward(first);
+      // Only a real recovery costs budget, and only once tangd has taken the connection. Charging it
+      // at the request — which is what this did — means a box whose own tang is dead spends its
+      // partner's budget to deliver nothing, and writes "Disk opened for <partner>" on the owner's
+      // Activity page each time it does. Counting attempts would be self-defeating for the same
+      // reason: the retry loop tries every 10s, so one refusal would cost ten minutes.
+      forward(
+        first,
+        () => {
+          lastOpened.set(ip, Date.now());
+          audit({ event: "tang.opened", ip, name: known.name || null });
+        },
+        () => {
+          tangIsDown("a disk open");
+          audit({ event: "tang.refused", ip, name: known.name || null, why: TANG_DOWN });
+        },
+      );
     });
     sock.once("error", () => sock.destroy());
   });
@@ -431,29 +502,31 @@ async function report(ident, status) {
  * Unbinding is the half that matters for §7.3: an agent that was deleted must stop being able to open
  * the firewall's disk, and this is what removes its slot.
  */
-function reconcile(partners) {
+async function reconcile(partners) {
   try {
     fs.mkdirSync(STATE, { recursive: true });
     fs.writeFileSync(`${STATE}/tang-partners.json`, JSON.stringify(partners.map((p) => ({ ip: p.ip, name: p.name }))));
   } catch (e) { log(`could not write the partner allow-list: ${e.message}`); }
 
   let bound = [];
-  try { bound = sh(["list"]).split("\n").filter(Boolean).map((l) => JSON.parse(l)); }
+  try { bound = (await shAsync(["list"])).split("\n").filter(Boolean).map((l) => JSON.parse(l)); }
   catch { return; }
 
   const wantUrl = (p) => `http://${p.ip}:${GATE_PORT}`;
   for (const p of partners) {
     const already = bound.find((b) => b.url === wantUrl(p) && b.thp === p.thumbprint);
     if (already) continue;
-    try { sh(["bind", wantUrl(p), p.thumbprint], { stdio: "inherit" }); }
-    catch { log(`could not bind ${p.name} (${p.ip}); leaving the slots as they are`); }
+    // Awaited, not synchronous: this call reaches out to the partner's gate, and the partner is
+    // reaching back to ours. See shAsync.
+    try { await shAsync(["bind", wantUrl(p), p.thumbprint], { stdio: "inherit" }); }
+    catch (e) { log(`could not bind ${p.name} (${p.ip}): ${e.message}; leaving the slots as they are`); }
   }
   for (const b of bound) {
     if (partners.some((p) => wantUrl(p) === b.url)) continue;
     // A slot for a box that is no longer a partner. cc-secure refuses to remove the last one, so a
     // list that arrives empty (a control plane that has lost its mind, or a network blip mid-deploy)
     // cannot lock this box out of itself.
-    try { sh(["unbind", b.url], { stdio: "inherit" }); }
+    try { await shAsync(["unbind", b.url], { stdio: "inherit" }); }
     catch { log(`could not unbind ${b.url}`); }
   }
 }
@@ -461,9 +534,17 @@ function reconcile(partners) {
 async function reportLoop(ident) {
   for (;;) {
     let status = { mounted: false, thumbprint: "" };
-    try { status = JSON.parse(sh(["status"])); } catch { /* report what little we know */ }
+    // Async: `cc-secure status` asks tangd for this box's thumbprint with a five-second curl, and a
+    // box whose tang is dead is exactly the box that spends all five — with its gate shut, every
+    // beat, which is the state a partner is trying to reach it in.
+    try { status = JSON.parse(await shAsync(["status"])); } catch { /* report what little we know */ }
+    // A mounted container with no thumbprint means tangd is not answering. The box is otherwise
+    // perfectly healthy — open, reporting, serving — and the only consequence is that its partner
+    // will not come back from its next reboot, so nothing else will ever notice. Put it right here,
+    // on the beat, rather than wait for a partner to ask and fail (T-97).
+    if (status.mounted && !status.thumbprint) tangIsDown("the report beat found no thumbprint");
     const res = await report(ident, status);
-    if (res?.partners && status.mounted) reconcile(res.partners);
+    if (res?.partners && status.mounted) await reconcile(res.partners);
     // The control plane may ask us back sooner while something in the organization is new. An
     // unreachable control plane, or one too old to say, keeps the ordinary beat.
     const asked = Number(res?.nextReportMs);
