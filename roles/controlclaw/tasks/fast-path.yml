@@ -1,0 +1,140 @@
+---
+# May this boot skip the tasks whose only job is installing what the base image already carries?
+#
+# A box boots from a snapshot built by running this same role (controlclaw
+# scripts/build-base-image.sh). On the boot that follows, every install task runs again and finds
+# nothing to do — but apt still refreshes its lists, npm still resolves, openclaw still reinstalls
+# its plugins, and each no-op still costs a task. That is most of a first provision.
+#
+# Three things have to hold before anything is skipped, and each one is load-bearing:
+#
+#   1. THE IMAGE WAS BUILT FROM THIS COMMIT. The build records what `ansible-pull` checked out in
+#      /etc/controlclaw/base-image; `git rev-parse HEAD` in this play's own checkout says what is
+#      about to run. Equal means "every install below would install exactly what the image already
+#      has" — the only claim that makes skipping one safe. Different (a stale image), missing (a
+#      box on stock Ubuntu, which is what resolveBaseImage falls back to) or unreadable all mean
+#      the full role.
+#
+#   2. THIS BOX HAS NEVER FINISHED A PROVISION. release.yml writes /etc/controlclaw/release.json as
+#      the last step of a successful play and the image build scrubs it, so its absence is exactly
+#      "first boot from an image". An UPDATE — the console's Update button, `cc-reprovision` — runs
+#      on a box that has one and therefore always runs the full role, which is what keeps an update
+#      able to repair a box.
+#
+#   3. THE THING IS ACTUALLY THERE. The commit says what the image was built to contain; the probe
+#      below is the box saying what it does contain. One command, read once, so a skipped install
+#      is never a skipped install of something absent — not even if a snapshot were taken half way
+#      through a build.
+#
+# What is skipped is only ever an INSTALL. Every task that writes this box's identity, opens its
+# container, configures its hostname, wires its egress, or checks a security property runs on every
+# boot — none of those can be baked, because the agent's home, /opt/controlclaw/keys and
+# /opt/controlclaw/state live inside the per-box encrypted container and are empty on a fresh box.
+# The list, and why each entry is safe, is in controlclaw
+# apps/saas/docs/features/new-agent-speed.md.
+#
+# `cc_fast_path` and `cc_skip` default to "run everything" in defaults/main.yml, so a play that
+# never reaches this file behaves exactly as it did before it existed.
+
+- name: Fast path | what the image carries, and what this play is
+  ansible.builtin.shell:
+    executable: /bin/bash
+    # One task rather than a stat per question: on a local connection a task costs more than every
+    # check in here put together.
+    cmd: |
+      set -uo pipefail
+      present() {
+        for spec in "$@"; do
+          case "$spec" in
+            bin:*)  command -v "${spec#bin:}" >/dev/null 2>&1 || { echo false; return; } ;;
+            file:*) [ -s "${spec#file:}" ]                    || { echo false; return; } ;;
+            dir:*)  [ -d "${spec#dir:}" ]                     || { echo false; return; } ;;
+          esac
+        done
+        echo true
+      }
+      image_commit=""
+      if [ -r /etc/controlclaw/base-image ]; then
+        # shellcheck disable=SC1091
+        . /etc/controlclaw/base-image 2>/dev/null || true
+        image_commit="${ANSIBLE_COMMIT:-}"
+      fi
+      play_commit="$(git -C {{ playbook_dir | quote }} rev-parse HEAD 2>/dev/null || true)"
+      cat <<JSON
+      {
+        "image_commit": "${image_commit}",
+        "play_commit": "${play_commit}",
+        "provisioned_before": $(present file:/etc/controlclaw/release.json),
+        "carries": {
+          "system_tools": $(present bin:jq bin:tcpdump bin:tmux bin:gcc file:/etc/gitconfig),
+          "node": $(present bin:node bin:pnpm),
+          "docker": $(present bin:docker),
+          "tailscale": $(present bin:tailscale file:/usr/local/bin/cc-tailscale),
+          "caddy": $(present bin:caddy),
+          "ufw": $(present bin:ufw),
+          "fail2ban": $(present bin:fail2ban-client),
+          "unattended_upgrades": $(present file:/usr/bin/unattended-upgrade file:/usr/bin/apt-listchanges),
+          "nftables": $(present bin:nft),
+          "browser": $(present bin:google-chrome-stable bin:Xvfb bin:x11vnc bin:openbox bin:certutil bin:websockify bin:apparmor_parser file:/usr/share/novnc/vnc.html),
+          "redsocks": $(present bin:redsocks),
+          "fuse3": $(present bin:fusermount3),
+          "luks": $(present bin:cryptsetup bin:clevis bin:jose file:/usr/bin/clevis-luks-bind file:/usr/libexec/tangd),
+          "openclaw_plugins": $(present dir:/opt/controlclaw/prestage/openclaw-npm-projects)
+        }
+      }
+      JSON
+  register: cc_image_probe
+  changed_when: false
+  check_mode: false
+
+# Read straight off the registered result, never through an intermediate `vars:` entry. Ansible
+# runs literal_eval over a templated result, so `{{ result.stdout }}` assigned to a variable comes
+# back as a real dict and `from_json` then dies with "the JSON object must be str, bytes or
+# bytearray, not dict" — the trap openclaw-search.yml documents, and here it would end the play
+# before anything had run.
+- name: Fast path | read the probe
+  ansible.builtin.set_fact:
+    cc_image: "{{ cc_image_probe.stdout | from_json }}"
+
+# `ci_test` is the image build's own switch. A build must never take the fast path, or an image
+# would inherit the one before it instead of being rebuilt — belt and braces, since a build box
+# starts from stock Ubuntu and has no marker to match anyway.
+# `box_role` is in here because "this box has never finished a provision" is read off
+# /etc/controlclaw/release.json, and release.yml only writes that for `openclaw` and `mitm`
+# (main.yml gates it). On a `proxy` or `exit-relay` box the file never appears, so the test would
+# say "first boot" forever and a re-run by hand would skip installs instead of redoing them. Those
+# two roles are not what this is for — nobody waits on them while an organization is being set up —
+# so they keep the full role rather than the guarantee being quietly weaker there.
+- name: Fast path | decide
+  ansible.builtin.set_fact:
+    cc_fast_path: >-
+      {{ (not ci_test | bool)
+         and (box_role in ['openclaw', 'mitm'])
+         and (cc_image.image_commit | length == 40)
+         and (cc_image.image_commit == cc_image.play_commit)
+         and (not cc_image.provisioned_before | bool) }}
+
+# One dict the install tasks read, EMPTY unless the fast path is on — so every guard reads
+# `when: not cc_skip.<thing> | default(false) | bool` and means "run it" by default, whatever went
+# wrong above.
+- name: Fast path | what this boot may skip
+  ansible.builtin.set_fact:
+    cc_skip: "{{ cc_image.carries if cc_fast_path | bool else {} }}"
+
+- name: Fast path | say which it is, and why
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'FAST PATH: booted from an image built from ' ~ cc_image.play_commit[:12] ~
+         ', and this box has never finished a provision. Skipping the installs of: ' ~
+         (cc_skip | dict2items | selectattr('value') | map(attribute='key') | list | join(', ')) ~
+         '. Everything per-box still runs.'
+         if cc_fast_path | bool else
+         'FULL ROLE: ' ~
+         ('box_role=' ~ box_role ~ ' does not record a release, so it cannot tell a first boot from an update'
+          if box_role not in ['openclaw', 'mitm'] else
+         'this box has provisioned before, and an update runs everything'
+          if cc_image.provisioned_before | bool else
+          ('no /etc/controlclaw/base-image — stock Ubuntu, or an image built before T-98'
+           if cc_image.image_commit | length != 40 else
+           'the image was built from ' ~ cc_image.image_commit[:12] ~
+           ' but this play is ' ~ (cc_image.play_commit[:12] | default('(unknown)', true)))) }}

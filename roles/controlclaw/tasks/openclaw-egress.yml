@@ -126,7 +126,16 @@
     name: redsocks
     state: present
     update_cache: true
-  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+    cache_valid_time: 3600
+    lock_timeout: 300
+  # The base image build installs redsocks explicitly (controlclaw
+  # apps/saas/app/(vm)/lib/base-image.ts), because this file is skipped entirely during a build —
+  # it has no mitm box to point at — so the package would otherwise be the one thing an agent
+  # still had to fetch from apt. Masking the distro unit, staging the ruleset and writing our own
+  # unit all still run.
+  when:
+    - mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+    - not cc_skip.redsocks | default(false) | bool
 
 # The package ships an ENABLED redsocks.service with a stock /etc/redsocks.conf that also binds
 # 127.0.0.1:12345 (pointing at a SOCKS server that does not exist). Left alone it wins the port

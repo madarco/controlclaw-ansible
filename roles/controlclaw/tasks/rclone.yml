@@ -20,7 +20,13 @@
     name: fuse3
     state: present
     update_cache: true
-  when: not ci_test
+    cache_valid_time: 3600
+    lock_timeout: 300
+  # The package only. The assertion below that /usr/bin/fusermount3 and /dev/fuse are both there
+  # runs on every boot, so a skipped install still cannot produce a box that cannot mount.
+  when:
+    - not ci_test
+    - not cc_skip.fuse3 | default(false) | bool
 
 # Asserted rather than assumed: a mount is the whole feature, and "fusermount3 is missing" is a
 # much better failure here than an rclone unit that crash-loops on a box nobody is watching.

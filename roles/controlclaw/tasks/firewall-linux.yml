@@ -2,11 +2,19 @@
 # Linux-specific firewall configuration (UFW) with security hardening
 
 # Install and configure fail2ban for SSH brute-force protection
+#
+# Only the three PACKAGE installs in this file are ever skipped (fail2ban, unattended-upgrades,
+# ufw), and only on a first boot from an image built from this commit that really has them. Every
+# rule, policy and config below runs on every boot without exception: this file is where the box's
+# firewall is, and a firewall that depends on an image being what it claims is not one.
 - name: Install fail2ban
   ansible.builtin.apt:
     name: fail2ban
     state: present
     update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  when: not cc_skip.fail2ban | default(false) | bool
 
 - name: Configure fail2ban for SSH protection
   ansible.builtin.copy:
@@ -41,6 +49,8 @@
       - unattended-upgrades
       - apt-listchanges
     state: present
+    lock_timeout: 300
+  when: not cc_skip.unattended_upgrades | default(false) | bool
 
 - name: Configure automatic security updates
   ansible.builtin.copy:
@@ -79,6 +89,9 @@
     name: ufw
     state: present
     update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  when: not cc_skip.ufw | default(false) | bool
 
 - name: Set UFW default policies
   community.general.ufw:

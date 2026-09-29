@@ -2,6 +2,13 @@
 # The live browser: Chrome on an Xvfb display, shown over x11vnc + noVNC and driven by OpenClaw
 # over CDP. On by default (defaults/main.yml); the console reaches noVNC through Caddy only.
 
+# The five install tasks below — the X/VNC stack, Chrome's apt key and repository, and Chrome
+# itself — are skipped on a first boot from an image built from this commit. tasks/fast-path.yml
+# has checked that google-chrome-stable, Xvfb, x11vnc, openbox, certutil, websockify and noVNC's
+# vnc.html are all on the box before it says so. Everything after them runs on every boot: the
+# per-box VNC password (it lives in /opt/controlclaw/keys, inside the encrypted container, and is
+# empty on a fresh box), the unit, the restart logic, the RFB probe, and the two assertions that
+# Chrome is sandboxed and memory-capped.
 - name: Install browser streaming dependencies
   ansible.builtin.apt:
     name:
@@ -23,6 +30,9 @@
       - python3
     state: present
     update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  when: not cc_skip.browser | default(false) | bool
 
 # Chrome comes from Google's apt repository, not a downloaded .deb. The .deb declares
 # `libasound2 (>= 1.0.17)`, and Ubuntu 24.04 renamed that package to `libasound2t64` for the
@@ -36,23 +46,32 @@
     url: https://dl.google.com/linux/linux_signing_key.pub
     dest: /usr/share/keyrings/google-chrome.asc
     mode: '0644'
+  when: not cc_skip.browser | default(false) | bool
 
 - name: Dearmor the Google Chrome apt repository key
   ansible.builtin.command:
     cmd: gpg --dearmor --yes -o /usr/share/keyrings/google-chrome.gpg /usr/share/keyrings/google-chrome.asc
     creates: /usr/share/keyrings/google-chrome.gpg
+  when: not cc_skip.browser | default(false) | bool
 
 - name: Add the Google Chrome apt repository
   ansible.builtin.apt_repository:
     repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main"
     filename: google-chrome
     state: present
+  register: chrome_repo
+  when: not cc_skip.browser | default(false) | bool
 
 - name: Install Google Chrome stable
   ansible.builtin.apt:
     name: google-chrome-stable
     state: present
     update_cache: true
+    # Unconditional only when this play just added Google's repository; otherwise the refresh in
+    # the play's pre_tasks stands.
+    cache_valid_time: "{{ 0 if chrome_repo is changed else 3600 }}"
+    lock_timeout: 300
+  when: not cc_skip.browser | default(false) | bool
 
 # The renderer is where LLM-chosen web content is parsed, in a browser that holds the customer's
 # saved logins and runs as the user that owns the gateway token and the cc-install-ca sudo rule.

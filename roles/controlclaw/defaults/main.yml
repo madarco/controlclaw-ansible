@@ -4,6 +4,12 @@
 # CI testing mode - skips tasks that require systemd, Docker-in-Docker, or kernel access
 ci_test: false
 
+# The first-boot fast path (tasks/fast-path.yml). Both default to "run everything": a play that
+# never reaches that file, or one where anything about the base image could not be read, behaves
+# exactly as it did before the fast path existed. fast-path.yml is the only thing that sets them.
+cc_fast_path: false
+cc_skip: {}
+
 # Residential exit relay (box_role=exit-relay). The secrets have NO defaults on purpose: the role
 # asserts them and refuses rather than building a relay that cannot verify a token or report a
 # byte. Terraform passes them all (controlclaw repo, infra/exit-relay.tf).

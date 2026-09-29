@@ -7,6 +7,16 @@
   vars:
     ansible_python_interpreter: /usr/bin/python3
 
+  # The role reads ansible_system, ansible_os_family, ansible_distribution(_version/_release),
+  # ansible_architecture and ansible_env — all of them in `min`. The subsets left out are the
+  # expensive ones and nothing reads them: `hardware` shells out to lsblk and friends, `network`
+  # walks every interface, `virtual` probes dmi. Named rather than left to the default so that
+  # adding a fact to the role is a deliberate act.
+  gather_facts: true
+  gather_subset:
+    - '!all'
+    - 'min'
+
   environment:
     TERM: xterm-256color
     COLORTERM: truecolor

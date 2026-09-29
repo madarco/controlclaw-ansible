@@ -29,7 +29,9 @@
     repo: "deb {{ ansible_facts['apt_mirror'] | default('http://archive.ubuntu.com/ubuntu') }} {{ ansible_facts['distribution_release'] }} universe"
     state: present
     update_cache: false
-  when: ansible_facts['distribution'] == 'Ubuntu'
+  when:
+    - ansible_facts['distribution'] == 'Ubuntu'
+    - not cc_skip.luks | default(false) | bool
   failed_when: false
 
 # The dpkg-lock timeout this play used to write lives in playbooks/install.yml now, before the
@@ -38,6 +40,12 @@
 # it never ran. Two copies writing the same path with different comment text would also have made
 # both tasks report `changed` on every run of an encrypted box.
 
+# The PACKAGES, and nothing else in this file. Skipped only on a first boot from an image built
+# from this commit where cryptsetup, clevis, jose and /usr/libexec/tangd are all already there
+# (tasks/fast-path.yml looks for all four). The container, its keyslots, the seal, the tang key
+# database and every assertion in this file are untouched by the fast path and run on every boot —
+# nothing about the encryption itself changes, and none of it can be baked: the container is
+# created per box and its passphrase never leaves it.
 - name: Disk encryption | install the packages
   ansible.builtin.apt:
     name:
@@ -53,6 +61,7 @@
     # the other apt tasks in this play, and a box that dies mid-provision because a lock was held for
     # four seconds is a box somebody has to rebuild by hand. The repo uses the same timeout elsewhere.
     lock_timeout: 300
+  when: not cc_skip.luks | default(false) | bool
 
 # provenance.yml and self-update.yml both write here, but one runs before this file and one after,
 # so create it rather than depend on an ordering that a later edit could change.

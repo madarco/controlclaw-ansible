@@ -39,6 +39,45 @@
 # newer OpenClaw satisfies an older plugin. The chore is the other direction — an OpenClaw that
 # raises the plugin API floor needs this bumped.
 
+# The pinned plugins, pre-staged.
+#
+# `openclaw plugins install` costs ~18s PER PACKAGE and almost none of it is the download — it is
+# OpenClaw's own resolve, integrity check and per-plugin `npm install`, measured on a real box
+# (2026-09-29: 73s for the four of them, a quarter of the whole provision, with a warm npm cache
+# making no difference at all). So what is staged is the finished install, not the tarballs.
+#
+# An installed plugin is one directory under ~/.openclaw/npm/projects — package.json, its lockfile
+# and node_modules — and nothing else: OpenClaw discovers and enables it from that directory
+# alone, with no config entry needed (verified on a live box). The image build copies the four out
+# to /opt/controlclaw/prestage before it scrubs the home, and this puts them back.
+#
+# **It is not baked into the home.** ~/.openclaw is a bind inside the per-box encrypted container
+# and is empty on a fresh box; the staged copy lives on the plain root, holds no token and no
+# credential of any kind, and is the published contents of four public npm packages.
+#
+# Only on a first boot from an image built from this commit (`cc_skip`), and only when the box has
+# no projects directory yet (`creates:`) — so a customer who removed a plugin does not get it back
+# on the next re-provision, and an image whose pin has moved on stages nothing.
+#
+# It is a CACHE, exactly like the image it comes from: the listing below is unchanged and still
+# decides what is installed, so a stage that is stale, broken or absent costs the 73s it was meant
+# to save and nothing else.
+- name: Web search | put the image's copy of the pinned plugins in place
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      # Never create ~/.openclaw itself: it holds the gateway token, openclaw.yml creates it a few
+      # tasks earlier and OpenClaw tightens it to 0700 at runtime. Fail loudly if it is missing
+      # rather than quietly laying down a 0755 directory for a credential to land in.
+      test -d {{ controlclaw_home }}/.openclaw
+      install -d -o {{ controlclaw_user }} -g {{ controlclaw_user }} -m 0755 {{ controlclaw_home }}/.openclaw/npm
+      cp -a /opt/controlclaw/prestage/openclaw-npm-projects {{ controlclaw_home }}/.openclaw/npm/projects
+      chown -R {{ controlclaw_user }}:{{ controlclaw_user }} {{ controlclaw_home }}/.openclaw/npm
+    creates: "{{ controlclaw_home }}/.openclaw/npm/projects"
+  when: cc_skip.openclaw_plugins | default(false) | bool
+  register: openclaw_search_prestaged
+
 # One CLI call, not one per package: each `openclaw` invocation pays Node's startup cost (~4s),
 # and this file runs again on every re-provision.
 - name: Read the installed OpenClaw plugins
@@ -97,6 +136,23 @@
 # With the gateway already running (a re-provision) the install applies live; on a first
 # provision the gateway has not been created yet and it applies at startup. Either way the
 # plugin is on disk before `openclaw gateway run` first starts.
+# The stage is supposed to make the installs below a no-op. When it does not, every box built from
+# this image pays the full 73s and nobody would otherwise know — the installs succeed, so the play
+# stays green. Say it out loud instead.
+- name: Warn when the pre-staged plugins did not count
+  ansible.builtin.debug:
+    msg: >-
+      The base image's pre-staged plugins were copied into
+      {{ controlclaw_home }}/.openclaw/npm/projects but OpenClaw does not report
+      {{ openclaw_search_plugins_needed | map(attribute='id') | list }} at
+      {{ openclaw_search_plugin_version }}, so they are being installed from npm after all. Every
+      box built from this image pays that. Check what
+      /opt/controlclaw/prestage/openclaw-npm-projects holds against `openclaw plugins list --json`.
+  when:
+    - openclaw_search_prestaged is defined
+    - openclaw_search_prestaged is changed
+    - openclaw_search_plugins_needed | length > 0
+
 - name: Install the web-search plugins (pinned)
   ansible.builtin.command:
     cmd: "/usr/bin/openclaw plugins install npm:{{ item.package }}@{{ openclaw_search_plugin_version }}"

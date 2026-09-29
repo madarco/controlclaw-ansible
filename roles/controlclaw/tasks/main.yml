@@ -27,6 +27,14 @@
 - name: Record where this box's Ansible came from
   ansible.builtin.include_tasks: provenance.yml
 
+# Before the first install, and on every role: decide whether this boot may skip the tasks whose
+# only job is installing what the base image already has. It reads three things (the image's
+# commit, whether this box has ever finished a provision, and what is actually on disk) and says
+# so in the log. It changes nothing by itself; it only sets `cc_fast_path` and `cc_skip`, which
+# default to "run everything".
+- name: Decide whether this is a first boot from a matching base image
+  ansible.builtin.include_tasks: fast-path.yml
+
 - name: Include system tools installation tasks
   ansible.builtin.include_tasks: system-tools.yml
 

@@ -1,4 +1,9 @@
 ---
+# Everything down to "Install Node.js" is skipped on a first boot from an image built from this
+# commit: the image carries the NodeSource keyring, its sources.list entry, node and pnpm, and
+# tasks/fast-path.yml has checked that `node` and `pnpm` are both really on PATH. The four verify
+# tasks at the bottom always run, so the play still fails loudly on a box where they are not —
+# correctness never rests on the image.
 - name: Install required packages for Node.js
   ansible.builtin.apt:
     name:
@@ -6,12 +11,14 @@
       - curl
       - gnupg
     state: present
+  when: not cc_skip.node | default(false) | bool
 
 - name: Create directory for NodeSource GPG key
   ansible.builtin.file:
     path: /etc/apt/keyrings
     state: directory
     mode: '0755'
+  when: not cc_skip.node | default(false) | bool
 
 - name: Add NodeSource GPG key
   ansible.builtin.shell:
@@ -22,6 +29,8 @@
       chmod a+r /etc/apt/keyrings/nodesource.gpg
     creates: /etc/apt/keyrings/nodesource.gpg
     executable: /bin/bash
+  register: nodesource_key
+  when: not cc_skip.node | default(false) | bool
 
 - name: Add NodeSource repository
   ansible.builtin.shell:
@@ -32,25 +41,37 @@
         tee /etc/apt/sources.list.d/nodesource.list > /dev/null
     creates: /etc/apt/sources.list.d/nodesource.list
     executable: /bin/bash
+  register: nodesource_repo
+  when: not cc_skip.node | default(false) | bool
 
+# 0 means "always", 3600 means "the pre_tasks refresh a minute ago is good enough". A cache that
+# predates the line this task just added would send `apt install nodejs` to the distro's node, so
+# the refresh is unconditional exactly when the repository is new.
 - name: Update apt cache after adding NodeSource repo
   ansible.builtin.apt:
     update_cache: true
+    cache_valid_time: "{{ 0 if (nodesource_repo is changed or nodesource_key is changed) else 3600 }}"
+  when: not cc_skip.node | default(false) | bool
 
 - name: Install Node.js
   ansible.builtin.apt:
     name: nodejs
     state: present
+    lock_timeout: 300
+  when: not cc_skip.node | default(false) | bool
 
 - name: Check if pnpm is already installed
   ansible.builtin.command: pnpm --version
   register: pnpm_check
   failed_when: false
   changed_when: false
+  when: not cc_skip.node | default(false) | bool
 
 - name: Install pnpm globally
   ansible.builtin.command: npm install -g pnpm
-  when: pnpm_check.rc != 0
+  when:
+    - not cc_skip.node | default(false) | bool
+    - pnpm_check.rc | default(1) != 0
   environment: "{{ controlclaw_node_env }}"
 
 - name: Verify Node.js installation

@@ -6,6 +6,8 @@
 
 # Common tasks for all operating systems
 
+# Eleven `git config --system` calls, which land in /etc/gitconfig — on the plain root, so the base
+# image carries them. Same gate as the package list above.
 - name: Configure git system-wide
   community.general.git_config:
     name: "{{ item.name }}"
@@ -23,3 +25,4 @@
     - { name: 'alias.unstage', value: 'reset HEAD --' }
     - { name: 'alias.last', value: 'log -1 HEAD' }
     - { name: 'alias.lg', value: 'log --oneline --graph --decorate --all' }
+  when: not cc_skip.system_tools | default(false) | bool

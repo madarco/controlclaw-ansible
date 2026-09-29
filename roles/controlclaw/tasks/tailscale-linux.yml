@@ -21,6 +21,10 @@
 # `*.tailscale.com` only once the org firewall has recorded a join for this box (mitm-proxy/addon.py,
 # TAILSCALE_HOSTS).
 
+# The keyring, the repository and the package are skipped on a first boot from an image built from
+# this commit; tasks/fast-path.yml has checked for both `tailscale` and the cc-tailscale helper.
+# The helper and its sudoers line are rewritten on every boot regardless — they are what the
+# console's join button needs, and they cost nothing.
 - name: Tailscale | Add the package signing key
   ansible.builtin.get_url:
     url: "https://pkgs.tailscale.com/stable/{{ ansible_distribution | lower }}/{{ ansible_distribution_release }}.noarmor.gpg"
@@ -29,6 +33,7 @@
     group: root
     mode: "0644"
   register: tailscale_keyring
+  when: not cc_skip.tailscale | default(false) | bool
 
 - name: Tailscale | Add the package repository
   ansible.builtin.get_url:
@@ -38,13 +43,16 @@
     group: root
     mode: "0644"
   register: tailscale_repo
+  when: not cc_skip.tailscale | default(false) | bool
 
 - name: Tailscale | Install the package
   ansible.builtin.apt:
     name: tailscale
     state: present
     update_cache: "{{ tailscale_keyring is changed or tailscale_repo is changed }}"
+    lock_timeout: 300
   register: tailscale_pkg
+  when: not cc_skip.tailscale | default(false) | bool
 
 # The Debian package enables and starts tailscaled on install. Undo that only on the run that
 # installed it, so a box whose owner has already joined keeps its running daemon on every update.

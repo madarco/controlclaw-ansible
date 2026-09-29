@@ -67,7 +67,12 @@
   ansible.builtin.apt:
     name: nftables
     state: present
-  when: not ci_test
+    lock_timeout: 300
+  # The install, and only the install. The ruleset, the root script, the unit and the OpenClaw
+  # drop-in that fails closed with it are written on every boot, including the fast path.
+  when:
+    - not ci_test
+    - not cc_skip.nftables | default(false) | bool
 
 - name: Stage the metadata guard ruleset
   ansible.builtin.copy:

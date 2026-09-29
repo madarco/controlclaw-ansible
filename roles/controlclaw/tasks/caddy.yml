@@ -7,11 +7,17 @@
 # The install half runs always (so the base image carries the package); the config half needs
 # vm_hostname, which the control plane passes per box.
 
+# The four install tasks are skipped on a first boot from an image built from this commit: the
+# image build installs Caddy explicitly and tasks/fast-path.yml has checked the binary is there.
+# The config half below — the Caddyfile, its `caddy validate`, enabling the unit, and the two
+# grep assertions that the noVNC gate and the firewall's single path prefix are in it — runs on
+# every boot, because all of it is per-box.
 - name: Download the Caddy apt repository key
   ansible.builtin.get_url:
     url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
     dest: /usr/share/keyrings/caddy-stable-archive-keyring.asc
     mode: '0644'
+  when: not cc_skip.caddy | default(false) | bool
 
 # Same keyring path and list name as the official install instructions, so a box that was
 # set up by hand converges instead of conflicting on Signed-By.
@@ -19,18 +25,26 @@
   ansible.builtin.command:
     cmd: gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /usr/share/keyrings/caddy-stable-archive-keyring.asc
     creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  when: not cc_skip.caddy | default(false) | bool
 
 - name: Add Caddy apt repository
   ansible.builtin.apt_repository:
     repo: "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
     filename: caddy-stable
     state: present
+  register: caddy_repo
+  when: not cc_skip.caddy | default(false) | bool
 
 - name: Install Caddy
   ansible.builtin.apt:
     name: caddy
     state: present
     update_cache: true
+    # Unconditional only when this play just added the repository line; otherwise the refresh in
+    # the play's pre_tasks stands. `update_cache: true` on its own cost 17s of every provision.
+    cache_valid_time: "{{ 0 if caddy_repo is changed else 3600 }}"
+    lock_timeout: 300
+  when: not cc_skip.caddy | default(false) | bool
 
 # The package ships an enabled unit serving a static site on :80. Keep it down until we have a
 # hostname to configure; an image build must not leave a listener behind.

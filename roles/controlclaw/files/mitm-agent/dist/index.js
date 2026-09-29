@@ -851,20 +851,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a2, b2) {
   return (a2 & 15) + (a2 >> 6 | a2 >> 3 & 8) << 4 | (b2 & 15) + (b2 >> 6 | b2 >> 3 & 8);
 }
-function writeHexToUInt8(buf, str16) {
-  const size = str16.length >> 1;
+function writeHexToUInt8(buf, str17) {
+  const size = str17.length >> 1;
   for (let i2 = 0; i2 < size; i2++) {
     const index = i2 << 1;
-    buf[i2] = hexCharCodesToInt(str16.charCodeAt(index), str16.charCodeAt(index + 1));
+    buf[i2] = hexCharCodesToInt(str17.charCodeAt(index), str17.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str16, buf) {
-  if (str16.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str17, buf) {
+  if (str17.length !== buf.length * 2) {
     return false;
   }
   for (let i2 = 0; i2 < buf.length; i2++) {
     const strIndex = i2 << 1;
-    if (buf[i2] !== hexCharCodesToInt(str16.charCodeAt(strIndex), str16.charCodeAt(strIndex + 1))) {
+    if (buf[i2] !== hexCharCodesToInt(str17.charCodeAt(strIndex), str17.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -2281,9 +2281,9 @@ var checkFailed = "check_failed";
 function invalidDuration() {
   throw new TypeError("Invalid time period format");
 }
-function secs(str16) {
-  typeof str16 != "string" && invalidDuration();
-  const matched = REGEX.exec(str16);
+function secs(str17) {
+  typeof str17 != "string" && invalidDuration();
+  const matched = REGEX.exec(str17);
   (!matched || matched[4] && matched[1]) && invalidDuration();
   const value = parseFloat(matched[2]), numericDate2 = Math.round(value * multipliers[matched[3][0].toLowerCase()]);
   return Number.isFinite(numericDate2) || invalidDuration(), matched[1] === "-" || matched[4] === "ago" ? -numericDate2 : numericDate2;
@@ -3135,32 +3135,32 @@ function unreadableStores() {
 // src/enc-file.ts
 var NONCE_BYTES2 = 12;
 var TAG_BYTES2 = 16;
-function encryptJson(value, boxKeyB64, aad13) {
+function encryptJson(value, boxKeyB64, aad14) {
   const key = Buffer.from(boxKeyB64, "base64");
   const nonce = randomBytes2(NONCE_BYTES2);
   const cipher = createCipheriv2("aes-256-gcm", key, nonce);
-  cipher.setAAD(Buffer.from(aad13, "utf8"));
+  cipher.setAAD(Buffer.from(aad14, "utf8"));
   const ct2 = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(value), "utf8")), cipher.final(), cipher.getAuthTag()]);
   return JSON.stringify({ alg: "AES-256-GCM", nonce: nonce.toString("base64"), ct: ct2.toString("base64") });
 }
-function decryptJson(raw, boxKeyB64, aad13) {
+function decryptJson(raw, boxKeyB64, aad14) {
   const { nonce, ct: ct2 } = JSON.parse(raw);
   const key = Buffer.from(boxKeyB64, "base64");
   const buf = Buffer.from(ct2, "base64");
   const decipher = createDecipheriv2("aes-256-gcm", key, Buffer.from(nonce, "base64"));
-  decipher.setAAD(Buffer.from(aad13, "utf8"));
+  decipher.setAAD(Buffer.from(aad14, "utf8"));
   decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES2));
   const pt2 = Buffer.concat([decipher.update(buf.subarray(0, buf.length - TAG_BYTES2)), decipher.final()]);
   return JSON.parse(pt2.toString("utf8"));
 }
-function loadEncryptedJson(path, boxKeyB64, aad13) {
+function loadEncryptedJson(path, boxKeyB64, aad14) {
   if (!existsSync4(path)) return null;
-  return decryptJson(readFileSync6(path, "utf8"), boxKeyB64, aad13);
+  return decryptJson(readFileSync6(path, "utf8"), boxKeyB64, aad14);
 }
-function loadStoreOrEmpty(store, path, boxKeyB64, aad13, log = console.error) {
+function loadStoreOrEmpty(store, path, boxKeyB64, aad14, log = console.error) {
   let parsed;
   try {
-    parsed = loadEncryptedJson(path, boxKeyB64, aad13);
+    parsed = loadEncryptedJson(path, boxKeyB64, aad14);
   } catch (error62) {
     noteStoreUnreadable(store, error62.message);
     log(`[${store}] this firewall cannot read ${path} (${error62.message}); starting empty. The console says so, and the next change reseals it.`);
@@ -3180,14 +3180,14 @@ function keepUnreadable(path, store, log) {
     log(`[${store}] could not keep a copy of ${path}: ${error62.message}`);
   }
 }
-function saveStore(store, path, value, boxKeyB64, aad13) {
-  saveEncryptedJson(path, value, boxKeyB64, aad13);
+function saveStore(store, path, value, boxKeyB64, aad14) {
+  saveEncryptedJson(path, value, boxKeyB64, aad14);
   noteStoreReadable(store);
 }
-function saveEncryptedJson(path, value, boxKeyB64, aad13) {
+function saveEncryptedJson(path, value, boxKeyB64, aad14) {
   mkdirSync3(dirname2(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync4(tmp, encryptJson(value, boxKeyB64, aad13), { mode: 384 });
+  writeFileSync4(tmp, encryptJson(value, boxKeyB64, aad14), { mode: 384 });
   renameSync(tmp, path);
 }
 
@@ -9734,6 +9734,21 @@ var UpdateFirewall = class {
     this.log(`[update] started on ${p2.agent.name}`);
     return { vmId: p2.agent.vmId, phase: r2?.status?.phase ?? "resolving" };
   }
+  /**
+   * Start a run on one agent box for a batch whose code was already confirmed (T-100).
+   *
+   * Exposed rather than copied, because everything that matters about starting an agent update is
+   * in `apply`: the update window has to be open before the run's first download, it has to be
+   * closed again if the box refuses to start, and the polling that eventually closes it has to be
+   * running. A second copy of that would be a second way to leave a window open for an hour.
+   *
+   * It performs NO consent check of its own. The caller — `UpdateAllFirewall` — is the only thing
+   * that calls it, and it does so after claiming this box out of a grant that a verified code
+   * wrote. Nothing on the command path reaches this method directly.
+   */
+  async applyToTarget(target, name25) {
+    return this.apply({ changeId: "", agent: { vmId: target.vmId, name: name25, hostname: target.hostname } });
+  }
   async propose(payload) {
     const p2 = parseProposal10(payload);
     const summary = summarize11(p2);
@@ -14647,6 +14662,18 @@ var FirewallUpdate = class {
     this.log("[firewall-update] started on this box");
     return { phase: status.phase };
   }
+  /**
+   * Start this box's own run for a batch whose code was already confirmed (T-100).
+   *
+   * Thin, because `apply` is thin — the self-update is a local spawn. It is here rather than
+   * inlined in `update-all.ts` so that there stays exactly one caller of `SelfUpdateService.start`,
+   * and `supported()` is still the thing that says whether it can be called at all.
+   *
+   * No consent check of its own; see the note on `UpdateFirewall.applyToTarget`.
+   */
+  applyForBatch() {
+    return this.apply();
+  }
   async propose(payload) {
     const changeId = str13(payload.changeId);
     if (!changeId) throw new Error("malformed firewall-update.propose payload");
@@ -14702,10 +14729,250 @@ var FirewallUpdate = class {
   }
 };
 
+// src/update-all.ts
+var SCOPE10 = "update-all:org";
+var BATCH_GRANT_MS = 150 * 6e4;
+function str14(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function summarize13(p2) {
+  const names = p2.boxes.map((b2) => b2.name);
+  if (names.length === 0) return "Update the software on nothing";
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `Update the software on ${list}`;
+}
+function parseProposal11(payload) {
+  const changeId = str14(payload.changeId);
+  const raw = Array.isArray(payload.boxes) ? payload.boxes : [];
+  const boxes = [];
+  for (const entry of raw) {
+    const b2 = entry ?? {};
+    const vmId = str14(b2.vmId);
+    const role = b2.role === "mitm" ? "mitm" : "openclaw";
+    const hostname3 = str14(b2.hostname) ?? "";
+    if (!vmId || role === "openclaw" && !hostname3) throw new Error("malformed update-all.propose payload");
+    boxes.push({ vmId, name: str14(b2.name) ?? vmId, hostname: hostname3, role });
+  }
+  if (!changeId || boxes.length === 0) throw new Error("malformed update-all.propose payload");
+  if (new Set(boxes.map((b2) => b2.vmId)).size !== boxes.length) throw new Error("malformed update-all.propose payload");
+  return { changeId, boxes };
+}
+var CLAIM_REFUSALS = {
+  no_grant: "Your firewall no longer has a confirmed batch. Start the update again.",
+  wrong_batch: "That code confirmed a different batch. Start the update again.",
+  not_listed: "That box was not in the batch you confirmed.",
+  already_used: "That box has already been started by this batch."
+};
+var UpdateAllFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.boxName = opts.boxName ?? "your organization";
+    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode });
+  }
+  codes;
+  log;
+  now;
+  boxName;
+  handlers() {
+    return {
+      "update-all.propose": (p2) => this.propose(p2),
+      "update-all.confirm": (p2) => this.confirm(p2),
+      "update-all.apply": (p2) => this.applyOne(p2),
+      "update-all.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /**
+   * Write the grant, then say the batch is confirmed.
+   *
+   * See `BATCH_GRANT_MS` for why the deadline is not one box's update window.
+   */
+  grantFor(p2) {
+    this.opts.store.put({
+      changeId: p2.changeId,
+      until: this.now() + BATCH_GRANT_MS,
+      pending: p2.boxes.map((b2) => b2.vmId),
+      used: [],
+      at: new Date(this.now()).toISOString()
+    });
+  }
+  async propose(payload) {
+    const p2 = parseProposal11(payload);
+    const summary = summarize13(p2);
+    const includesSelf = p2.boxes.some((b2) => b2.role === "mitm");
+    const data = { changeId: p2.changeId, summary, boxes: p2.boxes.map((b2) => b2.vmId) };
+    if (includesSelf && !this.opts.self.supported()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "This firewall was created before in-place updates; it has to be rebuilt instead. Leave it out of the batch.",
+        data
+      };
+    }
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      if (includesSelf) {
+        const no = noRecipients(this.opts.agentAllowedCount?.());
+        return {
+          ok: false,
+          status: "failed",
+          message: `${no.message} Your firewall cannot be updated until then.`,
+          data: { ...data, ...no.data }
+        };
+      }
+      this.codes.drop(SCOPE10);
+      this.grantFor(p2);
+      this.log(`[update-all] no code recipient: ${p2.boxes.length} agent(s) applied on first use`);
+      return { ok: true, status: "applied", data: { ...data, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE10, p2, this.boxName, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[update-all] code sent for ${p2.boxes.length} box(es) via ${sent.sentVia}`);
+    return {
+      ok: true,
+      status: "awaiting_code",
+      data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft }
+    };
+  }
+  /**
+   * Check the one code and write the grant. Starts nothing: the control plane's workflow asks for
+   * each box in turn, because the firewall's own run would kill whatever was sequencing them.
+   */
+  async confirm(payload) {
+    const changeId = str14(payload.changeId);
+    if (!changeId) throw new Error("malformed update-all.confirm payload");
+    const code = str14(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE10, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    this.grantFor(v2.proposal);
+    this.log(`[update-all] confirmed for ${v2.proposal.boxes.length} box(es)`);
+    return {
+      ok: true,
+      status: "applied",
+      data: { ...data, summary: summarize13(v2.proposal), sentVia: v2.sentVia, tofu: false, boxes: v2.proposal.boxes.map((b2) => b2.vmId) }
+    };
+  }
+  /**
+   * Start one box out of a confirmed batch.
+   *
+   * The whole consent check is `store.claim`: this box id has to be in the grant this code wrote,
+   * the grant has to be live, and it has to not have been started already. The payload's name and
+   * hostname are used to REACH the box, never to decide whether it may be reached — a tampered
+   * hostname points the run at a box that then rejects the firewall's token, and a tampered vm id
+   * is refused here.
+   */
+  async applyOne(payload) {
+    const changeId = str14(payload.changeId);
+    const vmId = str14(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed update-all.apply payload");
+    const role = payload.role === "mitm" ? "mitm" : "openclaw";
+    const data = { changeId, vmId };
+    const claim2 = this.opts.store.claim(changeId, vmId, this.now());
+    if (!claim2.ok) {
+      return { ok: false, status: "failed", message: CLAIM_REFUSALS[claim2.reason] ?? "Your firewall refused that box.", data };
+    }
+    try {
+      if (role === "mitm") {
+        if (!this.opts.self.supported()) throw new Error("This firewall has nothing pinned to update from.");
+        const applied2 = this.opts.self.applyForBatch();
+        this.log("[update-all] started on this box");
+        return { ok: true, status: "applied", data: { ...data, ...applied2 } };
+      }
+      const hostname3 = str14(payload.hostname);
+      if (!hostname3) throw new Error("malformed update-all.apply payload");
+      const target = { vmId, hostname: hostname3 };
+      const applied = await this.opts.agents.applyToTarget(target, str14(payload.name) ?? vmId);
+      return { ok: true, status: "applied", data: { ...data, ...applied } };
+    } catch (err) {
+      this.opts.store.unclaim(changeId, vmId);
+      return { ok: false, status: "failed", message: err.message || "The box did not start the run.", data };
+    }
+  }
+  async cancel(payload) {
+    const changeId = str14(payload.changeId);
+    this.codes.cancel(SCOPE10, changeId);
+    this.opts.store.drop(changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/update-all-store.ts
+var EMPTY = { version: 1, grant: null };
+function aad13(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:update-all`;
+}
+var UpdateAllStoreFile = class {
+  constructor(path, boxKeyB64, ids2, log = console.error) {
+    this.path = path;
+    this.boxKeyB64 = boxKeyB64;
+    this.ids = ids2;
+    this.state = loadStoreOrEmpty("update-all", path, boxKeyB64, aad13(ids2), log) ?? { ...EMPTY };
+    if (this.state.version !== 1) this.state = { ...EMPTY };
+  }
+  state;
+  save() {
+    saveStore("update-all", this.path, this.state, this.boxKeyB64, aad13(this.ids));
+  }
+  /** The live grant, or null when there is none or it has run out. */
+  grant(now2) {
+    const g2 = this.state.grant;
+    if (!g2) return null;
+    if (g2.until <= now2) return null;
+    return g2;
+  }
+  put(grant) {
+    this.state.grant = grant;
+    this.save();
+  }
+  /**
+   * Take one box out of the grant, or say why it cannot be taken.
+   *
+   * The write happens BEFORE the caller starts anything, so a crash between the two leaves the box
+   * unstarted and consumed rather than startable twice. Repeating an update is harmless; a loop
+   * that keeps restarting one is not, and this is the side to fail on.
+   */
+  claim(changeId, vmId, now2) {
+    const g2 = this.grant(now2);
+    if (!g2) return { ok: false, reason: "no_grant" };
+    if (g2.changeId !== changeId) return { ok: false, reason: "wrong_batch" };
+    if (g2.used.includes(vmId)) return { ok: false, reason: "already_used" };
+    if (!g2.pending.includes(vmId)) return { ok: false, reason: "not_listed" };
+    g2.pending = g2.pending.filter((id) => id !== vmId);
+    g2.used.push(vmId);
+    this.save();
+    return { ok: true };
+  }
+  /** Give a claimed box back, for a start that threw before the box did anything. */
+  unclaim(changeId, vmId) {
+    const g2 = this.state.grant;
+    if (!g2 || g2.changeId !== changeId) return;
+    g2.used = g2.used.filter((id) => id !== vmId);
+    if (!g2.pending.includes(vmId)) g2.pending.push(vmId);
+    this.save();
+  }
+  drop(changeId) {
+    if (!this.state.grant) return;
+    if (changeId && this.state.grant.changeId !== changeId) return;
+    this.state.grant = null;
+    this.save();
+  }
+};
+
 // src/ssh.ts
 var SCOPE_PREFIX6 = "ssh:";
 var SELF = "self";
-function str14(v2) {
+function str15(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 function hours(seconds) {
@@ -14713,19 +14980,19 @@ function hours(seconds) {
   if (h2 >= 24 && h2 % 24 === 0) return `${h2 / 24} day${h2 === 24 ? "" : "s"}`;
   return `${h2} hour${h2 === 1 ? "" : "s"}`;
 }
-function summarize13(p2, boxName) {
+function summarize14(p2, boxName) {
   return `Let ControlClaw support open a shell on ${p2.agent?.name ?? boxName} for ${hours(p2.seconds)}`;
 }
-function parseProposal11(payload) {
-  const changeId = str14(payload.changeId);
+function parseProposal12(payload) {
+  const changeId = str15(payload.changeId);
   const seconds = typeof payload.seconds === "number" ? Math.round(payload.seconds) : 0;
   if (!changeId || !Number.isFinite(seconds) || seconds <= 0) throw new Error("malformed ssh.propose payload");
   const raw = payload.agent;
   if (!raw) return { changeId, seconds, agent: null };
-  const vmId = str14(raw.vmId);
-  const hostname3 = str14(raw.hostname);
+  const vmId = str15(raw.vmId);
+  const hostname3 = str15(raw.hostname);
   if (!vmId || !hostname3) throw new Error("malformed ssh.propose payload");
-  return { changeId, seconds, agent: { vmId, name: str14(raw.name) ?? vmId, hostname: hostname3 } };
+  return { changeId, seconds, agent: { vmId, name: str15(raw.name) ?? vmId, hostname: hostname3 } };
 }
 var SshFirewall = class {
   constructor(opts) {
@@ -14771,8 +15038,8 @@ var SshFirewall = class {
     return this.opts.agent.post({ vmId: p2.agent.vmId, hostname: p2.agent.hostname }, "/ssh/close", {});
   }
   async propose(payload) {
-    const p2 = parseProposal11(payload);
-    const summary = summarize13(p2, this.boxName);
+    const p2 = parseProposal12(payload);
+    const summary = summarize14(p2, this.boxName);
     const data = { changeId: p2.changeId, summary };
     if (!this.opts.channelsReady()) {
       return {
@@ -14799,10 +15066,10 @@ var SshFirewall = class {
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
   }
   async confirm(payload) {
-    const changeId = str14(payload.changeId);
+    const changeId = str15(payload.changeId);
     if (!changeId) throw new Error("malformed ssh.confirm payload");
-    const vmId = str14(payload.vmId);
-    const code = str14(payload.code) ?? "";
+    const vmId = str15(payload.vmId);
+    const code = str15(payload.code) ?? "";
     const data = { changeId };
     const v2 = this.codes.verify(`${SCOPE_PREFIX6}${vmId ?? SELF}`, changeId, code);
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No shell access is waiting for a code, or the code expired.", data };
@@ -14813,12 +15080,12 @@ var SshFirewall = class {
       status: "opened",
       // `privateKey` rides in here and is taken out of the result by the control plane before
       // anything is written down (`app/(ssh)/lib/ssh-access.server.ts`). It is not logged here.
-      data: { ...data, ...opened, summary: summarize13(v2.proposal, this.boxName), sentVia: v2.sentVia, vmId: v2.proposal.agent?.vmId ?? null }
+      data: { ...data, ...opened, summary: summarize14(v2.proposal, this.boxName), sentVia: v2.sentVia, vmId: v2.proposal.agent?.vmId ?? null }
     };
   }
   async cancel(payload) {
-    const changeId = str14(payload.changeId);
-    const vmId = str14(payload.vmId);
+    const changeId = str15(payload.changeId);
+    const vmId = str15(payload.vmId);
     this.codes.cancel(`${SCOPE_PREFIX6}${vmId ?? SELF}`, changeId);
     return { ok: true, status: "cancelled", data: { changeId } };
   }
@@ -14829,9 +15096,9 @@ var SshFirewall = class {
    * does what it says.
    */
   async close(payload) {
-    const changeId = str14(payload.changeId);
+    const changeId = str15(payload.changeId);
     const raw = payload.agent;
-    const agent = raw && str14(raw.vmId) && str14(raw.hostname) ? { vmId: str14(raw.vmId), hostname: str14(raw.hostname) } : null;
+    const agent = raw && str15(raw.vmId) && str15(raw.hostname) ? { vmId: str15(raw.vmId), hostname: str15(raw.hostname) } : null;
     this.codes.drop(`${SCOPE_PREFIX6}${agent?.vmId ?? SELF}`);
     const closed = await this.closeOn({ agent });
     this.log(`[ssh] closed on ${agent?.vmId ?? "this firewall"}`);
@@ -16720,14 +16987,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str16 = "";
+  let str17 = "";
   for (let i2 = 0; i2 < length; i2++) {
-    str16 += chars[Math.floor(Math.random() * chars.length)];
+    str17 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str16;
+  return str17;
 }
-function esc(str16) {
-  return JSON.stringify(str16);
+function esc(str17) {
+  return JSON.stringify(str17);
 }
 function slugify(input2) {
   return input2.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -16841,8 +17108,8 @@ var primitiveTypes = /* @__PURE__ */ new Set([
   "symbol",
   "undefined"
 ]);
-function escapeRegex(str16) {
-  return str16.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str17) {
+  return str17.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -17096,13 +17363,13 @@ function getSizableOrigin(input2) {
   return "unknown";
 }
 var highSurrogate = /[\uD800-\uDBFF]/;
-function codePointLength(str16) {
-  const units = str16.length;
-  if (!highSurrogate.test(str16))
+function codePointLength(str17) {
+  const units = str17.length;
+  if (!highSurrogate.test(str17))
     return units;
   let count = units;
   for (let i2 = 0; i2 < units - 1; i2++) {
-    if ((str16.charCodeAt(i2) & 64512) === 55296 && (str16.charCodeAt(i2 + 1) & 64512) === 56320) {
+    if ((str17.charCodeAt(i2) & 64512) === 55296 && (str17.charCodeAt(i2 + 1) & 64512) === 56320) {
       count--;
       i2++;
     }
@@ -48808,8 +49075,8 @@ async function hashCanonical(value) {
   return toBase64url(new Uint8Array(digest));
 }
 var encoder22 = new TextEncoder();
-function fromBase64url(str16) {
-  return convertBase64ToUint8Array(str16);
+function fromBase64url(str17) {
+  return convertBase64ToUint8Array(str17);
 }
 async function importKey(secret) {
   const keyData = typeof secret === "string" ? encoder22.encode(secret) : secret;
@@ -82110,7 +82377,7 @@ var MAX_FIREWALL_ARCHIVE_BYTES = 32 * 1024 * 1024;
 var MAX_AGENT_ARCHIVE_BYTES = 6 * 1024 * 1024 * 1024;
 var STAGED_TTL_MS = 60 * 6e4;
 var RECOVERY_PATH_PREFIX = "/recovery/";
-function str15(v2) {
+function str16(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 var RecoveryRoutes = class {
@@ -82176,7 +82443,7 @@ var RecoveryRoutes = class {
     };
     if (req.method !== "POST") return reply(405, { error: "Use POST." });
     const keys = this.opts.recoveryKeys();
-    const signature = str15(req.headers["x-cc-recovery-signature"]);
+    const signature = str16(req.headers["x-cc-recovery-signature"]);
     const timestamp = Number(req.headers["x-cc-recovery-timestamp"] ?? NaN);
     const locked = this.lockedUntil - this.now();
     if (!signature || !Number.isFinite(timestamp)) {
@@ -82331,14 +82598,14 @@ var RecoveryRoutes = class {
     const service = this.opts.selfRestore;
     if (!service) throw new Error("This firewall cannot put itself back.");
     const head = body.head;
-    const backupId = str15(head.backupId);
-    const sourceBoxId = str15(head.sourceBoxId);
-    const header = str15(head.header);
-    const manifestHash2 = str15(head.manifestHash);
-    const sealed = str15(head.dataKeySealedToFirewall);
+    const backupId = str16(head.backupId);
+    const sourceBoxId = str16(head.sourceBoxId);
+    const header = str16(head.header);
+    const manifestHash2 = str16(head.manifestHash);
+    const sealed = str16(head.dataKeySealedToFirewall);
     if (!backupId || !sourceBoxId || !header || !manifestHash2 || !sealed) throw new Error("This request does not name a backup to put back.");
     const dataKey = await this.openDataKey(sealed);
-    const given = str15(head.archiveUrl);
+    const given = str16(head.archiveUrl);
     const archive = given ? void 0 : this.requireInline(body.tail);
     const r2 = await service.run({
       backupId,
@@ -82358,12 +82625,12 @@ var RecoveryRoutes = class {
    */
   async agentRestore(body) {
     const head = body.head;
-    const backupId = str15(head.backupId);
-    const kind = str15(head.kind);
-    const header = str15(head.header);
-    const manifestHash2 = str15(head.manifestHash);
-    const sealed = str15(head.dataKeySealedToFirewall);
-    const agentName = str15(head.agent);
+    const backupId = str16(head.backupId);
+    const kind = str16(head.kind);
+    const header = str16(head.header);
+    const manifestHash2 = str16(head.manifestHash);
+    const sealed = str16(head.dataKeySealedToFirewall);
+    const agentName = str16(head.agent);
     if (!backupId || !header || !manifestHash2 || !sealed || !agentName) throw new Error("This request does not name a backup to restore.");
     if (kind !== "workspace" && kind !== "state") throw new Error(`A ${kind ?? "missing"} archive is not something an agent can be restored from.`);
     const target = this.resolveAgent(agentName);
@@ -82430,7 +82697,7 @@ var RecoveryRoutes = class {
    * machines involved, and nothing about it depends on the object store being reachable.
    */
   stagedUrl(head, tailPath) {
-    const given = str15(head.archiveUrl);
+    const given = str16(head.archiveUrl);
     if (given) return { url: this.checkedUrl(given), token: null };
     if (!tailPath || !existsSync11(tailPath) || statSync3(tailPath).size === 0) throw new Error("No archive arrived, and no address was given for one.");
     if (!this.opts.staging.baseUrl) {
@@ -82535,8 +82802,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "dc309d3" : "unknown",
-  builtAt: true ? "2026-09-29T13:22:31+01:00" : "unknown"
+  commit: true ? "e7a44e8" : "unknown",
+  builtAt: true ? "2026-09-29T22:00:06+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -82698,6 +82965,7 @@ var SSH_STATE_PATH = process.env.SSH_STATE_PATH ?? "/opt/controlclaw/state/ssh.j
 var SSH_LOGIN_CURSOR_PATH = process.env.SSH_LOGIN_CURSOR_PATH ?? "/opt/controlclaw/state/ssh-logins.cursor";
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 var SELF_UPDATE_STATE_PATH = process.env.SELF_UPDATE_STATE_PATH ?? "/opt/controlclaw/state/update.json";
+var UPDATE_ALL_STORE_PATH = process.env.UPDATE_ALL_STORE_PATH ?? "/opt/controlclaw/state/update-all.enc";
 var SELF_UPDATE_CONF_PATH = process.env.SELF_UPDATE_CONF_PATH ?? "/etc/controlclaw/update.conf";
 var AGENT_VERSION = process.env.MITM_AGENT_VERSION ?? "0.1.0";
 var SHIP_ONCE = process.env.SHIP_ONCE === "1";
@@ -82732,6 +83000,7 @@ var connectors = null;
 var updates = null;
 var backups = null;
 var selfUpdates = null;
+var batchUpdates = null;
 var sshAccess = null;
 var sshLocal = null;
 var aiSettings = null;
@@ -83118,6 +83387,19 @@ async function main() {
       agentAllowedCount: () => channels?.agentAllowedCount()
     });
     console.log(`[mitm-agent] self-update ${selfUpdates.supported() ? "available" : "unavailable (this box has no update pin; rebuild only)"}`);
+    try {
+      batchUpdates = new UpdateAllFirewall({
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+        agents: updates,
+        self: selfUpdates,
+        store: new UpdateAllStoreFile(UPDATE_ALL_STORE_PATH, boxKey, ids),
+        codeRoutes: () => channels?.codeRoutes() ?? [],
+        channelsReady: () => channels !== null,
+        agentAllowedCount: () => channels?.agentAllowedCount()
+      });
+    } catch (err) {
+      console.error(`[mitm-agent] batch update module would not start, "Update everything" disabled: ${err.message}`);
+    }
     sshLocal = new SshLocal({ statePath: SSH_STATE_PATH });
     sshAccess = new SshFirewall({
       agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
@@ -83310,6 +83592,7 @@ async function main() {
           ...connectors?.handlers() ?? {},
           ...updates?.handlers() ?? {},
           ...selfUpdates?.handlers() ?? {},
+          ...batchUpdates?.handlers() ?? {},
           ...sshAccess?.handlers() ?? {},
           ...backups?.handlers() ?? {},
           "ai.scan": async () => {
@@ -83349,6 +83632,7 @@ async function main() {
           if (google2) features.push("google_account");
           if (connectors) features.push("connectors");
           if (selfUpdates?.supported()) features.push("self_update");
+          if (batchUpdates) features.push("update_all");
           if (backups) features.push("backups");
           if (exitFirewall) features.push("residential_exit");
           if (kill) features.push("kill_switch");

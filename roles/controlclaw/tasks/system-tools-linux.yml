@@ -1,6 +1,10 @@
 ---
 # Linux-specific system tools installation (apt-based)
 
+# Skipped on a first boot from an image built from this commit, which already carries every one of
+# these (tasks/fast-path.yml checks that jq, tcpdump, tmux and gcc are really there before saying
+# so). Nothing here is per-box and nothing here is a security control: it is the toolbox an
+# operator expects on the box.
 - name: Install essential system tools (Linux - apt)
   ansible.builtin.apt:
     name:
@@ -43,3 +47,8 @@
       - file
     state: present
     update_cache: true
+    # The play's pre_tasks already refreshed the cache; this is a second guard rather than a second
+    # `apt update`. No repository is added ahead of this task, so a fresh cache is a correct one.
+    cache_valid_time: 3600
+    lock_timeout: 300
+  when: not cc_skip.system_tools | default(false) | bool
