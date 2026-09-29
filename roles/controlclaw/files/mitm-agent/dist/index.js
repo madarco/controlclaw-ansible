@@ -6794,6 +6794,15 @@ function saveLlmStore(path, store, boxKeyB64, ids2) {
 var REFRESH_AHEAD_MS = 15 * 6e4;
 var REFRESH_TIMEOUT_MS = 3e4;
 var SCOPE5 = "org";
+function parseEmbeddingsRef(raw) {
+  if (raw === void 0) return void 0;
+  const r2 = raw;
+  if (!r2) return null;
+  const credentialId = str4(r2.credentialId);
+  const memory = parseMemorySearch(r2.memory);
+  if (!credentialId || !memory) return null;
+  return { credentialId, memory, allowedModels: parseModelList(r2.allowedModels) };
+}
 function str4(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
@@ -6884,7 +6893,15 @@ function parseProposal4(payload) {
     allowedModels: parseModelList(payload.allowedModels),
     memory: parseMemorySearch(payload.memory),
     replaces: str4(payload.replaces),
-    agents: agents.filter((a2) => str4(a2.vmId) && str4(a2.model)).map((a2) => ({ vmId: String(a2.vmId), name: str4(a2.name) ?? String(a2.vmId), hostname: str4(a2.hostname), model: String(a2.model), role: a2.role === "secondary" ? "secondary" : "primary" })),
+    agents: agents.filter((a2) => str4(a2.vmId) && str4(a2.model)).map((a2) => ({
+      vmId: String(a2.vmId),
+      name: str4(a2.name) ?? String(a2.vmId),
+      hostname: str4(a2.hostname),
+      model: String(a2.model),
+      role: a2.role === "secondary" ? "secondary" : "primary",
+      // Spread, so "the field was not there" stays different from "the field was null".
+      ..."embeddings" in a2 ? { embeddings: parseEmbeddingsRef(a2.embeddings) } : {}
+    })),
     secret: parseSecret2(payload.secret)
   };
 }
@@ -6920,23 +6937,41 @@ var LlmFirewall = class {
       "llm.push": (p2) => this.push(p2)
     };
   }
-  /** Proxy credential entries: one per agent binding, swapped only on that agent's traffic. */
+  /**
+   * Proxy credential entries: one per agent binding, swapped only on that agent's traffic.
+   *
+   * An agent whose embeddings somebody else pays for gets a second entry for that credential, on
+   * the same `vm_id`. Without it the embedding request would leave the box carrying a placeholder
+   * the proxy does not know, and the gateway would refuse it — the box holds no real key, and the
+   * embeddings credential is deliberately not one of the agent's bindings, so nothing else in
+   * this list covers it. The entry carries the key's `allowed_models`, so the proxy still lets it
+   * be spent on nothing but the embedding model, and `vm_id` is what attributes the request to
+   * this agent on the Activity page.
+   */
   credentials() {
     const out = [];
+    const entry = (vmId, c2) => ({
+      placeholder: c2.placeholder,
+      match_domain: c2.swap.matchDomain,
+      secret: secretValue(c2.secret),
+      locations: c2.swap.locations,
+      vm_id: vmId,
+      ...c2.allowedModels ? { allowed_models: c2.allowedModels, included: true } : {}
+    });
     for (const [vmId, agent] of Object.entries(this.store.agents)) {
+      const seen = /* @__PURE__ */ new Set();
       for (const b2 of agent.bindings) {
         const c2 = this.store.credentials[b2.credentialId];
         if (!c2) continue;
         if (this.plainOnBox(c2)) continue;
-        out.push({
-          placeholder: c2.placeholder,
-          match_domain: c2.swap.matchDomain,
-          secret: secretValue(c2.secret),
-          locations: c2.swap.locations,
-          vm_id: vmId,
-          ...c2.allowedModels ? { allowed_models: c2.allowedModels, included: true } : {}
-        });
+        seen.add(b2.credentialId);
+        out.push(entry(vmId, c2));
       }
+      const paid = agent.embeddings;
+      if (!paid || seen.has(paid.credentialId)) continue;
+      const payer = this.store.credentials[paid.credentialId];
+      if (!payer || this.plainOnBox(payer)) continue;
+      out.push({ ...entry(vmId, payer), allowed_models: paid.allowedModels, included: true });
     }
     return out;
   }
@@ -7026,15 +7061,25 @@ var LlmFirewall = class {
   async push(payload) {
     const vmId = str4(payload.vmId);
     if (!vmId) throw new Error("malformed llm.push payload");
-    const agent = this.store.agents[vmId];
-    if (!agent || agent.bindings.length === 0) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    const name25 = str4(payload.name);
+    const embeddings = parseEmbeddingsRef(payload.embeddings);
+    const known = this.store.agents[vmId];
+    const fresh = !known && embeddings && this.store.credentials[embeddings.credentialId] ? this.agentOf({ vmId, name: name25 ?? vmId, hostname: str4(payload.hostname) }) : void 0;
+    const agent = known ?? fresh;
+    if (!agent) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
     if (str4(payload.hostname)) agent.hostname = String(payload.hostname);
-    if (str4(payload.name)) agent.name = String(payload.name);
+    if (name25) agent.name = name25;
     const refreshed = this.refreshCredential(payload.refresh);
+    const movedEmbeddings = this.applyEmbeddings(vmId, embeddings);
+    if (agent.bindings.length === 0 && !agent.embeddings && !agent.memory) {
+      if (fresh) delete this.store.agents[vmId];
+      if (known) this.save();
+      return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    }
     this.save();
-    if (refreshed) await this.opts.onCredentialsChanged?.();
+    if (refreshed || movedEmbeddings) await this.opts.onCredentialsChanged?.();
     const failed = await this.pushAgents([vmId], [], { timeoutMs: LLM_PUSH_TIMEOUT_MS });
-    this.log(`[llm] re-applied ${agent.bindings.length} provider(s) on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
+    this.log(`[llm] re-applied ${agent.bindings.length} provider(s)${agent.embeddings ? " + embeddings" : ""} on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
     return {
       ok: failed.length === 0,
       status: failed.length ? "failed" : "applied",
@@ -7070,8 +7115,14 @@ var LlmFirewall = class {
     return before !== JSON.stringify([cred.memory ?? null, cred.allowedModels ?? null]);
   }
   /**
-   * Memory search for one agent box: the first bound credential that can pay for embeddings, with
-   * its placeholder as the key.
+   * Memory search for one agent box: the credential that pays for its embeddings, with that
+   * credential's placeholder as the key (`memory.search.remote.apiKey` on the box, which OpenClaw
+   * keeps separate from the credential the agent answers with).
+   *
+   * A bound credential that pays out of its own endpoint comes first — an agent answering on the
+   * included tokens uses those, and nothing else is needed. Otherwise the agent's `embeddings`
+   * credential, which the control plane named on a push: that is the ChatGPT / Claude / OpenRouter
+   * case, and the case of an agent with no model at all.
    *
    * Three answers, not two. A descriptor writes it. `null` takes ours back off, and is sent only
    * when this firewall has a record of writing one — otherwise the box's own `memory.search`,
@@ -7083,7 +7134,37 @@ var LlmFirewall = class {
       const c2 = this.store.credentials[b2.credentialId];
       if (c2?.memory) return { memory: { ...c2.memory, apiKey: c2.placeholder } };
     }
-    return this.store.agents[vmId]?.memory ? { memory: null } : {};
+    const agent = this.store.agents[vmId];
+    const paid = agent?.embeddings;
+    const payer = paid ? this.store.credentials[paid.credentialId] : void 0;
+    if (paid && payer) return { memory: { ...paid.memory, apiKey: payer.placeholder } };
+    return agent?.memory ? { memory: null } : {};
+  }
+  /**
+   * Record who pays for this agent's embeddings, and put the catalog data that credential needs on
+   * it. Returns whether the proxy has to be told, because the allow-list it enforces may have
+   * moved and a new swap entry may now be owed.
+   *
+   * `undefined` means the payload said nothing (an older control plane, or a change that takes a
+   * credential away and leaves the remaining bindings to decide): the agent keeps what it has.
+   */
+  applyEmbeddings(vmId, ref) {
+    const agent = this.store.agents[vmId];
+    if (!agent || ref === void 0) return false;
+    const before = JSON.stringify(agent.embeddings ?? null);
+    const moved = () => before !== JSON.stringify(agent.embeddings ?? null);
+    if (!ref) {
+      delete agent.embeddings;
+      return moved();
+    }
+    const cred = this.store.credentials[ref.credentialId];
+    if (!cred || !ref.allowedModels?.includes(ref.memory.model)) {
+      if (cred) this.log(`[llm] ignoring an embeddings payer for ${agent.name}: ${ref.memory.model} is not on the allow-list it came with`);
+      delete agent.embeddings;
+      return moved();
+    }
+    agent.embeddings = { credentialId: ref.credentialId, memory: ref.memory, allowedModels: ref.allowedModels };
+    return moved();
   }
   /**
    * Record what a box actually took, once the POST has come back. Recording it while building the
@@ -7152,6 +7233,10 @@ var LlmFirewall = class {
   boundAgents(credentialId) {
     return Object.entries(this.store.agents).filter(([, a2]) => a2.bindings.some((b2) => b2.credentialId === credentialId)).map(([vmId]) => vmId);
   }
+  /** Agents this credential pays the embeddings for without being one of their models. */
+  embeddingsAgents(credentialId) {
+    return Object.entries(this.store.agents).filter(([, a2]) => a2.embeddings?.credentialId === credentialId).map(([vmId]) => vmId);
+  }
   async apply(p2) {
     const mode = this.opts.plainKeys && p2.credKind !== "oauth" && !p2.allowedModels ? "plain" : "placeholder";
     const existing = this.store.credentials[p2.credentialId];
@@ -7178,21 +7263,25 @@ var LlmFirewall = class {
           updatedAt: new Date(this.now()).toISOString()
         };
         for (const a2 of p2.agents) this.setBinding(a2, p2.credentialId);
+        const targets = /* @__PURE__ */ new Set([...this.boundAgents(p2.credentialId), ...p2.agents.map((a2) => a2.vmId)]);
+        for (const a2 of p2.agents) this.applyEmbeddings(a2.vmId, a2.embeddings);
         this.save();
         await this.opts.onCredentialsChanged?.();
-        const targets = /* @__PURE__ */ new Set([...this.boundAgents(p2.credentialId), ...p2.agents.map((a2) => a2.vmId)]);
         const failed = await this.pushAgents([...targets], []);
         return { mode, applied: [...targets].filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
       }
       case "remove": {
         const bound = this.boundAgents(p2.credentialId);
+        const payees = this.embeddingsAgents(p2.credentialId);
         const remove = existing ? [removeEntry(existing)] : [];
         for (const vmId of bound) this.dropBinding(vmId, p2.credentialId);
+        for (const vmId of payees) delete this.store.agents[vmId]?.embeddings;
         delete this.store.credentials[p2.credentialId];
         this.save();
         await this.opts.onCredentialsChanged?.();
-        const failed = await this.pushAgents(bound, remove);
-        return { applied: bound.filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
+        const targets = [.../* @__PURE__ */ new Set([...bound, ...payees])];
+        const failed = await this.pushAgents(targets, remove);
+        return { applied: targets.filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
       }
       case "bind":
       case "set_model": {
@@ -7200,6 +7289,7 @@ var LlmFirewall = class {
         const a2 = p2.agents[0];
         if (!a2) throw new Error("no agent in the proposal");
         this.setBinding(a2, p2.credentialId);
+        this.applyEmbeddings(a2.vmId, a2.embeddings);
         this.save();
         await this.opts.onCredentialsChanged?.();
         const failed = await this.pushAgents([a2.vmId], []);
@@ -82120,8 +82210,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "73f7916" : "unknown",
-  builtAt: true ? "2026-09-29T12:08:57+01:00" : "unknown"
+  commit: true ? "429b425" : "unknown",
+  builtAt: true ? "2026-09-29T12:34:48+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
