@@ -9,7 +9,7 @@ var __require = /* @__PURE__ */ ((x2) => typeof require !== "undefined" ? requir
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID3 } from "crypto";
-import { readFileSync as readFileSync18 } from "fs";
+import { readFileSync as readFileSync19 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -68,6 +68,34 @@ async function verifyMitmRequest(req, purpose = "channels") {
     return null;
   }
 }
+var FIREWALL_TICKET_MAX_S = 120;
+async function verifyFirewallTicket(token, vmId, purpose) {
+  if (!mitmPinnedKey && mitmPinnedKeyLoader) mitmPinnedKey = mitmPinnedKeyLoader();
+  if (!mitmPinnedKey) return null;
+  try {
+    const key = await importSPKI(mitmPinnedKey, "EdDSA");
+    const { payload } = await jwtVerify(token, key, { algorithms: ["EdDSA"] });
+    const p2 = payload;
+    if (p2.purpose !== purpose || p2.vmId !== vmId) return null;
+    if (typeof p2.iss !== "string" || !p2.iss.startsWith("fw:")) return null;
+    if (typeof p2.jti !== "string" || typeof p2.exp !== "number" || typeof p2.iat !== "number") return null;
+    if (p2.exp - p2.iat > FIREWALL_TICKET_MAX_S) return null;
+    if (typeof p2.c !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(p2.c)) return null;
+    if (typeof p2.deviceId !== "string" || !p2.deviceId) return null;
+    return {
+      vmId: p2.vmId,
+      purpose,
+      jti: p2.jti,
+      exp: p2.exp,
+      c: p2.c,
+      deviceId: p2.deviceId,
+      canWrite: p2.canWrite === true,
+      ...p2.next === "files" ? { next: "files" } : {}
+    };
+  } catch {
+    return null;
+  }
+}
 async function requireAuth(req, res) {
   const payload = await verifyRequest(req);
   if (!payload) {
@@ -80,8 +108,8 @@ async function requireAuth(req, res) {
 
 // src/session.ts
 import crypto from "crypto";
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
+import { join as join2 } from "path";
 import { SignJWT, jwtVerify as jwtVerify2 } from "jose";
 
 // ../origin-guard/src/index.ts
@@ -161,6 +189,68 @@ function readUniqueCookie(header2, name) {
   return { value: null, duplicated: values.length > 1 };
 }
 
+// src/access-state.ts
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
+var REVOKED_KEEP_MS = 12 * 60 * 6e4;
+function statePath() {
+  return join(process.env.STATE_DIR ?? "/opt/controlclaw/state", "access.json");
+}
+var cache = null;
+function load() {
+  const path = statePath();
+  if (cache?.path === path) return cache.state;
+  let state = { firewallOrigin: null, revoked: {} };
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8"));
+    state = {
+      firewallOrigin: typeof raw.firewallOrigin === "string" && validFirewallOrigin(raw.firewallOrigin) ? raw.firewallOrigin : null,
+      revoked: raw.revoked && typeof raw.revoked === "object" ? raw.revoked : {}
+    };
+  } catch {
+  }
+  cache = { path, state };
+  return state;
+}
+function save(state) {
+  const path = statePath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync(tmp, path);
+  cache = { path, state };
+}
+function validFirewallOrigin(origin) {
+  return /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(origin) && origin.length <= 261;
+}
+function firewallOrigin() {
+  return load().firewallOrigin;
+}
+function setFirewallOrigin(origin) {
+  const state = load();
+  if (state.firewallOrigin === origin) return;
+  save({ ...state, firewallOrigin: origin });
+}
+function revokeDevices(ids, now = Date.now()) {
+  const state = load();
+  const revoked = prune(state.revoked, now);
+  for (const id of ids) revoked[id] = now;
+  save({ ...state, revoked });
+}
+function clearRevoked() {
+  const state = load();
+  save({ ...state, revoked: {} });
+}
+function isRevoked(deviceId, now = Date.now()) {
+  const at2 = load().revoked[deviceId];
+  return typeof at2 === "number" && now - at2 < REVOKED_KEEP_MS;
+}
+function prune(revoked, now) {
+  const out = {};
+  for (const [id, at2] of Object.entries(revoked)) if (typeof at2 === "number" && now - at2 < REVOKED_KEEP_MS) out[id] = at2;
+  return out;
+}
+
 // src/session.ts
 var SESSION_COOKIE = "__Host-cc_session";
 var SESSION_TTL_SECONDS = 12 * 60 * 60;
@@ -168,17 +258,27 @@ var VIEW_COOKIE = "__Secure-cc_view";
 var VIEW_COOKIE_PATH = "/__cc/novnc";
 var VIEW_AUDIENCE = "view";
 var secret = null;
+var secretDir = null;
 function ensureSessionSecret(keysDir2) {
-  const path = join(keysDir2, "session_secret");
+  secretDir = keysDir2;
+  const path = join2(keysDir2, "session_secret");
   if (!existsSync(path)) {
-    writeFileSync(path, crypto.randomBytes(32).toString("hex"), { mode: 384 });
+    writeFileSync2(path, crypto.randomBytes(32).toString("hex"), { mode: 384 });
     console.log("[session] generated session secret");
   }
-  secret = Buffer.from(readFileSync(path, "utf8").trim(), "hex");
+  secret = Buffer.from(readFileSync2(path, "utf8").trim(), "hex");
+}
+function rotateSessionSecret() {
+  if (!secretDir) throw new Error("session secret not initialised");
+  const path = join2(secretDir, "session_secret");
+  writeFileSync2(path, crypto.randomBytes(32).toString("hex"), { mode: 384 });
+  secret = Buffer.from(readFileSync2(path, "utf8").trim(), "hex");
+  clearRevoked();
+  console.log("[session] rotated the session secret: every browser is signed out");
 }
 async function issueSession(vmId, claims = { canWrite: false }) {
   if (!secret) throw new Error("session secret not initialised");
-  return new SignJWT({ sub: vmId, ...claims.canWrite ? { canWrite: true } : {} }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
+  return new SignJWT({ sub: vmId, ...claims.canWrite ? { canWrite: true } : {}, ...claims.deviceId ? { dev: claims.deviceId } : {} }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
 }
 function sessionCookie(token) {
   return `${SESSION_COOKIE}=${token}; Path=/; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=Lax`;
@@ -193,7 +293,9 @@ async function readSession(cookieHeader, vmId) {
   try {
     const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"] });
     if (payload.sub !== vmId || payload.aud !== void 0) return null;
-    return { canWrite: payload.canWrite === true };
+    const deviceId = typeof payload.dev === "string" ? payload.dev : void 0;
+    if (deviceId && isRevoked(deviceId)) return null;
+    return { canWrite: payload.canWrite === true, ...deviceId ? { deviceId } : {} };
   } catch {
     return null;
   }
@@ -201,9 +303,9 @@ async function readSession(cookieHeader, vmId) {
 async function verifySession(cookieHeader, vmId) {
   return await readSession(cookieHeader, vmId) !== null;
 }
-async function issueViewSession(vmId) {
+async function issueViewSession(vmId, deviceId) {
   if (!secret) throw new Error("session secret not initialised");
-  return new SignJWT({ sub: vmId }).setProtectedHeader({ alg: "HS256" }).setAudience(VIEW_AUDIENCE).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
+  return new SignJWT({ sub: vmId, ...deviceId ? { dev: deviceId } : {} }).setProtectedHeader({ alg: "HS256" }).setAudience(VIEW_AUDIENCE).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
 }
 function viewSessionCookie(token) {
   return `${VIEW_COOKIE}=${token}; Path=${VIEW_COOKIE_PATH}; Max-Age=${SESSION_TTL_SECONDS}; HttpOnly; Secure; SameSite=None`;
@@ -217,6 +319,7 @@ async function verifyViewSession(cookieHeader, vmId) {
   if (!token) return false;
   try {
     const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"], audience: VIEW_AUDIENCE });
+    if (typeof payload.dev === "string" && isRevoked(payload.dev)) return false;
     return payload.sub === vmId;
   } catch {
     return false;
@@ -237,10 +340,10 @@ function consumeJti(jti, expSeconds) {
 }
 
 // src/routes/access.ts
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { execFile } from "child_process";
-import { readFileSync as readFileSync2 } from "fs";
-import { join as join3 } from "path";
+import { readFileSync as readFileSync3 } from "fs";
+import { join as join4 } from "path";
 
 // src/http.ts
 async function readJsonBody(req, limit = 16384) {
@@ -277,7 +380,7 @@ function sendJson(res, status, body, extraHeaders = {}) {
 
 // src/routes/files-page.ts
 import { readFile } from "fs/promises";
-import { basename, join as join2 } from "path";
+import { basename, join as join3 } from "path";
 import { fileURLToPath } from "url";
 function uiDir() {
   return process.env.FILES_UI_DIR ?? fileURLToPath(new URL("./files-ui/", import.meta.url));
@@ -296,7 +399,7 @@ async function serveFilesAsset(res, name) {
   }
   let body;
   try {
-    body = await readFile(join2(uiDir(), file));
+    body = await readFile(join3(uiDir(), file));
   } catch {
     res.writeHead(404, { "Content-Type": "text/plain" }).end("Not found");
     return;
@@ -366,7 +469,7 @@ var FORGET_PREVIOUS_GATEWAY_JS = `
   } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
-    return readFileSync2(join3(keysDir(), name), "utf-8").trim() || null;
+    return readFileSync3(join4(keysDir(), name), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -453,6 +556,10 @@ a.btn{display:inline-block;margin-top:1.25rem;padding:.55rem .9rem;border-radius
 a.btn.alt{margin-left:.5rem;background:transparent;color:var(--brand);border:1px solid var(--line)}
 p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink2)}
 .foot{margin-top:1.5rem;font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:.4rem}
+p.lead{margin:0 0 1rem;color:var(--ink2)}
+input.code{width:100%;font:600 1.6rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3em;text-align:center;padding:.7rem;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink)}
+input.code:focus{outline:2px solid var(--brand);outline-offset:1px}
+button.btn{margin-top:1rem;width:100%;padding:.7rem;border:0;border-radius:10px;background:var(--brand);color:#fff;font-weight:600;font-size:15px;cursor:pointer}
 `;
 var MARK_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`;
 var CONSOLE_URL = "https://controlclaw.com/dashboard/agents";
@@ -552,6 +659,123 @@ function browserPage(hostname) {
 })();`
   );
 }
+var OPEN_ERRORS = {
+  invalid: "This link is not valid any more. Open the agent from your ControlClaw console again.",
+  used: "This link was already used. Open the agent from your ControlClaw console again.",
+  stopped: "This agent is stopped by your organization's emergency stop.",
+  busy: "Too many sign-ins in a short time. Wait a minute, then open the agent again.",
+  unreachable: "This browser needs a code, and your firewall could not send one. Make sure the agent with your chat channel is running, then open the agent again.",
+  code_expired: "That code expired or ran out of tries. Open the agent from your ControlClaw console again to get a new one.",
+  no_firewall: "This agent cannot check your browser with its firewall yet. Open it again from your ControlClaw console."
+};
+function openPage(hostname) {
+  const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
+  const host = hostname ? escapeHtml(hostname) : "";
+  return shell(
+    `Opening ${agent}\u2026`,
+    `<h1 id="h">Opening ${agent}</h1><p class="host">${host}</p>
+<ol class="steps">
+  <li id="s1" class="active"><span class="dot"></span>Checking this browser with your firewall</li>
+</ol>
+<div class="err" id="err"></div>
+<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>`,
+    `
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const ERRORS = ${JSON.stringify(OPEN_ERRORS)};
+  const fail = (msg) => { $('h').textContent = 'Could not open the agent'; $('s1').className = ''; $('err').textContent = msg; $('err').className = 'err show'; $('back').style.display = 'inline-block'; };
+  const h = new URLSearchParams(location.hash.slice(1));
+  const i = h.get('i'), e = h.get('e');
+  history.replaceState(null, '', location.pathname);
+  if (e) { fail(ERRORS[e] || ERRORS.invalid); return; }
+  if (!i) { fail('This page only works from the Open button in your ControlClaw console.'); return; }
+  let d, ok;
+  try {
+    const r = await fetch('/__cc/open/begin', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    d = await r.json().catch(() => ({})); ok = r.ok;
+  } catch (err) { fail('Could not reach the agent. Try again from your ControlClaw console.'); return; }
+  if (!ok || !d.firewall || !d.c) { fail(d.error || ERRORS.no_firewall); return; }
+  const f = document.createElement('form');
+  f.method = 'POST'; f.action = d.firewall + '/__cc/open';
+  for (const [k, v] of [['intent', i], ['c', d.c]]) { const x = document.createElement('input'); x.type = 'hidden'; x.name = k; x.value = v; f.appendChild(x); }
+  document.body.appendChild(f);
+  f.submit();
+})();`
+  );
+}
+var CHANNEL_NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
+function enrollPage(hostname, firewall) {
+  const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
+  const host = hostname ? escapeHtml(hostname) : "";
+  if (!firewall) {
+    return shell("Could not open the agent", `<h1>Could not open the agent</h1><p class="host">${host}</p><p class="note">${escapeHtml(OPEN_ERRORS.no_firewall)}</p><a class="btn" href="${CONSOLE_URL}">Back to the console</a>`);
+  }
+  return shell(
+    `Confirm this browser`,
+    `<h1>Confirm this browser</h1><p class="host">${host}</p>
+<p class="lead" id="lead">This browser has not opened your organization's agents before. We sent a 6-digit code to your organization's chat channel. Type it here to open ${agent}.</p>
+<form id="f" method="post" action="${escapeHtml(firewall)}/__cc/enroll/confirm">
+  <input type="hidden" name="p" id="p">
+  <input class="code" name="code" id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus aria-label="6-digit code">
+  <div class="err" id="err"></div>
+  <button class="btn" type="submit">Continue</button>
+</form>
+<p class="note">Only type the code on this page, at ${host}. If you did not just press Open, close this tab.</p>`,
+    `
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const NAMES = ${JSON.stringify(CHANNEL_NAMES)};
+  const h = new URLSearchParams(location.hash.slice(1));
+  const p = h.get('p'), via = h.get('via'), e = h.get('e'), left = h.get('left');
+  if (!p) { location.replace('/__cc/open#e=code_expired'); return; }
+  $('p').value = p;
+  // Keep the pending id in the fragment for a reload, drop the rest.
+  history.replaceState(null, '', location.pathname + '#p=' + encodeURIComponent(p) + (via ? '&via=' + encodeURIComponent(via) : ''));
+  if (via && NAMES[via]) $('lead').textContent = ${JSON.stringify("This browser has not opened your organization's agents before. We sent a 6-digit code to your ")} + NAMES[via] + ${JSON.stringify(`. Type it here to open ${agent}.`)};
+  if (e === 'invalid_code') { $('err').textContent = 'Wrong code. ' + (left === '1' ? '1 try left.' : (left || 'A few') + ' tries left.'); $('err').className = 'err show'; }
+})();`
+  );
+}
+var BIND_COOKIE_PREFIX = "__Host-cc_bind_";
+var BIND_TTL_S = 15 * 60;
+var BIND_READ_MAX = 8;
+function bindings(cookieHeader) {
+  if (!cookieHeader) return [];
+  const out = [];
+  for (const part of cookieHeader.split(";")) {
+    const i2 = part.indexOf("=");
+    if (i2 < 0) continue;
+    const name = part.slice(0, i2).trim();
+    const value = part.slice(i2 + 1).trim();
+    if (name.startsWith(BIND_COOKIE_PREFIX) && /^[A-Za-z0-9_-]{43}$/.test(value)) out.push({ name, value });
+  }
+  return out.slice(-BIND_READ_MAX);
+}
+function bindCookie(name, value) {
+  return value ? `${name}=${value}; Path=/; Max-Age=${BIND_TTL_S}; HttpOnly; Secure; SameSite=Lax` : `${name}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
+}
+function bindingHash(value) {
+  return createHash("sha256").update(value).digest("base64url");
+}
+async function acceptTicket(req, token, vmId, purpose) {
+  const invalid = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
+  if (!token) return invalid;
+  const cp = await verifyLoginToken(token, vmId, purpose);
+  if (cp) return { jti: cp.jti, exp: cp.exp, canWrite: cp.canWrite === true, ...cp.next ? { next: cp.next } : {}, issuer: "control-plane", cookies: [] };
+  const fw = await verifyFirewallTicket(token, vmId, purpose);
+  if (!fw) return invalid;
+  const match = bindings(req.headers.cookie).find((b2) => bindingHash(b2.value) === fw.c);
+  if (!match) return { error: "This link was opened in a different browser. Open the agent again from this one." };
+  return {
+    jti: fw.jti,
+    exp: fw.exp,
+    canWrite: fw.canWrite,
+    ...fw.next ? { next: fw.next } : {},
+    deviceId: fw.deviceId,
+    issuer: "firewall",
+    cookies: [bindCookie(match.name, null)]
+  };
+}
 function parseDashboardOutput(stdout, hostname, err) {
   let out = null;
   try {
@@ -618,6 +842,29 @@ async function handleAccess(req, res, pathname) {
     html(res, 200, loginPage(readKey("vm_hostname")));
     return;
   }
+  if (pathname === "/__cc/open" && req.method === "GET") {
+    html(res, 200, openPage(readKey("vm_hostname")));
+    return;
+  }
+  if (pathname === "/__cc/open/begin" && req.method === "POST") {
+    if (!originAllowed(req, EXCHANGE_POLICY(), "/__cc/open/begin")) {
+      json(res, 403, { error: "This request did not come from your agent's own page." });
+      return;
+    }
+    const firewall = firewallOrigin();
+    if (!firewall) {
+      json(res, 409, { error: OPEN_ERRORS.no_firewall });
+      return;
+    }
+    const value = randomBytes(32).toString("base64url");
+    const name = `${BIND_COOKIE_PREFIX}${randomBytes(6).toString("base64url")}`;
+    json(res, 200, { c: bindingHash(value), firewall }, { "Set-Cookie": bindCookie(name, value) });
+    return;
+  }
+  if (pathname === "/__cc/enroll" && req.method === "GET") {
+    html(res, 200, enrollPage(readKey("vm_hostname"), firewallOrigin()));
+    return;
+  }
   if (pathname === "/__cc/verify" && req.method === "GET") {
     if (originAllowed(req, AGENT_POLICY(), "/__cc/verify") && await verifySession(req.headers.cookie, vmId)) {
       res.writeHead(200, { "Cache-Control": "no-store" });
@@ -634,18 +881,20 @@ async function handleAccess(req, res, pathname) {
     }
     const body = await readJsonBody(req, 8192);
     const token = typeof body?.token === "string" ? body.token : "";
-    const payload = token ? await verifyLoginToken(token, vmId, "browser-login") : null;
-    if (!payload) {
-      json(res, 401, { error: "This link is not valid for this agent. Open it from your ControlClaw console again." });
+    const payload = await acceptTicket(req, token, vmId, "browser-login");
+    if ("error" in payload) {
+      json(res, 401, { error: payload.error });
       return;
     }
     if (!consumeJti(payload.jti, payload.exp)) {
       json(res, 401, { error: "This link was already used. Open the agent from your ControlClaw console again." });
       return;
     }
+    const claims = { canWrite: payload.canWrite, ...payload.deviceId ? { deviceId: payload.deviceId } : {} };
+    console.log(`[access] sign-in with a ${payload.issuer} ticket${payload.deviceId ? ` (browser ${payload.deviceId})` : ""}`);
     if (payload.next === "files") {
-      const session2 = await issueSession(vmId, { canWrite: payload.canWrite === true });
-      json(res, 200, { next: "/__cc/files", view: "files", paired: true }, { "Set-Cookie": sessionCookie(session2) });
+      const session2 = await issueSession(vmId, claims);
+      json(res, 200, { next: "/__cc/files", view: "files", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
     const hostname = readKey("vm_hostname");
@@ -667,9 +916,9 @@ async function handleAccess(req, res, pathname) {
       const gatewayToken = readKey("openclaw_gateway_token");
       if (gatewayToken) next = `/#token=${encodeURIComponent(gatewayToken)}`;
     }
-    const session = await issueSession(vmId, { canWrite: payload.canWrite === true });
+    const session = await issueSession(vmId, claims);
     const install = installId(readKey("openclaw_gateway_token"), vmId);
-    json(res, 200, { next, install, paired, pairError }, { "Set-Cookie": sessionCookie(session) });
+    json(res, 200, { next, install, paired, pairError }, { "Set-Cookie": [sessionCookie(session), ...payload.cookies] });
     return;
   }
   if (pathname === "/__cc/browser" && req.method === "GET") {
@@ -683,16 +932,16 @@ async function handleAccess(req, res, pathname) {
     }
     const body = await readJsonBody(req, 8192);
     const token = typeof body?.token === "string" ? body.token : "";
-    const payload = token ? await verifyLoginToken(token, vmId, "browser-view") : null;
-    if (!payload) {
-      json(res, 401, { error: "This link is not valid for this agent. Open the browser from your ControlClaw console again." });
+    const payload = await acceptTicket(req, token, vmId, "browser-view");
+    if ("error" in payload) {
+      json(res, 401, { error: payload.error.replace("Open it from your ControlClaw console again.", "Open the browser from your ControlClaw console again.") });
       return;
     }
     if (!consumeJti(payload.jti, payload.exp)) {
       json(res, 401, { error: "This link was already used. Press Screen again in your ControlClaw console." });
       return;
     }
-    json(res, 200, { ok: true }, { "Set-Cookie": viewSessionCookie(await issueViewSession(vmId)) });
+    json(res, 200, { ok: true }, { "Set-Cookie": [viewSessionCookie(await issueViewSession(vmId, payload.deviceId)), ...payload.cookies] });
     return;
   }
   if (pathname === "/__cc/verify-view" && req.method === "GET") {
@@ -724,11 +973,11 @@ async function handleAccess(req, res, pathname) {
 }
 
 // src/box-token.ts
-import { readFileSync as readFileSync3 } from "fs";
+import { readFileSync as readFileSync4 } from "fs";
 import { importPKCS8, SignJWT as SignJWT2 } from "jose";
 function readKeyFile(keysDir2, name) {
   try {
-    return readFileSync3(`${keysDir2}/${name}`, "utf-8").trim();
+    return readFileSync4(`${keysDir2}/${name}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -752,12 +1001,12 @@ function saasBaseUrl(keysDir2) {
 }
 
 // src/software.ts
-import { readFileSync as readFileSync4, realpathSync } from "fs";
-import { dirname } from "path";
+import { readFileSync as readFileSync5, realpathSync } from "fs";
+import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "da59d96" : "unknown",
-  builtAt: true ? "2026-09-30T15:41:30+01:00" : "unknown"
+  commit: true ? "0a71b73" : "unknown",
+  builtAt: true ? "2026-09-30T15:58:35+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -771,7 +1020,7 @@ function clip(value) {
 }
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync4(path, "utf8"));
+    const parsed = JSON.parse(readFileSync5(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -793,14 +1042,14 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
   }
   let dir;
   try {
-    dir = dirname(realpathSync(bin));
+    dir = dirname2(realpathSync(bin));
   } catch {
     return null;
   }
   for (let i2 = 0; i2 < 4; i2++) {
     const pkg = readJson(`${dir}/package.json`);
     if (pkg?.name === "openclaw") return clip(pkg.version);
-    const parent = dirname(dir);
+    const parent = dirname2(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -810,7 +1059,8 @@ function boxSoftware(opts = {}) {
   return {
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
-    openclaw: readOpenClawVersion(opts.openclawCandidates)
+    openclaw: readOpenClawVersion(opts.openclawCandidates),
+    features: firewallOrigin() ? ["open_v1"] : []
   };
 }
 
@@ -858,10 +1108,10 @@ async function reportReady(readSsh, extra = {}) {
 
 // src/keys.ts
 import crypto2 from "crypto";
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync2, existsSync as existsSync2, mkdirSync } from "fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
 function readFile2(path) {
   try {
-    return readFileSync5(path, "utf8").trim();
+    return readFileSync6(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -870,15 +1120,15 @@ function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
   if (existsSync2(privPath)) {
-    return readFile2(pubPath) ?? derivePublicKey(readFileSync5(privPath, "utf8"));
+    return readFile2(pubPath) ?? derivePublicKey(readFileSync6(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto2.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" }
   });
-  mkdirSync(keysDir2, { recursive: true });
-  writeFileSync2(privPath, privateKey, { mode: 384 });
-  writeFileSync2(pubPath, publicKey, { mode: 420 });
+  mkdirSync2(keysDir2, { recursive: true });
+  writeFileSync3(privPath, privateKey, { mode: 384 });
+  writeFileSync3(pubPath, publicKey, { mode: 420 });
   console.log("[keys] generated on-box vm keypair");
   return publicKey;
 }
@@ -940,12 +1190,12 @@ function sha256Hex(s2) {
 }
 
 // src/mitm-ca.ts
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync3, existsSync as existsSync3 } from "fs";
+import { readFileSync as readFileSync7, writeFileSync as writeFileSync4, existsSync as existsSync3 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
 function readFile3(path) {
   try {
-    return readFileSync6(path, "utf8").trim();
+    return readFileSync7(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -986,7 +1236,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
           let pin = existsSync3(pinPath) ? readFile3(pinPath) : null;
           if (!pin && mitm.pubKey) {
             pin = mitm.pubKey;
-            writeFileSync3(pinPath, pin, { mode: 420 });
+            writeFileSync4(pinPath, pin, { mode: 420 });
             console.log("[mitm-ca] TOFU-pinned mitm public key (first box for this org)");
           }
           if (!pin) {
@@ -1000,7 +1250,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
             if (readFile3(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
             installCa(caSrcPath, mitm.caCert);
             trustMitmCaInProcess();
-            writeFileSync3(fprPath, fpr, { mode: 420 });
+            writeFileSync4(fprPath, fpr, { mode: 420 });
             console.log(`[mitm-ca] installed mitm CA (sha256=${fpr.slice(0, 16)}\u2026)`);
             return { trusted: true, installed: true, message: `Installed the firewall's certificate (sha256=${fpr.slice(0, 16)}\u2026).` };
           }
@@ -1021,18 +1271,18 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
   return { trusted: false, installed: false, message: last };
 }
 function installCa(caSrcPath, caCert) {
-  writeFileSync3(caSrcPath, caCert, { mode: 420 });
+  writeFileSync4(caSrcPath, caCert, { mode: 420 });
   execFileSync("sudo", ["/usr/local/bin/cc-install-ca"], { stdio: "inherit" });
 }
 
 // src/egress.ts
-import { readFileSync as readFileSync7 } from "fs";
+import { readFileSync as readFileSync8 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
 function readFile4(path) {
   try {
-    return readFileSync7(path, "utf8").trim();
+    return readFileSync8(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1221,11 +1471,11 @@ function handleStatus(res, drive2) {
 // src/routes/logs.ts
 import { execFile as execFile2, spawn } from "child_process";
 import { closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "fs";
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // src/redact.ts
-import { readFileSync as readFileSync8 } from "fs";
-import { join as join4 } from "path";
+import { readFileSync as readFileSync9 } from "fs";
+import { join as join5 } from "path";
 var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
 var MIN_SECRET_LENGTH = 8;
 var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
@@ -1239,7 +1489,7 @@ function loadRedactionSecrets(keysDir2) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
-      const value = readFileSync8(join4(keysDir2, name), "utf-8").trim();
+      const value = readFileSync9(join5(keysDir2, name), "utf-8").trim();
       if (value.length >= MIN_SECRET_LENGTH) found.push(value);
     } catch {
     }
@@ -1342,7 +1592,7 @@ function newestLogFile() {
     const candidates = readdirSync(LOG_DIR).filter((f2) => f2.startsWith("openclaw") && f2.endsWith(".log"));
     let best = null;
     for (const f2 of candidates) {
-      const path = join5(LOG_DIR, f2);
+      const path = join6(LOG_DIR, f2);
       const mtime = statSync(path).mtimeMs;
       if (!best || mtime > best.mtime) best = { path, mtime };
     }
@@ -1857,8 +2107,8 @@ var GatewayClient = class {
 };
 
 // src/audit.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync9, renameSync, writeFileSync as writeFileSync4 } from "fs";
-import { dirname as dirname2 } from "path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname3 } from "path";
 var PAGE_LIMIT = 500;
 var MAX_PAGES = 40;
 var AFTER_SLACK_MS = 6e4;
@@ -1915,7 +2165,7 @@ var AuditShipper = class {
   loadCursor() {
     try {
       if (!existsSync4(this.opts.cursorPath)) return null;
-      const c2 = JSON.parse(readFileSync9(this.opts.cursorPath, "utf-8"));
+      const c2 = JSON.parse(readFileSync10(this.opts.cursorPath, "utf-8"));
       if (typeof c2.sequence === "number" && typeof c2.occurredAt === "number") return { sequence: c2.sequence, occurredAt: c2.occurredAt };
     } catch {
     }
@@ -1923,9 +2173,9 @@ var AuditShipper = class {
   }
   saveCursor() {
     const tmp = `${this.opts.cursorPath}.tmp`;
-    mkdirSync2(dirname2(this.opts.cursorPath), { recursive: true });
-    writeFileSync4(tmp, JSON.stringify(this.cursor), { mode: 384 });
-    renameSync(tmp, this.opts.cursorPath);
+    mkdirSync3(dirname3(this.opts.cursorPath), { recursive: true });
+    writeFileSync5(tmp, JSON.stringify(this.cursor), { mode: 384 });
+    renameSync2(tmp, this.opts.cursorPath);
   }
   async tick() {
     const total = { read: 0, accepted: 0, duplicates: 0 };
@@ -2285,8 +2535,8 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname3 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname4 } from "path";
 import { randomUUID } from "crypto";
 
 // src/exec.ts
@@ -2627,7 +2877,7 @@ function looksBusy2(message) {
 function readChannelState(path) {
   if (!path || !existsSync6(path)) return { version: 1, seededAt: null, approved: [] };
   try {
-    const parsed = JSON.parse(readFileSync10(path, "utf8"));
+    const parsed = JSON.parse(readFileSync11(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
     return {
       version: 1,
@@ -2641,10 +2891,10 @@ function readChannelState(path) {
   }
 }
 function writeChannelState(path, state) {
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname4(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync5(tmp, JSON.stringify(state), { mode: 384 });
-  renameSync2(tmp, path);
+  writeFileSync6(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync3(tmp, path);
 }
 function channelBlock(input) {
   if ("remove" in input) return null;
@@ -2933,7 +3183,7 @@ var ChannelsService = class {
     for (const type of CHANNEL_TYPES) {
       let raw;
       try {
-        raw = readFileSync10(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
+        raw = readFileSync11(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
       } catch {
         continue;
       }
@@ -3465,8 +3715,8 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname4 } from "path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname5 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
 var REINDEX_TIMEOUT_MS = 15 * 6e4;
@@ -3505,7 +3755,7 @@ function readMemory(config) {
 function readReindexFailure(path) {
   if (!path || !existsSync7(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync11(path, "utf8"));
+    const parsed = JSON.parse(readFileSync12(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
   } catch {
     return null;
@@ -3662,10 +3912,10 @@ var LlmService = class {
     const path = this.opts.statePath;
     if (!path) return;
     try {
-      mkdirSync4(dirname4(path), { recursive: true });
+      mkdirSync5(dirname5(path), { recursive: true });
       const tmp = `${path}.tmp`;
-      writeFileSync6(tmp, JSON.stringify({ version: 1, error }), { mode: 384 });
-      renameSync3(tmp, path);
+      writeFileSync7(tmp, JSON.stringify({ version: 1, error }), { mode: 384 });
+      renameSync4(tmp, path);
     } catch (err) {
       this.log(`[llm] could not record the memory index state: ${err.message}`);
     }
@@ -4092,8 +4342,8 @@ async function handleSearch(req, res, url2, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, unlinkSync, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname5 } from "path";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync5, unlinkSync, writeFileSync as writeFileSync8 } from "fs";
+import { dirname as dirname6 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
 var RELAYED = [/^\/mcp$/, /^\/mcp\/tools$/, /^\/v1\/health$/, /^\/v1\/apps(\/|$)/, /^\/v1\/actions(\/|$)/, /^\/v1\/proxy\//];
@@ -4247,7 +4497,7 @@ var ConnectorsService = class {
 function readState(path) {
   if (!existsSync8(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
-    const parsed = JSON.parse(readFileSync12(path, "utf8"));
+    const parsed = JSON.parse(readFileSync13(path, "utf8"));
     return {
       gateway: parsed.gateway && typeof parsed.gateway.url === "string" && typeof parsed.gateway.token === "string" ? parsed.gateway : null,
       connections: Array.isArray(parsed.connections) ? parsed.connections : [],
@@ -4258,10 +4508,10 @@ function readState(path) {
   }
 }
 function writeState(path, state) {
-  mkdirSync5(dirname5(path), { recursive: true });
+  mkdirSync6(dirname6(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync7(tmp, JSON.stringify(state), { mode: 384 });
-  renameSync4(tmp, path);
+  writeFileSync8(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync5(tmp, path);
 }
 function cliEnvContents(relayUrl, token) {
   return [
@@ -4273,10 +4523,10 @@ function cliEnvContents(relayUrl, token) {
   ].join("\n");
 }
 function writeCliEnv(path, relayUrl, token) {
-  mkdirSync5(dirname5(path), { recursive: true });
+  mkdirSync6(dirname6(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync7(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
-  renameSync4(tmp, path);
+  writeFileSync8(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
+  renameSync5(tmp, path);
 }
 function removeFile(path) {
   try {
@@ -4355,8 +4605,8 @@ async function handleConnectors(req, res, url2, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
-import { dirname as dirname6 } from "path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync6, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname7 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
 var MAX_MOUNTS = 8;
@@ -4407,10 +4657,10 @@ function parseApply4(body) {
   return { placeholder, scope, connected: body.connected === true, defaults, mounts };
 }
 function writeAtomic(path, body, mode) {
-  mkdirSync6(dirname6(path), { recursive: true });
+  mkdirSync7(dirname7(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync8(tmp, body, { mode });
-  renameSync5(tmp, path);
+  writeFileSync9(tmp, body, { mode });
+  renameSync6(tmp, path);
 }
 var DriveService = class {
   constructor(opts) {
@@ -4432,7 +4682,7 @@ var DriveService = class {
   modes() {
     const out = /* @__PURE__ */ new Map();
     try {
-      const desired = JSON.parse(readFileSync13(this.opts.desiredPath, "utf8"));
+      const desired = JSON.parse(readFileSync14(this.opts.desiredPath, "utf8"));
       for (const m2 of desired.mounts ?? []) if (m2?.name) out.set(m2.name, m2.mode);
     } catch {
     }
@@ -4446,7 +4696,7 @@ var DriveService = class {
    */
   readState() {
     try {
-      const raw = JSON.parse(readFileSync13(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync14(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object" || !Array.isArray(raw.mounts)) return null;
       const mounts = raw.mounts.filter((m2) => !!m2 && typeof m2.name === "string" && typeof m2.rcPort === "number");
       return {
@@ -4487,7 +4737,7 @@ var DriveService = class {
   /** The desired file as written, so a failed launch can put it back byte for byte. */
   readDesiredRaw() {
     try {
-      return readFileSync13(this.opts.desiredPath, "utf8");
+      return readFileSync14(this.opts.desiredPath, "utf8");
     } catch {
       return null;
     }
@@ -4632,8 +4882,8 @@ async function handleDrive(req, res, url2, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync6, rmSync, writeFileSync as writeFileSync9 } from "fs";
-import { dirname as dirname7 } from "path";
+import { existsSync as existsSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync15, renameSync as renameSync7, rmSync, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname8 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 var SERVICES = ["gmail", "calendar", "drive", "contacts", "sheets", "docs"];
@@ -4661,10 +4911,10 @@ function parseApply5(body) {
   return { placeholder, connected: body.connected === true, projectId, services, accountLabel };
 }
 function writeAtomic2(path, body, mode) {
-  mkdirSync7(dirname7(path), { recursive: true });
+  mkdirSync8(dirname8(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync9(tmp, body, { mode });
-  renameSync6(tmp, path);
+  writeFileSync10(tmp, body, { mode });
+  renameSync7(tmp, path);
 }
 function envValue(value) {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -4747,7 +4997,7 @@ var GoogleService = class {
   }
   readState() {
     try {
-      const raw = JSON.parse(readFileSync14(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync15(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object") return null;
       return {
         placeholder: null,
@@ -4817,7 +5067,7 @@ async function handleGoogle(req, res, url2, service) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync15 } from "fs";
+import { readFileSync as readFileSync16 } from "fs";
 import { spawn as spawn2 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -4849,7 +5099,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync15(path, "utf8");
+      raw = readFileSync16(path, "utf8");
     } catch {
       return null;
     }
@@ -4863,7 +5113,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync15(this.opts.statePath, "utf8");
+      raw = readFileSync16(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -4935,7 +5185,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname as dirname8, join as join6 } from "path";
+import { dirname as dirname9, join as join7 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -8512,8 +8762,8 @@ async function manifestHash(m2) {
   const sodium = await sodiumReady();
   return [...sodium.crypto_generichash(32, utf8(canonicalManifest(m2)), null)].map((b2) => b2.toString(16).padStart(2, "0")).join("");
 }
-function parseManifest(json2) {
-  const m2 = JSON.parse(json2);
+function parseManifest(json3) {
+  const m2 = JSON.parse(json3);
   if (m2?.version !== 1 || !Array.isArray(m2.entries)) throw new Error("the archive's manifest is not readable");
   return { ...m2, excluded: Array.isArray(m2.excluded) ? m2.excluded : [] };
 }
@@ -8761,7 +9011,7 @@ var BackupService = class {
   busy = null;
   rootFor(kind) {
     if (kind === "firewall") throw new Error("an agent box does not hold the firewall's own backup");
-    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join6(this.home, ARCHIVE_ROOTS[kind]);
+    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join7(this.home, ARCHIVE_ROOTS[kind]);
     assertArchivableRoot(root);
     return root;
   }
@@ -8775,25 +9025,25 @@ var BackupService = class {
     const walk = async (rel) => {
       let dir;
       try {
-        dir = await opendir(rel === "" ? root : join6(root, rel));
+        dir = await opendir(rel === "" ? root : join7(root, rel));
       } catch {
         return;
       }
       for await (const item of dir) {
         const childRel = rel === "" ? item.name : `${rel}/${item.name}`;
         if (shouldExclude(childRel, kind)) {
-          const bytes = item.isDirectory() ? await dirSize(join6(root, childRel)) : await fileSize(join6(root, childRel));
+          const bytes = item.isDirectory() ? await dirSize(join7(root, childRel)) : await fileSize(join7(root, childRel));
           excluded.push({ path: childRel, bytes });
           continue;
         }
         let st2;
         try {
-          st2 = await lstat(join6(root, childRel));
+          st2 = await lstat(join7(root, childRel));
         } catch {
           continue;
         }
         if (st2.isSymbolicLink()) {
-          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join6(root, childRel)) });
+          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join7(root, childRel)) });
           continue;
         }
         if (st2.isDirectory()) {
@@ -8844,8 +9094,8 @@ var BackupService = class {
         backupId: input.backupId,
         kind: input.kind
       });
-      const dir = await mkdtemp(join6(this.spoolDir, "cc-backup-"));
-      spool = join6(dir, "archive.bin");
+      const dir = await mkdtemp(join7(this.spoolDir, "cc-backup-"));
+      spool = join7(dir, "archive.bin");
       await pipeline(
         Readable.from(tarOf(plan.root, manifest, input.kind)),
         createGzip({ level: 6 }),
@@ -8866,7 +9116,7 @@ var BackupService = class {
         takenAt: manifest.takenAt
       };
     } finally {
-      if (spool) await rm(dirname8(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (spool) await rm(dirname9(spool), { recursive: true, force: true }).catch(() => void 0);
       this.busy = null;
     }
   }
@@ -8944,13 +9194,13 @@ var BackupService = class {
             manifest = parseManifest(new TextDecoder().decode(e.body));
             continue;
           }
-          const abs = join6(into, rel);
+          const abs = join7(into, rel);
           if (e.type === "dir") {
             await mkdir(abs, { recursive: true, mode: 448 });
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
             continue;
           }
-          await mkdir(dirname8(abs), { recursive: true, mode: 448 });
+          await mkdir(dirname9(abs), { recursive: true, mode: 448 });
           if (e.type === "link") {
             await symlink(e.target ?? "", abs).catch(() => void 0);
             continue;
@@ -9018,7 +9268,7 @@ async function* tarOf(root, manifest, kind) {
   yield manifestBody;
   yield* tarPadding(manifestBody.length);
   for (const e of manifest.entries) {
-    const abs = join6(root, e.path);
+    const abs = join7(root, e.path);
     if (e.kind === "dir") {
       yield* tarHeader({ path: `${e.path}/`, type: "dir", size: 0, mode: e.mode, mtime });
       continue;
@@ -9078,15 +9328,15 @@ async function swapDirectory(opts) {
   };
   try {
     for (const rel of opts.keep ?? []) {
-      const from = join6(opts.target, rel);
-      const to = join6(opts.staged, rel);
+      const from = join7(opts.target, rel);
+      const to = join7(opts.staged, rel);
       const exists2 = await lstat(from).then(
         () => true,
         () => false
       );
       if (!exists2) continue;
       await rm(to, { recursive: true, force: true });
-      await mkdir(dirname8(to), { recursive: true, mode: 448 });
+      await mkdir(dirname9(to), { recursive: true, mode: 448 });
       await rename(from, to);
       moved.push({ from, to });
     }
@@ -9129,7 +9379,7 @@ async function dirSize(path) {
     return 0;
   }
   for await (const item of dir) {
-    const child = join6(path, item.name);
+    const child = join7(path, item.name);
     if (item.isDirectory()) total += await dirSize(child);
     else if (item.isFile()) total += await fileSize(child);
   }
@@ -9243,7 +9493,7 @@ async function handleBackup(req, res, url2, service) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID2 } from "crypto";
-import { basename as basename2, dirname as dirname9, join as join7, resolve, sep } from "path";
+import { basename as basename2, dirname as dirname10, join as join8, resolve, sep } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -9392,9 +9642,9 @@ async function realpathLenient(path) {
   for (; ; ) {
     try {
       const real = await realpath(cursor);
-      return missing.length ? join7(real, ...missing.reverse()) : real;
+      return missing.length ? join8(real, ...missing.reverse()) : real;
     } catch {
-      const parent = dirname9(cursor);
+      const parent = dirname10(cursor);
       if (parent === cursor) return resolve(path);
       missing.push(basename2(cursor));
       cursor = parent;
@@ -9475,7 +9725,7 @@ var FilesService = class {
     const normalized = normalizeRelative(rel);
     let real;
     try {
-      real = await realpath(normalized ? join7(root, normalized) : root);
+      real = await realpath(normalized ? join8(root, normalized) : root);
     } catch {
       throw new FilesError(404, "not_found", "No such file or folder.");
     }
@@ -9502,11 +9752,11 @@ var FilesService = class {
     }
     const name = basename2(normalized);
     if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
-    const parentRel = dirname9(normalized) === "." ? "" : dirname9(normalized);
+    const parentRel = dirname10(normalized) === "." ? "" : dirname10(normalized);
     const parent = await this.resolveExisting(parentRel);
     const st2 = await stat2(parent.abs).catch(() => null);
     if (!st2?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
-    const abs = join7(parent.abs, name);
+    const abs = join8(parent.abs, name);
     await this.assertAllowed(abs);
     return { rel: normalized, abs, parent: parent.abs, name };
   }
@@ -9525,7 +9775,7 @@ var FilesService = class {
     const truncated = names.length > this.limits.listMaxEntries;
     const entries = [];
     for (const name of names.slice(0, this.limits.listMaxEntries)) {
-      const entry = await describe(root, join7(abs, name), name);
+      const entry = await describe(root, join8(abs, name), name);
       if (entry) entries.push(entry);
     }
     entries.sort((a2, b2) => {
@@ -9685,7 +9935,7 @@ var FilesService = class {
   async spool(req, parent, max, op) {
     const declared = Number(req.headers["content-length"] ?? "");
     if (Number.isFinite(declared) && declared > max) throw tooLargeError(op, max);
-    const tmp = join7(parent, `.cc-${op}-${randomUUID2()}.part`);
+    const tmp = join8(parent, `.cc-${op}-${randomUUID2()}.part`);
     let written = 0;
     let tooBig = false;
     const meter = new Transform({
@@ -9759,7 +10009,7 @@ async function countEntries(dir, max) {
     for (const name of names) {
       count++;
       if (count > max) return null;
-      const child = join7(current, name);
+      const child = join8(current, name);
       const st2 = await lstat2(child).catch(() => null);
       if (st2?.isDirectory()) stack.push(child);
     }
@@ -9973,9 +10223,9 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync8, mkdtempSync, readFileSync as readFileSync16, rmSync as rmSync2, writeFileSync as writeFileSync10 } from "fs";
+import { mkdirSync as mkdirSync9, mkdtempSync, readFileSync as readFileSync17, rmSync as rmSync2, writeFileSync as writeFileSync11 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname10, join as join8 } from "path";
+import { dirname as dirname11, join as join9 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -10059,8 +10309,8 @@ var SshAccessService = class {
   }
   // ---- internals ----
   async mint(grantId) {
-    const dir = mkdtempSync(join8(this.opts.workDir ?? tmpdir2(), "cc-ssh-"));
-    const path = join8(dir, "key");
+    const dir = mkdtempSync(join9(this.opts.workDir ?? tmpdir2(), "cc-ssh-"));
+    const path = join9(dir, "key");
     try {
       await this.exec(
         "ssh-keygen",
@@ -10068,8 +10318,8 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync16(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync16(path, "utf8")
+        publicKey: readFileSync17(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync17(path, "utf8")
       };
     } finally {
       rmSync2(dir, { recursive: true, force: true });
@@ -10077,7 +10327,7 @@ var SshAccessService = class {
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync16(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -10090,8 +10340,8 @@ var SshAccessService = class {
     }
   }
   writeState(state) {
-    mkdirSync8(dirname10(this.opts.statePath), { recursive: true });
-    writeFileSync10(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    mkdirSync9(dirname11(this.opts.statePath), { recursive: true });
+    writeFileSync11(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -10620,8 +10870,8 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile5 } from "child_process";
-import { existsSync as existsSync11, mkdirSync as mkdirSync9, readFileSync as readFileSync17, rmSync as rmSync3, writeFileSync as writeFileSync11 } from "fs";
-import { dirname as dirname11 } from "path";
+import { existsSync as existsSync11, mkdirSync as mkdirSync10, readFileSync as readFileSync18, rmSync as rmSync3, writeFileSync as writeFileSync12 } from "fs";
+import { dirname as dirname12 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile5);
 var UNIT = "cc-gmail-watch.service";
@@ -10670,7 +10920,7 @@ var GmailWatchService = class {
    * role, so nothing here writes a systemd unit at runtime.
    */
   async apply(cfg) {
-    mkdirSync9(dirname11(this.opts.envPath), { recursive: true });
+    mkdirSync10(dirname12(this.opts.envPath), { recursive: true });
     const lines = [
       "# Managed by the ControlClaw vm-agent. Do not edit.",
       "# The audience is the firewall's public URL for this webhook, set explicitly: derived from",
@@ -10685,8 +10935,8 @@ var GmailWatchService = class {
       "OPENCLAW_SKIP_GMAIL_WATCHER=1",
       ""
     ];
-    writeFileSync11(this.opts.envPath, lines.join("\n"), { mode: 384 });
-    writeFileSync11(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+    writeFileSync12(this.opts.envPath, lines.join("\n"), { mode: 384 });
+    writeFileSync12(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
     await this.systemctl("restart");
     this.log(`[gmail-watch] serving ${cfg.path} on 127.0.0.1:${cfg.port} for ${cfg.audience}`);
     return this.status();
@@ -10701,7 +10951,7 @@ var GmailWatchService = class {
   async status() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync18(this.opts.statePath, "utf8"));
     } catch {
       cfg = null;
     }
@@ -10736,7 +10986,7 @@ var GmailWatchService = class {
   async renew() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync18(this.opts.statePath, "utf8"));
     } catch {
       return { ok: false, message: "This box is not watching a mailbox." };
     }
@@ -10900,6 +11150,37 @@ async function handleKill(req, res, url2) {
   sendJson(res, answer.ok ? 200 : 500, answer);
 }
 
+// src/routes/access-push.ts
+function json2(res, status, body) {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+async function handleAccessPush(req, res, pathname) {
+  if (req.method !== "POST") return json2(res, 405, { error: "Method not allowed" });
+  if (!await verifyMitmRequest(req, "access")) return json2(res, 401, { error: "Unauthorized" });
+  const body = await readJsonBody(req, 64 * 1024);
+  if (!body) return json2(res, 400, { error: "Invalid JSON body" });
+  if (pathname === "/access/config") {
+    const origin = typeof body.firewallOrigin === "string" ? body.firewallOrigin.toLowerCase() : "";
+    if (!validFirewallOrigin(origin)) return json2(res, 400, { error: "firewallOrigin must be https://<hostname>" });
+    setFirewallOrigin(origin);
+    console.log(`[access] the firewall for Opens is ${origin}`);
+    return json2(res, 200, { ok: true, firewallOrigin: origin });
+  }
+  if (pathname === "/access/revoke") {
+    if (body.all === true) {
+      rotateSessionSecret();
+      return json2(res, 200, { ok: true, all: true });
+    }
+    const ids = Array.isArray(body.deviceIds) ? body.deviceIds.filter((x2) => typeof x2 === "string" && x2.length > 0 && x2.length <= 64) : [];
+    if (ids.length === 0 || ids.length > 1e3) return json2(res, 400, { error: "deviceIds must be a non-empty list" });
+    revokeDevices(ids);
+    console.log(`[access] revoked ${ids.length} browser(s); their sessions here end now`);
+    return json2(res, 200, { ok: true, revoked: ids.length });
+  }
+  return json2(res, 404, { error: "Not found" });
+}
+
 // src/brain-mcp.ts
 var BRAIN_MCP_NAME = "gbrain";
 var BRAIN_URL_RE = /^http:\/\/10\.(?:\d{1,3}\.){2}\d{1,3}:3131\/mcp$/;
@@ -10967,7 +11248,7 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
 try {
-  const saasPublicKey2 = readFileSync18(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync19(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -10975,7 +11256,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync18(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync19(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -11152,6 +11433,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/gbrain/")) {
     await handleGbrain(req, res, url2, brainMcp);
+    return;
+  }
+  if (url2.pathname.startsWith("/access/")) {
+    await handleAccessPush(req, res, url2.pathname);
     return;
   }
   if (url2.pathname.startsWith("/files/")) {

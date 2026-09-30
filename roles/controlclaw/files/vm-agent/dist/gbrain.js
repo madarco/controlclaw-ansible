@@ -2,7 +2,7 @@ import { createRequire as __ccCreateRequire } from "node:module"; import { fileU
 
 // src/gbrain.ts
 import { createServer as createServer2 } from "http";
-import { readFileSync as readFileSync8 } from "fs";
+import { readFileSync as readFileSync9 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -389,12 +389,44 @@ async function applyBrainKey(input, exec = defaultExec) {
 }
 
 // src/software.ts
-import { readFileSync as readFileSync5, realpathSync } from "fs";
-import { dirname } from "path";
+import { readFileSync as readFileSync6, realpathSync } from "fs";
+import { dirname as dirname2 } from "path";
+
+// src/access-state.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync5, renameSync, writeFileSync as writeFileSync3 } from "fs";
+import { dirname, join } from "path";
+var REVOKED_KEEP_MS = 12 * 60 * 6e4;
+function statePath() {
+  return join(process.env.STATE_DIR ?? "/opt/controlclaw/state", "access.json");
+}
+var cache = null;
+function load() {
+  const path = statePath();
+  if (cache?.path === path) return cache.state;
+  let state = { firewallOrigin: null, revoked: {} };
+  try {
+    const raw = JSON.parse(readFileSync5(path, "utf8"));
+    state = {
+      firewallOrigin: typeof raw.firewallOrigin === "string" && validFirewallOrigin(raw.firewallOrigin) ? raw.firewallOrigin : null,
+      revoked: raw.revoked && typeof raw.revoked === "object" ? raw.revoked : {}
+    };
+  } catch {
+  }
+  cache = { path, state };
+  return state;
+}
+function validFirewallOrigin(origin) {
+  return /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(origin) && origin.length <= 261;
+}
+function firewallOrigin() {
+  return load().firewallOrigin;
+}
+
+// src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "da59d96" : "unknown",
-  builtAt: true ? "2026-09-30T15:41:30+01:00" : "unknown"
+  commit: true ? "0a71b73" : "unknown",
+  builtAt: true ? "2026-09-30T15:58:35+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -408,7 +440,7 @@ function clip(value) {
 }
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync5(path, "utf8"));
+    const parsed = JSON.parse(readFileSync6(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -430,14 +462,14 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
   }
   let dir;
   try {
-    dir = dirname(realpathSync(bin));
+    dir = dirname2(realpathSync(bin));
   } catch {
     return null;
   }
   for (let i = 0; i < 4; i++) {
     const pkg = readJson(`${dir}/package.json`);
     if (pkg?.name === "openclaw") return clip(pkg.version);
-    const parent = dirname(dir);
+    const parent = dirname2(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -447,7 +479,8 @@ function boxSoftware(opts = {}) {
   return {
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
-    openclaw: readOpenClawVersion(opts.openclawCandidates)
+    openclaw: readOpenClawVersion(opts.openclawCandidates),
+    features: firewallOrigin() ? ["open_v1"] : []
   };
 }
 
@@ -577,11 +610,11 @@ function handleStatus(res, drive) {
 // src/routes/logs.ts
 import { execFile as execFile2, spawn } from "child_process";
 import { closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "fs";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 
 // src/redact.ts
-import { readFileSync as readFileSync6 } from "fs";
-import { join } from "path";
+import { readFileSync as readFileSync7 } from "fs";
+import { join as join2 } from "path";
 var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
 var MIN_SECRET_LENGTH = 8;
 var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
@@ -595,7 +628,7 @@ function loadRedactionSecrets(keysDir) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
-      const value = readFileSync6(join(keysDir, name), "utf-8").trim();
+      const value = readFileSync7(join2(keysDir, name), "utf-8").trim();
       if (value.length >= MIN_SECRET_LENGTH) found.push(value);
     } catch {
     }
@@ -726,8 +759,8 @@ function getServiceStatus(service) {
 
 // src/gbrain-gate.ts
 import { createServer, request as httpRequest } from "http";
-import { chmodSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync7, renameSync, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname2 } from "path";
+import { chmodSync, existsSync as existsSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname3 } from "path";
 import { networkInterfaces } from "os";
 var GATE_PORT = 3131;
 var HELPER2 = "/usr/local/bin/cc-gbrain-token";
@@ -761,8 +794,8 @@ function parseDisconnect(body) {
   return { vmId };
 }
 var BrainGate = class {
-  constructor(statePath, exec = defaultExec, log = (l) => console.log(l)) {
-    this.statePath = statePath;
+  constructor(statePath2, exec = defaultExec, log = (l) => console.log(l)) {
+    this.statePath = statePath2;
     this.exec = exec;
     this.log = log;
     this.entries = this.load();
@@ -771,7 +804,7 @@ var BrainGate = class {
   load() {
     if (!existsSync3(this.statePath)) return [];
     try {
-      const s = JSON.parse(readFileSync7(this.statePath, "utf-8"));
+      const s = JSON.parse(readFileSync8(this.statePath, "utf-8"));
       return Array.isArray(s.entries) ? s.entries.filter((e) => e && typeof e.token === "string" && typeof e.ip === "string") : [];
     } catch (err) {
       this.log(`[gbrain-gate] could not read ${this.statePath}: ${err.message}`);
@@ -779,11 +812,11 @@ var BrainGate = class {
     }
   }
   save() {
-    mkdirSync2(dirname2(this.statePath), { recursive: true });
+    mkdirSync3(dirname3(this.statePath), { recursive: true });
     const tmp = `${this.statePath}.tmp`;
-    writeFileSync3(tmp, JSON.stringify({ version: 1, entries: this.entries }), { mode: 384 });
+    writeFileSync4(tmp, JSON.stringify({ version: 1, entries: this.entries }), { mode: 384 });
     chmodSync(tmp, 384);
-    renameSync(tmp, this.statePath);
+    renameSync2(tmp, this.statePath);
   }
   /** What the firewall reads to reconcile. No tokens. */
   list() {
@@ -878,13 +911,13 @@ if (process.env.CC_SERVICE !== "gbrain") {
   process.exit(1);
 }
 try {
-  setSaasPublicKey(readFileSync8(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+  setSaasPublicKey(readFileSync9(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
 } catch (err) {
   console.error("Failed to load SaaS public key:", err);
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync8(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync9(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }

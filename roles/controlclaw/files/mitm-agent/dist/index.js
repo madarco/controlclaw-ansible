@@ -8355,7 +8355,7 @@ var SCOPE7 = "access";
 var NEXT = {
   chat: { purpose: "browser-login", path: "/__cc/login" },
   screen: { purpose: "browser-view", path: "/__cc/browser" },
-  files: { purpose: "files", path: "/__cc/files" }
+  files: { purpose: "browser-login", path: "/__cc/login", next: "files" }
 };
 function sha2562(s2) {
   return createHash3("sha256").update(s2).digest("hex");
@@ -8620,7 +8620,7 @@ var AccessFirewall = class {
   }
   async issue(res, hostname3, intent, c2, deviceId, cookies) {
     const route = NEXT[intent.next];
-    const ticket = await this.signTicket({ vmId: intent.vmId, purpose: route.purpose, c: c2, deviceId, canWrite: intent.canWrite });
+    const ticket = await this.signTicket({ vmId: intent.vmId, purpose: route.purpose, c: c2, deviceId, canWrite: intent.canWrite, ...route.next ? { next: route.next } : {} });
     return redirect(res, `https://${hostname3}${route.path}#t=${ticket}`, cookies);
   }
   // ---- intents, tickets, devices ----
@@ -83707,8 +83707,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "da59d96" : "unknown",
-  builtAt: true ? "2026-09-30T15:41:30+01:00" : "unknown"
+  commit: true ? "0a71b73" : "unknown",
+  builtAt: true ? "2026-09-30T15:58:35+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
