@@ -1,8 +1,9 @@
 # Managed by Ansible (roles/controlclaw/templates/haproxy.cfg.j2). Do not edit on the box.
 #
-# Blind L4 proxy for *{{ vm_domain_suffix }}: routes by SNI, forwards ciphertext, never holds
-# a certificate. Destinations come from /etc/haproxy/routes.map ("<hostname> <ip>" lines),
-# kept in sync from Hetzner labels by cc-proxy-routes.timer.
+# Blind L4 proxy: routes by SNI, forwards ciphertext, never holds a certificate. Destinations
+# come from /etc/haproxy/routes.map ("<hostname> <ip>" lines), kept in sync from Hetzner labels
+# by cc-proxy-routes.timer. Domains routed: *{{ vm_domain_suffix }}{% for d in proxy_domain_suffixes %}, *.{{ d.suffix }}{% endfor %}
+
 
 global
     log /dev/log local0

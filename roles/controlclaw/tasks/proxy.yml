@@ -1,8 +1,10 @@
 ---
 # The blind L4 proxy (box_role=proxy). HAProxy forwards 443 by SNI to the agent box that owns
 # the name and relays ACME challenges on 80 by Host header. It never terminates TLS on 443.
-# The route map is rebuilt from Hetzner server labels (cc-role=agent, cc-host=<slug>) by a timer
-# using a READ-ONLY token. Design: docs/plans/blind-proxy-and-remote-access.md.
+# The route map is rebuilt from Hetzner server labels (cc-role=agent|mitm, cc-host=<slug>, and
+# cc-domain=<suffix> on boxes created since controlclaw T-105) by a timer using a READ-ONLY token.
+# It routes every suffix in proxy_domain_suffixes, plus vm_domain_suffix for boxes without
+# cc-domain. Design: docs/plans/blind-proxy-and-remote-access.md.
 
 - name: Assert the proxy has a Hetzner read token
   ansible.builtin.assert:
@@ -67,6 +69,7 @@
     mode: '0644'
     content: |
       CC_DOMAIN_SUFFIX={{ vm_domain_suffix }}
+      CC_DOMAIN_SUFFIXES={{ proxy_domain_suffixes | map(attribute='suffix') | join(',') }}
       CC_TOKEN_FILE=/etc/controlclaw/hcloud_read_token
       CC_ROUTES_MAP=/etc/haproxy/routes.map
 
@@ -125,6 +128,7 @@
   ansible.builtin.command: /usr/bin/python3 /usr/local/bin/cc-proxy-routes
   environment:
     CC_DOMAIN_SUFFIX: "{{ vm_domain_suffix }}"
+    CC_DOMAIN_SUFFIXES: "{{ proxy_domain_suffixes | map(attribute='suffix') | join(',') }}"
     CC_TOKEN_FILE: /etc/controlclaw/hcloud_read_token
     CC_ROUTES_MAP: /etc/haproxy/routes.map
   register: proxy_routes_first

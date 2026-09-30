@@ -271,6 +271,11 @@ update_allow_unverified: false
 # Proxy box (box_role=proxy)
 hcloud_read_token: ""                 # READ-ONLY Hetzner token for route discovery
 proxy_routes_interval_sec: 20
+# Every domain the proxy routes, besides vm_domain_suffix (which boxes without a cc-domain label
+# use). A box's cc-domain label must name one of these or its route is dropped. One entry per
+# domain, as a mapping so a per-domain option can be added without changing the shape, e.g.
+#   proxy_domain_suffixes: [{ suffix: "ccl.bot" }]
+proxy_domain_suffixes: []
 
 # mitm box settings (secret zone)
 mitm_proxy_port: 8080
