@@ -117,8 +117,10 @@ fi
 #   firewall box without org_id, controlclaw_url and saas_public_key mitmbox.yml refuses to run
 #                at all — writing them empty is what bricks the box.
 #
-# vm_hostname is an agent-only requirement. The firewall runs no Caddy and has no hostname, so
-# demanding one there would make every firewall update fail on the first check.
+# vm_hostname is required on an agent only. A firewall built before webhook ingress has none and
+# runs no Caddy, so demanding one there would make its update fail on the first check; one that has
+# a name must keep it, or caddy.yml stops Caddy on the update and the firewall's webhook and Open
+# routes go dark. It is read the same way as a brain's.
 read_key() { [ -r "$KEYS/$1" ] && tr -d '\n' < "$KEYS/$1"; }
 # A PEM goes back with its line breaks, re-folded: the role writes these straight back to the keys
 # dir, and OpenSSL cannot read a PEM that is all on one line. read_key used to flatten them, which
@@ -145,10 +147,15 @@ VM_HOSTNAME=""
 if [ "$ROLE" = openclaw ]; then
   VM_HOSTNAME=$(read_key vm_hostname)
   [ -n "$VM_HOSTNAME" ] || die "this box has no vm_hostname on disk; refusing (it would disable Caddy)"
-elif [ "$ROLE" = gbrain ]; then
+elif [ "$ROLE" = gbrain ] || [ "$ROLE" = mitm ]; then
   # A brain built before brains had a public name has none, and that is not an error: it has no
   # Caddy to disable. One that has a name must keep it, so it is read the same way.
   VM_HOSTNAME=$(read_key vm_hostname)
+  # A firewall provisioned before the role wrote that key still has its name in the Caddyfile the
+  # role rendered for it: the first site block. Taken only when it looks like a hostname.
+  if [ -z "$VM_HOSTNAME" ] && [ "$ROLE" = mitm ] && [ -r /etc/caddy/Caddyfile ]; then
+    VM_HOSTNAME=$(grep -m1 -E '^[a-z0-9]([a-z0-9.-]*[a-z0-9])? \{$' /etc/caddy/Caddyfile | cut -d' ' -f1 || true)
+  fi
 fi
 
 # The firewall's identity comes from the pin first and the keys dir second. Both are root-written
@@ -175,7 +182,7 @@ vars=$(BOX_ROLE="$ROLE" VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PR
 import json, os
 role = os.environ["BOX_ROLE"]
 v = {"vm_id": os.environ["VM_ID"], "box_role": role}
-if role == "openclaw" or (role == "gbrain" and os.environ["VM_HOSTNAME"]):
+if role == "openclaw" or (role in ("gbrain", "mitm") and os.environ["VM_HOSTNAME"]):
     v["vm_hostname"] = os.environ["VM_HOSTNAME"]
 # Hand the pin straight back, so self-update.yml runs on a re-run and rewrites update.conf and
 # cc-reprovision itself. Without this a box keeps whatever updater it was created with, and a fix

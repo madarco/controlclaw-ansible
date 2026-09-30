@@ -98,3 +98,10 @@
     cmd: grep -qF '/hook/*' /etc/caddy/Caddyfile
   changed_when: false
   when: vm_hostname is defined and box_role == 'mitm'
+
+# And the two Open routes, as exact paths (browser-enrollment.md §3).
+- name: Check the firewall's Caddyfile routes the two Open paths
+  ansible.builtin.command:
+    cmd: grep -qF '@access path /__cc/open /__cc/enroll/confirm' /etc/caddy/Caddyfile
+  changed_when: false
+  when: vm_hostname is defined and box_role == 'mitm'

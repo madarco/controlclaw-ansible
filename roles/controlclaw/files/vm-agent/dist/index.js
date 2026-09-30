@@ -50,7 +50,7 @@ async function verifyLoginToken(token, vmId, purpose) {
   const payload = await verifySaasToken(token);
   if (!payload || payload.purpose !== purpose || payload.vmId !== vmId) return null;
   if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
-  return { ...payload, canWrite: payload.canWrite === true };
+  return { ...payload, canWrite: payload.canWrite === true, next: payload.next === "files" ? "files" : void 0 };
 }
 async function verifyMitmRequest(req, purpose = "channels") {
   const authHeader = req.headers.authorization;
@@ -113,9 +113,6 @@ function checkOrigin(facts, policy) {
   const origin = normalizeOrigin(facts.origin);
   const navigation = navigationKind(facts);
   if (policy.allowTopLevelNavigation && navigation === "top-level") return { ok: true };
-  if (origin === null && policy.allowFramedNavigation && navigation === "framed" && (facts.secFetchDest === "iframe" || facts.secFetchDest === "frame")) {
-    return { ok: true };
-  }
   if (facts.secFetchSite === "cross-site") return { ok: false, reason: "cross_site", origin };
   if (origin !== null) {
     const allowed = policy.allowed.map((o2) => normalizeOrigin(o2)).filter((o2) => o2 !== null);
@@ -243,7 +240,7 @@ function consumeJti(jti, expSeconds) {
 import { createHash } from "crypto";
 import { execFile } from "child_process";
 import { readFileSync as readFileSync2 } from "fs";
-import { join as join2 } from "path";
+import { join as join3 } from "path";
 
 // src/http.ts
 async function readJsonBody(req, limit = 16384) {
@@ -278,6 +275,67 @@ function sendJson(res, status, body, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 
+// src/routes/files-page.ts
+import { readFile } from "fs/promises";
+import { basename, join as join2 } from "path";
+import { fileURLToPath } from "url";
+function uiDir() {
+  return process.env.FILES_UI_DIR ?? fileURLToPath(new URL("./files-ui/", import.meta.url));
+}
+var TYPES = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".woff2": "font/woff2"
+};
+var ASSET_RE = /^[A-Za-z0-9_-]+\.(js|css|woff2)$/;
+async function serveFilesAsset(res, name) {
+  const file = basename(name);
+  if (file !== name || !ASSET_RE.test(file)) {
+    res.writeHead(404, { "Content-Type": "text/plain" }).end("Not found");
+    return;
+  }
+  let body;
+  try {
+    body = await readFile(join2(uiDir(), file));
+  } catch {
+    res.writeHead(404, { "Content-Type": "text/plain" }).end("Not found");
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": TYPES[file.slice(file.lastIndexOf("."))] ?? "application/octet-stream",
+    // Chunks and fonts are named by their content hash, so they never change; the three entry
+    // files keep their names from build to build and are revalidated.
+    "Cache-Control": /^(chunk|asset)-/.test(file) ? "public, max-age=31536000, immutable" : "no-cache",
+    "X-Content-Type-Options": "nosniff"
+  });
+  res.end(body);
+}
+function inlineJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+async function serveFilesPage(req, res, ctx) {
+  const headers = {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Frame-Options": "DENY",
+    // The bundle and the box's own routes, nothing else. `img-src blob:` is the image preview, which
+    // the explorer reads as bytes and shows through an object URL; `data:` is the editors' icons.
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+  };
+  const session = await readSession(req.headers.cookie, ctx.vmId);
+  if (!session) {
+    res.writeHead(401, headers);
+    res.end(ctx.deniedPage);
+    return;
+  }
+  const agentName = ctx.hostname ? ctx.hostname.split(".")[0] : "your agent";
+  const data = { canWrite: session.canWrite, agentName, consoleUrl: ctx.consoleUrl };
+  res.writeHead(200, headers);
+  res.end(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName.replace(/[&<>"']/g, "")} \xB7 files</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"><link rel="stylesheet" href="/__cc/files-ui/app.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-files" type="application/json">${inlineJson(data)}</script><script type="module" src="/__cc/files-ui/app.js"></script></body></html>`
+  );
+}
+
 // src/routes/access.ts
 var DASHBOARD_BUDGET_MS = 4e4;
 var DASHBOARD_RETRY_WAIT_MS = 3e3;
@@ -308,7 +366,7 @@ var FORGET_PREVIOUS_GATEWAY_JS = `
   } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
-    return readFileSync2(join2(keysDir(), name), "utf-8").trim() || null;
+    return readFileSync2(join3(keysDir(), name), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -343,15 +401,20 @@ function allowedOrigins() {
   }
   return origins;
 }
-function frameAncestors() {
-  const origin = allowedOrigins().console;
-  return origin ? `'self' ${origin}` : "'self'";
+function sameSite(a2, b2) {
+  const site = (origin) => {
+    if (!origin) return null;
+    try {
+      return new URL(origin).hostname.split(".").slice(-2).join(".");
+    } catch {
+      return null;
+    }
+  };
+  const x2 = site(a2);
+  return x2 !== null && x2 === site(b2);
 }
 var AGENT_POLICY = () => ({ allowed: [allowedOrigins().box], allowTopLevelNavigation: true });
-var VIEW_POLICY = () => {
-  const { box, console: consoleOrigin2 } = allowedOrigins();
-  return { allowed: [box, consoleOrigin2], allowTopLevelNavigation: true, allowFramedNavigation: true };
-};
+var VIEW_POLICY = () => ({ allowed: [allowedOrigins().box], allowTopLevelNavigation: true });
 var EXCHANGE_POLICY = () => ({ allowed: [allowedOrigins().box], uncredentialed: "check" });
 var LOGOUT_POLICY = () => {
   const { box, console: consoleOrigin2 } = allowedOrigins();
@@ -362,14 +425,6 @@ function originAllowed(req, policy, label) {
   if (verdict.ok) return true;
   console.warn(`[access] ${label}: ${denialMessage(verdict)}`);
   return false;
-}
-function framedHtml(res, status, body) {
-  res.writeHead(status, {
-    "Content-Type": "text/html; charset=utf-8",
-    "Cache-Control": "no-store",
-    "Content-Security-Policy": `frame-ancestors ${frameAncestors()}`
-  });
-  res.end(body);
 }
 function json(res, status, body, extraHeaders = {}) {
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders });
@@ -442,6 +497,7 @@ function loginPage(hostname) {
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
+  if (d.view === 'files') { $('h').textContent = 'Opening files'; step(3); location.replace(d.next); return; }
   if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
   step(3); await wait(350);
@@ -458,7 +514,14 @@ var DENIED_PAGE = shell(
 var DENIED_VIEW_PAGE = shell(
   "This browser is private",
   `<h1>This browser is private</h1>
-<p class="note">Open it from your ControlClaw console. If you were watching a moment ago, the view has expired: press Reconnect.</p>`
+<p class="note">Open it from your ControlClaw console. If you were watching a moment ago, the view has expired: press Screen again.</p>
+<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+);
+var DENIED_FILES_PAGE = shell(
+  "These files are private",
+  `<h1>These files are private</h1>
+<p class="note">Open them from your ControlClaw console. If you were signed in, your session has expired: click Files again.</p>
+<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
 );
 function browserPage(hostname) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
@@ -477,13 +540,13 @@ function browserPage(hostname) {
   const fail = (msg) => { $('h').textContent = 'Could not open the browser'; for (let i = 1; i <= 2; i++) $('s' + i).className = ''; $('err').textContent = msg; $('err').className = 'err show'; };
   const t = new URLSearchParams(location.hash.slice(1)).get('t');
   history.replaceState(null, '', location.pathname);
-  if (!t) { fail('This page only works from the Browser button in your ControlClaw console.'); return; }
+  if (!t) { fail('This page only works from the Screen button in your ControlClaw console.'); return; }
   let d, ok;
   try {
     const r = await fetch('/__cc/view-session', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
     d = await r.json().catch(() => ({})); ok = r.ok;
-  } catch (e) { fail('Could not reach the agent. Try Reconnect in your ControlClaw console.'); return; }
-  if (!ok) { fail(d.error || 'This view has expired. Press Reconnect in your ControlClaw console.'); return; }
+  } catch (e) { fail('Could not reach the agent. Press Screen again in your ControlClaw console.'); return; }
+  if (!ok) { fail(d.error || 'This view has expired. Press Screen again in your ControlClaw console.'); return; }
   $('s1').className = 'done'; $('s2').className = 'active';
   location.replace(${JSON.stringify(NOVNC_URL)});
 })();`
@@ -580,6 +643,11 @@ async function handleAccess(req, res, pathname) {
       json(res, 401, { error: "This link was already used. Open the agent from your ControlClaw console again." });
       return;
     }
+    if (payload.next === "files") {
+      const session2 = await issueSession(vmId, { canWrite: payload.canWrite === true });
+      json(res, 200, { next: "/__cc/files", view: "files", paired: true }, { "Set-Cookie": sessionCookie(session2) });
+      return;
+    }
     const hostname = readKey("vm_hostname");
     let next = "/";
     let paired = false;
@@ -605,7 +673,7 @@ async function handleAccess(req, res, pathname) {
     return;
   }
   if (pathname === "/__cc/browser" && req.method === "GET") {
-    framedHtml(res, 200, browserPage(readKey("vm_hostname")));
+    html(res, 200, browserPage(readKey("vm_hostname")));
     return;
   }
   if (pathname === "/__cc/view-session" && req.method === "POST") {
@@ -621,7 +689,7 @@ async function handleAccess(req, res, pathname) {
       return;
     }
     if (!consumeJti(payload.jti, payload.exp)) {
-      json(res, 401, { error: "This link was already used. Press Reconnect in your ControlClaw console." });
+      json(res, 401, { error: "This link was already used. Press Screen again in your ControlClaw console." });
       return;
     }
     json(res, 200, { ok: true }, { "Set-Cookie": viewSessionCookie(await issueViewSession(vmId)) });
@@ -632,8 +700,16 @@ async function handleAccess(req, res, pathname) {
       res.writeHead(200, { "Cache-Control": "no-store" });
       res.end();
     } else {
-      framedHtml(res, 401, DENIED_VIEW_PAGE);
+      html(res, 401, DENIED_VIEW_PAGE);
     }
+    return;
+  }
+  if (pathname === "/__cc/files" && req.method === "GET") {
+    await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), consoleUrl: CONSOLE_URL, deniedPage: DENIED_FILES_PAGE });
+    return;
+  }
+  if (pathname.startsWith("/__cc/files-ui/") && req.method === "GET") {
+    await serveFilesAsset(res, pathname.slice("/__cc/files-ui/".length));
     return;
   }
   if (pathname === "/__cc/logout" && req.method === "POST") {
@@ -680,8 +756,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "92deda8" : "unknown",
-  builtAt: true ? "2026-09-30T13:21:24+01:00" : "unknown"
+  commit: true ? "d956f43" : "unknown",
+  builtAt: true ? "2026-09-30T13:42:05+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -783,7 +859,7 @@ async function reportReady(readSsh, extra = {}) {
 // src/keys.ts
 import crypto2 from "crypto";
 import { readFileSync as readFileSync5, writeFileSync as writeFileSync2, existsSync as existsSync2, mkdirSync } from "fs";
-function readFile(path) {
+function readFile2(path) {
   try {
     return readFileSync5(path, "utf8").trim();
   } catch {
@@ -794,7 +870,7 @@ function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
   if (existsSync2(privPath)) {
-    return readFile(pubPath) ?? derivePublicKey(readFileSync5(privPath, "utf8"));
+    return readFile2(pubPath) ?? derivePublicKey(readFileSync5(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto2.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
@@ -812,10 +888,10 @@ function derivePublicKey(privatePem) {
 }
 var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 async function registerPublicKey(keysDir2) {
-  const vmId = readFile(`${keysDir2}/vm_id`);
-  const token = readFile(`${keysDir2}/bootstrap_token`);
-  const registerUrl = readFile(`${keysDir2}/register_api_url`);
-  const publicKey = readFile(`${keysDir2}/vm_public_key.pem`);
+  const vmId = readFile2(`${keysDir2}/vm_id`);
+  const token = readFile2(`${keysDir2}/bootstrap_token`);
+  const registerUrl = readFile2(`${keysDir2}/register_api_url`);
+  const publicKey = readFile2(`${keysDir2}/vm_public_key.pem`);
   if (!token || !registerUrl) {
     return;
   }
@@ -867,7 +943,7 @@ function sha256Hex(s2) {
 import { readFileSync as readFileSync6, writeFileSync as writeFileSync3, existsSync as existsSync3 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
-function readFile2(path) {
+function readFile3(path) {
   try {
     return readFileSync6(path, "utf8").trim();
   } catch {
@@ -876,21 +952,21 @@ function readFile2(path) {
 }
 var SYSTEM_MITM_CA_PATH = "/usr/local/share/ca-certificates/controlclaw-mitm.crt";
 function trustMitmCaInProcess(path = SYSTEM_MITM_CA_PATH) {
-  const pem = readFile2(path);
+  const pem = readFile3(path);
   if (!pem) return false;
   setDefaultCACertificates([...getCACertificates("bundled"), pem]);
   return true;
 }
 var sleep3 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
-  const mitmIp = readFile2(`${keysDir2}/mitm_box_private_ip`);
+  const mitmIp = readFile3(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
     return { trusted: true, installed: false, message: "This box is not behind a firewall proxy." };
   }
   trustMitmCaInProcess();
-  const configUrl = readFile2(`${keysDir2}/config_api_url`);
-  const vmId = readFile2(`${keysDir2}/vm_id`);
-  const privateKey = readFile2(`${keysDir2}/vm_private_key.pem`);
+  const configUrl = readFile3(`${keysDir2}/config_api_url`);
+  const vmId = readFile3(`${keysDir2}/vm_id`);
+  const privateKey = readFile3(`${keysDir2}/vm_private_key.pem`);
   if (!configUrl || !vmId || !privateKey) {
     console.warn("[mitm-ca] missing config_api_url / vm_id / vm_private_key.pem \u2014 cannot install CA");
     return { trusted: false, installed: false, message: "This box cannot ask for the firewall's certificate." };
@@ -907,7 +983,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
         const cfg = await res.json();
         const mitm = cfg.mitm;
         if (mitm?.caCert && mitm.caSig) {
-          let pin = existsSync3(pinPath) ? readFile2(pinPath) : null;
+          let pin = existsSync3(pinPath) ? readFile3(pinPath) : null;
           if (!pin && mitm.pubKey) {
             pin = mitm.pubKey;
             writeFileSync3(pinPath, pin, { mode: 420 });
@@ -921,7 +997,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
             last = "The certificate on offer is not signed by this box's pinned firewall key, so it was refused.";
           } else {
             const fpr = sha256Hex(mitm.caCert);
-            if (readFile2(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
+            if (readFile3(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
             installCa(caSrcPath, mitm.caCert);
             trustMitmCaInProcess();
             writeFileSync3(fprPath, fpr, { mode: 420 });
@@ -954,7 +1030,7 @@ import { readFileSync as readFileSync7 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
-function readFile3(path) {
+function readFile4(path) {
   try {
     return readFileSync7(path, "utf8").trim();
   } catch {
@@ -976,7 +1052,7 @@ function probe(host, port, timeoutMs = 3e3) {
   });
 }
 async function enableTransparentEgress(keysDir2) {
-  const mitmIp = readFile3(`${keysDir2}/mitm_box_private_ip`);
+  const mitmIp = readFile4(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) return true;
   if (await waitForMitmProxy(mitmIp)) {
     try {
@@ -1145,11 +1221,11 @@ function handleStatus(res, drive2) {
 // src/routes/logs.ts
 import { execFile as execFile2, spawn } from "child_process";
 import { closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "fs";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/redact.ts
 import { readFileSync as readFileSync8 } from "fs";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
 var MIN_SECRET_LENGTH = 8;
 var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
@@ -1163,7 +1239,7 @@ function loadRedactionSecrets(keysDir2) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
-      const value = readFileSync8(join3(keysDir2, name), "utf-8").trim();
+      const value = readFileSync8(join4(keysDir2, name), "utf-8").trim();
       if (value.length >= MIN_SECRET_LENGTH) found.push(value);
     } catch {
     }
@@ -1266,7 +1342,7 @@ function newestLogFile() {
     const candidates = readdirSync(LOG_DIR).filter((f2) => f2.startsWith("openclaw") && f2.endsWith(".log"));
     let best = null;
     for (const f2 of candidates) {
-      const path = join4(LOG_DIR, f2);
+      const path = join5(LOG_DIR, f2);
       const mtime = statSync(path).mtimeMs;
       if (!best || mtime > best.mtime) best = { path, mtime };
     }
@@ -4859,7 +4935,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname as dirname8, join as join5 } from "path";
+import { dirname as dirname8, join as join6 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -8685,7 +8761,7 @@ var BackupService = class {
   busy = null;
   rootFor(kind) {
     if (kind === "firewall") throw new Error("an agent box does not hold the firewall's own backup");
-    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join5(this.home, ARCHIVE_ROOTS[kind]);
+    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join6(this.home, ARCHIVE_ROOTS[kind]);
     assertArchivableRoot(root);
     return root;
   }
@@ -8699,25 +8775,25 @@ var BackupService = class {
     const walk = async (rel) => {
       let dir;
       try {
-        dir = await opendir(rel === "" ? root : join5(root, rel));
+        dir = await opendir(rel === "" ? root : join6(root, rel));
       } catch {
         return;
       }
       for await (const item of dir) {
         const childRel = rel === "" ? item.name : `${rel}/${item.name}`;
         if (shouldExclude(childRel, kind)) {
-          const bytes = item.isDirectory() ? await dirSize(join5(root, childRel)) : await fileSize(join5(root, childRel));
+          const bytes = item.isDirectory() ? await dirSize(join6(root, childRel)) : await fileSize(join6(root, childRel));
           excluded.push({ path: childRel, bytes });
           continue;
         }
         let st2;
         try {
-          st2 = await lstat(join5(root, childRel));
+          st2 = await lstat(join6(root, childRel));
         } catch {
           continue;
         }
         if (st2.isSymbolicLink()) {
-          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join5(root, childRel)) });
+          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join6(root, childRel)) });
           continue;
         }
         if (st2.isDirectory()) {
@@ -8768,8 +8844,8 @@ var BackupService = class {
         backupId: input.backupId,
         kind: input.kind
       });
-      const dir = await mkdtemp(join5(this.spoolDir, "cc-backup-"));
-      spool = join5(dir, "archive.bin");
+      const dir = await mkdtemp(join6(this.spoolDir, "cc-backup-"));
+      spool = join6(dir, "archive.bin");
       await pipeline(
         Readable.from(tarOf(plan.root, manifest, input.kind)),
         createGzip({ level: 6 }),
@@ -8868,7 +8944,7 @@ var BackupService = class {
             manifest = parseManifest(new TextDecoder().decode(e.body));
             continue;
           }
-          const abs = join5(into, rel);
+          const abs = join6(into, rel);
           if (e.type === "dir") {
             await mkdir(abs, { recursive: true, mode: 448 });
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
@@ -8942,7 +9018,7 @@ async function* tarOf(root, manifest, kind) {
   yield manifestBody;
   yield* tarPadding(manifestBody.length);
   for (const e of manifest.entries) {
-    const abs = join5(root, e.path);
+    const abs = join6(root, e.path);
     if (e.kind === "dir") {
       yield* tarHeader({ path: `${e.path}/`, type: "dir", size: 0, mode: e.mode, mtime });
       continue;
@@ -9002,8 +9078,8 @@ async function swapDirectory(opts) {
   };
   try {
     for (const rel of opts.keep ?? []) {
-      const from = join5(opts.target, rel);
-      const to = join5(opts.staged, rel);
+      const from = join6(opts.target, rel);
+      const to = join6(opts.staged, rel);
       const exists2 = await lstat(from).then(
         () => true,
         () => false
@@ -9053,7 +9129,7 @@ async function dirSize(path) {
     return 0;
   }
   for await (const item of dir) {
-    const child = join5(path, item.name);
+    const child = join6(path, item.name);
     if (item.isDirectory()) total += await dirSize(child);
     else if (item.isFile()) total += await fileSize(child);
   }
@@ -9167,7 +9243,7 @@ async function handleBackup(req, res, url2, service) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open, readdir, realpath, rename as rename2, rm as rm2, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID2 } from "crypto";
-import { basename, dirname as dirname9, join as join6, resolve, sep } from "path";
+import { basename as basename2, dirname as dirname9, join as join7, resolve, sep } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -9316,11 +9392,11 @@ async function realpathLenient(path) {
   for (; ; ) {
     try {
       const real = await realpath(cursor);
-      return missing.length ? join6(real, ...missing.reverse()) : real;
+      return missing.length ? join7(real, ...missing.reverse()) : real;
     } catch {
       const parent = dirname9(cursor);
       if (parent === cursor) return resolve(path);
-      missing.push(basename(cursor));
+      missing.push(basename2(cursor));
       cursor = parent;
     }
   }
@@ -9352,9 +9428,16 @@ var FilesService = class {
   get openToAnyoneCanWrite() {
     return this.opts.insecureDevReadOnly !== true;
   }
+  /**
+   * Who may call the file routes with this box's cookie: the box's own page (/__cc/files), and the
+   * console only while it is the same *site* as the box — a `vm.controlclaw.com` box, whose console
+   * still renders the explorer itself. For a `ccl.bot` box the browser would not send the cookie
+   * cross-site anyway; listing the console there would be an exception with nothing to gain.
+   */
   get origins() {
     const { box, console: consoleOrigin2 } = allowedOrigins();
-    return [box, consoleOrigin2, ...this.opts.extraOrigins ?? []].filter((o2) => !!o2);
+    const consoleIfSameSite = sameSite(box, consoleOrigin2) ? consoleOrigin2 : null;
+    return [box, consoleIfSameSite, ...this.opts.extraOrigins ?? []].filter((o2) => !!o2);
   }
   async root() {
     this.rootReal ??= await realpath(this.opts.root);
@@ -9392,7 +9475,7 @@ var FilesService = class {
     const normalized = normalizeRelative(rel);
     let real;
     try {
-      real = await realpath(normalized ? join6(root, normalized) : root);
+      real = await realpath(normalized ? join7(root, normalized) : root);
     } catch {
       throw new FilesError(404, "not_found", "No such file or folder.");
     }
@@ -9417,13 +9500,13 @@ var FilesService = class {
       const root = await this.root();
       return { rel: "", abs: root, parent: root, name: "" };
     }
-    const name = basename(normalized);
+    const name = basename2(normalized);
     if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
     const parentRel = dirname9(normalized) === "." ? "" : dirname9(normalized);
     const parent = await this.resolveExisting(parentRel);
     const st2 = await stat2(parent.abs).catch(() => null);
     if (!st2?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
-    const abs = join6(parent.abs, name);
+    const abs = join7(parent.abs, name);
     await this.assertAllowed(abs);
     return { rel: normalized, abs, parent: parent.abs, name };
   }
@@ -9442,7 +9525,7 @@ var FilesService = class {
     const truncated = names.length > this.limits.listMaxEntries;
     const entries = [];
     for (const name of names.slice(0, this.limits.listMaxEntries)) {
-      const entry = await describe(root, join6(abs, name), name);
+      const entry = await describe(root, join7(abs, name), name);
       if (entry) entries.push(entry);
     }
     entries.sort((a2, b2) => {
@@ -9457,7 +9540,7 @@ var FilesService = class {
     const st2 = await stat2(abs);
     if (st2.isDirectory()) throw new FilesError(400, "is_a_directory", "That is a folder, not a file.");
     if (!st2.isFile()) throw new FilesError(400, "not_a_file", "That is not a regular file.");
-    return { rel: relPath, abs, size: st2.size, mtime: st2.mtime.toISOString(), mime: mimeFor(basename(abs)) };
+    return { rel: relPath, abs, size: st2.size, mtime: st2.mtime.toISOString(), mime: mimeFor(basename2(abs)) };
   }
   async mkdir(rel) {
     const target = await this.resolveForCreate(rel);
@@ -9602,7 +9685,7 @@ var FilesService = class {
   async spool(req, parent, max, op) {
     const declared = Number(req.headers["content-length"] ?? "");
     if (Number.isFinite(declared) && declared > max) throw tooLargeError(op, max);
-    const tmp = join6(parent, `.cc-${op}-${randomUUID2()}.part`);
+    const tmp = join7(parent, `.cc-${op}-${randomUUID2()}.part`);
     let written = 0;
     let tooBig = false;
     const meter = new Transform({
@@ -9676,7 +9759,7 @@ async function countEntries(dir, max) {
     for (const name of names) {
       count++;
       if (count > max) return null;
-      const child = join6(current, name);
+      const child = join7(current, name);
       const st2 = await lstat2(child).catch(() => null);
       if (st2?.isDirectory()) stack.push(child);
     }
@@ -9804,7 +9887,7 @@ async function dispatch(req, res, url2, service, cors, session) {
   }
   if (path === "/files/read" && req.method === "GET") {
     const file = await service.fileFor(q2 ?? "");
-    const meta = { path: file.rel, name: basename(file.abs), mime: file.mime, size: file.size, mtime: file.mtime };
+    const meta = { path: file.rel, name: basename2(file.abs), mime: file.mime, size: file.size, mtime: file.mtime };
     if (isPreviewableImage(file.mime)) {
       if (file.size > service.limits.imagePreviewBytes) {
         sendJson(res, 200, { ...meta, kind: "binary", reason: "too_large" }, cors);
@@ -9836,7 +9919,7 @@ async function dispatch(req, res, url2, service, cors, session) {
   }
   if (path === "/files/download" && req.method === "GET") {
     const file = await service.fileFor(q2 ?? "");
-    const name = basename(file.abs);
+    const name = basename2(file.abs);
     res.writeHead(200, {
       ...cors,
       "Content-Type": "application/octet-stream",
@@ -9892,7 +9975,7 @@ async function readHead(path, max) {
 import { createHash as createHash2 } from "crypto";
 import { mkdirSync as mkdirSync8, mkdtempSync, readFileSync as readFileSync16, rmSync as rmSync2, writeFileSync as writeFileSync10 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname10, join as join7 } from "path";
+import { dirname as dirname10, join as join8 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -9976,8 +10059,8 @@ var SshAccessService = class {
   }
   // ---- internals ----
   async mint(grantId) {
-    const dir = mkdtempSync(join7(this.opts.workDir ?? tmpdir2(), "cc-ssh-"));
-    const path = join7(dir, "key");
+    const dir = mkdtempSync(join8(this.opts.workDir ?? tmpdir2(), "cc-ssh-"));
+    const path = join8(dir, "key");
     try {
       await this.exec(
         "ssh-keygen",

@@ -393,8 +393,8 @@ import { readFileSync as readFileSync5, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "92deda8" : "unknown",
-  builtAt: true ? "2026-09-30T13:21:24+01:00" : "unknown"
+  commit: true ? "d956f43" : "unknown",
+  builtAt: true ? "2026-09-30T13:42:05+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [

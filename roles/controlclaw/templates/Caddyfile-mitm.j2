@@ -1,14 +1,16 @@
 # Managed by Ansible (roles/controlclaw/templates/Caddyfile-mitm.j2). Do not edit on the box.
 #
-# Caddy on the FIREWALL box. It exists for one thing: inbound webhooks (controlclaw
-# docs/plans/webhooks.md). It terminates TLS for this firewall's own hostname with a Let's
-# Encrypt certificate (HTTP-01, relayed by the proxy box on port 80, exactly as an agent box's
-# is) and hands /hook/* to the mitm-agent's ingress listener on loopback.
+# Caddy on the FIREWALL box. It exists for two things: inbound webhooks (controlclaw
+# docs/plans/webhooks.md) and signing browsers in to the org's agents (controlclaw
+# docs/plans/browser-enrollment.md). It terminates TLS for this firewall's own hostname with a
+# Let's Encrypt certificate (HTTP-01, relayed by the proxy box on port 80, exactly as an agent
+# box's is) and hands /hook/*, /__cc/open and /__cc/enroll/confirm to the mitm-agent's ingress
+# listener on loopback.
 #
-# The reachable surface of a firewall box is precisely what this file serves. That is the whole
-# argument for putting ingress here rather than on the agent box, so it has to stay true: one
-# path prefix, and a bare 404 for everything else. No admin endpoint, no file server, no
-# directory listing, no OpenClaw, no noVNC — none of those exist on this box.
+# The reachable surface of a firewall box is precisely what this file serves, so it has to stay
+# small: one path prefix, two exact POST routes that answer with a status or a redirect and never
+# a page, and a bare 404 for everything else. No admin endpoint, no file server, no directory
+# listing, no OpenClaw, no noVNC — none of those exist on this box.
 {
     email {{ caddy_acme_email }}
     # Issuers are explicit and tried in this order: Let's Encrypt, then ZeroSSL. Every box still
@@ -30,6 +32,17 @@
         # Caddy buffer more than the ingress would ever accept.
         request_body {
             max_size {{ ingress_max_body }}
+        }
+        reverse_proxy 127.0.0.1:{{ ingress_port }}
+    }
+
+    # Open, through the firewall (browser-enrollment.md §3). A form POST from an agent's own page:
+    # an open intent and a binding, or a pending id and a code. Both fit in a few hundred bytes.
+    # Exact paths, not prefixes, so nothing else under /__cc/ reaches the mitm-agent.
+    @access path /__cc/open /__cc/enroll/confirm
+    handle @access {
+        request_body {
+            max_size 16KB
         }
         reverse_proxy 127.0.0.1:{{ ingress_port }}
     }

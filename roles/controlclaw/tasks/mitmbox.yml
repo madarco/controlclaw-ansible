@@ -128,6 +128,10 @@
     - { name: register_api_url, content: "{{ register_api_url | default('') }}", mode: '0644' }
     - { name: org_id, content: "{{ org_id | default('') }}", mode: '0644' }
     - { name: controlclaw_url, content: "{{ controlclaw_url | default('') }}", mode: '0644' }
+    # The firewall's own public hostname (Caddy's). The mitm-agent tells each agent where to send a
+    # browser for an Open (browser-enrollment.md §6), and cc-reprovision hands it back on an update
+    # so Caddy keeps serving.
+    - { name: vm_hostname, content: "{{ vm_hostname | default('') }}", mode: '0644' }
   no_log: true
   when: item.content | length > 0
 
