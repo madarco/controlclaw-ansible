@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e7a44e8" : "unknown",
-  builtAt: true ? "2026-09-29T22:00:06+01:00" : "unknown"
+  commit: true ? "21eddcc" : "unknown",
+  builtAt: true ? "2026-09-30T09:14:36+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -1515,10 +1515,12 @@ var GATEWAY_SCOPES = ["operator.read", "operator.approvals", "operator.admin"];
 var PROTOCOL = 4;
 var CONNECT_TIMEOUT_MS = 1e4;
 var DEFAULT_CALL_TIMEOUT_MS = 1e4;
+var DEFAULT_MIN_BACKOFF_MS = 1e3;
+var DEFAULT_MAX_BACKOFF_MS = 2e3;
 var GatewayClient = class {
   constructor(opts) {
     this.opts = opts;
-    this.backoff = opts.minBackoffMs ?? 1e3;
+    this.backoff = opts.minBackoffMs ?? DEFAULT_MIN_BACKOFF_MS;
   }
   ws = null;
   seq = 0;
@@ -1627,7 +1629,7 @@ var GatewayClient = class {
       ).then(() => {
         clearTimeout(connectTimer);
         this._connected = true;
-        this.backoff = this.opts.minBackoffMs ?? 1e3;
+        this.backoff = this.opts.minBackoffMs ?? DEFAULT_MIN_BACKOFF_MS;
         this.outageLogged = false;
         this.log("connected");
         for (const h2 of this.connectHandlers) {
@@ -1692,7 +1694,7 @@ var GatewayClient = class {
       this.outageLogged = true;
     }
     const delay = this.backoff;
-    this.backoff = Math.min(this.backoff * 2, this.opts.maxBackoffMs ?? 3e4);
+    this.backoff = Math.min(this.backoff * 2, this.opts.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();

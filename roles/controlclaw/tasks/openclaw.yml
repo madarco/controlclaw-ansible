@@ -25,6 +25,41 @@
       node {{ openclaw_node_version.stdout }} is too old for OpenClaw (needs >=24.16.0).
       Bump nodejs_version in roles/controlclaw/defaults/main.yml.
 
+# Where the gateway keeps Node's compile cache, and why it has to be set up at all (T-102).
+#
+# OpenClaw turns the cache on itself, in-process, at `/tmp/node-compile-cache/openclaw/<version>/`.
+# But npm 11 enables Node's compile cache too, at the same `/tmp/node-compile-cache`, and the play
+# runs npm as root before the gateway ever starts — so the directory was created root-owned 0755,
+# the gateway (running as controlclaw) could never create its `openclaw/` subdirectory, and OpenClaw
+# swallows that error. Every gateway start on every box compiled all of its modules from scratch.
+# The cache is worth ~0.8 s of a 12-15 s start, and ~0.4 s of every `openclaw` CLI call below.
+#
+# Pre-creating `openclaw/` for controlclaw is the whole fix, and it deliberately does NOT move the
+# cache anywhere. Setting NODE_COMPILE_CACHE on the unit instead would be inherited by every process
+# the agent starts, so the bytecode of a customer's own scripts would land wherever it points; the
+# in-process cache OpenClaw already uses is not inherited, holds only OpenClaw's own modules, stays
+# on /tmp and is wiped with it at every boot. 0700, and not world-writable: a cache another user
+# could write to is code the gateway would load.
+- name: Let the gateway write its compile cache (tmpfiles.d)
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/controlclaw-openclaw-compile-cache.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (roles/controlclaw/tasks/openclaw.yml). OpenClaw's own compile cache,
+      # which it enables in-process under /tmp/node-compile-cache/openclaw. The parent is npm's too.
+      d /tmp/node-compile-cache 0755 root root -
+      d /tmp/node-compile-cache/openclaw 0700 {{ controlclaw_user }} {{ controlclaw_user }} -
+
+# Every run, not only when the file changed: /tmp is emptied at boot and npm may already have made
+# the parent root-owned by the time this runs. `d` fixes the owner and mode of a directory that is
+# already there, so this is idempotent.
+- name: Create the compile cache directories now
+  ansible.builtin.command:
+    cmd: systemd-tmpfiles --create /etc/tmpfiles.d/controlclaw-openclaw-compile-cache.conf
+  changed_when: false
+
 - name: Create OpenClaw config directories
   ansible.builtin.file:
     path: "{{ item.path }}"
@@ -524,8 +559,12 @@
       WorkingDirectory={{ controlclaw_home }}
       Environment=HOME={{ controlclaw_home }}
       ExecStart=/usr/bin/openclaw gateway run
+      # 2 s, not 10 (T-102). A config change OpenClaw cannot hot-apply (memory.search, which the
+      # first model push always writes) makes it exit and hand the restart to systemd, and every
+      # second here is a second the agent is down. A crash loop is still paced by the start itself,
+      # which takes over 6 s before it can fail.
       Restart=always
-      RestartSec=10
+      RestartSec=2
       StandardOutput=journal
       StandardError=journal
       SyslogIdentifier=openclaw
