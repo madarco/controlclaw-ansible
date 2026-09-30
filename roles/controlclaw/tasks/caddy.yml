@@ -12,37 +12,21 @@
 # The config half below — the Caddyfile, its `caddy validate`, enabling the unit, and the two
 # grep assertions that the noVNC gate and the firewall's single path prefix are in it — runs on
 # every boot, because all of it is per-box.
-- name: Download the Caddy apt repository key
+# Installed from the GitHub release, pinned by version and checksum, not from Caddy's cloudsmith
+# apt repository: that repository signs with an expired subkey (see playbooks/install.yml, which
+# removes its source), so an apt install from it fails on every box. The .deb is the same package
+# the repository shipped (same unit, same caddy user), so boxes installed either way converge.
+- name: Download the Caddy package
   ansible.builtin.get_url:
-    url: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
-    dest: /usr/share/keyrings/caddy-stable-archive-keyring.asc
+    url: "https://github.com/caddyserver/caddy/releases/download/v{{ caddy_version }}/caddy_{{ caddy_version }}_linux_{{ caddy_deb_arch }}.deb"
+    dest: "/var/cache/caddy_{{ caddy_version }}_{{ caddy_deb_arch }}.deb"
+    checksum: "sha512:{{ caddy_deb_sha512[caddy_deb_arch] }}"
     mode: '0644'
-  when: not cc_skip.caddy | default(false) | bool
-
-# Same keyring path and list name as the official install instructions, so a box that was
-# set up by hand converges instead of conflicting on Signed-By.
-- name: Dearmor the Caddy apt repository key
-  ansible.builtin.command:
-    cmd: gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /usr/share/keyrings/caddy-stable-archive-keyring.asc
-    creates: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  when: not cc_skip.caddy | default(false) | bool
-
-- name: Add Caddy apt repository
-  ansible.builtin.apt_repository:
-    repo: "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main"
-    filename: caddy-stable
-    state: present
-  register: caddy_repo
   when: not cc_skip.caddy | default(false) | bool
 
 - name: Install Caddy
   ansible.builtin.apt:
-    name: caddy
-    state: present
-    update_cache: true
-    # Unconditional only when this play just added the repository line; otherwise the refresh in
-    # the play's pre_tasks stands. `update_cache: true` on its own cost 17s of every provision.
-    cache_valid_time: "{{ 0 if caddy_repo is changed else 3600 }}"
+    deb: "/var/cache/caddy_{{ caddy_version }}_{{ caddy_deb_arch }}.deb"
     lock_timeout: 300
   when: not cc_skip.caddy | default(false) | bool
 

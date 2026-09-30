@@ -291,6 +291,14 @@ org_id: ""                           # org this box serves
 # this firewall. See apps/saas/docs/features/backups.md.
 controlclaw_backup_host: "controlclaw-backups.s3.eu-west-1.amazonaws.com"
 
+# Caddy, installed from its GitHub release (tasks/caddy.yml). Checksums from
+# caddy_<version>_checksums.txt on the release page.
+caddy_version: "2.11.4"
+caddy_deb_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+caddy_deb_sha512:
+  amd64: "1c6f5404f3622e46d401d81f4af59677d46b886229c6694d60fd936b87c72d3bb5d1fcf42b55c8d555769fa75acf434ab618fc7e0df2c79cf8512ee580d38d06"
+  arm64: "c43c62b7b583b31c682b3c3e1a31cf03759fbab01dcb0fc7d7fc3a5ce1bef43403583e26133920634a730a9fe31dae1386af4d3f9f3fc19fcc2c29ebf19de235"
+
 # The hosts THIS ROLE downloads from when it re-runs on an agent box during an in-place update
 # (cc-reprovision). The box is confined to the org proxy by then, so under a deny-by-default policy
 # every download would be refused. The firewall allows these hosts for a box only while that box runs

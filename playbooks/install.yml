@@ -78,6 +78,21 @@
           DPkg::Lock::Timeout "300";
       when: is_debian_family
 
+    # Caddy's cloudsmith apt repository signs with a subkey that has expired (EXPKEYSIG
+    # 531A6B20FA058A70, seen 2026-09-30), and the key it publishes carries the same one, so every
+    # `apt-get update` on a box that lists it fails and takes the whole run down. Caddy now comes
+    # from its GitHub release (tasks/caddy.yml); drop the source before the first apt call so boxes
+    # built with it, and base images that carry it, can refresh their cache again.
+    - name: Remove the Caddy cloudsmith apt source (expired signing key)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/caddy-stable.list
+        - /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        - /usr/share/keyrings/caddy-stable-archive-keyring.asc
+      when: is_debian_family
+
     - name: Update apt cache and upgrade all packages
       ansible.builtin.apt:
         update_cache: true
