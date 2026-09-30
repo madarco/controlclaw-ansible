@@ -476,6 +476,13 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+# Run the pending restarts now, before the first start. Otherwise a new firewall's agent starts here,
+# reports ready, and is restarted a few seconds later by the handler at the end of the play; a command
+# the control plane handed to the first process dies with it (T-109: the included key's first replace
+# was lost that way). With the handlers flushed first, the start below is a no-op on a fresh box.
+- name: Mitm box | apply pending restarts before the first start
+  ansible.builtin.meta: flush_handlers
+
 - name: Enable and start mitm services
   ansible.builtin.systemd:
     name: "{{ item }}"
