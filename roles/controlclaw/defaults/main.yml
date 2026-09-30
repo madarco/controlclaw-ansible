@@ -434,8 +434,10 @@ gbrain_bin_dir: /opt/controlclaw/gbrain
 gbrain_user: gbrain
 gbrain_home: /var/lib/gbrain
 # Loopback only. Nothing on the private network or the internet talks to GBrain directly: the gate
-# that lets connected agents in (a later PR) and Caddy for the admin page both proxy to this.
+# that lets connected agents in and Caddy for the admin page both proxy to this.
 gbrain_port: 3130
+# The vm-agent's gate on the private address: connected agents' MCP traffic, each with its own token.
+gbrain_gate_port: 3131
 # Postgres from Ubuntu 24.04 (postgresql-16-pgvector is in universe). A cluster of its own rather
 # than the package's default `main`, so its data directory is created inside the container.
 gbrain_pg_version: "16"

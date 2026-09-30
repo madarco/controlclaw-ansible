@@ -225,6 +225,66 @@
       systemctl try-restart gbrain.service || true
       echo changed
 
+# The agents' tokens (controlclaw docs/plans/gbrain.md §5). The vm-agent's gate holds one per
+# connected agent and adds it to that agent's requests; it never leaves this box. GBrain's CLI reads
+# the database password from the env file only its own account can read, so this root helper runs it
+# as that account with fixed arguments: a token is always named cc-<vmId> and scoped read or
+# read,write, and `create` revokes any earlier token of that name first (GBrain names are not unique).
+# The token goes to stdout and nowhere else.
+- name: GBrain | cc-gbrain-token (root-owned, fixed commands)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-gbrain-token
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Managed by ControlClaw (gbrain.yml).
+      # Usage: cc-gbrain-token create <vmId> <read|read_write>   prints the new token
+      #        cc-gbrain-token revoke <vmId>
+      set -euo pipefail
+      op="${1:-}"; vm="${2:-}"
+      [[ "$vm" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo "cc-gbrain-token: bad vm id" >&2; exit 2; }
+      name="cc-$vm"
+      g() {
+        cd {{ gbrain_home }}
+        runuser -u {{ gbrain_user }} -- env HOME={{ gbrain_home }} bash -c \
+          'set -a; . {{ gbrain_home }}/.gbrain/env; set +a; exec /usr/local/bin/gbrain "$@"' _ "$@"
+      }
+      # Every active token of that name. GBrain exits non-zero when there is none, which is fine:
+      # the gate has already dropped the agent, so a token it no longer holds reaches nothing.
+      revoke() {
+        g auth revoke "$name" >/dev/null 2>&1 || true
+      }
+      case "$op" in
+        create)
+          case "${3:-}" in
+            read) scopes=read ;;
+            read_write) scopes=read,write ;;
+            *) echo "cc-gbrain-token: scope must be read or read_write" >&2; exit 2 ;;
+          esac
+          revoke
+          out="$(g auth create "$name" --scopes "$scopes")"
+          token="$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]+([A-Za-z0-9_]{32,})[[:space:]]*$/\1/p' | head -1)"
+          [ -n "$token" ] || { echo "cc-gbrain-token: GBrain printed no token" >&2; exit 3; }
+          printf '%s\n' "$token"
+          ;;
+        revoke) revoke; echo revoked ;;
+        *) echo "cc-gbrain-token: create or revoke" >&2; exit 2 ;;
+      esac
+
+# The gate (the vm-agent, on this box's private address) is what connected agents reach. The whole
+# private subnet, like the connector gate: the gate itself answers only the addresses it holds a
+# token for, and refuses the rest with a 403.
+- name: GBrain | Allow the agents' gate from the private network only
+  community.general.ufw:
+    rule: allow
+    port: "{{ gbrain_gate_port }}"
+    proto: tcp
+    src: "{{ mitm_private_subnet | default('10.0.0.0/16') }}"
+    comment: "ControlClaw brain gate (private net)"
+  when: not ci_test
+
 - name: GBrain | The vm-agent may drive GBrain's unit and read its journal
   ansible.builtin.copy:
     dest: /etc/sudoers.d/controlclaw-gbrain
@@ -235,12 +295,14 @@
     content: |
       # Managed by ControlClaw (gbrain.yml). The vm-agent runs as {{ controlclaw_user }} and serves
       # the console's Start / Stop / Restart / Logs for this box, and hands GBrain the model key the
-      # firewall pushed (cc-gbrain-key). Exactly these, nothing wider.
+      # firewall pushed (cc-gbrain-key), and mints and revokes the connected agents' tokens
+      # (cc-gbrain-token). Exactly these, nothing wider.
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl start gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl stop gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl -u gbrain *
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-key
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-token
 
 - name: GBrain | Serve
   ansible.builtin.systemd:

@@ -756,8 +756,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d956f43" : "unknown",
-  builtAt: true ? "2026-09-30T13:42:05+01:00" : "unknown"
+  commit: true ? "da59d96" : "unknown",
+  builtAt: true ? "2026-09-30T15:41:30+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -10900,6 +10900,61 @@ async function handleKill(req, res, url2) {
   sendJson(res, answer.ok ? 200 : 500, answer);
 }
 
+// src/brain-mcp.ts
+var BRAIN_MCP_NAME = "gbrain";
+var BRAIN_URL_RE = /^http:\/\/10\.(?:\d{1,3}\.){2}\d{1,3}:3131\/mcp$/;
+function parseBrainApply(body) {
+  if (!body) return "a JSON body is required";
+  if (body.remove === true) return { remove: true };
+  if (typeof body.url !== "string" || !BRAIN_URL_RE.test(body.url)) return "url must be the brain's private address (http://10.x.x.x:3131/mcp)";
+  return { url: body.url };
+}
+var BrainMcpService = class {
+  constructor(client) {
+    this.client = client;
+  }
+  gateway() {
+    const c2 = this.client();
+    if (!c2 || !c2.connected) throw new Error("OpenClaw is not running on this box");
+    return c2;
+  }
+  async apply(input) {
+    const gw = this.gateway();
+    const entry = "remove" in input ? null : { url: input.url, transport: "streamable-http" };
+    const snapshot = await gw.call("config.get", {}, GATEWAY_READ_MS);
+    const current = snapshot.parsed?.mcp?.servers?.[BRAIN_MCP_NAME];
+    if (entry ? current?.url === entry.url : !current) return { ok: true, configured: entry !== null, changed: false };
+    const hash = typeof snapshot.hash === "string" && snapshot.hash ? snapshot.hash : void 0;
+    await patchConfig(gw, { mcp: { servers: { [BRAIN_MCP_NAME]: entry } } }, { baseHash: hash, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
+    return { ok: true, configured: entry !== null, changed: true };
+  }
+};
+
+// src/routes/gbrain.ts
+async function handleGbrain(req, res, url2, service) {
+  if (url2.pathname !== "/gbrain/apply" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  if (!await verifyMitmRequest(req, "gbrain")) {
+    sendJson(res, 401, { error: "brain changes must come from the org firewall" });
+    return;
+  }
+  const input = parseBrainApply(await readJsonBody(req));
+  if (typeof input === "string") {
+    sendJson(res, 400, { ok: false, error: input });
+    return;
+  }
+  try {
+    const r2 = await service.apply(input);
+    console.log(`[gbrain] ${r2.configured ? "connected to" : "disconnected from"} the organization's brain`);
+    sendJson(res, 200, { ...r2, applied: [] });
+  } catch (err) {
+    const message = err.message;
+    sendJson(res, /not running/i.test(message) ? 503 : 500, { ok: false, error: message });
+  }
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -10995,6 +11050,7 @@ var google = null;
 var gmailWatch = null;
 var gateway = null;
 var devices = new DevicesService({ client: () => gateway });
+var brainMcp = new BrainMcpService(() => gateway);
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
 var ssh = new SshAccessService({ statePath: `${STATE_DIR}/ssh.json` });
 var tailscale = new TailscaleService({});
@@ -11092,6 +11148,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url2.pathname.startsWith("/kill/")) {
     await handleKill(req, res, url2);
+    return;
+  }
+  if (url2.pathname.startsWith("/gbrain/")) {
+    await handleGbrain(req, res, url2, brainMcp);
     return;
   }
   if (url2.pathname.startsWith("/files/")) {

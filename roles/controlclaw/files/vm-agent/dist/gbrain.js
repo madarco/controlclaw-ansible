@@ -1,8 +1,8 @@
 import { createRequire as __ccCreateRequire } from "node:module"; import { fileURLToPath as __ccFileURLToPath } from "node:url"; import { dirname as __ccDirname } from "node:path"; const require = __ccCreateRequire(import.meta.url); const __filename = __ccFileURLToPath(import.meta.url); const __dirname = __ccDirname(__filename);
 
 // src/gbrain.ts
-import { createServer } from "http";
-import { readFileSync as readFileSync7 } from "fs";
+import { createServer as createServer2 } from "http";
+import { readFileSync as readFileSync8 } from "fs";
 
 // src/auth.ts
 import { importSPKI, jwtVerify } from "jose";
@@ -393,8 +393,8 @@ import { readFileSync as readFileSync5, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d956f43" : "unknown",
-  builtAt: true ? "2026-09-30T13:42:05+01:00" : "unknown"
+  commit: true ? "da59d96" : "unknown",
+  builtAt: true ? "2026-09-30T15:41:30+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -724,28 +724,174 @@ function getServiceStatus(service) {
   }
 }
 
+// src/gbrain-gate.ts
+import { createServer, request as httpRequest } from "http";
+import { chmodSync, existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync7, renameSync, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname2 } from "path";
+import { networkInterfaces } from "os";
+var GATE_PORT = 3131;
+var HELPER2 = "/usr/local/bin/cc-gbrain-token";
+var HELPER_TIMEOUT_MS2 = 25e3;
+var UPSTREAM_TIMEOUT_MS = 10 * 6e4;
+var VM_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+var PRIVATE_IP_RE = /^10\.(?:\d{1,3}\.){2}\d{1,3}$/;
+var TOKEN_RE = /^[A-Za-z0-9_]{32,}$/;
+function normalizeIp(a) {
+  return (a ?? "").replace(/^::ffff:/i, "").trim();
+}
+function privateAddress() {
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.family === "IPv4" && !a.internal && PRIVATE_IP_RE.test(a.address)) return a.address;
+    }
+  }
+  return null;
+}
+function parseConnect(body) {
+  if (!body) return "a JSON body is required";
+  const { vmId, ip, scope } = body;
+  if (typeof vmId !== "string" || !VM_ID_RE.test(vmId)) return "vmId is required";
+  if (typeof ip !== "string" || !PRIVATE_IP_RE.test(ip)) return "ip must be a private 10.x address";
+  if (scope !== "read" && scope !== "read_write") return "scope must be read or read_write";
+  return { vmId, ip, scope };
+}
+function parseDisconnect(body) {
+  const vmId = body?.vmId;
+  if (typeof vmId !== "string" || !VM_ID_RE.test(vmId)) return "vmId is required";
+  return { vmId };
+}
+var BrainGate = class {
+  constructor(statePath, exec = defaultExec, log = (l) => console.log(l)) {
+    this.statePath = statePath;
+    this.exec = exec;
+    this.log = log;
+    this.entries = this.load();
+  }
+  entries;
+  load() {
+    if (!existsSync3(this.statePath)) return [];
+    try {
+      const s = JSON.parse(readFileSync7(this.statePath, "utf-8"));
+      return Array.isArray(s.entries) ? s.entries.filter((e) => e && typeof e.token === "string" && typeof e.ip === "string") : [];
+    } catch (err) {
+      this.log(`[gbrain-gate] could not read ${this.statePath}: ${err.message}`);
+      return [];
+    }
+  }
+  save() {
+    mkdirSync2(dirname2(this.statePath), { recursive: true });
+    const tmp = `${this.statePath}.tmp`;
+    writeFileSync3(tmp, JSON.stringify({ version: 1, entries: this.entries }), { mode: 384 });
+    chmodSync(tmp, 384);
+    renameSync(tmp, this.statePath);
+  }
+  /** What the firewall reads to reconcile. No tokens. */
+  list() {
+    return this.entries.map(({ vmId, ip, scope, at }) => ({ vmId, ip, scope, at }));
+  }
+  tokenFor(sourceIp) {
+    const ip = normalizeIp(sourceIp);
+    return this.entries.find((e) => e.ip === ip)?.token ?? null;
+  }
+  async connect(input) {
+    let token;
+    try {
+      const { stdout } = await this.exec("sudo", [HELPER2, "create", input.vmId, input.scope], HELPER_TIMEOUT_MS2);
+      token = stdout.trim();
+    } catch (err) {
+      throw new Error(`could not create the agent's brain token: ${execFailureLine(err)}`, { cause: err });
+    }
+    if (!TOKEN_RE.test(token)) throw new Error("GBrain returned no usable token");
+    const displaced = this.entries.filter((e) => e.ip === input.ip && e.vmId !== input.vmId);
+    this.entries = this.entries.filter((e) => e.vmId !== input.vmId && e.ip !== input.ip);
+    this.entries.push({ ...input, token, at: (/* @__PURE__ */ new Date()).toISOString() });
+    this.save();
+    for (const d of displaced) await this.revoke(d.vmId).catch((e) => this.log(`[gbrain-gate] ${e.message}`));
+    this.log(`[gbrain-gate] ${input.vmId} at ${input.ip} may use the brain (${input.scope})`);
+  }
+  async disconnect(vmId) {
+    const had = this.entries.some((e) => e.vmId === vmId);
+    this.entries = this.entries.filter((e) => e.vmId !== vmId);
+    this.save();
+    await this.revoke(vmId);
+    this.log(`[gbrain-gate] ${vmId} disconnected from the brain`);
+    return had;
+  }
+  async revoke(vmId) {
+    try {
+      await this.exec("sudo", [HELPER2, "revoke", vmId], HELPER_TIMEOUT_MS2);
+    } catch (err) {
+      throw new Error(`could not revoke ${vmId}'s brain token: ${execFailureLine(err)}`, { cause: err });
+    }
+  }
+};
+function deny(res, status, message) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: message }));
+}
+function gateAllows(method, url) {
+  const path = (url ?? "/").split("?")[0];
+  return path === "/mcp" && (method === "POST" || method === "GET" || method === "DELETE");
+}
+function createBrainGate(opts) {
+  const log = opts.log ?? ((l) => console.log(l));
+  return createServer((req, res) => {
+    if (!gateAllows(req.method, req.url)) {
+      deny(res, 404, "Not found");
+      req.resume();
+      return;
+    }
+    const token = opts.gate.tokenFor(req.socket.remoteAddress);
+    if (!token) {
+      log(`[gbrain-gate] refused ${normalizeIp(req.socket.remoteAddress)}: not a connected agent`);
+      deny(res, 403, "This agent is not connected to the brain.");
+      req.resume();
+      return;
+    }
+    const headers = { ...req.headers, host: `${opts.target.host}:${opts.target.port}`, authorization: `Bearer ${token}` };
+    delete headers["x-forwarded-for"];
+    const upstream = httpRequest({ host: opts.target.host, port: opts.target.port, method: req.method, path: req.url, headers }, (up) => {
+      res.writeHead(up.statusCode ?? 502, up.headers);
+      up.pipe(res);
+    });
+    upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => upstream.destroy(new Error("timeout")));
+    upstream.on("error", (err) => {
+      log(`[gbrain-gate] upstream failed: ${err.message}`);
+      if (!res.headersSent) deny(res, 502, "The brain is not answering.");
+      else res.end();
+    });
+    res.on("close", () => {
+      if (!res.writableFinished) upstream.destroy();
+    });
+    req.pipe(upstream);
+  });
+}
+
 // src/gbrain.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
 var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
+var STATE_DIR = process.env.STATE_DIR ?? "/opt/controlclaw/state";
+var GBRAIN_PORT = parseInt(process.env.GBRAIN_PORT ?? "3130", 10);
 if (process.env.CC_SERVICE !== "gbrain") {
   console.error("gbrain.js started without CC_SERVICE=gbrain; refusing (the lifecycle routes would act on the wrong unit)");
   process.exit(1);
 }
 try {
-  setSaasPublicKey(readFileSync7(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+  setSaasPublicKey(readFileSync8(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
 } catch (err) {
   console.error("Failed to load SaaS public key:", err);
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync7(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync8(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
 setMitmPinnedKeyLoader(() => readKeyFile(KEYS_DIR2, "mitm_pinned_pubkey.pem"));
 console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redaction`);
-var server = createServer(async (req, res) => {
+var gate = new BrainGate(`${STATE_DIR}/gbrain-gate.json`);
+var server = createServer2(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url.pathname === "/llm/apply" && req.method === "POST") {
     if (!await verifyMitmRequest(req, "llm")) {
@@ -764,6 +910,37 @@ var server = createServer(async (req, res) => {
     } catch (err) {
       sendJson(res, 500, { ok: false, error: err.message });
     }
+    return;
+  }
+  if (url.pathname.startsWith("/gbrain/")) {
+    if (!await verifyMitmRequest(req, "gbrain")) {
+      sendJson(res, 401, { error: "brain connections must come from the org firewall" });
+      return;
+    }
+    try {
+      if (url.pathname === "/gbrain/connections" && req.method === "GET") {
+        sendJson(res, 200, { ok: true, connections: gate.list() });
+        return;
+      }
+      if (url.pathname === "/gbrain/connect" && req.method === "POST") {
+        const input = parseConnect(await readJsonBody(req));
+        if (typeof input === "string") return sendJson(res, 400, { ok: false, error: input });
+        await gate.connect(input);
+        sendJson(res, 200, { ok: true, applied: [] });
+        return;
+      }
+      if (url.pathname === "/gbrain/disconnect" && req.method === "POST") {
+        const input = parseDisconnect(await readJsonBody(req));
+        if (typeof input === "string") return sendJson(res, 400, { ok: false, error: input });
+        const removed = await gate.disconnect(input.vmId);
+        sendJson(res, 200, { ok: true, removed, applied: [] });
+        return;
+      }
+    } catch (err) {
+      sendJson(res, 500, { ok: false, error: err.message });
+      return;
+    }
+    sendJson(res, 404, { error: "Not found" });
     return;
   }
   if (!await requireAuth(req, res)) return;
@@ -792,6 +969,21 @@ var server = createServer(async (req, res) => {
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Not found" }));
 });
+function listenGate() {
+  const ip = privateAddress();
+  if (!ip) {
+    console.warn("[gbrain-gate] no private address yet; trying again in 30 s");
+    setTimeout(listenGate, 3e4).unref();
+    return;
+  }
+  const g = createBrainGate({ gate, target: { host: "127.0.0.1", port: GBRAIN_PORT } });
+  g.on("error", (err) => {
+    console.error(`[gbrain-gate] could not listen on ${ip}:${GATE_PORT}: ${err.message}; trying again in 30 s`);
+    setTimeout(listenGate, 3e4).unref();
+  });
+  g.listen(GATE_PORT, ip, () => console.log(`[gbrain-gate] listening on ${ip}:${GATE_PORT} (${gate.list().length} agent(s) connected)`));
+}
+listenGate();
 server.listen(PORT, BIND, () => {
   console.log(`ControlClaw brain agent listening on ${BIND}:${PORT}`);
   void (async () => {
