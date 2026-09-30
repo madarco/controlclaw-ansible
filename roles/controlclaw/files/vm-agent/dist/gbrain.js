@@ -43,7 +43,7 @@ async function verifyLoginToken(token, vmId, purpose) {
   const payload = await verifySaasToken(token);
   if (!payload || payload.purpose !== purpose || payload.vmId !== vmId) return null;
   if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
-  return { ...payload, canWrite: payload.canWrite === true, next: payload.next === "files" ? "files" : void 0 };
+  return { ...payload, canWrite: payload.canWrite === true, next: payload.next === "files" || payload.next === "logs" ? payload.next : void 0 };
 }
 async function verifyMitmRequest(req, purpose = "channels") {
   const authHeader = req.headers.authorization;
@@ -83,7 +83,7 @@ async function verifyFirewallTicket(token, vmId, purpose) {
       c: p.c,
       deviceId: p.deviceId,
       canWrite: p.canWrite === true,
-      ...p.next === "files" ? { next: "files" } : {}
+      ...p.next === "files" || p.next === "logs" ? { next: p.next } : {}
     };
   } catch {
     return null;
@@ -634,6 +634,7 @@ function load() {
     const raw = JSON.parse(readFileSync6(path, "utf8"));
     state = {
       firewallOrigin: typeof raw.firewallOrigin === "string" && validFirewallOrigin(raw.firewallOrigin) ? raw.firewallOrigin : null,
+      enforcedAt: typeof raw.enforcedAt === "string" ? raw.enforcedAt : null,
       revoked: raw.revoked && typeof raw.revoked === "object" ? raw.revoked : {}
     };
   } catch {
@@ -641,11 +642,29 @@ function load() {
   cache = { path, state };
   return state;
 }
+function save(state) {
+  const path = statePath();
+  mkdirSync3(dirname2(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync4(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync2(tmp, path);
+  cache = { path, state };
+}
 function validFirewallOrigin(origin) {
   return /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(origin) && origin.length <= 261;
 }
 function firewallOrigin() {
   return load().firewallOrigin;
+}
+function firewallOpensEnforced() {
+  return !!load().enforcedAt;
+}
+function enforceFirewallOpens(now = /* @__PURE__ */ new Date()) {
+  const state = load();
+  if (state.enforcedAt) return false;
+  save({ ...state, enforcedAt: now.toISOString() });
+  console.log("[access] a firewall-issued sign-in worked here: this box no longer accepts the control plane's tickets");
+  return true;
 }
 function isRevoked(deviceId, now = Date.now()) {
   const at = load().revoked[deviceId];
@@ -655,8 +674,8 @@ function isRevoked(deviceId, now = Date.now()) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ac969b4" : "unknown",
-  builtAt: true ? "2026-09-30T17:33:19+01:00" : "unknown"
+  commit: true ? "ab22f5c" : "unknown",
+  builtAt: true ? "2026-09-30T19:23:51+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -710,7 +729,7 @@ function boxSoftware(opts = {}) {
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
-    features: firewallOrigin() ? ["open_v1"] : []
+    features: ["logs_page", ...firewallOrigin() ? ["open_v1"] : [], ...firewallOpensEnforced() ? ["open_enforced"] : []]
   };
 }
 
@@ -905,13 +924,21 @@ function redact(text) {
 }
 
 // src/routes/logs.ts
+var OPENCLAW_BIN2 = "/usr/bin/openclaw";
 var SERVICE2 = process.env.CC_SERVICE ?? "openclaw";
 var SNAPSHOT_TIMEOUT_MS = 15e3;
+var CLI_TIMEOUT_MS = 1e4;
+var MAX_BYTES = "250000";
 var DEFAULT_LINES = 200;
 var MAX_LINES = 1e3;
+var PING_MS = 2e4;
+var SERVICE_POLL_MS = 5e3;
+var LOGS_STREAM_MAX_MS = 28e4;
 var JOURNAL_LINES = 200;
 var LOG_DIR = process.env.OPENCLAW_LOG_DIR ?? "/tmp/openclaw";
 var TAIL_BYTES = 512 * 1024;
+var FOLLOW_POLL_MS = 700;
+var FOLLOW_BACKLOG_LINES = 50;
 var CRASH_RE = /^(\s+at |\w*Error\b|node:|FATAL|Unhandled|ELIFECYCLE|Segmentation fault)/;
 function env() {
   return { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" };
@@ -925,6 +952,148 @@ function run(cmd, args, timeout, maxBuffer = 4 * 1024 * 1024) {
       });
     });
   });
+}
+function mapCliRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (rec.type === "log") {
+    return {
+      time: String(rec.time ?? ""),
+      level: String(rec.level ?? "info").toLowerCase(),
+      subsystem: String(rec.subsystem ?? "openclaw"),
+      message: redact(String(rec.message ?? ""))
+    };
+  }
+  if (rec.type === "notice") {
+    return { time: (/* @__PURE__ */ new Date()).toISOString(), level: "notice", subsystem: "openclaw", message: redact(String(rec.message ?? "")) };
+  }
+  return null;
+}
+function mapFileRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const meta = rec._meta ?? {};
+  if (typeof rec.message !== "string" || typeof rec.time !== "string") return null;
+  let subsystem = "openclaw";
+  const name = typeof meta.name === "string" ? meta.name : "";
+  if (name.startsWith("{")) {
+    try {
+      const ctx = JSON.parse(name);
+      const s = ctx.subsystem ?? ctx.module;
+      if (typeof s === "string" && s) subsystem = s;
+    } catch {
+    }
+  } else if (name) {
+    subsystem = name;
+  }
+  return {
+    time: rec.time,
+    level: String(meta.logLevelName ?? "info").toLowerCase(),
+    subsystem,
+    message: redact(rec.message)
+  };
+}
+function newestLogFile() {
+  try {
+    const candidates = readdirSync(LOG_DIR).filter((f) => f.startsWith("openclaw") && f.endsWith(".log"));
+    let best = null;
+    for (const f of candidates) {
+      const path = join3(LOG_DIR, f);
+      const mtime = statSync(path).mtimeMs;
+      if (!best || mtime > best.mtime) best = { path, mtime };
+    }
+    return best?.path ?? null;
+  } catch {
+    return null;
+  }
+}
+function readFileTail(lines) {
+  const path = newestLogFile();
+  if (!path) return null;
+  let fd = null;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString("utf-8");
+    if (start > 0) text = text.slice(text.indexOf("\n") + 1);
+    const out = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      const mapped = mapFileRecord(line);
+      if (mapped) out.push(mapped);
+    }
+    return { path, size, lines: out.slice(-lines) };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+function followFile(start, onLine) {
+  let path = start.path;
+  let offset = start.size;
+  let partial = "";
+  const tick = () => {
+    try {
+      const newest = newestLogFile();
+      if (newest && newest !== path) {
+        path = newest;
+        offset = 0;
+        partial = "";
+      }
+      const size = statSync(path).size;
+      if (size < offset) {
+        offset = 0;
+        partial = "";
+      }
+      if (size === offset) return;
+      const fd = openSync(path, "r");
+      try {
+        const buf = Buffer.alloc(Math.min(size - offset, TAIL_BYTES));
+        const n = readSync(fd, buf, 0, buf.length, offset);
+        offset += n;
+        partial += buf.toString("utf-8", 0, n);
+      } finally {
+        closeSync(fd);
+      }
+      let idx;
+      while ((idx = partial.indexOf("\n")) >= 0) {
+        const line = partial.slice(0, idx);
+        partial = partial.slice(idx + 1);
+        if (!line.trim()) continue;
+        const mapped = mapFileRecord(line);
+        if (mapped) onLine(mapped);
+      }
+    } catch {
+    }
+  };
+  const timer = setInterval(tick, FOLLOW_POLL_MS);
+  return () => clearInterval(timer);
+}
+async function readCliSnapshot(lines) {
+  const { stdout, error } = await run(
+    OPENCLAW_BIN2,
+    ["logs", "--json", "--limit", String(lines), "--max-bytes", MAX_BYTES, "--timeout", String(CLI_TIMEOUT_MS)],
+    SNAPSHOT_TIMEOUT_MS
+  );
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const mapped = mapCliRecord(line);
+    if (mapped) out.push(mapped);
+  }
+  return { lines: out, warning: error && out.length === 0 ? redact(`openclaw logs: ${error}`) : null };
 }
 function mapJournalRecord(raw) {
   let rec;
@@ -990,11 +1159,115 @@ function parseLines(url) {
   if (!Number.isFinite(n) || n < 1) return DEFAULT_LINES;
   return Math.min(n, MAX_LINES);
 }
+async function handleLogs(url, res) {
+  const lines = parseLines(url);
+  const fromFile = readFileTail(lines);
+  const [gateway, journal, service] = await Promise.all([
+    fromFile ? Promise.resolve({ lines: fromFile.lines, warning: null }) : readCliSnapshot(lines),
+    readJournal(),
+    readServiceState()
+  ]);
+  const ts = (l) => Date.parse(l.time) || 0;
+  const merged = [...gateway.lines, ...journal].sort((a, b) => ts(a) - ts(b)).slice(-lines);
+  res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify({ service, lines: merged, ...gateway.warning ? { warning: gateway.warning } : {} }));
+}
 async function handleUnitLogs(url, res) {
   const lines = parseLines(url);
   const [journal, service] = await Promise.all([readJournal(), readServiceState()]);
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify({ service, lines: journal.slice(-lines) }));
+}
+async function handleLogStream(req, res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.flushHeaders?.();
+  let closed = false;
+  const write = (chunk) => {
+    if (closed) return;
+    try {
+      res.write(chunk);
+    } catch {
+      cleanup();
+    }
+  };
+  const event = (name, data) => write(`${name ? `event: ${name}
+` : ""}data: ${JSON.stringify(data)}
+
+`);
+  const ping = setInterval(() => write(": ping\n\n"), PING_MS);
+  const stop = setTimeout(() => {
+    event("end", { reason: "max-duration" });
+    cleanup();
+  }, LOGS_STREAM_MAX_MS);
+  let stopFollow = null;
+  function cleanup() {
+    if (closed) return;
+    closed = true;
+    clearInterval(ping);
+    clearInterval(servicePoll);
+    clearTimeout(stop);
+    stopFollow?.();
+    try {
+      res.end();
+    } catch {
+    }
+  }
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  let lastService = "";
+  const pushService = async () => {
+    const service = await readServiceState();
+    const key = JSON.stringify(service);
+    if (key !== lastService) {
+      lastService = key;
+      event("service", service);
+    }
+  };
+  void pushService();
+  const servicePoll = setInterval(() => void pushService(), SERVICE_POLL_MS);
+  const tail = readFileTail(FOLLOW_BACKLOG_LINES);
+  if (tail) {
+    for (const line of tail.lines) event(null, line);
+    stopFollow = followFile(tail, (line) => event(null, line));
+  } else {
+    stopFollow = followCli((line) => event(null, line), () => {
+      event("end", { reason: "cli-exit" });
+      cleanup();
+    });
+  }
+}
+function followCli(onLine, onExit) {
+  const child = spawn(OPENCLAW_BIN2, ["logs", "--json", "--follow", "--limit", String(FOLLOW_BACKLOG_LINES), "--max-bytes", MAX_BYTES], {
+    env: env(),
+    stdio: ["ignore", "pipe", "ignore"],
+    detached: true
+  });
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk.toString("utf-8");
+    let idx;
+    while ((idx = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (!line.trim()) continue;
+      const mapped = mapCliRecord(line);
+      if (mapped) onLine(mapped);
+    }
+  });
+  child.on("exit", onExit);
+  return () => {
+    if (child.exitCode !== null || child.pid === void 0) return;
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      child.kill("SIGTERM");
+    }
+  };
 }
 
 // src/routes/health.ts
@@ -1243,6 +1516,44 @@ async function serveFilesPage(req, res, ctx) {
   );
 }
 
+// src/routes/logs-page.ts
+function inlineJson2(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+var PAGE_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+};
+async function serveLogsPage(req, res, ctx) {
+  if (!await readSession(req.headers.cookie, ctx.vmId)) {
+    res.writeHead(401, PAGE_HEADERS);
+    res.end(ctx.deniedPage);
+    return;
+  }
+  const agentName = ctx.hostname ? ctx.hostname.split(".")[0] : "your agent";
+  res.writeHead(200, PAGE_HEADERS);
+  res.end(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName.replace(/[&<>"']/g, "")} \xB7 logs</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-logs" type="application/json">${inlineJson2({ agentName })}</script><script type="module" src="/__cc/files-ui/logs.js"></script></body></html>`
+  );
+}
+async function serveLogsData(req, res, pathname, ctx) {
+  const verdict = checkOrigin(nodeRequestFacts(req), { allowed: [ctx.boxOrigin], allowTopLevelNavigation: false });
+  if (!verdict.ok) {
+    console.warn(`[logs] ${denialMessage(verdict)}`);
+    res.writeHead(403, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "Not from this agent's own page." }));
+    return;
+  }
+  if (!await readSession(req.headers.cookie, ctx.vmId)) {
+    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "Your session on this agent has expired." }));
+    return;
+  }
+  const url = new URL(req.url ?? "/", "http://box");
+  if (pathname === "/__cc/logs/snapshot") return handleLogs(url, res);
+  return handleLogStream(req, res);
+}
+
 // src/routes/access.ts
 var DASHBOARD_BUDGET_MS = 4e4;
 var DASHBOARD_RETRY_WAIT_MS = 3e3;
@@ -1396,7 +1707,7 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.view === 'files') { $('h').textContent = 'Opening files'; step(3); location.replace(d.next); return; }
+  if (d.view === 'files' || d.view === 'logs') { $('h').textContent = d.view === 'files' ? 'Opening files' : 'Opening logs'; step(3); location.replace(d.next); return; }
   if (d.view === 'direct') { step(3); location.replace(d.next); return; }
   if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
@@ -1421,6 +1732,12 @@ var DENIED_FILES_PAGE = shell(
   "These files are private",
   `<h1>These files are private</h1>
 <p class="note">Open them from your ControlClaw console. If you were signed in, your session has expired: click Files again.</p>
+<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+);
+var DENIED_LOGS_PAGE = shell(
+  "This log is private",
+  `<h1>This log is private</h1>
+<p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Logs again.</p>
 <a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
 );
 function browserPage(hostname) {
@@ -1553,7 +1870,7 @@ function bindingHash(value) {
 async function acceptTicket(req, token, vmId, purpose) {
   const invalid = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
   if (!token) return invalid;
-  const cp = await verifyLoginToken(token, vmId, purpose);
+  const cp = firewallOpensEnforced() ? null : await verifyLoginToken(token, vmId, purpose);
   if (cp) return { jti: cp.jti, exp: cp.exp, canWrite: cp.canWrite === true, ...cp.next ? { next: cp.next } : {}, issuer: "control-plane", cookies: [] };
   const fw = await verifyFirewallTicket(token, vmId, purpose);
   if (!fw) return invalid;
@@ -1687,6 +2004,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 401, { error: "This link was already used. Open the agent from your ControlClaw console again." });
       return;
     }
+    if (payload.issuer === "firewall") enforceFirewallOpens();
     const claims = { canWrite: payload.canWrite, ...payload.deviceId ? { deviceId: payload.deviceId } : {} };
     console.log(`[access] sign-in with a ${payload.issuer} ticket${payload.deviceId ? ` (browser ${payload.deviceId})` : ""}`);
     if (opts.requireWrite && payload.canWrite !== true) {
@@ -1703,9 +2021,9 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    if (payload.next === "files") {
+    if (payload.next === "files" || payload.next === "logs") {
       const session2 = await issueSession(vmId, claims);
-      json(res, 200, { next: "/__cc/files", view: "files", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
+      json(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
     const hostname = readKey("vm_hostname");
@@ -1752,6 +2070,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 401, { error: "This link was already used. Press Screen again in your ControlClaw console." });
       return;
     }
+    if (payload.issuer === "firewall") enforceFirewallOpens();
     json(res, 200, { ok: true }, { "Set-Cookie": [viewSessionCookie(await issueViewSession(vmId, payload.deviceId)), ...payload.cookies] });
     return;
   }
@@ -1766,6 +2085,14 @@ async function handleAccess(req, res, pathname, opts = {}) {
   }
   if (pathname === "/__cc/files" && req.method === "GET") {
     await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), consoleUrl: CONSOLE_URL, deniedPage: DENIED_FILES_PAGE });
+    return;
+  }
+  if (pathname === "/__cc/logs" && req.method === "GET") {
+    await serveLogsPage(req, res, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
+    return;
+  }
+  if ((pathname === "/__cc/logs/snapshot" || pathname === "/__cc/logs/stream") && req.method === "GET") {
+    await serveLogsData(req, res, pathname, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
     return;
   }
   if (pathname.startsWith("/__cc/files-ui/") && req.method === "GET") {

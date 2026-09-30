@@ -8348,7 +8348,7 @@ var CONFIRM_PATH = "/__cc/enroll/confirm";
 function ownsAccessPath(path) {
   return path === OPEN_PATH || path === CONFIRM_PATH;
 }
-var MIGRATION_ENDS_AT = null;
+var MIGRATION_ENDS_AT = Date.parse("2026-10-21T00:00:00Z");
 var INTENT_MAX_LIFETIME_S = 120;
 var TICKET_TTL_S = 60;
 var DEVICE_TTL_MS = 90 * 24 * 60 * 6e4;
@@ -8366,7 +8366,9 @@ var SCOPE7 = "access";
 var NEXT = {
   chat: { purpose: "browser-login", path: "/__cc/login" },
   screen: { purpose: "browser-view", path: "/__cc/browser" },
-  files: { purpose: "browser-login", path: "/__cc/login", next: "files" }
+  files: { purpose: "browser-login", path: "/__cc/login", next: "files" },
+  // The agent's log on the box (browser-enrollment.md §7): the same shape as Files.
+  logs: { purpose: "browser-login", path: "/__cc/login", next: "logs" }
 };
 function sha2562(s2) {
   return createHash3("sha256").update(s2).digest("hex");
@@ -8431,7 +8433,7 @@ function silentListMessage(devices, max = 20) {
 ...and ${devices.length - max} more.` : "";
   return `ControlClaw: ${devices.length === 1 ? "this browser was" : "these browsers were"} signed in to your agents without a code, before anyone could receive one:
 ${lines.join("\n")}${more}
-Remove any you don't recognise in the console under Security, Browsers.`;
+Remove any you don't recognise on the Browsers page of your ControlClaw console.`;
 }
 var AccessFirewall = class {
   constructor(opts) {
@@ -83757,8 +83759,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ac969b4" : "unknown",
-  builtAt: true ? "2026-09-30T17:33:19+01:00" : "unknown"
+  commit: true ? "ab22f5c" : "unknown",
+  builtAt: true ? "2026-09-30T19:23:51+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -84667,6 +84669,7 @@ async function main() {
           if (exitFirewall) features.push("residential_exit");
           if (kill) features.push("kill_switch");
           if (access?.ready()) features.push("open_v1");
+          if (access?.ready()) features.push("open_logs");
           const backupStatus = backups?.status() ?? null;
           const recoveryRoutes = recoveryTls && recovery ? { enabled: true, port: PORT, certFingerprint: recoveryTls.fingerprint } : { enabled: false, port: PORT, certFingerprint: null };
           const inventory = firewallInventory(channels, llm, webhooks);
@@ -84689,7 +84692,7 @@ async function main() {
             // put back from a backup taken before the stop comes back saying nothing is locked,
             // and that difference is what tells the control plane to send the stop again.
             ...kill ? { kill: kill.summary() } : {},
-            // `access`: the browsers this firewall will sign in, for Security, Browsers. Ids,
+            // `access`: the browsers this firewall will sign in, for the console's Browsers page. Ids,
             // labels and dates only; the cookie is never on this box and its hash never leaves it.
             ...access ? { access: access.status() } : {},
             software: boxSoftware()

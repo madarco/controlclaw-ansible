@@ -50,7 +50,7 @@ async function verifyLoginToken(token, vmId, purpose) {
   const payload = await verifySaasToken(token);
   if (!payload || payload.purpose !== purpose || payload.vmId !== vmId) return null;
   if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
-  return { ...payload, canWrite: payload.canWrite === true, next: payload.next === "files" ? "files" : void 0 };
+  return { ...payload, canWrite: payload.canWrite === true, next: payload.next === "files" || payload.next === "logs" ? payload.next : void 0 };
 }
 async function verifyMitmRequest(req, purpose = "channels") {
   const authHeader = req.headers.authorization;
@@ -90,7 +90,7 @@ async function verifyFirewallTicket(token, vmId, purpose) {
       c: p2.c,
       deviceId: p2.deviceId,
       canWrite: p2.canWrite === true,
-      ...p2.next === "files" ? { next: "files" } : {}
+      ...p2.next === "files" || p2.next === "logs" ? { next: p2.next } : {}
     };
   } catch {
     return null;
@@ -205,6 +205,7 @@ function load() {
     const raw = JSON.parse(readFileSync(path, "utf8"));
     state = {
       firewallOrigin: typeof raw.firewallOrigin === "string" && validFirewallOrigin(raw.firewallOrigin) ? raw.firewallOrigin : null,
+      enforcedAt: typeof raw.enforcedAt === "string" ? raw.enforcedAt : null,
       revoked: raw.revoked && typeof raw.revoked === "object" ? raw.revoked : {}
     };
   } catch {
@@ -230,6 +231,16 @@ function setFirewallOrigin(origin) {
   const state = load();
   if (state.firewallOrigin === origin) return;
   save({ ...state, firewallOrigin: origin });
+}
+function firewallOpensEnforced() {
+  return !!load().enforcedAt;
+}
+function enforceFirewallOpens(now = /* @__PURE__ */ new Date()) {
+  const state = load();
+  if (state.enforcedAt) return false;
+  save({ ...state, enforcedAt: now.toISOString() });
+  console.log("[access] a firewall-issued sign-in worked here: this box no longer accepts the control plane's tickets");
+  return true;
 }
 function revokeDevices(ids, now = Date.now()) {
   const state = load();
@@ -341,9 +352,9 @@ function consumeJti(jti, expSeconds) {
 
 // src/routes/access.ts
 import { createHash, randomBytes } from "crypto";
-import { execFile } from "child_process";
-import { readFileSync as readFileSync3 } from "fs";
-import { join as join4 } from "path";
+import { execFile as execFile2 } from "child_process";
+import { readFileSync as readFileSync4 } from "fs";
+import { join as join6 } from "path";
 
 // src/http.ts
 async function readJsonBody(req, limit = 16384) {
@@ -439,6 +450,426 @@ async function serveFilesPage(req, res, ctx) {
   );
 }
 
+// src/routes/logs.ts
+import { execFile, spawn } from "child_process";
+import { closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "fs";
+import { join as join5 } from "path";
+
+// src/redact.ts
+import { readFileSync as readFileSync3 } from "fs";
+import { join as join4 } from "path";
+var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
+var MIN_SECRET_LENGTH = 8;
+var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
+var BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
+var secrets = [];
+function escapeRegExp(s2) {
+  return s2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+var secretRe = null;
+function loadRedactionSecrets(keysDir2) {
+  const found = [];
+  for (const name of SECRET_FILES) {
+    try {
+      const value = readFileSync3(join4(keysDir2, name), "utf-8").trim();
+      if (value.length >= MIN_SECRET_LENGTH) found.push(value);
+    } catch {
+    }
+  }
+  setRedactionSecrets(found);
+  return found.length;
+}
+function setRedactionSecrets(values) {
+  secrets = values.filter((v2) => v2.length >= MIN_SECRET_LENGTH);
+  secretRe = secrets.length ? new RegExp(secrets.map(escapeRegExp).join("|"), "g") : null;
+}
+function redact(text2) {
+  let out = text2;
+  if (secretRe) out = out.replace(secretRe, "[redacted]");
+  out = out.replace(PARAM_RE, (_m, k2) => `${k2}=[redacted]`);
+  out = out.replace(BEARER_RE, "Bearer [redacted]");
+  return out;
+}
+
+// src/routes/logs.ts
+var OPENCLAW_BIN = "/usr/bin/openclaw";
+var SERVICE = process.env.CC_SERVICE ?? "openclaw";
+var SNAPSHOT_TIMEOUT_MS = 15e3;
+var CLI_TIMEOUT_MS = 1e4;
+var MAX_BYTES = "250000";
+var DEFAULT_LINES = 200;
+var MAX_LINES = 1e3;
+var PING_MS = 2e4;
+var SERVICE_POLL_MS = 5e3;
+var LOGS_STREAM_MAX_MS = 28e4;
+var JOURNAL_LINES = 200;
+var LOG_DIR = process.env.OPENCLAW_LOG_DIR ?? "/tmp/openclaw";
+var TAIL_BYTES = 512 * 1024;
+var FOLLOW_POLL_MS = 700;
+var FOLLOW_BACKLOG_LINES = 50;
+var CRASH_RE = /^(\s+at |\w*Error\b|node:|FATAL|Unhandled|ELIFECYCLE|Segmentation fault)/;
+function env() {
+  return { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" };
+}
+function run(cmd, args, timeout, maxBuffer = 4 * 1024 * 1024) {
+  return new Promise((resolve2) => {
+    execFile(cmd, args, { timeout, maxBuffer, env: env(), encoding: "utf-8" }, (err, stdout, stderr) => {
+      resolve2({
+        stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
+        error: err ? String(stderr ?? "").trim().split("\n")[0] || err.message : null
+      });
+    });
+  });
+}
+function mapCliRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (rec.type === "log") {
+    return {
+      time: String(rec.time ?? ""),
+      level: String(rec.level ?? "info").toLowerCase(),
+      subsystem: String(rec.subsystem ?? "openclaw"),
+      message: redact(String(rec.message ?? ""))
+    };
+  }
+  if (rec.type === "notice") {
+    return { time: (/* @__PURE__ */ new Date()).toISOString(), level: "notice", subsystem: "openclaw", message: redact(String(rec.message ?? "")) };
+  }
+  return null;
+}
+function mapFileRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const meta = rec._meta ?? {};
+  if (typeof rec.message !== "string" || typeof rec.time !== "string") return null;
+  let subsystem = "openclaw";
+  const name = typeof meta.name === "string" ? meta.name : "";
+  if (name.startsWith("{")) {
+    try {
+      const ctx = JSON.parse(name);
+      const s2 = ctx.subsystem ?? ctx.module;
+      if (typeof s2 === "string" && s2) subsystem = s2;
+    } catch {
+    }
+  } else if (name) {
+    subsystem = name;
+  }
+  return {
+    time: rec.time,
+    level: String(meta.logLevelName ?? "info").toLowerCase(),
+    subsystem,
+    message: redact(rec.message)
+  };
+}
+function newestLogFile() {
+  try {
+    const candidates = readdirSync(LOG_DIR).filter((f2) => f2.startsWith("openclaw") && f2.endsWith(".log"));
+    let best = null;
+    for (const f2 of candidates) {
+      const path = join5(LOG_DIR, f2);
+      const mtime = statSync(path).mtimeMs;
+      if (!best || mtime > best.mtime) best = { path, mtime };
+    }
+    return best?.path ?? null;
+  } catch {
+    return null;
+  }
+}
+function readFileTail(lines) {
+  const path = newestLogFile();
+  if (!path) return null;
+  let fd = null;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    let text2 = buf.toString("utf-8");
+    if (start > 0) text2 = text2.slice(text2.indexOf("\n") + 1);
+    const out = [];
+    for (const line of text2.split("\n")) {
+      if (!line.trim()) continue;
+      const mapped = mapFileRecord(line);
+      if (mapped) out.push(mapped);
+    }
+    return { path, size, lines: out.slice(-lines) };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+function followFile(start, onLine) {
+  let path = start.path;
+  let offset = start.size;
+  let partial = "";
+  const tick = () => {
+    try {
+      const newest = newestLogFile();
+      if (newest && newest !== path) {
+        path = newest;
+        offset = 0;
+        partial = "";
+      }
+      const size = statSync(path).size;
+      if (size < offset) {
+        offset = 0;
+        partial = "";
+      }
+      if (size === offset) return;
+      const fd = openSync(path, "r");
+      try {
+        const buf = Buffer.alloc(Math.min(size - offset, TAIL_BYTES));
+        const n2 = readSync(fd, buf, 0, buf.length, offset);
+        offset += n2;
+        partial += buf.toString("utf-8", 0, n2);
+      } finally {
+        closeSync(fd);
+      }
+      let idx;
+      while ((idx = partial.indexOf("\n")) >= 0) {
+        const line = partial.slice(0, idx);
+        partial = partial.slice(idx + 1);
+        if (!line.trim()) continue;
+        const mapped = mapFileRecord(line);
+        if (mapped) onLine(mapped);
+      }
+    } catch {
+    }
+  };
+  const timer = setInterval(tick, FOLLOW_POLL_MS);
+  return () => clearInterval(timer);
+}
+async function readCliSnapshot(lines) {
+  const { stdout, error } = await run(
+    OPENCLAW_BIN,
+    ["logs", "--json", "--limit", String(lines), "--max-bytes", MAX_BYTES, "--timeout", String(CLI_TIMEOUT_MS)],
+    SNAPSHOT_TIMEOUT_MS
+  );
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const mapped = mapCliRecord(line);
+    if (mapped) out.push(mapped);
+  }
+  return { lines: out, warning: error && out.length === 0 ? redact(`openclaw logs: ${error}`) : null };
+}
+function mapJournalRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const message = typeof rec.MESSAGE === "string" ? rec.MESSAGE : null;
+  if (!message) return null;
+  const ts = Number(rec.__REALTIME_TIMESTAMP);
+  const time = Number.isFinite(ts) ? new Date(ts / 1e3).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
+  if (rec.SYSLOG_IDENTIFIER === "systemd") {
+    return { time, level: "unit", subsystem: "systemd", message: redact(message) };
+  }
+  if (CRASH_RE.test(message)) {
+    return { time, level: "error", subsystem: "stderr", message: redact(message) };
+  }
+  return null;
+}
+async function readJournal() {
+  const { stdout } = await run(
+    "sudo",
+    ["journalctl", "-u", SERVICE, "-n", String(JOURNAL_LINES), "-o", "json", "--no-pager"],
+    SNAPSHOT_TIMEOUT_MS
+  );
+  const out = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    const mapped = mapJournalRecord(line);
+    if (mapped) out.push(mapped);
+  }
+  return out;
+}
+function parseServiceShow(stdout) {
+  const kv = {};
+  for (const line of stdout.split("\n")) {
+    const i2 = line.indexOf("=");
+    if (i2 > 0) kv[line.slice(0, i2)] = line.slice(i2 + 1).trim();
+  }
+  const sinceRaw = kv.ExecMainStartTimestamp;
+  const since = sinceRaw && !Number.isNaN(Date.parse(sinceRaw)) ? new Date(sinceRaw).toISOString() : null;
+  const exit = Number(kv.ExecMainStatus);
+  return {
+    active: kv.ActiveState ?? "unknown",
+    subState: kv.SubState ?? "unknown",
+    result: kv.Result ?? "unknown",
+    exitStatus: Number.isFinite(exit) ? exit : null,
+    since,
+    restarts: Number(kv.NRestarts) || 0
+  };
+}
+async function readServiceState() {
+  const { stdout } = await run(
+    "systemctl",
+    ["show", SERVICE, "-p", "ActiveState,SubState,Result,ExecMainStatus,ExecMainStartTimestamp,NRestarts"],
+    5e3
+  );
+  return parseServiceShow(stdout);
+}
+function parseLines(url2) {
+  const n2 = parseInt(url2.searchParams.get("lines") ?? "", 10);
+  if (!Number.isFinite(n2) || n2 < 1) return DEFAULT_LINES;
+  return Math.min(n2, MAX_LINES);
+}
+async function handleLogs(url2, res) {
+  const lines = parseLines(url2);
+  const fromFile = readFileTail(lines);
+  const [gateway2, journal2, service] = await Promise.all([
+    fromFile ? Promise.resolve({ lines: fromFile.lines, warning: null }) : readCliSnapshot(lines),
+    readJournal(),
+    readServiceState()
+  ]);
+  const ts = (l2) => Date.parse(l2.time) || 0;
+  const merged = [...gateway2.lines, ...journal2].sort((a2, b2) => ts(a2) - ts(b2)).slice(-lines);
+  res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify({ service, lines: merged, ...gateway2.warning ? { warning: gateway2.warning } : {} }));
+}
+async function handleLogStream(req, res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  res.flushHeaders?.();
+  let closed = false;
+  const write = (chunk) => {
+    if (closed) return;
+    try {
+      res.write(chunk);
+    } catch {
+      cleanup();
+    }
+  };
+  const event = (name, data) => write(`${name ? `event: ${name}
+` : ""}data: ${JSON.stringify(data)}
+
+`);
+  const ping = setInterval(() => write(": ping\n\n"), PING_MS);
+  const stop = setTimeout(() => {
+    event("end", { reason: "max-duration" });
+    cleanup();
+  }, LOGS_STREAM_MAX_MS);
+  let stopFollow = null;
+  function cleanup() {
+    if (closed) return;
+    closed = true;
+    clearInterval(ping);
+    clearInterval(servicePoll);
+    clearTimeout(stop);
+    stopFollow?.();
+    try {
+      res.end();
+    } catch {
+    }
+  }
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  let lastService = "";
+  const pushService = async () => {
+    const service = await readServiceState();
+    const key = JSON.stringify(service);
+    if (key !== lastService) {
+      lastService = key;
+      event("service", service);
+    }
+  };
+  void pushService();
+  const servicePoll = setInterval(() => void pushService(), SERVICE_POLL_MS);
+  const tail = readFileTail(FOLLOW_BACKLOG_LINES);
+  if (tail) {
+    for (const line of tail.lines) event(null, line);
+    stopFollow = followFile(tail, (line) => event(null, line));
+  } else {
+    stopFollow = followCli((line) => event(null, line), () => {
+      event("end", { reason: "cli-exit" });
+      cleanup();
+    });
+  }
+}
+function followCli(onLine, onExit) {
+  const child = spawn(OPENCLAW_BIN, ["logs", "--json", "--follow", "--limit", String(FOLLOW_BACKLOG_LINES), "--max-bytes", MAX_BYTES], {
+    env: env(),
+    stdio: ["ignore", "pipe", "ignore"],
+    detached: true
+  });
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk.toString("utf-8");
+    let idx;
+    while ((idx = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (!line.trim()) continue;
+      const mapped = mapCliRecord(line);
+      if (mapped) onLine(mapped);
+    }
+  });
+  child.on("exit", onExit);
+  return () => {
+    if (child.exitCode !== null || child.pid === void 0) return;
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      child.kill("SIGTERM");
+    }
+  };
+}
+
+// src/routes/logs-page.ts
+function inlineJson2(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+var PAGE_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "Cache-Control": "no-store",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+};
+async function serveLogsPage(req, res, ctx) {
+  if (!await readSession(req.headers.cookie, ctx.vmId)) {
+    res.writeHead(401, PAGE_HEADERS);
+    res.end(ctx.deniedPage);
+    return;
+  }
+  const agentName = ctx.hostname ? ctx.hostname.split(".")[0] : "your agent";
+  res.writeHead(200, PAGE_HEADERS);
+  res.end(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName.replace(/[&<>"']/g, "")} \xB7 logs</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-logs" type="application/json">${inlineJson2({ agentName })}</script><script type="module" src="/__cc/files-ui/logs.js"></script></body></html>`
+  );
+}
+async function serveLogsData(req, res, pathname, ctx) {
+  const verdict = checkOrigin(nodeRequestFacts(req), { allowed: [ctx.boxOrigin], allowTopLevelNavigation: false });
+  if (!verdict.ok) {
+    console.warn(`[logs] ${denialMessage(verdict)}`);
+    res.writeHead(403, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "Not from this agent's own page." }));
+    return;
+  }
+  if (!await readSession(req.headers.cookie, ctx.vmId)) {
+    res.writeHead(401, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "Your session on this agent has expired." }));
+    return;
+  }
+  const url2 = new URL(req.url ?? "/", "http://box");
+  if (pathname === "/__cc/logs/snapshot") return handleLogs(url2, res);
+  return handleLogStream(req, res);
+}
+
 // src/routes/access.ts
 var DASHBOARD_BUDGET_MS = 4e4;
 var DASHBOARD_RETRY_WAIT_MS = 3e3;
@@ -469,7 +900,7 @@ var FORGET_PREVIOUS_GATEWAY_JS = `
   } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
-    return readFileSync3(join4(keysDir(), name), "utf-8").trim() || null;
+    return readFileSync4(join6(keysDir(), name), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -604,7 +1035,7 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.view === 'files') { $('h').textContent = 'Opening files'; step(3); location.replace(d.next); return; }
+  if (d.view === 'files' || d.view === 'logs') { $('h').textContent = d.view === 'files' ? 'Opening files' : 'Opening logs'; step(3); location.replace(d.next); return; }
   if (d.view === 'direct') { step(3); location.replace(d.next); return; }
   if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
@@ -629,6 +1060,12 @@ var DENIED_FILES_PAGE = shell(
   "These files are private",
   `<h1>These files are private</h1>
 <p class="note">Open them from your ControlClaw console. If you were signed in, your session has expired: click Files again.</p>
+<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+);
+var DENIED_LOGS_PAGE = shell(
+  "This log is private",
+  `<h1>This log is private</h1>
+<p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Logs again.</p>
 <a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
 );
 function browserPage(hostname) {
@@ -761,7 +1198,7 @@ function bindingHash(value) {
 async function acceptTicket(req, token, vmId, purpose) {
   const invalid = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
   if (!token) return invalid;
-  const cp = await verifyLoginToken(token, vmId, purpose);
+  const cp = firewallOpensEnforced() ? null : await verifyLoginToken(token, vmId, purpose);
   if (cp) return { jti: cp.jti, exp: cp.exp, canWrite: cp.canWrite === true, ...cp.next ? { next: cp.next } : {}, issuer: "control-plane", cookies: [] };
   const fw = await verifyFirewallTicket(token, vmId, purpose);
   if (!fw) return invalid;
@@ -802,7 +1239,7 @@ function parseDashboardOutput(stdout, hostname, err) {
 }
 function runDashboard(hostname, timeoutMs) {
   return new Promise((resolve2) => {
-    execFile(
+    execFile2(
       openclawBin(),
       ["dashboard", "--json", "--no-open"],
       { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } },
@@ -895,6 +1332,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 401, { error: "This link was already used. Open the agent from your ControlClaw console again." });
       return;
     }
+    if (payload.issuer === "firewall") enforceFirewallOpens();
     const claims = { canWrite: payload.canWrite, ...payload.deviceId ? { deviceId: payload.deviceId } : {} };
     console.log(`[access] sign-in with a ${payload.issuer} ticket${payload.deviceId ? ` (browser ${payload.deviceId})` : ""}`);
     if (opts.requireWrite && payload.canWrite !== true) {
@@ -911,9 +1349,9 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    if (payload.next === "files") {
+    if (payload.next === "files" || payload.next === "logs") {
       const session2 = await issueSession(vmId, claims);
-      json(res, 200, { next: "/__cc/files", view: "files", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
+      json(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
     const hostname = readKey("vm_hostname");
@@ -960,6 +1398,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 401, { error: "This link was already used. Press Screen again in your ControlClaw console." });
       return;
     }
+    if (payload.issuer === "firewall") enforceFirewallOpens();
     json(res, 200, { ok: true }, { "Set-Cookie": [viewSessionCookie(await issueViewSession(vmId, payload.deviceId)), ...payload.cookies] });
     return;
   }
@@ -974,6 +1413,14 @@ async function handleAccess(req, res, pathname, opts = {}) {
   }
   if (pathname === "/__cc/files" && req.method === "GET") {
     await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), consoleUrl: CONSOLE_URL, deniedPage: DENIED_FILES_PAGE });
+    return;
+  }
+  if (pathname === "/__cc/logs" && req.method === "GET") {
+    await serveLogsPage(req, res, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
+    return;
+  }
+  if ((pathname === "/__cc/logs/snapshot" || pathname === "/__cc/logs/stream") && req.method === "GET") {
+    await serveLogsData(req, res, pathname, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
     return;
   }
   if (pathname.startsWith("/__cc/files-ui/") && req.method === "GET") {
@@ -992,11 +1439,11 @@ async function handleAccess(req, res, pathname, opts = {}) {
 }
 
 // src/box-token.ts
-import { readFileSync as readFileSync4 } from "fs";
+import { readFileSync as readFileSync5 } from "fs";
 import { importPKCS8, SignJWT as SignJWT2 } from "jose";
 function readKeyFile(keysDir2, name) {
   try {
-    return readFileSync4(`${keysDir2}/${name}`, "utf-8").trim();
+    return readFileSync5(`${keysDir2}/${name}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -1020,26 +1467,26 @@ function saasBaseUrl(keysDir2) {
 }
 
 // src/software.ts
-import { readFileSync as readFileSync5, realpathSync } from "fs";
+import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ac969b4" : "unknown",
-  builtAt: true ? "2026-09-30T17:33:19+01:00" : "unknown"
+  commit: true ? "ab22f5c" : "unknown",
+  builtAt: true ? "2026-09-30T19:23:51+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
   "/usr/lib/node_modules/openclaw/package.json",
   "/usr/local/lib/node_modules/openclaw/package.json"
 ];
-var OPENCLAW_BIN = "/usr/bin/openclaw";
+var OPENCLAW_BIN2 = "/usr/bin/openclaw";
 var MAX_FIELD = 64;
 function clip(value) {
   return typeof value === "string" && value.length > 0 ? value.slice(0, MAX_FIELD) : null;
 }
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync5(path, "utf8"));
+    const parsed = JSON.parse(readFileSync6(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -1054,7 +1501,7 @@ function readRelease(path = RELEASE_PATH) {
   if (!commit2 || !commitDate || !installedAt) return null;
   return { commit: commit2, commitDate, installedAt };
 }
-function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BIN) {
+function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BIN2) {
   for (const path of candidates) {
     const version = clip(readJson(path)?.version);
     if (version) return version;
@@ -1079,7 +1526,7 @@ function boxSoftware(opts = {}) {
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
-    features: firewallOrigin() ? ["open_v1"] : []
+    features: ["logs_page", ...firewallOrigin() ? ["open_v1"] : [], ...firewallOpensEnforced() ? ["open_enforced"] : []]
   };
 }
 
@@ -1155,10 +1602,10 @@ async function waitForOwnCertificate(probe2, opts) {
 
 // src/keys.ts
 import crypto2 from "crypto";
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
+import { readFileSync as readFileSync7, writeFileSync as writeFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
 function readFile2(path) {
   try {
-    return readFileSync6(path, "utf8").trim();
+    return readFileSync7(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1167,7 +1614,7 @@ function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
   if (existsSync2(privPath)) {
-    return readFile2(pubPath) ?? derivePublicKey(readFileSync6(privPath, "utf8"));
+    return readFile2(pubPath) ?? derivePublicKey(readFileSync7(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto2.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
@@ -1237,12 +1684,12 @@ function sha256Hex(s2) {
 }
 
 // src/mitm-ca.ts
-import { readFileSync as readFileSync7, writeFileSync as writeFileSync4, existsSync as existsSync3 } from "fs";
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync4, existsSync as existsSync3 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
 function readFile3(path) {
   try {
-    return readFileSync7(path, "utf8").trim();
+    return readFileSync8(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1323,13 +1770,13 @@ function installCa(caSrcPath, caCert) {
 }
 
 // src/egress.ts
-import { readFileSync as readFileSync8 } from "fs";
+import { readFileSync as readFileSync9 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
 function readFile4(path) {
   try {
-    return readFileSync8(path, "utf8").trim();
+    return readFileSync9(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1451,12 +1898,12 @@ function openClawState(unit, recentRestarts, gateway2) {
 }
 
 // src/routes/openclaw.ts
-var SERVICE = process.env.CC_SERVICE ?? "openclaw";
+var SERVICE2 = process.env.CC_SERVICE ?? "openclaw";
 var EXEC_TIMEOUT_MS = 5e3;
 var ACTION_TIMEOUT_MS = SERVICE_ACTION_MS;
 function runIsActive() {
   try {
-    return execSync2(`systemctl is-active ${SERVICE}`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }).trim();
+    return execSync2(`systemctl is-active ${SERVICE2}`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }).trim();
   } catch (err) {
     const stdout = err.stdout;
     if (stdout) return stdout.toString().trim();
@@ -1466,7 +1913,7 @@ function runIsActive() {
 function recentAutoRestarts() {
   try {
     const out = execSync2(
-      `sudo -n journalctl -u ${SERVICE} --since "-${Math.round(CRASH_WINDOW_MS / 1e3)}s" --no-pager -o cat`,
+      `sudo -n journalctl -u ${SERVICE2} --since "-${Math.round(CRASH_WINDOW_MS / 1e3)}s" --no-pager -o cat`,
       { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }
     );
     return out.split("\n").filter((l2) => l2.includes("Scheduled restart job")).length;
@@ -1476,7 +1923,7 @@ function recentAutoRestarts() {
 }
 function runStatusSummary() {
   try {
-    return execSync2(`systemctl status ${SERVICE} --no-pager -n 5`, {
+    return execSync2(`systemctl status ${SERVICE2} --no-pager -n 5`, {
       encoding: "utf-8",
       timeout: EXEC_TIMEOUT_MS
     }).trim();
@@ -1491,7 +1938,7 @@ function send(res, statusCode, body) {
 }
 function runAction(action) {
   try {
-    execSync2(`sudo systemctl ${action} ${SERVICE}`, { encoding: "utf-8", timeout: ACTION_TIMEOUT_MS });
+    execSync2(`sudo systemctl ${action} ${SERVICE2}`, { encoding: "utf-8", timeout: ACTION_TIMEOUT_MS });
     return { ok: true };
   } catch (err) {
     const message = err.stderr?.toString().trim() || (err instanceof Error ? err.message : "systemctl failed");
@@ -1539,388 +1986,6 @@ function handleStatus(res, drive2, gateway2) {
     // rclone call. `GET /drive/status` is where the cache sizes and queues live.
     ...drive2 ? { drive: drive2 } : {}
   });
-}
-
-// src/routes/logs.ts
-import { execFile as execFile2, spawn } from "child_process";
-import { closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "fs";
-import { join as join6 } from "path";
-
-// src/redact.ts
-import { readFileSync as readFileSync9 } from "fs";
-import { join as join5 } from "path";
-var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
-var MIN_SECRET_LENGTH = 8;
-var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
-var BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
-var secrets = [];
-function escapeRegExp(s2) {
-  return s2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-var secretRe = null;
-function loadRedactionSecrets(keysDir2) {
-  const found = [];
-  for (const name of SECRET_FILES) {
-    try {
-      const value = readFileSync9(join5(keysDir2, name), "utf-8").trim();
-      if (value.length >= MIN_SECRET_LENGTH) found.push(value);
-    } catch {
-    }
-  }
-  setRedactionSecrets(found);
-  return found.length;
-}
-function setRedactionSecrets(values) {
-  secrets = values.filter((v2) => v2.length >= MIN_SECRET_LENGTH);
-  secretRe = secrets.length ? new RegExp(secrets.map(escapeRegExp).join("|"), "g") : null;
-}
-function redact(text2) {
-  let out = text2;
-  if (secretRe) out = out.replace(secretRe, "[redacted]");
-  out = out.replace(PARAM_RE, (_m, k2) => `${k2}=[redacted]`);
-  out = out.replace(BEARER_RE, "Bearer [redacted]");
-  return out;
-}
-
-// src/routes/logs.ts
-var OPENCLAW_BIN2 = "/usr/bin/openclaw";
-var SERVICE2 = process.env.CC_SERVICE ?? "openclaw";
-var SNAPSHOT_TIMEOUT_MS = 15e3;
-var CLI_TIMEOUT_MS = 1e4;
-var MAX_BYTES = "250000";
-var DEFAULT_LINES = 200;
-var MAX_LINES = 1e3;
-var PING_MS = 2e4;
-var SERVICE_POLL_MS = 5e3;
-var LOGS_STREAM_MAX_MS = 28e4;
-var JOURNAL_LINES = 200;
-var LOG_DIR = process.env.OPENCLAW_LOG_DIR ?? "/tmp/openclaw";
-var TAIL_BYTES = 512 * 1024;
-var FOLLOW_POLL_MS = 700;
-var FOLLOW_BACKLOG_LINES = 50;
-var CRASH_RE = /^(\s+at |\w*Error\b|node:|FATAL|Unhandled|ELIFECYCLE|Segmentation fault)/;
-function env() {
-  return { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" };
-}
-function run(cmd, args, timeout, maxBuffer = 4 * 1024 * 1024) {
-  return new Promise((resolve2) => {
-    execFile2(cmd, args, { timeout, maxBuffer, env: env(), encoding: "utf-8" }, (err, stdout, stderr) => {
-      resolve2({
-        stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
-        error: err ? String(stderr ?? "").trim().split("\n")[0] || err.message : null
-      });
-    });
-  });
-}
-function mapCliRecord(raw) {
-  let rec;
-  try {
-    rec = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (rec.type === "log") {
-    return {
-      time: String(rec.time ?? ""),
-      level: String(rec.level ?? "info").toLowerCase(),
-      subsystem: String(rec.subsystem ?? "openclaw"),
-      message: redact(String(rec.message ?? ""))
-    };
-  }
-  if (rec.type === "notice") {
-    return { time: (/* @__PURE__ */ new Date()).toISOString(), level: "notice", subsystem: "openclaw", message: redact(String(rec.message ?? "")) };
-  }
-  return null;
-}
-function mapFileRecord(raw) {
-  let rec;
-  try {
-    rec = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  const meta = rec._meta ?? {};
-  if (typeof rec.message !== "string" || typeof rec.time !== "string") return null;
-  let subsystem = "openclaw";
-  const name = typeof meta.name === "string" ? meta.name : "";
-  if (name.startsWith("{")) {
-    try {
-      const ctx = JSON.parse(name);
-      const s2 = ctx.subsystem ?? ctx.module;
-      if (typeof s2 === "string" && s2) subsystem = s2;
-    } catch {
-    }
-  } else if (name) {
-    subsystem = name;
-  }
-  return {
-    time: rec.time,
-    level: String(meta.logLevelName ?? "info").toLowerCase(),
-    subsystem,
-    message: redact(rec.message)
-  };
-}
-function newestLogFile() {
-  try {
-    const candidates = readdirSync(LOG_DIR).filter((f2) => f2.startsWith("openclaw") && f2.endsWith(".log"));
-    let best = null;
-    for (const f2 of candidates) {
-      const path = join6(LOG_DIR, f2);
-      const mtime = statSync(path).mtimeMs;
-      if (!best || mtime > best.mtime) best = { path, mtime };
-    }
-    return best?.path ?? null;
-  } catch {
-    return null;
-  }
-}
-function readFileTail(lines) {
-  const path = newestLogFile();
-  if (!path) return null;
-  let fd = null;
-  try {
-    fd = openSync(path, "r");
-    const size = fstatSync(fd).size;
-    const start = Math.max(0, size - TAIL_BYTES);
-    const buf = Buffer.alloc(size - start);
-    readSync(fd, buf, 0, buf.length, start);
-    let text2 = buf.toString("utf-8");
-    if (start > 0) text2 = text2.slice(text2.indexOf("\n") + 1);
-    const out = [];
-    for (const line of text2.split("\n")) {
-      if (!line.trim()) continue;
-      const mapped = mapFileRecord(line);
-      if (mapped) out.push(mapped);
-    }
-    return { path, size, lines: out.slice(-lines) };
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
-}
-function followFile(start, onLine) {
-  let path = start.path;
-  let offset = start.size;
-  let partial = "";
-  const tick = () => {
-    try {
-      const newest = newestLogFile();
-      if (newest && newest !== path) {
-        path = newest;
-        offset = 0;
-        partial = "";
-      }
-      const size = statSync(path).size;
-      if (size < offset) {
-        offset = 0;
-        partial = "";
-      }
-      if (size === offset) return;
-      const fd = openSync(path, "r");
-      try {
-        const buf = Buffer.alloc(Math.min(size - offset, TAIL_BYTES));
-        const n2 = readSync(fd, buf, 0, buf.length, offset);
-        offset += n2;
-        partial += buf.toString("utf-8", 0, n2);
-      } finally {
-        closeSync(fd);
-      }
-      let idx;
-      while ((idx = partial.indexOf("\n")) >= 0) {
-        const line = partial.slice(0, idx);
-        partial = partial.slice(idx + 1);
-        if (!line.trim()) continue;
-        const mapped = mapFileRecord(line);
-        if (mapped) onLine(mapped);
-      }
-    } catch {
-    }
-  };
-  const timer = setInterval(tick, FOLLOW_POLL_MS);
-  return () => clearInterval(timer);
-}
-async function readCliSnapshot(lines) {
-  const { stdout, error } = await run(
-    OPENCLAW_BIN2,
-    ["logs", "--json", "--limit", String(lines), "--max-bytes", MAX_BYTES, "--timeout", String(CLI_TIMEOUT_MS)],
-    SNAPSHOT_TIMEOUT_MS
-  );
-  const out = [];
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
-    const mapped = mapCliRecord(line);
-    if (mapped) out.push(mapped);
-  }
-  return { lines: out, warning: error && out.length === 0 ? redact(`openclaw logs: ${error}`) : null };
-}
-function mapJournalRecord(raw) {
-  let rec;
-  try {
-    rec = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  const message = typeof rec.MESSAGE === "string" ? rec.MESSAGE : null;
-  if (!message) return null;
-  const ts = Number(rec.__REALTIME_TIMESTAMP);
-  const time = Number.isFinite(ts) ? new Date(ts / 1e3).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
-  if (rec.SYSLOG_IDENTIFIER === "systemd") {
-    return { time, level: "unit", subsystem: "systemd", message: redact(message) };
-  }
-  if (CRASH_RE.test(message)) {
-    return { time, level: "error", subsystem: "stderr", message: redact(message) };
-  }
-  return null;
-}
-async function readJournal() {
-  const { stdout } = await run(
-    "sudo",
-    ["journalctl", "-u", SERVICE2, "-n", String(JOURNAL_LINES), "-o", "json", "--no-pager"],
-    SNAPSHOT_TIMEOUT_MS
-  );
-  const out = [];
-  for (const line of stdout.split("\n")) {
-    if (!line.trim()) continue;
-    const mapped = mapJournalRecord(line);
-    if (mapped) out.push(mapped);
-  }
-  return out;
-}
-function parseServiceShow(stdout) {
-  const kv = {};
-  for (const line of stdout.split("\n")) {
-    const i2 = line.indexOf("=");
-    if (i2 > 0) kv[line.slice(0, i2)] = line.slice(i2 + 1).trim();
-  }
-  const sinceRaw = kv.ExecMainStartTimestamp;
-  const since = sinceRaw && !Number.isNaN(Date.parse(sinceRaw)) ? new Date(sinceRaw).toISOString() : null;
-  const exit = Number(kv.ExecMainStatus);
-  return {
-    active: kv.ActiveState ?? "unknown",
-    subState: kv.SubState ?? "unknown",
-    result: kv.Result ?? "unknown",
-    exitStatus: Number.isFinite(exit) ? exit : null,
-    since,
-    restarts: Number(kv.NRestarts) || 0
-  };
-}
-async function readServiceState() {
-  const { stdout } = await run(
-    "systemctl",
-    ["show", SERVICE2, "-p", "ActiveState,SubState,Result,ExecMainStatus,ExecMainStartTimestamp,NRestarts"],
-    5e3
-  );
-  return parseServiceShow(stdout);
-}
-function parseLines(url2) {
-  const n2 = parseInt(url2.searchParams.get("lines") ?? "", 10);
-  if (!Number.isFinite(n2) || n2 < 1) return DEFAULT_LINES;
-  return Math.min(n2, MAX_LINES);
-}
-async function handleLogs(url2, res) {
-  const lines = parseLines(url2);
-  const fromFile = readFileTail(lines);
-  const [gateway2, journal2, service] = await Promise.all([
-    fromFile ? Promise.resolve({ lines: fromFile.lines, warning: null }) : readCliSnapshot(lines),
-    readJournal(),
-    readServiceState()
-  ]);
-  const ts = (l2) => Date.parse(l2.time) || 0;
-  const merged = [...gateway2.lines, ...journal2].sort((a2, b2) => ts(a2) - ts(b2)).slice(-lines);
-  res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-  res.end(JSON.stringify({ service, lines: merged, ...gateway2.warning ? { warning: gateway2.warning } : {} }));
-}
-async function handleLogStream(req, res) {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no"
-  });
-  res.flushHeaders?.();
-  let closed = false;
-  const write = (chunk) => {
-    if (closed) return;
-    try {
-      res.write(chunk);
-    } catch {
-      cleanup();
-    }
-  };
-  const event = (name, data) => write(`${name ? `event: ${name}
-` : ""}data: ${JSON.stringify(data)}
-
-`);
-  const ping = setInterval(() => write(": ping\n\n"), PING_MS);
-  const stop = setTimeout(() => {
-    event("end", { reason: "max-duration" });
-    cleanup();
-  }, LOGS_STREAM_MAX_MS);
-  let stopFollow = null;
-  function cleanup() {
-    if (closed) return;
-    closed = true;
-    clearInterval(ping);
-    clearInterval(servicePoll);
-    clearTimeout(stop);
-    stopFollow?.();
-    try {
-      res.end();
-    } catch {
-    }
-  }
-  req.on("close", cleanup);
-  res.on("close", cleanup);
-  let lastService = "";
-  const pushService = async () => {
-    const service = await readServiceState();
-    const key = JSON.stringify(service);
-    if (key !== lastService) {
-      lastService = key;
-      event("service", service);
-    }
-  };
-  void pushService();
-  const servicePoll = setInterval(() => void pushService(), SERVICE_POLL_MS);
-  const tail = readFileTail(FOLLOW_BACKLOG_LINES);
-  if (tail) {
-    for (const line of tail.lines) event(null, line);
-    stopFollow = followFile(tail, (line) => event(null, line));
-  } else {
-    stopFollow = followCli((line) => event(null, line), () => {
-      event("end", { reason: "cli-exit" });
-      cleanup();
-    });
-  }
-}
-function followCli(onLine, onExit) {
-  const child = spawn(OPENCLAW_BIN2, ["logs", "--json", "--follow", "--limit", String(FOLLOW_BACKLOG_LINES), "--max-bytes", MAX_BYTES], {
-    env: env(),
-    stdio: ["ignore", "pipe", "ignore"],
-    detached: true
-  });
-  let buffer = "";
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk.toString("utf-8");
-    let idx;
-    while ((idx = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 1);
-      if (!line.trim()) continue;
-      const mapped = mapCliRecord(line);
-      if (mapped) onLine(mapped);
-    }
-  });
-  child.on("exit", onExit);
-  return () => {
-    if (child.exitCode !== null || child.pid === void 0) return;
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      child.kill("SIGTERM");
-    }
-  };
 }
 
 // src/gateway.ts
