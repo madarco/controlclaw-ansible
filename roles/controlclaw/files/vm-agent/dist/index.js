@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "6d926e2" : "unknown",
-  builtAt: true ? "2026-09-30T10:21:38+01:00" : "unknown"
+  commit: true ? "2d913fb" : "unknown",
+  builtAt: true ? "2026-09-30T10:49:31+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -847,9 +847,13 @@ async function registerPublicKey(keysDir2) {
   }
   console.error(`[keys] gave up registering after ${maxAttempts} attempts`);
 }
+function spkiFromPem(pem) {
+  const body = pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, "").replace(/\s+/g, "");
+  return crypto2.createPublicKey({ key: Buffer.from(body, "base64"), format: "der", type: "spki" });
+}
 function verifyDetached(message, signatureB64, publicKeyPem) {
   try {
-    const key = crypto2.createPublicKey(publicKeyPem);
+    const key = spkiFromPem(publicKeyPem);
     return crypto2.verify(null, Buffer.from(message, "utf8"), key, Buffer.from(signatureB64, "base64"));
   } catch {
     return false;
@@ -862,6 +866,7 @@ function sha256Hex(s2) {
 // src/mitm-ca.ts
 import { readFileSync as readFileSync6, writeFileSync as writeFileSync3, existsSync as existsSync3 } from "fs";
 import { execFileSync } from "child_process";
+import { getCACertificates, setDefaultCACertificates } from "tls";
 function readFile2(path) {
   try {
     return readFileSync6(path, "utf8").trim();
@@ -869,12 +874,20 @@ function readFile2(path) {
     return null;
   }
 }
+var SYSTEM_MITM_CA_PATH = "/usr/local/share/ca-certificates/controlclaw-mitm.crt";
+function trustMitmCaInProcess(path = SYSTEM_MITM_CA_PATH) {
+  const pem = readFile2(path);
+  if (!pem) return false;
+  setDefaultCACertificates([...getCACertificates("bundled"), pem]);
+  return true;
+}
 var sleep3 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
   const mitmIp = readFile2(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
     return { trusted: true, installed: false, message: "This box is not behind a firewall proxy." };
   }
+  trustMitmCaInProcess();
   const configUrl = readFile2(`${keysDir2}/config_api_url`);
   const vmId = readFile2(`${keysDir2}/vm_id`);
   const privateKey = readFile2(`${keysDir2}/vm_private_key.pem`);
@@ -910,6 +923,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
             const fpr = sha256Hex(mitm.caCert);
             if (readFile2(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
             installCa(caSrcPath, mitm.caCert);
+            trustMitmCaInProcess();
             writeFileSync3(fprPath, fpr, { mode: 420 });
             console.log(`[mitm-ca] installed mitm CA (sha256=${fpr.slice(0, 16)}\u2026)`);
             return { trusted: true, installed: true, message: `Installed the firewall's certificate (sha256=${fpr.slice(0, 16)}\u2026).` };
@@ -3478,8 +3492,9 @@ var LlmService = class {
    *
    * The CA has to be passed in. On a secured box every embedding call goes through the org proxy,
    * which presents the firewall's own certificate; `openclaw.service` and `profile.d` carry
-   * `NODE_EXTRA_CA_CERTS` but the vm-agent's unit does not, so a rebuild started from here would
-   * fail the handshake — or hang on it — and leave vector search paused for good.
+   * `NODE_EXTRA_CA_CERTS`, and the vm-agent's unit only on a box whose role is from T-88 or later,
+   * so without this a rebuild started from here would fail the handshake — or hang on it — and
+   * leave vector search paused for good.
    *
    * A failure leaves `memory.search` written and the index paused, which `/llm/status` cannot
    * otherwise tell from a healthy one — so the failure is remembered and reported there, and the
