@@ -81,17 +81,15 @@
     group: root
     mode: '0644'
 
-# Public, and a locked box needs it: /opt/controlclaw/keys moves inside the container, so the copy
-# there is unreadable exactly when something has to verify that a request is really the control
-# plane's. This is the one file that leaves KEYS_DIR.
-- name: Disk encryption | keep the SaaS public key on the plain root too
-  ansible.builtin.copy:
-    dest: /etc/controlclaw/saas_public_key.pem
-    content: "{{ saas_public_key }}"
-    owner: root
-    group: root
-    mode: '0644'
-  when: saas_public_key is defined and saas_public_key | length > 0
+# There used to be a copy of the SaaS public key here, on the plain root, for a locked box to check
+# that a request was the control plane's. Nothing reads it: cc-secure-daemon's two routes are
+# unauthenticated by design, and everything that does check the control plane's key runs inside the
+# container. It is removed, so a box updated in place drops the copy it has
+# (controlclaw docs/plans/browser-enrollment.md §7, PR 6).
+- name: Disk encryption | no SaaS public key on the plain root
+  ansible.builtin.file:
+    path: /etc/controlclaw/saas_public_key.pem
+    state: absent
 
 # vm_id and the control-plane URL, on the PLAIN root. Both are needed while the container is shut —
 # the copies in KEYS_DIR are inside it — and neither is a secret.

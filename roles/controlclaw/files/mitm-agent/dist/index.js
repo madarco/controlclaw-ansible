@@ -12150,7 +12150,9 @@ function emptyAccessStore() {
 function loadAccessStore(path, boxKeyB64, ids2) {
   const parsed = loadStoreOrEmpty("access", path, boxKeyB64, aad10(ids2));
   if (!parsed || parsed.version !== 1) return emptyAccessStore();
-  return { version: 1, devices: parsed.devices ?? {}, pins: parsed.pins ?? {} };
+  const devices = parsed.devices ?? {};
+  for (const d2 of Object.values(devices)) if (d2.via === "migration") d2.via = "tofu";
+  return { version: 1, devices, pins: parsed.pins ?? {} };
 }
 function saveAccessStore(path, store, boxKeyB64, ids2) {
   saveStore("access", path, store, boxKeyB64, aad10(ids2));
@@ -12162,7 +12164,6 @@ var CONFIRM_PATH = "/__cc/enroll/confirm";
 function ownsAccessPath(path) {
   return path === OPEN_PATH || path === CONFIRM_PATH;
 }
-var MIGRATION_ENDS_AT = Date.parse("2026-10-21T00:00:00Z");
 var INTENT_MAX_LIFETIME_S = 120;
 var TICKET_TTL_S = 60;
 var DEVICE_TTL_MS = 90 * 24 * 60 * 6e4;
@@ -12172,6 +12173,7 @@ var CONFIRM_PER_MINUTE = 30;
 var ACCESS_BODY_BYTES = 8 * 1024;
 var MAX_DEVICES = 500;
 var BEAT_DEVICES = 200;
+var CONFIG_RETRY_FIRST_MS = 15e3;
 var CONFIG_RETRY_MS = 10 * 6e4;
 var DEV_COOKIE = "__Host-cc_dev";
 var DEVICES_PER_BROWSER = 5;
@@ -12182,7 +12184,9 @@ var NEXT = {
   screen: { purpose: "browser-view", path: "/__cc/browser" },
   files: { purpose: "browser-login", path: "/__cc/login", next: "files" },
   // The agent's log on the box (browser-enrollment.md §7): the same shape as Files.
-  logs: { purpose: "browser-login", path: "/__cc/login", next: "logs" }
+  logs: { purpose: "browser-login", path: "/__cc/login", next: "logs" },
+  // The WhatsApp link QR on the box (§7): shown there only to a session that may change the agent.
+  whatsapp: { purpose: "browser-login", path: "/__cc/login", next: "whatsapp" }
 };
 function sha2562(s2) {
   return createHash3("sha256").update(s2).digest("hex");
@@ -12282,10 +12286,6 @@ var AccessFirewall = class {
   ready() {
     return this.origin() !== null && this.opts.saasPublicKey() !== null;
   }
-  migration() {
-    const ends = this.opts.migrationEndsAt === void 0 ? MIGRATION_ENDS_AT : this.opts.migrationEndsAt;
-    return ends === null || this.now() < ends;
-  }
   /** Real people a code can go to. The dev route is not a person, so it never closes the free window. */
   realRoutes() {
     return this.opts.codeRoutes().map((r2) => ({ target: r2.target, senders: r2.senders.filter((s2) => s2 !== DEV_SENDER) })).filter((r2) => r2.senders.length > 0);
@@ -12368,8 +12368,8 @@ var AccessFirewall = class {
       return this.issue(res, agent.hostname, intent, c2, device.id, [this.deviceCookie(req)]);
     }
     const free = this.freeWindow();
-    if (free || this.migration()) {
-      const via = free ? "tofu" : "migration";
+    if (free) {
+      const via = "tofu";
       const enrolled = this.enroll(intent, label, via);
       this.log(`[access] open ${intent.next} on ${agent.hostname}: browser ${enrolled.id} enrolled without a code (${via})`);
       void this.maybeList();
@@ -12537,12 +12537,12 @@ var AccessFirewall = class {
   }
   // ---- the owner's list, config, revocation ----
   /**
-   * Send the owner the browsers enrolled without a code, once there is an owner to send them to
-   * and migration mode is over (§6, §10 step 5). The list comes from here, so a compromised
+   * Send the owner the browsers enrolled without a code, once there is an owner to send them to:
+   * at the organization's first approved sender (§6). The list comes from here, so a compromised
    * console cannot hide an entry from the channel message. Retried from `tick` until it lands.
    */
   async maybeList() {
-    if (this.listing || this.migration() || !this.opts.channelsReady()) return;
+    if (this.listing || !this.opts.channelsReady()) return;
     const routes = this.realRoutes();
     if (routes.length === 0) return;
     const unlisted = Object.entries(this.store.devices).filter(([, d2]) => d2.via !== "code" && !d2.listedAt);
@@ -12571,7 +12571,8 @@ var AccessFirewall = class {
   /**
    * Tell each agent where its firewall is (`POST /access/config`, purpose `access`). The agent
    * refuses an Open flow until it has this, and takes it only with this box's signature. Agents
-   * older than PR 2 answer 404; they are asked again every `CONFIG_RETRY_MS`.
+   * older than PR 2 answer 404. A failed push is tried again with a backoff (`CONFIG_RETRY_FIRST_MS`
+   * doubling to `CONFIG_RETRY_MS`).
    */
   async pushConfig() {
     const origin = this.origin();
@@ -12580,8 +12581,8 @@ var AccessFirewall = class {
       if (!this.opts.identities().some((i2) => String(i2.vm_id) === vmId)) continue;
       if (this.configured.get(vmId) === origin) continue;
       const tried = this.configTried.get(vmId);
-      if (tried !== void 0 && this.now() - tried < CONFIG_RETRY_MS) continue;
-      this.configTried.set(vmId, this.now());
+      if (tried !== void 0 && this.now() - tried.at < tried.wait) continue;
+      this.configTried.set(vmId, { at: this.now(), wait: tried ? Math.min(tried.wait * 2, CONFIG_RETRY_MS) : CONFIG_RETRY_FIRST_MS });
       try {
         await this.opts.agent.post({ vmId, hostname: pin.hostname }, "/access/config", { firewallOrigin: origin });
         this.configured.set(vmId, origin);
@@ -12658,7 +12659,6 @@ var AccessFirewall = class {
     }));
     return {
       origin: this.origin(),
-      migration: this.migration(),
       freeWindow: this.freeWindow(),
       pending: this.pending && this.now() <= this.pending.expiresAt ? { vmId: this.pending.vmId, expiresAt: new Date(this.pending.expiresAt).toISOString() } : null,
       devices,
@@ -83438,34 +83438,6 @@ function parseAiSettings(raw) {
   };
 }
 
-// src/auth.ts
-var saasPublicKey = null;
-function setSaasPublicKey(key) {
-  saasPublicKey = key;
-}
-async function verifyRequest(req) {
-  if (!saasPublicKey) return null;
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith("Bearer ")) return null;
-  const token2 = authHeader.slice(7);
-  try {
-    const key = await importSPKI(saasPublicKey, "EdDSA");
-    const { payload } = await jwtVerify(token2, key, { algorithms: ["EdDSA"] });
-    return payload;
-  } catch {
-    return null;
-  }
-}
-async function requireAuth(req, res) {
-  const payload = await verifyRequest(req);
-  if (!payload) {
-    res.writeHead(401, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Unauthorized" }));
-    return false;
-  }
-  return true;
-}
-
 // src/recovery.ts
 import { createWriteStream, existsSync as existsSync11, mkdirSync as mkdirSync10, readdirSync as readdirSync2, rmSync as rmSync3, statSync as statSync3 } from "fs";
 import { createReadStream } from "fs";
@@ -83903,8 +83875,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "c569394" : "unknown",
-  builtAt: true ? "2026-09-30T20:52:09+01:00" : "unknown"
+  commit: true ? "06c39af" : "unknown",
+  builtAt: true ? "2026-09-30T21:20:09+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -84038,13 +84010,6 @@ var TAILSCALE_STORE_PATH = process.env.TAILSCALE_STORE_PATH ?? "/opt/controlclaw
 var KILL_STORE_PATH = process.env.KILL_STORE_PATH ?? "/opt/controlclaw/state/kill.enc";
 var ACCESS_STORE_PATH = process.env.ACCESS_STORE_PATH ?? "/opt/controlclaw/state/access.enc";
 var ACCESS_TICK_MS = parseInt(process.env.ACCESS_TICK_MS ?? "60000", 10);
-var ACCESS_MIGRATION_ENDS_AT = (() => {
-  const raw = process.env.ACCESS_MIGRATION_ENDS_AT ?? "";
-  const t2 = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
-  const env = raw && Number.isFinite(t2) ? t2 : null;
-  if (env === null) return MIGRATION_ENDS_AT;
-  return MIGRATION_ENDS_AT === null ? env : Math.min(env, MIGRATION_ENDS_AT);
-})();
 var GBRAIN_STORE_PATH = process.env.GBRAIN_STORE_PATH ?? "/opt/controlclaw/state/gbrain.enc";
 var EXIT_STORE_PATH = process.env.EXIT_STORE_PATH ?? "/opt/controlclaw/state/exit.enc";
 var EXIT_CHECK_POLL_MS = parseInt(process.env.EXIT_CHECK_POLL_MS ?? "60000", 10);
@@ -84477,12 +84442,11 @@ async function main() {
         stopped: (vmId) => kill ? kill.lockedVmIds([vmId]).includes(vmId) : false,
         hostname: () => readKeyFile2("vm_hostname"),
         saasPublicKey: () => saasPublicKeyPem,
-        signingKey: () => readFileSync19(`${KEYS_DIR2}/vm_private_key.pem`, "utf-8"),
-        migrationEndsAt: ACCESS_MIGRATION_ENDS_AT
+        signingKey: () => readFileSync19(`${KEYS_DIR2}/vm_private_key.pem`, "utf-8")
       });
       const as = access.status();
       console.log(
-        `[mitm-agent] access store loaded (${String(as.deviceCount)} browser(s), origin ${String(as.origin ?? "none")}, migration ${as.migration ? "on" : "off"})`
+        `[mitm-agent] access store loaded (${String(as.deviceCount)} browser(s), origin ${String(as.origin ?? "none")}, free window ${as.freeWindow ? "on" : "off"})`
       );
     } catch (err) {
       console.error(`[mitm-agent] access module would not start, browser sign-in through this firewall is off: ${err.message}`);
@@ -84612,7 +84576,6 @@ async function main() {
   }
   try {
     saasPublicKeyPem = readFileSync19(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
-    setSaasPublicKey(saasPublicKeyPem);
   } catch (err) {
     die(`failed to load SaaS public key: ${err.message}`);
   }
@@ -84666,23 +84629,6 @@ async function main() {
     if (RecoveryRoutes.owns(url2.pathname)) {
       res.writeHead(426, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "The recovery routes are HTTPS only. Use https:// and pin this box's certificate." }));
-      return;
-    }
-    if (!await requireAuth(req, res)) return;
-    if (url2.pathname === "/health" && req.method === "GET") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", role: "mitm", org: ORG_ID, box: BOX_ID }));
-      return;
-    }
-    if (url2.pathname === "/sync" && req.method === "POST") {
-      try {
-        await runSync(boxKey);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
-      } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
-      }
       return;
     }
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -84833,6 +84779,7 @@ async function main() {
           if (kill) features.push("kill_switch");
           if (access?.ready()) features.push("open_v1");
           if (access?.ready()) features.push("open_logs");
+          if (access?.ready()) features.push("open_whatsapp");
           const backupStatus = backups?.status() ?? null;
           const recoveryRoutes = recoveryTls && recovery ? { enabled: true, port: PORT, certFingerprint: recoveryTls.fingerprint } : { enabled: false, port: PORT, certFingerprint: null };
           const inventory = firewallInventory(channels, llm, webhooks);

@@ -38,18 +38,46 @@ async function verifySaasToken(token) {
     return null;
   }
 }
+var CONTROL_PLANE_ROUTES = {
+  openclaw: /* @__PURE__ */ new Set([
+    "GET /health",
+    "GET /status",
+    "POST /start",
+    "POST /stop",
+    "POST /restart",
+    "POST /mitm-ca/refresh",
+    "GET /update",
+    // Metadata the console shows. Written down in the plan as what the control plane can see.
+    "GET /channels/status",
+    "GET /llm/status",
+    "GET /llm/models",
+    "GET /tailscale/status",
+    "GET /devices",
+    "GET /google/status",
+    "GET /drive/status",
+    "GET /ssh/status",
+    "GET /backup/plan",
+    "GET /search/status",
+    "GET /connectors/status"
+  ]),
+  gbrain: /* @__PURE__ */ new Set(["GET /health", "GET /status", "POST /start", "POST /stop", "POST /restart", "POST /mitm-ca/refresh", "GET /logs"])
+};
+function controlPlaneMayCall(method, url2, service = process.env.CC_SERVICE ?? "openclaw") {
+  let pathname;
+  try {
+    pathname = new URL(url2 ?? "/", "http://box").pathname;
+  } catch {
+    return false;
+  }
+  return (CONTROL_PLANE_ROUTES[service] ?? CONTROL_PLANE_ROUTES.openclaw).has(`${method ?? "GET"} ${pathname}`);
+}
 async function verifyRequest(req) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
+  if (!controlPlaneMayCall(req.method, req.url)) return null;
   const payload = await verifySaasToken(authHeader.slice(7));
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
-}
-async function verifyLoginToken(token, vmId, purpose) {
-  const payload = await verifySaasToken(token);
-  if (!payload || payload.purpose !== purpose || payload.vmId !== vmId) return null;
-  if (typeof payload.jti !== "string" || typeof payload.exp !== "number") return null;
-  return { ...payload, canWrite: payload.canWrite === true, next: payload.next === "files" || payload.next === "logs" ? payload.next : void 0 };
 }
 async function verifyMitmRequest(req, purpose = "channels") {
   const authHeader = req.headers.authorization;
@@ -89,7 +117,7 @@ async function verifyFirewallTicket(token, vmId, purpose) {
       c: p2.c,
       deviceId: p2.deviceId,
       canWrite: p2.canWrite === true,
-      ...p2.next === "files" || p2.next === "logs" ? { next: p2.next } : {}
+      ...p2.next === "files" || p2.next === "logs" || p2.next === "whatsapp" ? { next: p2.next } : {}
     };
   } catch {
     return null;
@@ -4120,8 +4148,8 @@ async function manifestHash(m2) {
   const sodium = await sodiumReady();
   return [...sodium.crypto_generichash(32, utf8(canonicalManifest(m2)), null)].map((b2) => b2.toString(16).padStart(2, "0")).join("");
 }
-function parseManifest(json2) {
-  const m2 = JSON.parse(json2);
+function parseManifest(json3) {
+  const m2 = JSON.parse(json3);
   if (m2?.version !== 1 || !Array.isArray(m2.entries)) throw new Error("the archive's manifest is not readable");
   return { ...m2, excluded: Array.isArray(m2.excluded) ? m2.excluded : [] };
 }
@@ -5036,7 +5064,6 @@ function load() {
     const raw = JSON.parse(readFileSync7(path, "utf8"));
     state = {
       firewallOrigin: typeof raw.firewallOrigin === "string" && validFirewallOrigin(raw.firewallOrigin) ? raw.firewallOrigin : null,
-      enforcedAt: typeof raw.enforcedAt === "string" ? raw.enforcedAt : null,
       revoked: raw.revoked && typeof raw.revoked === "object" ? raw.revoked : {}
     };
   } catch {
@@ -5058,26 +5085,36 @@ function validFirewallOrigin(origin) {
 function firewallOrigin() {
   return load().firewallOrigin;
 }
-function firewallOpensEnforced() {
-  return !!load().enforcedAt;
-}
-function enforceFirewallOpens(now = /* @__PURE__ */ new Date()) {
+function setFirewallOrigin(origin) {
   const state = load();
-  if (state.enforcedAt) return false;
-  save({ ...state, enforcedAt: now.toISOString() });
-  console.log("[access] a firewall-issued sign-in worked here: this box no longer accepts the control plane's tickets");
-  return true;
+  if (state.firewallOrigin === origin) return;
+  save({ ...state, firewallOrigin: origin });
+}
+function revokeDevices(ids, now = Date.now()) {
+  const state = load();
+  const revoked = prune(state.revoked, now);
+  for (const id of ids) revoked[id] = now;
+  save({ ...state, revoked });
+}
+function clearRevoked() {
+  const state = load();
+  save({ ...state, revoked: {} });
 }
 function isRevoked(deviceId, now = Date.now()) {
   const at2 = load().revoked[deviceId];
   return typeof at2 === "number" && now - at2 < REVOKED_KEEP_MS;
 }
+function prune(revoked, now) {
+  const out = {};
+  for (const [id, at2] of Object.entries(revoked)) if (typeof at2 === "number" && now - at2 < REVOKED_KEEP_MS) out[id] = at2;
+  return out;
+}
 
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "c569394" : "unknown",
-  builtAt: true ? "2026-09-30T20:52:09+01:00" : "unknown"
+  commit: true ? "06c39af" : "unknown",
+  builtAt: true ? "2026-09-30T21:20:09+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -5131,7 +5168,8 @@ function boxSoftware(opts = {}) {
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
-    features: ["logs_page", ...firewallOrigin() ? ["open_v1"] : [], ...firewallOpensEnforced() ? ["open_enforced"] : []]
+    // A brain serves neither page; it only signs its admin in through the firewall.
+    features: [...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -5862,6 +5900,14 @@ function ensureSessionSecret(keysDir2) {
   }
   secret = Buffer.from(readFileSync10(path, "utf8").trim(), "hex");
 }
+function rotateSessionSecret() {
+  if (!secretDir) throw new Error("session secret not initialised");
+  const path = join5(secretDir, "session_secret");
+  writeFileSync5(path, crypto2.randomBytes(32).toString("hex"), { mode: 384 });
+  secret = Buffer.from(readFileSync10(path, "utf8").trim(), "hex");
+  clearRevoked();
+  console.log("[session] rotated the session secret: every browser is signed out");
+}
 async function issueSession(vmId, claims = { canWrite: false }) {
   if (!secret) throw new Error("session secret not initialised");
   return new SignJWT2({ sub: vmId, ...claims.canWrite ? { canWrite: true } : {}, ...claims.deviceId ? { dev: claims.deviceId } : {} }).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(`${SESSION_TTL_SECONDS}s`).sign(secret);
@@ -6177,7 +6223,7 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.view === 'files' || d.view === 'logs') { $('h').textContent = d.view === 'files' ? 'Opening files' : 'Opening logs'; step(3); location.replace(d.next); return; }
+  if (d.view === 'files' || d.view === 'logs' || d.view === 'whatsapp') { $('h').textContent = d.view === 'files' ? 'Opening files' : d.view === 'logs' ? 'Opening logs' : 'Opening WhatsApp'; step(3); location.replace(d.next); return; }
   if (d.view === 'direct') { step(3); location.replace(d.next); return; }
   if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
@@ -6202,6 +6248,12 @@ var DENIED_FILES_PAGE = shell(
   "These files are private",
   `<h1>These files are private</h1>
 <p class="note">Open them from your ControlClaw console. If you were signed in, your session has expired: click Files again.</p>
+<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+);
+var DENIED_WHATSAPP_PAGE = shell(
+  "This code is private",
+  `<h1>This code is private</h1>
+<p class="note">Only an owner or admin can link WhatsApp. Open it from the Channels page of your ControlClaw console.</p>
 <a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
 );
 var DENIED_LOGS_PAGE = shell(
@@ -6340,8 +6392,6 @@ function bindingHash(value) {
 async function acceptTicket(req, token, vmId, purpose) {
   const invalid = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
   if (!token) return invalid;
-  const cp = firewallOpensEnforced() ? null : await verifyLoginToken(token, vmId, purpose);
-  if (cp) return { jti: cp.jti, exp: cp.exp, canWrite: cp.canWrite === true, ...cp.next ? { next: cp.next } : {}, issuer: "control-plane", cookies: [] };
   const fw = await verifyFirewallTicket(token, vmId, purpose);
   if (!fw) return invalid;
   const match = bindings(req.headers.cookie).find((b2) => bindingHash(b2.value) === fw.c);
@@ -6352,9 +6402,71 @@ async function acceptTicket(req, token, vmId, purpose) {
     canWrite: fw.canWrite,
     ...fw.next ? { next: fw.next } : {},
     deviceId: fw.deviceId,
-    issuer: "firewall",
     cookies: [bindCookie(match.name, null)]
   };
+}
+var whatsappLogin = null;
+var WHATSAPP_PAGE_HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" };
+function whatsappPage(hostname) {
+  const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
+  const host = hostname ? escapeHtml(hostname) : "";
+  return shell(
+    "Link WhatsApp",
+    `<h1 id="h">Link WhatsApp to ${agent}</h1><p class="host">${host}</p>
+<p class="lead" id="lead">On your phone, open WhatsApp, go to Linked devices, and scan this code.</p>
+<div id="qr" style="display:grid;place-items:center;min-height:16rem"></div>
+<div class="err" id="err"></div>
+<p class="note">Anyone who scans this code links their WhatsApp to your agent, so only scan it yourself, and close this tab when you are done.</p>`,
+    `
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const TEXT = ${JSON.stringify({
+      installing: "Setting up WhatsApp on this agent. The code appears here in a moment.",
+      connected: "Linked. You can close this tab.",
+      expired: "The code expired. Start the WhatsApp link again from your ControlClaw console.",
+      failed: "The link did not work. Start it again from your ControlClaw console.",
+      idle: "No WhatsApp link is waiting. Start one from your ControlClaw console."
+    })};
+  let last = '';
+  const tick = async () => {
+    let d;
+    try {
+      const r = await fetch('/__cc/whatsapp/qr', { credentials: 'same-origin' });
+      if (r.status === 401) { $('err').textContent = 'Your session on this agent has expired. Open WhatsApp again from your ControlClaw console.'; $('err').className = 'err show'; return; }
+      d = await r.json();
+    } catch (e) { setTimeout(tick, 4000); return; }
+    if (d.state === 'qr' && d.qrDataUrl) {
+      if (d.qrDataUrl !== last) { last = d.qrDataUrl; const img = new Image(); img.alt = 'WhatsApp link code'; img.width = 256; img.height = 256; img.src = d.qrDataUrl; $('qr').replaceChildren(img); }
+      $('lead').textContent = 'On your phone, open WhatsApp, go to Linked devices, and scan this code.';
+    } else {
+      $('qr').replaceChildren();
+      $('lead').textContent = TEXT[d.state] || d.message || TEXT.idle;
+      if (d.state === 'connected') { $('h').textContent = 'WhatsApp is linked'; return; }
+    }
+    if (d.state !== 'expired' && d.state !== 'failed') setTimeout(tick, 2500);
+  };
+  tick();
+})();`
+  );
+}
+async function serveWhatsapp(req, res, pathname, vmId) {
+  const session = await readSession(req.headers.cookie, vmId);
+  const page = pathname === "/__cc/whatsapp";
+  if (!page && !originAllowed(req, EXCHANGE_POLICY(), "/__cc/whatsapp/qr")) {
+    json(res, 403, { error: "This request did not come from your agent's own page." }, WHATSAPP_PAGE_HEADERS);
+    return;
+  }
+  if (!session || !session.canWrite) {
+    if (page) html(res, 401, DENIED_WHATSAPP_PAGE, WHATSAPP_PAGE_HEADERS);
+    else json(res, 401, { error: "Only an owner or admin who opened this agent can see the WhatsApp code." }, WHATSAPP_PAGE_HEADERS);
+    return;
+  }
+  if (page) {
+    html(res, 200, whatsappPage(readKey("vm_hostname")), WHATSAPP_PAGE_HEADERS);
+    return;
+  }
+  const login = whatsappLogin?.() ?? { state: "idle", qrDataUrl: null, message: null };
+  json(res, 200, login, WHATSAPP_PAGE_HEADERS);
 }
 function parseDashboardOutput(stdout, hostname, err) {
   let out = null;
@@ -6474,9 +6586,8 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 401, { error: "This link was already used. Open the agent from your ControlClaw console again." });
       return;
     }
-    if (payload.issuer === "firewall") enforceFirewallOpens();
     const claims = { canWrite: payload.canWrite, ...payload.deviceId ? { deviceId: payload.deviceId } : {} };
-    console.log(`[access] sign-in with a ${payload.issuer} ticket${payload.deviceId ? ` (browser ${payload.deviceId})` : ""}`);
+    console.log(`[access] sign-in with the firewall's ticket (browser ${payload.deviceId})`);
     if (opts.requireWrite && payload.canWrite !== true) {
       json(res, 403, { error: opts.requireWrite });
       return;
@@ -6491,7 +6602,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    if (payload.next === "files" || payload.next === "logs") {
+    if (payload.next === "files" || payload.next === "logs" || payload.next === "whatsapp") {
       const session2 = await issueSession(vmId, claims);
       json(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
@@ -6540,7 +6651,6 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 401, { error: "This link was already used. Press Screen again in your ControlClaw console." });
       return;
     }
-    if (payload.issuer === "firewall") enforceFirewallOpens();
     json(res, 200, { ok: true }, { "Set-Cookie": [viewSessionCookie(await issueViewSession(vmId, payload.deviceId)), ...payload.cookies] });
     return;
   }
@@ -6555,6 +6665,10 @@ async function handleAccess(req, res, pathname, opts = {}) {
   }
   if (pathname === "/__cc/files" && req.method === "GET") {
     await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), consoleUrl: CONSOLE_URL, deniedPage: DENIED_FILES_PAGE });
+    return;
+  }
+  if ((pathname === "/__cc/whatsapp" || pathname === "/__cc/whatsapp/qr") && req.method === "GET") {
+    await serveWhatsapp(req, res, pathname, vmId);
     return;
   }
   if (pathname === "/__cc/logs" && req.method === "GET") {
@@ -6598,6 +6712,37 @@ async function gbrainLoginPath(exec = defaultExec) {
   const path = parseLoginLink(stdout);
   if (!path) throw new Error("GBrain returned no login link");
   return path;
+}
+
+// src/routes/access-push.ts
+function json2(res, status, body) {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+async function handleAccessPush(req, res, pathname) {
+  if (req.method !== "POST") return json2(res, 405, { error: "Method not allowed" });
+  if (!await verifyMitmRequest(req, "access")) return json2(res, 401, { error: "Unauthorized" });
+  const body = await readJsonBody(req, 64 * 1024);
+  if (!body) return json2(res, 400, { error: "Invalid JSON body" });
+  if (pathname === "/access/config") {
+    const origin = typeof body.firewallOrigin === "string" ? body.firewallOrigin.toLowerCase() : "";
+    if (!validFirewallOrigin(origin)) return json2(res, 400, { error: "firewallOrigin must be https://<hostname>" });
+    setFirewallOrigin(origin);
+    console.log(`[access] the firewall for Opens is ${origin}`);
+    return json2(res, 200, { ok: true, firewallOrigin: origin });
+  }
+  if (pathname === "/access/revoke") {
+    if (body.all === true) {
+      rotateSessionSecret();
+      return json2(res, 200, { ok: true, all: true });
+    }
+    const ids = Array.isArray(body.deviceIds) ? body.deviceIds.filter((x2) => typeof x2 === "string" && x2.length > 0 && x2.length <= 64) : [];
+    if (ids.length === 0 || ids.length > 1e3) return json2(res, 400, { error: "deviceIds must be a non-empty list" });
+    revokeDevices(ids);
+    console.log(`[access] revoked ${ids.length} browser(s); their sessions here end now`);
+    return json2(res, 200, { ok: true, revoked: ids.length });
+  }
+  return json2(res, 404, { error: "Not found" });
 }
 
 // src/gbrain-gate.ts
@@ -6829,7 +6974,7 @@ var backup = new BackupService({
   }
 });
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
-var BRAIN_ACCESS_ROUTES = /* @__PURE__ */ new Set(["/__cc/login", "/__cc/session", "/__cc/verify", "/__cc/logout"]);
+var BRAIN_ACCESS_ROUTES = /* @__PURE__ */ new Set(["/__cc/open", "/__cc/open/begin", "/__cc/enroll", "/__cc/login", "/__cc/session", "/__cc/verify", "/__cc/logout"]);
 var server = createServer2(async (req, res) => {
   const url2 = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url2.pathname === "/llm/apply" && req.method === "POST") {
@@ -6871,6 +7016,10 @@ var server = createServer2(async (req, res) => {
       if (!res.headersSent) sendJson(res, 500, { error: "The brain could not sign you in. Try Open again." });
       else res.end();
     }
+    return;
+  }
+  if (url2.pathname.startsWith("/access/")) {
+    await handleAccessPush(req, res, url2.pathname);
     return;
   }
   if (url2.pathname.startsWith("/gbrain/")) {
