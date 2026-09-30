@@ -655,8 +655,8 @@ function isRevoked(deviceId, now = Date.now()) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "08cf92d" : "unknown",
-  builtAt: true ? "2026-09-30T16:52:15+01:00" : "unknown"
+  commit: true ? "ac969b4" : "unknown",
+  builtAt: true ? "2026-09-30T17:33:19+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -763,6 +763,18 @@ import { execSync } from "child_process";
 var APPLY_RECORD_TTL_MS = 10 * 6e4;
 var SERVICE_ACTION_MS = 3e4;
 
+// src/openclaw-state.ts
+var CRASH_WINDOW_MS = 12e4;
+var CRASH_RESTARTS = 4;
+function openClawState(unit, recentRestarts, gateway) {
+  if (unit === "active" && gateway !== false) return "running";
+  if (recentRestarts >= CRASH_RESTARTS) return "crashing";
+  if (unit === "failed") return "failed";
+  if (unit === "active") return "starting";
+  if (unit === "activating" || unit === "deactivating" || unit === "reloading") return "restarting";
+  return "stopped";
+}
+
 // src/routes/openclaw.ts
 var SERVICE = process.env.CC_SERVICE ?? "openclaw";
 var EXEC_TIMEOUT_MS = 5e3;
@@ -774,6 +786,17 @@ function runIsActive() {
     const stdout = err.stdout;
     if (stdout) return stdout.toString().trim();
     return "unknown";
+  }
+}
+function recentAutoRestarts() {
+  try {
+    const out = execSync(
+      `sudo -n journalctl -u ${SERVICE} --since "-${Math.round(CRASH_WINDOW_MS / 1e3)}s" --no-pager -o cat`,
+      { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }
+    );
+    return out.split("\n").filter((l) => l.includes("Scheduled restart job")).length;
+  } catch {
+    return 0;
   }
 }
 function runStatusSummary() {
@@ -821,14 +844,17 @@ function handleStop(res) {
 function handleRestart(res) {
   handleAction(res, "restart");
 }
-function handleStatus(res, drive) {
+function handleStatus(res, drive, gateway) {
   const status = runIsActive();
   const summary = runStatusSummary();
+  const connected = gateway ? gateway.connected : null;
   send(res, 200, {
     ok: true,
     action: "status",
     active: status === "active",
     status,
+    state: openClawState(status, status === "active" && connected !== false ? 0 : recentAutoRestarts(), connected),
+    ...connected !== null ? { gateway: connected } : {},
     message: summary,
     software: boxSoftware(),
     // A count, not the detail: this is polled for every agent, so it reads a file and makes no

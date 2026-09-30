@@ -1024,8 +1024,8 @@ import { readFileSync as readFileSync5, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "08cf92d" : "unknown",
-  builtAt: true ? "2026-09-30T16:52:15+01:00" : "unknown"
+  commit: true ? "ac969b4" : "unknown",
+  builtAt: true ? "2026-09-30T17:33:19+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -1123,6 +1123,34 @@ async function reportReady(readSsh, extra = {}) {
     await sleep(Math.min(2e3 * attempt, 15e3));
   }
   console.error(`[ready] gave up reporting ready after ${maxAttempts} attempts`);
+}
+
+// src/https-ready.ts
+import { connect } from "tls";
+function ownCertificateServes(hostname, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 5e3;
+  return new Promise((resolve2) => {
+    const socket = connect({ host: "127.0.0.1", port: opts.port ?? 443, servername: hostname, rejectUnauthorized: true, timeout: timeoutMs });
+    const done = (ok) => {
+      socket.destroy();
+      resolve2(ok);
+    };
+    socket.once("secureConnect", () => done(true));
+    socket.once("error", () => done(false));
+    socket.once("timeout", () => done(false));
+  });
+}
+async function waitForOwnCertificate(probe2, opts) {
+  const sleep6 = opts.sleep ?? ((ms) => new Promise((r2) => setTimeout(r2, ms)));
+  const now = opts.now ?? Date.now;
+  const deadline = now() + opts.timeoutMs;
+  let delay = opts.minDelayMs ?? 2e3;
+  for (; ; ) {
+    if (await probe2()) return true;
+    if (now() + delay > deadline) return false;
+    await sleep6(delay);
+    delay = Math.min(delay * 2, opts.maxDelayMs ?? 5e3);
+  }
 }
 
 // src/keys.ts
@@ -1410,6 +1438,18 @@ var DEVICES_LIST_TOTAL_MS = 18e3;
 var DEVICES_ACTION_MS = CONFIG_PATCH_MS;
 var DEVICES_ACTION_CLI_MS = 45e3;
 
+// src/openclaw-state.ts
+var CRASH_WINDOW_MS = 12e4;
+var CRASH_RESTARTS = 4;
+function openClawState(unit, recentRestarts, gateway2) {
+  if (unit === "active" && gateway2 !== false) return "running";
+  if (recentRestarts >= CRASH_RESTARTS) return "crashing";
+  if (unit === "failed") return "failed";
+  if (unit === "active") return "starting";
+  if (unit === "activating" || unit === "deactivating" || unit === "reloading") return "restarting";
+  return "stopped";
+}
+
 // src/routes/openclaw.ts
 var SERVICE = process.env.CC_SERVICE ?? "openclaw";
 var EXEC_TIMEOUT_MS = 5e3;
@@ -1421,6 +1461,17 @@ function runIsActive() {
     const stdout = err.stdout;
     if (stdout) return stdout.toString().trim();
     return "unknown";
+  }
+}
+function recentAutoRestarts() {
+  try {
+    const out = execSync2(
+      `sudo -n journalctl -u ${SERVICE} --since "-${Math.round(CRASH_WINDOW_MS / 1e3)}s" --no-pager -o cat`,
+      { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }
+    );
+    return out.split("\n").filter((l2) => l2.includes("Scheduled restart job")).length;
+  } catch {
+    return 0;
   }
 }
 function runStatusSummary() {
@@ -1471,14 +1522,17 @@ function handleStop(res) {
 function handleRestart(res) {
   handleAction(res, "restart");
 }
-function handleStatus(res, drive2) {
+function handleStatus(res, drive2, gateway2) {
   const status = runIsActive();
   const summary = runStatusSummary();
+  const connected = gateway2 ? gateway2.connected : null;
   send(res, 200, {
     ok: true,
     action: "status",
     active: status === "active",
     status,
+    state: openClawState(status, status === "active" && connected !== false ? 0 : recentAutoRestarts(), connected),
+    ...connected !== null ? { gateway: connected } : {},
     message: summary,
     software: boxSoftware(),
     // A count, not the detail: this is polled for every agent, so it reads a file and makes no
@@ -11262,6 +11316,7 @@ var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 var STATE_DIR = process.env.STATE_DIR ?? "/opt/controlclaw/state";
 var GATEWAY_PORT = parseInt(process.env.OPENCLAW_GATEWAY_PORT ?? "18789", 10);
 var GATEWAY_READY_TIMEOUT_MS2 = parseInt(process.env.GATEWAY_READY_TIMEOUT_MS ?? "120000", 10);
+var CERT_READY_TIMEOUT_MS = parseInt(process.env.CERT_READY_TIMEOUT_MS ?? "300000", 10);
 var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
@@ -11300,9 +11355,13 @@ async function bootstrap(client, readSsh) {
     console.error("[bootstrap] transparent egress not active \u2014 skipping ready report (box stays initializing)");
     return;
   }
-  if (client && !await client.whenConnected(GATEWAY_READY_TIMEOUT_MS2)) {
-    console.warn("[bootstrap] OpenClaw's gateway is still down \u2014 reporting ready without it");
-  }
+  const hostname = readKeyFile(KEYS_DIR2, "vm_hostname");
+  const [gatewayUp, certServed] = await Promise.all([
+    client ? client.whenConnected(GATEWAY_READY_TIMEOUT_MS2) : Promise.resolve(true),
+    hostname ? waitForOwnCertificate(() => ownCertificateServes(hostname), { timeoutMs: CERT_READY_TIMEOUT_MS }) : Promise.resolve(true)
+  ]);
+  if (!gatewayUp) console.warn("[bootstrap] OpenClaw's gateway is still down \u2014 reporting ready without it");
+  if (!certServed) console.warn(`[bootstrap] ${hostname} still serves no valid certificate \u2014 reporting ready without it`);
   await reportReady(readSsh);
 }
 function startSshLoginWatch() {
@@ -11480,7 +11539,7 @@ var server = createServer2(async (req, res) => {
     return;
   }
   if (url2.pathname === "/status" && req.method === "GET") {
-    handleStatus(res, drive?.summary() ?? null);
+    handleStatus(res, drive?.summary() ?? null, gateway);
     return;
   }
   if (url2.pathname === "/mitm-ca/refresh" && req.method === "POST") {

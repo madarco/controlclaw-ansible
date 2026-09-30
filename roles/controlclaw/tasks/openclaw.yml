@@ -129,16 +129,99 @@
 
 # Install when the versions differ, when either lookup failed (no binary yet, or the registry is
 # unreachable and we would rather try than silently skip), or when the box has no openclaw at all.
+- name: Decide whether OpenClaw needs installing
+  ansible.builtin.set_fact:
+    openclaw_install_wanted: >-
+      {{ openclaw_installed_version.rc != 0 or
+         openclaw_latest_version.rc != 0 or
+         openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default('')) }}
+    # An upgrade of an OpenClaw that has already run here, as opposed to a first install.
+    openclaw_upgrading: >-
+      {{ openclaw_installed_version.rc == 0 and
+         (openclaw_latest_version.rc != 0 or
+          openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default(''))) }}
+
+# An upgrade can carry a state migration the new gateway will not run by itself (T-107). OpenClaw
+# 2026.9.7 moved the agent database from schema 23 to 24, and on a v23 database it exits
+# 78/CONFIG ("stop active agents and run openclaw doctor --fix to migrate session identities"),
+# which systemd answers by starting it again two seconds later, for ever. And a running gateway
+# does not wait for the end of the play: 2026.9.6 notices npm replacing its files and restarts
+# itself onto the new build ("installation replaced"). So every agent updated in place from an
+# older OpenClaw went into that loop halfway through its update, and stayed there: the console
+# flipped between "OpenClaw running" and "OpenClaw stopped", and every read through the gateway
+# answered "OpenClaw is not running on this box" (prod, 2026-09-30).
+#
+# So the gateway is stopped before the new build lands, the migration runs with nothing holding
+# the databases, and the `restart openclaw` handler starts it once, at the end, as on a first boot.
+- name: Stop the gateway before upgrading OpenClaw
+  ansible.builtin.systemd:
+    name: openclaw
+    state: stopped
+  when: openclaw_upgrading | bool
+  # A base image carries the binary before it has a unit; nothing is running to stop.
+  failed_when: false
+
 - name: Install OpenClaw globally from npm
   ansible.builtin.command:
     cmd: npm install -g openclaw@latest
   register: openclaw_npm_install
   environment: "{{ controlclaw_node_env }}"
-  when: >-
-    openclaw_installed_version.rc != 0 or
-    openclaw_latest_version.rc != 0 or
-    openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default(''))
+  when: openclaw_install_wanted | bool
   changed_when: openclaw_npm_install.changed
+
+# The same migration, for a box that is already in the loop: one updated before this task existed,
+# where the new build is already installed and nothing above changes. The gateway's own message is
+# the signal, read from this boot's journal. A match left over from a loop that is already fixed
+# costs one more doctor run and a restart, and nothing else.
+- name: Look for a state migration the gateway is waiting for
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      journalctl -u openclaw -b -n 400 --no-pager -o cat
+      | grep -cE 'openclaw doctor --fix to migrate|Stop the Gateway, run "openclaw doctor --fix"'
+    executable: /bin/bash
+  register: openclaw_migration_pending
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether OpenClaw's state needs migrating
+  ansible.builtin.set_fact:
+    openclaw_migrate: >-
+      {{ (openclaw_upgrading | bool and openclaw_npm_install is changed) or
+         (openclaw_migration_pending.stdout | default('0') | int > 0) }}
+
+- name: Stop the gateway for the state migration
+  ansible.builtin.systemd:
+    name: openclaw
+    state: stopped
+  when: openclaw_migrate | bool
+  failed_when: false
+
+# `--non-interactive` applies the safe migrations only. It also checks the installed plugins
+# against the new build, which is npm traffic, hence the node environment: without the firewall's
+# CA every lookup waits out npm's timeout and the run takes minutes instead of seconds.
+- name: Migrate OpenClaw's state (openclaw doctor --fix)
+  ansible.builtin.command:
+    cmd: timeout 900 openclaw doctor --fix --non-interactive
+    chdir: "{{ controlclaw_home }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: openclaw_doctor
+  when: openclaw_migrate | bool
+  changed_when: true
+  # A failed repair must not stop the play before the handlers: the gateway would then stay
+  # stopped, which is worse than what it had. The warning below says so, and the unit is started
+  # either way.
+  failed_when: false
+  notify: restart openclaw
+
+- name: Warn when the OpenClaw state migration failed
+  ansible.builtin.debug:
+    msg: >-
+      openclaw doctor --fix exited {{ openclaw_doctor.rc }}; the gateway may refuse to start.
+      {{ (openclaw_doctor.stderr | default('') ~ ' ' ~ openclaw_doctor.stdout | default('')) | trim | truncate(600) }}
+  when: openclaw_migrate | bool and openclaw_doctor.rc | default(0) != 0
 
 # The plan and the agent-https doc both assume /usr/bin/openclaw. NodeSource sets npm's prefix
 # to /usr so that holds, but assert it rather than baking an unverified path into ExecStart.
