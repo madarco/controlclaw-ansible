@@ -3,8 +3,9 @@
 
 Agent boxes are created with cc-role=agent and cc-host=<slug>. FIREWALL boxes carry
 cc-role=mitm and a cc-host of their own, because inbound webhooks arrive at the firewall and
-need the same blind SNI route an agent gets (controlclaw docs/plans/webhooks.md). Both are
-listed here with a READ-ONLY token; this script writes "<slug><suffix> <public ipv4>" lines to
+need the same blind SNI route an agent gets (controlclaw docs/plans/webhooks.md). BRAIN boxes
+(cc-role=gbrain) carry one too, so the control plane can reach the brain's vm-agent (controlclaw
+docs/plans/gbrain.md §9). All three are listed here with a READ-ONLY token; this script writes "<slug><suffix> <public ipv4>" lines to
 the map and reloads HAProxy only when the map changed. Stdlib only; runs from
 cc-proxy-routes.timer.
 
@@ -34,7 +35,7 @@ def list_boxes(token: str) -> list[dict]:
     servers: list[dict] = []
     page = 1
     while True:
-        query = urllib.parse.urlencode({"label_selector": "cc-role in (agent,mitm)", "per_page": 50, "page": page})
+        query = urllib.parse.urlencode({"label_selector": "cc-role in (agent,mitm,gbrain)", "per_page": 50, "page": page})
         req = urllib.request.Request(f"{API}?{query}", headers={"Authorization": f"Bearer {token}"})
         with urllib.request.urlopen(req, timeout=15) as res:
             body = json.load(res)

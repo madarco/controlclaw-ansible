@@ -60,7 +60,7 @@
 # templating them in would widen the one surface this feature is meant to keep narrow.
 - name: Write the Caddyfile
   ansible.builtin.template:
-    src: "{{ 'Caddyfile-mitm.j2' if box_role == 'mitm' else 'Caddyfile.j2' }}"
+    src: "{{ 'Caddyfile-mitm.j2' if box_role == 'mitm' else ('Caddyfile-gbrain.j2' if box_role == 'gbrain' else 'Caddyfile.j2') }}"
     dest: /etc/caddy/Caddyfile
     owner: root
     group: root
@@ -87,6 +87,12 @@
 
 # The firewall's Caddyfile must serve the webhook prefix and nothing else. Asserted rather than
 # assumed: "one path and a 404" is the claim the whole ingress design rests on.
+- name: Check the brain's Caddyfile routes the control plane to its vm-agent and nothing of GBrain's
+  ansible.builtin.shell:
+    cmd: grep -qF '/__cc/agent/*' /etc/caddy/Caddyfile && ! grep -qE '127\.0\.0\.1:{{ gbrain_port }}' /etc/caddy/Caddyfile
+  changed_when: false
+  when: vm_hostname is defined and box_role == 'gbrain'
+
 - name: Check the firewall's Caddyfile serves only the webhook prefix
   ansible.builtin.command:
     cmd: grep -qF '/hook/*' /etc/caddy/Caddyfile

@@ -123,7 +123,7 @@
 
 # Agent boxes: 80 (ACME) and 443 (dashboard + control plane) only from the proxy box. Without a
 # proxy_ip (base-image build, CI) fall back to any source; the Hetzner firewall still applies.
-- name: Allow HTTP/HTTPS from the proxy box only (agent)
+- name: Allow HTTP/HTTPS from the proxy box only (agent, brain)
   community.general.ufw:
     rule: allow
     from_ip: "{{ proxy_ip }}"
@@ -131,27 +131,27 @@
     proto: tcp
     comment: 'via proxy'
   loop: ['80', '443']
-  when: box_role == 'openclaw' and proxy_ip | length > 0
+  when: box_role in ['openclaw', 'gbrain'] and proxy_ip | length > 0
 
 # The base image is built without a proxy_ip and therefore carries the any-source rules;
 # drop them once the real box knows its proxy.
-- name: Remove any-source HTTP/HTTPS rules once the proxy is known (agent)
+- name: Remove any-source HTTP/HTTPS rules once the proxy is known (agent, brain)
   community.general.ufw:
     rule: allow
     port: "{{ item }}"
     proto: tcp
     delete: true
   loop: ['80', '443']
-  when: box_role == 'openclaw' and proxy_ip | length > 0
+  when: box_role in ['openclaw', 'gbrain'] and proxy_ip | length > 0
 
-- name: Allow HTTP/HTTPS from anywhere (agent without a known proxy)
+- name: Allow HTTP/HTTPS from anywhere (agent or brain without a known proxy)
   community.general.ufw:
     rule: allow
     port: "{{ item }}"
     proto: tcp
     comment: 'HTTP/HTTPS'
   loop: ['80', '443']
-  when: box_role == 'openclaw' and proxy_ip | length == 0
+  when: box_role in ['openclaw', 'gbrain'] and proxy_ip | length == 0
 
 - name: Allow HTTP/HTTPS from anywhere (proxy)
   community.general.ufw:

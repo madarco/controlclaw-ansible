@@ -1,0 +1,42 @@
+# Managed by Ansible (roles/controlclaw/templates/Caddyfile-gbrain.j2). Do not edit on the box.
+#
+# Caddy on the organization's BRAIN box (controlclaw docs/plans/gbrain.md §9). It terminates TLS for
+# the brain's own hostname, reached through the same blind SNI proxy an agent's is, and serves the
+# control plane's route to the vm-agent. GBrain itself is not on this name: its MCP server listens on
+# loopback and agents reach it over the private network, never through here.
+#
+# The reachable surface of a brain is what this file serves, and it stays small on purpose: the
+# vm-agent (which checks the control plane's bearer itself), the locked-disk route while the disk is
+# shut, and a bare 404 for everything else.
+{
+    email {{ caddy_acme_email }}
+    # The same issuers, in the same order, as every other box: Let's Encrypt, then ZeroSSL.
+    cert_issuer acme https://acme-v02.api.letsencrypt.org/directory
+    cert_issuer acme https://acme.zerossl.com/v2/DV90
+    admin off
+}
+
+{{ vm_hostname }} {
+    # Control plane -> vm-agent (bearer JWT checked by the vm-agent itself).
+    handle /__cc/agent/* {
+        uri strip_prefix /__cc/agent
+        reverse_proxy 127.0.0.1:3100 {
+            flush_interval -1
+        }
+    }
+
+{% if disk_encryption | default(false) | bool %}
+    # A brain whose encrypted disk has not been opened. Separate from /__cc/agent/* for the reason the
+    # agent Caddyfile gives: the vm-agent is not running then, and cc-secure-daemon on 3101 is the
+    # only thing up. Neither route needs a bearer (docs/plans/disk-encryption.md §5.1).
+    handle /__cc/disk/* {
+        uri strip_prefix /__cc/disk
+        reverse_proxy 127.0.0.1:{{ luks_locked_port | default(3101) }}
+    }
+
+{% endif %}
+    # Everything else, including /, is a bare 404.
+    handle {
+        respond 404
+    }
+}

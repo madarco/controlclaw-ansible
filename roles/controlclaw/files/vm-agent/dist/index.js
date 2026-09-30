@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "2d913fb" : "unknown",
-  builtAt: true ? "2026-09-30T10:49:31+01:00" : "unknown"
+  commit: true ? "17d525a" : "unknown",
+  builtAt: true ? "2026-09-30T11:32:23+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -1057,7 +1057,7 @@ var SERVICE_ACTION_MS = 3e4;
 var TAILSCALE_STATUS_MS = 2e4;
 var GOOGLE_VERSION_MS = 1e4;
 function patchRestartsGateway(patch) {
-  return Object.hasOwn(patch, "channels") || Object.hasOwn(patch, "plugins") || Object.hasOwn(patch, "models");
+  return Object.hasOwn(patch, "channels") || Object.hasOwn(patch, "plugins") || Object.hasOwn(patch, "models") || Object.hasOwn(patch, "memory");
 }
 var DEVICES_LIST_MS = GATEWAY_READ_MS;
 var DEVICES_LIST_CLI_MS = 8e3;
@@ -1530,7 +1530,64 @@ var PROTOCOL = 4;
 var CONNECT_TIMEOUT_MS = 1e4;
 var DEFAULT_CALL_TIMEOUT_MS = 1e4;
 var DEFAULT_MIN_BACKOFF_MS = 1e3;
+var RESTART_BEGIN_WAIT_MS = 15e3;
+var RESTART_BACK_WAIT_MS = 9e4;
+function isPersistedPendingRestart(message) {
+  return /persisted and (updated the active Gateway, but a recovery restart is required|was accepted for restart)/i.test(message);
+}
+function isRestartWindow(message) {
+  return /unavailable during gateway restart|gateway not connected|gateway disconnected|ECONNREFUSED/i.test(message);
+}
 var DEFAULT_MAX_BACKOFF_MS = 2e3;
+async function patchConfig(gw, patch, opts) {
+  const raw = JSON.stringify(patch);
+  const log = opts.log ?? ((l2) => console.log(`[gateway] ${l2}`));
+  for (let attempt = 0; ; attempt++) {
+    const baseHash = attempt === 0 && opts.baseHash ? opts.baseHash : await freshHash(gw, opts.readTimeoutMs);
+    try {
+      await gw.call("config.patch", { raw, baseHash }, opts.timeoutMs);
+      return;
+    } catch (err) {
+      const message = err.message ?? "";
+      if (isPersistedPendingRestart(message)) {
+        log("config write saved; waiting for the gateway restart it is queued behind");
+        if (!await awaitRestart(gw)) throw new Error("The config was saved but the agent did not come back after restarting.", { cause: err });
+        return;
+      }
+      if (attempt === 0 && isRestartWindow(message)) {
+        log("config write landed while the gateway was restarting; sending it again once it is back");
+        if (!await whenBack(gw, RESTART_BACK_WAIT_MS)) throw err;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+async function freshHash(gw, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
+  const snapshot = await gw.call("config.get", {}, timeoutMs);
+  if (typeof snapshot.hash !== "string" || !snapshot.hash) throw new Error("OpenClaw returned no config hash");
+  return snapshot.hash;
+}
+async function whenBack(gw, timeoutMs) {
+  if (gw.whenConnected) return gw.whenConnected(timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  while (!gw.connected && Date.now() < deadline) await new Promise((r2) => setTimeout(r2, 250));
+  return gw.connected;
+}
+async function awaitRestart(gw) {
+  if (gw.connected && gw.onDisconnected) {
+    await new Promise((resolve2) => {
+      const timer = setTimeout(done, RESTART_BEGIN_WAIT_MS);
+      const off = gw.onDisconnected(done);
+      function done() {
+        clearTimeout(timer);
+        off();
+        resolve2();
+      }
+    });
+  }
+  return whenBack(gw, RESTART_BACK_WAIT_MS);
+}
 var GatewayClient = class {
   constructor(opts) {
     this.opts = opts;
@@ -1541,6 +1598,7 @@ var GatewayClient = class {
   pending = /* @__PURE__ */ new Map();
   handlers = /* @__PURE__ */ new Map();
   connectHandlers = /* @__PURE__ */ new Set();
+  disconnectHandlers = /* @__PURE__ */ new Set();
   backoff;
   reconnectTimer = null;
   stopped = false;
@@ -1586,6 +1644,11 @@ var GatewayClient = class {
       const timer = setTimeout(() => done(false), timeoutMs);
       const off = this.onConnected(() => done(true));
     });
+  }
+  /** Runs every time an established connection closes. Returns the unsubscribe function. */
+  onDisconnected(handler) {
+    this.disconnectHandlers.add(handler);
+    return () => this.disconnectHandlers.delete(handler);
   }
   async call(method, params = {}, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
     const ws = this.ws;
@@ -1693,6 +1756,7 @@ var GatewayClient = class {
       const wasConnected = this._connected;
       this._connected = false;
       if (this.ws === ws) this.ws = null;
+      if (wasConnected) for (const h2 of [...this.disconnectHandlers]) h2();
       for (const [id, p2] of this.pending) {
         clearTimeout(p2.timer);
         p2.reject(new Error("gateway disconnected"));
@@ -2940,12 +3004,8 @@ var ChannelsService = class {
     }
   }
   async writeConfig(patch) {
-    const gw = this.gateway();
-    const snapshot = await gw.call("config.get", {}, GATEWAY_READ_MS);
-    const baseHash = snapshot.hash;
-    if (!baseHash) throw new Error("OpenClaw returned no config hash");
     const budget = patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS;
-    await gw.call("config.patch", { raw: JSON.stringify(patch), baseHash }, budget);
+    await patchConfig(this.gateway(), patch, { timeoutMs: budget, readTimeoutMs: GATEWAY_READ_MS });
   }
   /** The live config, for deciding whether a channel's plugin is already there. */
   async config() {
@@ -3409,7 +3469,7 @@ var LlmService = class {
   }
   async patchConfig(patch, baseHash) {
     const hash = baseHash ?? (await this.config()).hash;
-    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash: hash }, patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS);
+    await patchConfig(this.gateway(), patch, { baseHash: hash, timeoutMs: patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS, readTimeoutMs: GATEWAY_READ_MS });
   }
   /** Make OpenClaw match the desired state. Applies what it can and reports each failure by name. */
   async apply(input) {
@@ -3771,7 +3831,7 @@ var SearchService = class _SearchService {
     return { hash, config: config && typeof config === "object" ? config : {} };
   }
   async patchConfig(patch, baseHash) {
-    await this.gateway().call("config.patch", { raw: JSON.stringify(patch), baseHash }, CONFIG_PATCH_RESTART_MS);
+    await patchConfig(this.gateway(), patch, { baseHash, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
   }
   /**
    * Plugin ids this box HAS, from `openclaw plugins list --json`. Empty when it cannot say.
@@ -4032,7 +4092,7 @@ var ConnectorsService = class {
     const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
     const hash = typeof snapshot.hash === "string" ? snapshot.hash : null;
     if (!hash) throw new Error("OpenClaw returned no config hash");
-    await this.gateway().call("config.patch", { raw: JSON.stringify({ mcpServers: { [MCP_SERVER_NAME]: entry } }), baseHash: hash }, CONFIG_PATCH_RESTART_MS);
+    await patchConfig(this.gateway(), { mcpServers: { [MCP_SERVER_NAME]: entry } }, { baseHash: hash, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
   }
   async status() {
     let configured = false;

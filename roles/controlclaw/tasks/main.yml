@@ -160,7 +160,7 @@
   # include here defeated all of that — a base-image build passes no hostname, so the image carried
   # no Caddy at all and every box installed it at boot. Real boxes always have a hostname, so this
   # changes nothing for them.
-  when: box_role in ['openclaw', 'mitm']
+  when: box_role in ['openclaw', 'mitm', 'gbrain']
 
 # The firewall's identity is checked HERE, before anything writes, and not only inside
 # mitmbox.yml. self-update.yml runs first and rewrites /etc/controlclaw/update.conf, which is one

@@ -3396,6 +3396,13 @@ var ChannelsFirewall = class {
     return out;
   }
   /**
+   * Whether any connection is on this agent, approved senders or not. A new agent's first model
+   * skips the code only while nobody can talk to it yet (`LlmFirewall.newAgentBind`).
+   */
+  hasAgentConnection(vmId) {
+    return Object.values(this.store.connections).some((c2) => c2.assignedVmId === vmId);
+  }
+  /**
    * Late approvals, as results the control plane recognizes without a command behind them
    * (`channels.reconciled:<connectionId>`, the shape `llm.refresh:` uses). Drained by
    * `FirewallControl.extraResults` on the next beat.
@@ -4046,6 +4053,44 @@ var ChannelsFirewall = class {
         return { mode: "plain", vmId: p2.agent.vmId, whatsapp: { state: r2.state ?? "qr" } };
       }
     }
+  }
+};
+
+// src/new-agents.ts
+var NEW_AGENT_WINDOW_MS = 30 * 6e4;
+var AgentFirstSeen = class {
+  constructor(now2 = Date.now) {
+    this.now = now2;
+  }
+  seen = /* @__PURE__ */ new Map();
+  /** The vm ids in the latest sync: the organisation's agents as they are now. */
+  current = /* @__PURE__ */ new Set();
+  baselined = false;
+  /** Every vm id in one sync of the identity map. */
+  observe(vmIds) {
+    const at2 = this.baselined ? this.now() : null;
+    this.current = new Set(vmIds);
+    for (const id of this.current) if (!this.seen.has(id)) this.seen.set(id, at2);
+    this.baselined = true;
+  }
+  /**
+   * In the latest identity map. The LLM store keeps a deleted agent's bindings, and one of those
+   * must not count as the organisation still using a credential.
+   */
+  isLive(vmId) {
+    return this.current.has(vmId);
+  }
+  /**
+   * When this agent first appeared, or null when this firewall cannot say it is new: it was in the
+   * baseline, or it has never been in the identity map at all.
+   */
+  firstSeenAt(vmId) {
+    return this.seen.get(vmId) ?? null;
+  }
+  /** First seen after the baseline, and no longer ago than the window. */
+  isNew(vmId, windowMs = NEW_AGENT_WINDOW_MS) {
+    const at2 = this.firstSeenAt(vmId);
+    return at2 !== null && this.now() - at2 <= windowMs;
   }
 };
 
@@ -6818,6 +6863,12 @@ function modelShort(model) {
   const bare = at2 > 0 && model.slice(at2 + 1).includes(":") ? model.slice(0, at2) : model;
   return bare.includes("/") ? bare.slice(bare.indexOf("/") + 1) : bare;
 }
+function modelFamily(model) {
+  const at2 = model.lastIndexOf("@");
+  const pinned = at2 > 0 && model.slice(at2 + 1).includes(":");
+  const bare = pinned ? model.slice(0, at2) : model;
+  return `${bare.includes("/") ? bare.slice(0, bare.indexOf("/")) : ""}@${pinned ? model.slice(at2 + 1) : ""}`;
+}
 function summarize5(p2) {
   const a2 = p2.agents[0];
   const replaced = p2.replaces ? `, replacing ${p2.replaces}` : "";
@@ -7038,10 +7089,54 @@ var LlmFirewall = class {
       const applied = await this.apply(p2);
       return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
     }
+    const why = this.newAgentBind(p2);
+    if (why === null) {
+      this.log(`[llm] ${p2.provider} on new agent ${p2.agents[0].name}: applied with the agent's creation, no code`);
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: false, newAgent: true } };
+    }
+    if (p2.kind === "bind") this.log(`[llm] bind of ${p2.provider} on ${p2.agents[0]?.name ?? "?"} needs a code: ${why}`);
     const sent = await this.codes.send(SCOPE5, p2, "your organization's model providers", summary, routes);
     if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
     this.log(`[llm] code sent for ${p2.kind} ${p2.provider} via ${sent.sentVia}`);
     return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  /**
+   * Null when this change is a new agent's first model on a credential the organisation already
+   * approved, which applies without a code; otherwise the reason it is not. Everything here is
+   * checked against what THIS firewall holds and has seen, never against what the proposal says
+   * about itself, because the exemption has to survive a control plane that lies
+   * (docs/security-design.md, "A new agent's first model").
+   *
+   * - `bind`, one agent, the main slot, nothing pushed out. Never `add` or `replace` (a new secret),
+   *   never `set_model` (the agent already has this credential), never a fallback.
+   * - The credential is on this firewall, has not failed, and is already bound to another agent
+   *   that is still in the identity map.
+   *   That binding is the approval being reused: it was confirmed with a code, or taken on first
+   *   use when nobody could be asked.
+   * - Same provider and same auth profile as that binding (`modelFamily`); only the model name may
+   *   differ, so a new agent can start on the provider's default.
+   * - The agent holds no model here and no channel connection, so nobody talks to it yet and
+   *   nothing it already answers with is changed.
+   * - This firewall saw the agent appear in its identity map less than `NEW_AGENT_WINDOW_MS` ago.
+   */
+  newAgentBind(p2) {
+    if (p2.kind !== "bind") return "not a bind";
+    const a2 = p2.agents[0];
+    if (!a2 || p2.agents.length !== 1) return "not exactly one agent";
+    if (a2.role !== "primary") return "not the main model";
+    if (p2.replaces) return "pushes another provider out";
+    const cred = this.store.credentials[p2.credentialId];
+    if (!cred) return "credential not on this firewall";
+    if (cred.failed) return "credential failed";
+    if (cred.provider !== p2.provider) return "provider does not match the stored credential";
+    const others = Object.entries(this.store.agents).filter(([vmId]) => vmId !== a2.vmId && (this.opts.isLiveAgent?.(vmId) ?? false)).flatMap(([, agent]) => agent.bindings.filter((b2) => b2.credentialId === p2.credentialId));
+    if (others.length === 0) return "no other live agent uses this credential";
+    if (!others.some((b2) => modelFamily(b2.model) === modelFamily(a2.model))) return "model is not on the provider and profile already in use";
+    if ((this.store.agents[a2.vmId]?.bindings.length ?? 0) > 0) return "agent already has a model";
+    if (this.opts.agentHasChannels?.(a2.vmId) ?? true) return "agent has a channel";
+    if (!(this.opts.isNewAgent?.(a2.vmId) ?? false)) return "agent is not new to this firewall";
+    return null;
   }
   async confirm(payload) {
     const changeId = str4(payload.changeId);
@@ -35115,14 +35210,14 @@ function checkArrayGuards(arraySchema, guards) {
     if (!Array.isArray(items))
       return;
     if (guards.uniqueItems === true) {
-      const firstSeen = /* @__PURE__ */ new Map();
+      const firstSeen2 = /* @__PURE__ */ new Map();
       for (let i2 = 0; i2 < items.length; i2++) {
         const key = canonicalKey(items[i2], /* @__PURE__ */ new Set());
         if (key === null)
           continue;
-        const first = firstSeen.get(key);
+        const first = firstSeen2.get(key);
         if (first === void 0) {
-          firstSeen.set(key, i2);
+          firstSeen2.set(key, i2);
           continue;
         }
         payload.issues.push({
@@ -82802,8 +82897,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "2d913fb" : "unknown",
-  builtAt: true ? "2026-09-30T10:49:31+01:00" : "unknown"
+  commit: true ? "17d525a" : "unknown",
+  builtAt: true ? "2026-09-30T11:32:23+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -82984,6 +83079,7 @@ function die(msg) {
 var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http") || FIREWALL_URL.startsWith("http");
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 var identities = [];
+var firstSeen = new AgentFirstSeen();
 var lastProxyConfig = null;
 var channels = null;
 var llm = null;
@@ -83024,6 +83120,7 @@ async function runSync(boxKey) {
   if (IDENTITIES_URL) {
     cfg.identities = await fetchIdentities(IDENTITIES_URL, getToken);
     identities = cfg.identities;
+    firstSeen.observe(identities.map((i2) => String(i2.vm_id)));
   }
   if (tailscale) {
     const joined = new Set(tailscale.enabledVmIds());
@@ -83170,6 +83267,10 @@ async function main() {
         ids,
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
         codeRoutes: () => channels?.codeRoutes() ?? [],
+        isNewAgent: (vmId) => firstSeen.isNew(vmId),
+        isLiveAgent: (vmId) => firstSeen.isLive(vmId),
+        // No channels module means no way to know, and not knowing asks for a code.
+        agentHasChannels: (vmId) => channels?.hasAgentConnection(vmId) ?? true,
         plainKeys: LLM_PLAIN_KEYS,
         onCredentialsChanged: () => runSync(boxKey)
       });
