@@ -120,6 +120,23 @@ fi
 # vm_hostname is an agent-only requirement. The firewall runs no Caddy and has no hostname, so
 # demanding one there would make every firewall update fail on the first check.
 read_key() { [ -r "$KEYS/$1" ] && tr -d '\n' < "$KEYS/$1"; }
+# A PEM goes back with its line breaks, re-folded: the role writes these straight back to the keys
+# dir, and OpenSSL cannot read a PEM that is all on one line. read_key used to flatten them, which
+# made an agent refuse its own firewall's CA after every update (T-88, real box 2026-09-30), and a
+# box updated then still holds the flat copy, so passing the file through unchanged is not enough.
+read_pem() {
+  [ -r "$KEYS/$1" ] || return 0
+  python3 -c '
+import re, sys, textwrap
+s = open(sys.argv[1]).read()
+m = re.search(r"-----BEGIN ([A-Z0-9 ]+)-----(.*?)-----END \1-----", s, re.S)
+if not m:
+    sys.stdout.write(s.strip())
+else:
+    body = "\n".join(textwrap.wrap(re.sub(r"\s+", "", m.group(2)), 64))
+    sys.stdout.write("-----BEGIN %s-----\n%s\n-----END %s-----" % (m.group(1), body, m.group(1)))
+' "$KEYS/$1"
+}
 
 VM_ID=$(read_key vm_id)
 [ -n "$VM_ID" ] || die "this box has no vm_id on disk"
@@ -148,10 +165,10 @@ vars=$(BOX_ROLE="$ROLE" VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PR
   ANSIBLE_REPO="$ANSIBLE_REPO" ANSIBLE_BRANCH="${ANSIBLE_BRANCH:-main}" ALLOW_UNVERIFIED="${ALLOW_UNVERIFIED:-false}" \
   SSH_DEBUG="${SSH_DEBUG:-false}" \
   DISK_ENCRYPTION="${DISK_ENCRYPTION:-false}" LUKS_RECOVERY_PUBKEY="${LUKS_RECOVERY_PUBKEY:-}" \
-  SAAS_PUB="$(read_key saas_public_key.pem)" \
+  SAAS_PUB="$(read_pem saas_public_key.pem)" \
   CONFIG_URL="$(read_key config_api_url)" READY_URL="$(read_key ready_api_url)" \
   REGISTER_URL="$(read_key register_api_url)" \
-  MITM_IP="$(read_key mitm_box_private_ip)" MITM_PUB="$(read_key mitm_pinned_pubkey.pem)" \
+  MITM_IP="$(read_key mitm_box_private_ip)" MITM_PUB="$(read_pem mitm_pinned_pubkey.pem)" \
   ORG_ID="$ORG_ID" CONTROLCLAW_URL="$CONTROLCLAW_URL" \
   MITM_PRIVATE_SUBNET="${MITM_PRIVATE_SUBNET:-}" MITM_PUBLIC_IFACE="${MITM_PUBLIC_IFACE:-}" \
   python3 -c '

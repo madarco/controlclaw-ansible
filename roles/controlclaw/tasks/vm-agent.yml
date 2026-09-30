@@ -140,6 +140,15 @@
       Environment=OPENCLAW_GATEWAY_PORT={{ openclaw_gateway_port }}
       # The unit Start / Stop / Restart / Logs act on.
       Environment=CC_SERVICE={{ 'gbrain' if box_role == 'gbrain' else 'openclaw' }}
+      {% if mitm_box_private_ip is defined and mitm_box_private_ip | length > 0 %}
+      # Behind the org firewall every request it inspects is signed by its CA, and Node does not
+      # read the OS trust store that cc-install-ca writes to. Without this the agent's own backups
+      # failed as a bare "fetch failed" while curl on the same box worked (T-88, prod 2026-09-29).
+      # It is also what the OpenClaw CLIs the agent runs inherit. On the first boot the file does
+      # not exist yet: Node logs one "Ignoring extra certs" warning and starts, and the agent trusts
+      # the CA in-process once it has installed it (vm-agent src/mitm-ca.ts).
+      Environment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}
+      {% endif %}
 
       [Install]
       WantedBy=multi-user.target
