@@ -1471,8 +1471,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ab22f5c" : "unknown",
-  builtAt: true ? "2026-09-30T19:23:51+01:00" : "unknown"
+  commit: true ? "89eb84c" : "unknown",
+  builtAt: true ? "2026-09-30T20:35:25+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -9103,6 +9103,7 @@ function shouldExclude(relPath, kind) {
   if (parts.some((p2) => RESTORE_SCRATCH.test(p2))) return true;
   const name = parts[parts.length - 1].toLowerCase();
   if (EXCLUDED_NAMES.has(name)) return true;
+  if (kind === "gbrain") return false;
   if (EXCLUDED_SUFFIXES.some((s2) => name.endsWith(s2))) return true;
   return parts.some((p2) => EXCLUDED_SEGMENTS.has(p2.toLowerCase()));
 }
@@ -9149,6 +9150,11 @@ var BackupService = class {
   busy = null;
   rootFor(kind) {
     if (kind === "firewall") throw new Error("an agent box does not hold the firewall's own backup");
+    if (this.opts.staged && kind === this.opts.staged.kind) {
+      assertArchivableRoot(this.opts.staged.root);
+      return this.opts.staged.root;
+    }
+    if (kind === "gbrain") throw new Error("an agent box does not hold a brain");
     const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join7(this.home, ARCHIVE_ROOTS[kind]);
     assertArchivableRoot(root);
     return root;
@@ -9221,7 +9227,9 @@ var BackupService = class {
     if (this.busy) throw new Error(`This agent is already backing up or restoring (${this.busy}). Wait for that to finish.`);
     this.busy = label;
     let spool = null;
+    const staged = this.opts.staged && input.kind === this.opts.staged.kind ? this.opts.staged : null;
     try {
+      if (staged) await staged.prepare();
       const plan = await this.plan(input.kind);
       if (plan.plainBytes > MAX_ARCHIVE_BYTES) throw this.overLimit(plan);
       const manifest = plan.manifest;
@@ -9255,6 +9263,7 @@ var BackupService = class {
       };
     } finally {
       if (spool) await rm(dirname9(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (staged) await staged.release().catch((err) => this.log(`[backup] could not drop the staged copy: ${err.message}`));
       this.busy = null;
     }
   }
@@ -9282,7 +9291,8 @@ var BackupService = class {
     if (this.busy) throw new Error(`This agent is already backing up or restoring (${this.busy}). Wait for that to finish.`);
     this.busy = label;
     const target = this.rootFor(input.kind);
-    const staging = `${target}.cc-restoring`;
+    const staged = this.opts.staged && input.kind === this.opts.staged.kind ? this.opts.staged : null;
+    const staging = staged ? staged.restoreDir : `${target}.cc-restoring`;
     const aside = `${target}.cc-previous-${this.now()}`;
     try {
       await rm(staging, { recursive: true, force: true });
@@ -9292,6 +9302,10 @@ var BackupService = class {
         throw new Error("This backup does not match what was recorded for it. Nothing was restored.");
       }
       this.log(`[backup] ${label}: ${extracted.entries} entries verified, swapping`);
+      if (staged) {
+        await staged.apply(staging);
+        return { kind: input.kind, entries: extracted.entries, plainBytes: extracted.plainBytes, restarted: true };
+      }
       const stopped = this.opts.service("stop");
       if (!stopped.ok) this.log(`[backup] could not stop OpenClaw cleanly: ${stopped.error ?? "unknown"}; continuing`);
       try {
@@ -9315,7 +9329,9 @@ var BackupService = class {
     if (!res.ok || !res.body) throw new Error(`The backup store would not serve this archive (HTTP ${res.status}).`);
     const dec = await makeDecryptor(input.dataKey, input.header, {
       orgId: input.orgId,
-      vmId: input.vmId,
+      // The box it was sealed on. Still bound to the org, the backup and the kind, so a blob from
+      // any other backup, or of another kind, still fails to open.
+      vmId: input.sourceVmId ?? input.vmId,
       backupId: input.backupId,
       kind: input.kind
     });
@@ -9525,7 +9541,7 @@ async function dirSize(path) {
 }
 
 // src/routes/backup.ts
-var KINDS2 = /* @__PURE__ */ new Set(["workspace", "state"]);
+var AGENT_KINDS = /* @__PURE__ */ new Set(["workspace", "state"]);
 var B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 var ID = /^[A-Za-z0-9_-]{1,64}$/;
 var HEX64 = /^[0-9a-f]{64}$/;
@@ -9542,7 +9558,7 @@ function url(body, key) {
     return null;
   }
 }
-function common(body) {
+function common(body, kinds) {
   const orgId = str5(body, "orgId");
   const vmId = str5(body, "vmId");
   const backupId = str5(body, "backupId");
@@ -9551,19 +9567,19 @@ function common(body) {
   if (!orgId || orgId.length > 64) return "orgId is required";
   if (!vmId || !ID.test(vmId)) return "vmId is required";
   if (!backupId || !ID.test(backupId)) return "backupId is required";
-  if (!kind || !KINDS2.has(kind)) return "kind must be workspace or state";
+  if (!kind || !kinds.has(kind)) return `kind must be ${[...kinds].join(" or ")}`;
   if (!dataKey || dataKey.length !== 44 || !B64.test(dataKey)) return "dataKey is required";
   return { orgId, vmId, backupId, kind, dataKey };
 }
-function parseRun(body) {
-  const c2 = common(body);
+function parseRun(body, kinds = AGENT_KINDS) {
+  const c2 = common(body, kinds);
   if (typeof c2 === "string") return c2;
   const uploadUrl = url(body, "uploadUrl");
   if (!uploadUrl) return "uploadUrl must be an https URL";
   return { ...c2, uploadUrl };
 }
-function parseRestore(body) {
-  const c2 = common(body);
+function parseRestore(body, kinds = AGENT_KINDS) {
+  const c2 = common(body, kinds);
   if (typeof c2 === "string") return c2;
   const downloadUrl = url(body, "downloadUrl");
   if (!downloadUrl) return "downloadUrl must be an https URL";
@@ -9571,9 +9587,11 @@ function parseRestore(body) {
   const hash = str5(body, "manifestHash");
   if (!header2 || header2.length !== 32 || !B64.test(header2)) return "header is required";
   if (!hash || !HEX64.test(hash)) return "manifestHash is required";
-  return { ...c2, downloadUrl, header: header2, manifestHash: hash };
+  const source = str5(body, "sourceVmId");
+  if (source !== null && !ID.test(source)) return "sourceVmId must be a vm id";
+  return { ...c2, downloadUrl, header: header2, manifestHash: hash, ...source ? { sourceVmId: source } : {} };
 }
-async function handleBackup(req, res, url2, service) {
+async function handleBackup(req, res, url2, service, kinds = AGENT_KINDS) {
   const write = req.method === "POST";
   const auth = write ? await verifyMitmRequest(req, "backup") : await verifyMitmRequest(req, "backup") ?? await verifyRequest(req);
   if (!auth) {
@@ -9587,7 +9605,7 @@ async function handleBackup(req, res, url2, service) {
   try {
     if (url2.pathname === "/backup/plan" && req.method === "GET") {
       const kind = url2.searchParams.get("kind") ?? "";
-      if (!KINDS2.has(kind)) return sendJson(res, 400, { ok: false, error: "kind must be workspace or state" });
+      if (!kinds.has(kind)) return sendJson(res, 400, { ok: false, error: `kind must be ${[...kinds].join(" or ")}` });
       const plan = await service.plan(kind);
       sendJson(res, 200, {
         ok: true,
@@ -9609,13 +9627,13 @@ async function handleBackup(req, res, url2, service) {
       return;
     }
     if (url2.pathname === "/backup/run") {
-      const input = parseRun(body);
+      const input = parseRun(body, kinds);
       if (typeof input === "string") return sendJson(res, 400, { ok: false, error: input });
       sendJson(res, 200, { ok: true, ...await service.run(input) });
       return;
     }
     if (url2.pathname === "/backup/restore") {
-      const input = parseRestore(body);
+      const input = parseRestore(body, kinds);
       if (typeof input === "string") return sendJson(res, 400, { ok: false, error: input });
       sendJson(res, 200, { ok: true, ...await service.restore(input) });
       return;
@@ -11342,7 +11360,7 @@ var BrainMcpService = class {
     const entry = "remove" in input ? null : { url: input.url, transport: "streamable-http" };
     const snapshot = await gw.call("config.get", {}, GATEWAY_READ_MS);
     const current = snapshot.parsed?.mcp?.servers?.[BRAIN_MCP_NAME];
-    if (entry ? current?.url === entry.url : !current) return { ok: true, configured: entry !== null, changed: false };
+    if (entry && current?.url === entry.url) return { ok: true, configured: true, changed: false };
     const hash = typeof snapshot.hash === "string" && snapshot.hash ? snapshot.hash : void 0;
     await patchConfig(gw, { mcp: { servers: { [BRAIN_MCP_NAME]: entry } } }, { baseHash: hash, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
     return { ok: true, configured: entry !== null, changed: true };

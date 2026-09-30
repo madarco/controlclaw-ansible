@@ -14596,7 +14596,7 @@ var SELF_RESTORE_REPORT_PREFIX = "backup.firewall-restored:";
 var RESTORE_PREFIX = "backup-restore:";
 var RECOVERY_SCOPE = "backup-recovery:org";
 var SELF_RESTORE_SCOPE = "backup-firewall-restore:self";
-var KINDS = /* @__PURE__ */ new Set(["workspace", "state"]);
+var KINDS = /* @__PURE__ */ new Set(["workspace", "state", "gbrain"]);
 function str13(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
@@ -14613,8 +14613,9 @@ function httpsUrl(v2) {
   }
 }
 function summarizeRestore(p2) {
-  const what = p2.kind === "workspace" ? "files" : "settings";
   const when = p2.takenAt ? ` from ${p2.takenAt.slice(0, 16).replace("T", " ")} UTC` : "";
+  if (p2.kind === "gbrain") return `Replace everything in your organization's brain with a backup${when}`;
+  const what = p2.kind === "workspace" ? "files" : "settings";
   return `Replace ${p2.agent.name}'s ${what} with a backup${when}`;
 }
 function summarizeRecovery(p2, own2) {
@@ -14896,7 +14897,11 @@ var BackupFirewall = class {
       manifestHash: manifestHash2,
       downloadUrl,
       wrapped,
-      takenAt: str13(payload.takenAt)
+      takenAt: str13(payload.takenAt),
+      sourceVmId: (() => {
+        const v2 = str13(payload.sourceVmId);
+        return v2 && /^[A-Za-z0-9_-]{1,64}$/.test(v2) ? v2 : null;
+      })()
     };
   }
   /**
@@ -14923,7 +14928,8 @@ var BackupFirewall = class {
         dataKey,
         header: p2.header,
         manifestHash: p2.manifestHash,
-        downloadUrl: p2.downloadUrl
+        downloadUrl: p2.downloadUrl,
+        ...p2.sourceVmId && p2.sourceVmId !== p2.agent.vmId ? { sourceVmId: p2.sourceVmId } : {}
       });
       this.log(`[backup] restored ${p2.kind} onto ${p2.agent.name}`);
       return { changeId: p2.changeId, vmId: p2.agent.vmId, kind: p2.kind, entries: r2.entries, restarted: r2.restarted };
@@ -83759,8 +83765,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ab22f5c" : "unknown",
-  builtAt: true ? "2026-09-30T19:23:51+01:00" : "unknown"
+  commit: true ? "89eb84c" : "unknown",
+  builtAt: true ? "2026-09-30T20:35:25+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

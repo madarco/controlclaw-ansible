@@ -307,6 +307,81 @@
       [[ "$url" =~ ^https://[^/]+/admin/auth/[A-Za-z0-9_.~-]+$ ]] || { echo "cc-gbrain-login-link: GBrain gave no login link" >&2; exit 3; }
       printf '%s\n' "$url"
 
+# The brain's backup (controlclaw docs/plans/gbrain.md §10). The vm-agent seals and uploads the
+# archive like an agent's; what it cannot do is read GBrain's database or pages, which belong to
+# GBrain's account. Fixed verbs, fixed paths, no arguments beyond the verb:
+#   stage    pg_dump of the database and a copy of the pages into STAGE, handed to the vm-agent
+#   clean    remove STAGE and RESTORE
+#   restore  with GBrain stopped: load RESTORE's dump over the database, put its pages back, apply
+#            GBrain's migrations, start GBrain again
+# Never config.json or the env file: they hold the database password, the owner credential and the
+# model key's placeholder, which belong to the box, and the role writes the settings on every run.
+# STAGE is under the state directory, inside the encrypted container.
+- name: GBrain | cc-gbrain-backup (root-owned, fixed verbs)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-gbrain-backup
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Managed by ControlClaw (gbrain.yml). Usage: cc-gbrain-backup stage|clean|restore
+      set -euo pipefail
+      DIR=/opt/controlclaw/state/gbrain-backup
+      STAGE="$DIR/stage"
+      RESTORE="$DIR/restoring"
+      HOME_DIR={{ gbrain_home }}
+      as_gbrain() {
+        cd "$HOME_DIR"
+        runuser -u {{ gbrain_user }} -- env HOME="$HOME_DIR" bash -c \
+          'set -a; . {{ gbrain_home }}/.gbrain/env; set +a; "$@"' _ "$@"
+      }
+      case "${1:-}" in
+        stage)
+          rm -rf "$STAGE"
+          # DIR stays the vm-agent's whatever happens below: it extracts restores into it, and a
+          # dump that failed must not leave it root's (a restore is what someone reaches for then).
+          install -d -m 0750 -o {{ controlclaw_user }} -g {{ controlclaw_user }} "$DIR"
+          install -d -m 0700 -o root -g root "$STAGE"
+          as_gbrain bash -c 'exec pg_dump -Fc "$GBRAIN_DATABASE_URL"' > "$STAGE/gbrain.dump"
+          if [ -d "$HOME_DIR/content" ]; then cp -a "$HOME_DIR/content" "$STAGE/content"; fi
+          chown -R {{ controlclaw_user }}:{{ controlclaw_user }} "$STAGE"
+          chmod -R u+rwX,go-rwx "$STAGE"
+          echo staged
+          ;;
+        clean)
+          rm -rf "$STAGE" "$RESTORE"
+          echo cleaned
+          ;;
+        restore)
+          [ -s "$RESTORE/gbrain.dump" ] || { echo "cc-gbrain-backup: no database dump in the restore" >&2; exit 3; }
+          # Whatever fails from here, GBrain comes back: a pg_restore that fails rolls back (one
+          # transaction), so the database it comes back to is the one it had.
+          trap 'systemctl start gbrain || true; systemctl start gbrain-dream.timer || true' EXIT
+          systemctl stop gbrain-dream.timer gbrain || true
+          # --clean drops what the dump holds before loading it; the role's own objects come back
+          # with it. A failure here leaves GBrain stopped, which the console reports.
+          as_gbrain bash -c 'exec pg_restore --clean --if-exists --no-owner --single-transaction -d "$GBRAIN_DATABASE_URL"' < "$RESTORE/gbrain.dump"
+          if [ -d "$RESTORE/content" ]; then
+            rm -rf "$HOME_DIR/content.cc-previous"
+            [ -d "$HOME_DIR/content" ] && mv "$HOME_DIR/content" "$HOME_DIR/content.cc-previous"
+            cp -a "$RESTORE/content" "$HOME_DIR/content"
+            chown -R {{ gbrain_user }}:{{ gbrain_user }} "$HOME_DIR/content"
+            rm -rf "$HOME_DIR/content.cc-previous"
+          fi
+          # For a dump older than the installed GBrain. Not fatal: GBrain reports some data phases as
+          # "partial" on a brain that is fine (v0.13.1's grandfather phase, seen on the PR 6 round,
+          # exits non-zero on a freshly restored brain and on a live one alike), and the data is back.
+          if ! as_gbrain bash -c 'GBRAIN_NO_REEMBED=1 exec /usr/local/bin/gbrain apply-migrations --yes --no-autopilot-install' >/tmp/cc-gbrain-migrations.log 2>&1; then
+            echo "cc-gbrain-backup: GBrain's migrations reported a problem after the restore (the data is restored): $(tail -1 /tmp/cc-gbrain-migrations.log)" >&2
+          fi
+          rm -f /tmp/cc-gbrain-migrations.log
+          rm -rf "$RESTORE"
+          echo restored
+          ;;
+        *) echo "cc-gbrain-backup: stage, clean or restore" >&2; exit 2 ;;
+      esac
+
 - name: GBrain | The vm-agent may drive GBrain's unit and read its journal
   ansible.builtin.copy:
     dest: /etc/sudoers.d/controlclaw-gbrain
@@ -327,6 +402,9 @@
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-key
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-token
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-login-link ""
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-backup stage
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-backup clean
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-backup restore
 
 - name: GBrain | Serve
   ansible.builtin.systemd:
