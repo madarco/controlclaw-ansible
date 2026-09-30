@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "21eddcc" : "unknown",
-  builtAt: true ? "2026-09-30T09:14:36+01:00" : "unknown"
+  commit: true ? "6d926e2" : "unknown",
+  builtAt: true ? "2026-09-30T10:21:38+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -1052,7 +1052,7 @@ var DEVICES_ACTION_MS = CONFIG_PATCH_MS;
 var DEVICES_ACTION_CLI_MS = 45e3;
 
 // src/routes/openclaw.ts
-var SERVICE = "openclaw";
+var SERVICE = process.env.CC_SERVICE ?? "openclaw";
 var EXEC_TIMEOUT_MS = 5e3;
 var ACTION_TIMEOUT_MS = SERVICE_ACTION_MS;
 function runIsActive() {
@@ -1171,7 +1171,7 @@ function redact(text2) {
 
 // src/routes/logs.ts
 var OPENCLAW_BIN2 = "/usr/bin/openclaw";
-var SERVICE2 = "openclaw";
+var SERVICE2 = process.env.CC_SERVICE ?? "openclaw";
 var SNAPSHOT_TIMEOUT_MS = 15e3;
 var CLI_TIMEOUT_MS = 1e4;
 var MAX_BYTES = "250000";

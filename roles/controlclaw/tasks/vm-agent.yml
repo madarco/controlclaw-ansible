@@ -125,7 +125,9 @@
       [Service]
       Type=simple
       User={{ controlclaw_user }}
-      ExecStart=/usr/bin/node /opt/controlclaw/agent/dist/index.js
+      # A brain runs the same bundle's second entry: the box lifecycle routes for GBrain's unit and
+      # nothing of OpenClaw's (controlclaw packages/vm-agent/src/gbrain.ts).
+      ExecStart=/usr/bin/node /opt/controlclaw/agent/dist/{{ 'gbrain' if box_role == 'gbrain' else 'index' }}.js
       Restart=always
       RestartSec=10
       Environment=HOME={{ controlclaw_home }}
@@ -136,6 +138,8 @@
       # The agent keeps one socket to the local OpenClaw gateway: audit ledger shipping and the
       # approvals bridge (exec / plugin / system-agent approvals <-> the ControlClaw queue).
       Environment=OPENCLAW_GATEWAY_PORT={{ openclaw_gateway_port }}
+      # The unit Start / Stop / Restart / Logs act on.
+      Environment=CC_SERVICE={{ 'gbrain' if box_role == 'gbrain' else 'openclaw' }}
 
       [Install]
       WantedBy=multi-user.target

@@ -222,8 +222,8 @@ drive_mount_root: "{{ controlclaw_home }}/.openclaw/workspace/Drive"
 # order by cc-drive-apply; the vm-agent reads the allocation out of the state file it writes.
 drive_rc_base_port: 5700
 
-# Box role: "openclaw" (agent zone, default), "proxy" (blind L4 proxy in front of the agents)
-# or "mitm" (secret zone — egress proxy + secrets).
+# Box role: "openclaw" (agent zone, default), "proxy" (blind L4 proxy in front of the agents),
+# "mitm" (secret zone — egress proxy + secrets) or "gbrain" (the org's shared GBrain, see below).
 box_role: openclaw
 
 # Which roles get Docker. Derived once here rather than spelled out per task: the install and the
@@ -231,7 +231,7 @@ box_role: openclaw
 # box wrote /etc/docker/daemon.json, notified the restart handler and the play ended
 # `Could not find the requested service docker: host` — after the relay itself was already up, so
 # the failure looked like a relay problem and was not one.
-controlclaw_uses_docker: "{{ box_role not in ['proxy', 'exit-relay'] }}"
+controlclaw_uses_docker: "{{ box_role not in ['proxy', 'exit-relay', 'gbrain'] }}"
 
 # Open TCP 22 in UFW, and leave the box's own SSH alone. Mirrors the Hetzner firewall flag
 # (agent_ssh_debug in Terraform), which is the first gate; this keeps the box consistent if that
@@ -368,7 +368,9 @@ luks_secure_mount: /opt/controlclaw/secure
 # Sparse, so it occupies what is written rather than its nominal size — which is what keeps a box
 # image small. 20 GiB on an agent (cx23 has a 40 GB disk, cx33 80 GB), less on a firewall, which
 # holds stores and keys rather than an agent's workspace.
-luks_container_size_gb: "{{ 5 if box_role == 'mitm' else 20 }}"
+# A brain's is sized by the control plane from the box size (gbrain_container_gb, 60% of the disk),
+# because its Postgres data and the dump a backup stages next to it both live inside.
+luks_container_size_gb: "{{ 5 if box_role == 'mitm' else (gbrain_container_gb if box_role == 'gbrain' else 20) }}"
 
 # Two ports, and only one of them is reachable. tangd itself is loopback-only; the gate in
 # cc-secure-daemon faces the org's private network, checks the caller and logs every open.
@@ -397,6 +399,8 @@ luks_binds: >-
     + (['openclaw:' ~ controlclaw_home ~ '/.openclaw:' ~ controlclaw_user ~ ':0750'] if box_role == 'openclaw' else [])
     + (['mitm-ca:/opt/controlclaw/mitm/ca:root:0700',
         'connector:/opt/controlclaw/connector:root:0700'] if box_role == 'mitm' else [])
+    + (['gbrain:' ~ gbrain_home ~ ':' ~ gbrain_user ~ ':0750',
+        'postgresql:/var/lib/postgresql:postgres:0700'] if box_role == 'gbrain' else [])
   }}
 
 # The units that read a path inside the container, and therefore wait for it. Caddy and ssh are
@@ -407,4 +411,30 @@ luks_dependent_units: >-
       'cc-drive@.service', 'cc-gmail-watch.service'] if box_role == 'openclaw' else [])
     + (['controlclaw-mitm-agent.service', 'controlclaw-mitmproxy.service',
         'controlclaw-connector.service'] if box_role == 'mitm' else [])
+    + (['controlclaw-agent.service', 'postgresql@' ~ gbrain_pg_version ~ '-' ~ gbrain_pg_cluster ~ '.service',
+        'gbrain.service'] if box_role == 'gbrain' else [])
   }}
+
+# GBrain box (box_role=gbrain): the organization's shared brain. One per org, next to the firewall.
+# Design: controlclaw docs/plans/gbrain.md. GBrain is a single compiled binary (bun build --compile)
+# published with every upstream release; it is pinned here by version AND sha256 and moves only when
+# this file does, never by GBrain's own self-upgrade (which the role switches off).
+gbrain_version: "0.60.10.0"
+gbrain_sha256: "16c27c6660b50f61cff62a435e0bf26ea0091dc98d47160cccda00e4b3594650"
+gbrain_download_url: "https://github.com/garrytan/gbrain/releases/download/v{{ gbrain_version }}/gbrain-linux-x64"
+gbrain_bin_dir: /opt/controlclaw/gbrain
+# A system account with no shell. Its home is GBrain's home (~/.gbrain holds config.json, the env
+# file with the DB password and the admin token, and the markdown content root), and it is a bind
+# inside the encrypted container.
+gbrain_user: gbrain
+gbrain_home: /var/lib/gbrain
+# Loopback only. Nothing on the private network or the internet talks to GBrain directly: the gate
+# that lets connected agents in (a later PR) and Caddy for the admin page both proxy to this.
+gbrain_port: 3130
+# Postgres from Ubuntu 24.04 (postgresql-16-pgvector is in universe). A cluster of its own rather
+# than the package's default `main`, so its data directory is created inside the container.
+gbrain_pg_version: "16"
+gbrain_pg_cluster: gbrain
+gbrain_pg_port: 5432
+# Passed by the control plane per box size; this is the Small figure, for a box built without one.
+gbrain_container_gb: 24

@@ -4,6 +4,7 @@
 #   proxy              - the blind L4 proxy in front of every agent box (HAProxy)
 #   mitm               - per-org egress proxy / secret zone
 #   exit-relay         - the shared residential exit relay in front of Apify
+#   gbrain             - the organization's shared GBrain (Postgres + pgvector), next to the firewall
 # system tools, the service user and the firewall apply to every role.
 
 # Node does not read the OS trust store. Once the box is confined to the org mitm proxy, every
@@ -77,6 +78,13 @@
   ansible.builtin.include_tasks: nodejs.yml
   when: box_role != 'proxy'
 
+# Before disk encryption, and in the base-image build too: the container binds /var/lib/postgresql
+# and GBrain's home with `chown postgres` / `chown gbrain`, so both accounts have to exist before it
+# is mounted. Packages, the pinned binary and the (disabled) unit only; nothing of the org's.
+- name: Include GBrain packages (Postgres, pgvector, the pinned binary)
+  ansible.builtin.include_tasks: gbrain-packages.yml
+  when: box_role == 'gbrain'
+
 # Encryption at rest, and it has to be HERE: everything below this line that writes a key writes it
 # into a path that belongs inside the container (/opt/controlclaw/keys, the agent's home, the CA), so
 # the container has to be open first. It runs after nodejs.yml because the container manager is a Node
@@ -90,7 +98,7 @@
   ansible.builtin.include_tasks: disk-encryption.yml
   when:
     - disk_encryption | bool
-    - box_role in ['openclaw', 'mitm']
+    - box_role in ['openclaw', 'mitm', 'gbrain']
     - not ci_test
 
 # Before the browser: the live browser is what makes a swapless 4 GB box a problem, and a box
@@ -128,7 +136,12 @@
 
 - name: Include VM agent tasks (OpenClaw box)
   ansible.builtin.include_tasks: vm-agent.yml
-  when: vm_id is defined and box_role == 'openclaw'
+  when: vm_id is defined and box_role in ['openclaw', 'gbrain']
+
+# The brain's database and GBrain itself, inside the container disk-encryption.yml has just opened.
+- name: Include GBrain (the org's database and brain)
+  ansible.builtin.include_tasks: gbrain.yml
+  when: vm_id is defined and box_role == 'gbrain' and not ci_test
 
 - name: Include OpenClaw gateway install (systemd unit the vm-agent drives)
   ansible.builtin.include_tasks: openclaw.yml
@@ -183,19 +196,19 @@
 # keypair, the CA and the box key — all three are generated on the box behind existence guards.
 - name: Include on-demand re-provisioning (pin + cc-reprovision)
   ansible.builtin.include_tasks: self-update.yml
-  when: box_role in ['openclaw', 'mitm']
+  when: box_role in ['openclaw', 'mitm', 'gbrain']
 
 # Rescue shell access on request (controlclaw PR #86, apps/saas/docs/features/shell-access.md):
 # two root scripts, one sudoers line, a close-at-boot unit. Nothing opens until an owner grants it.
 - name: Include rescue shell access tasks
   ansible.builtin.include_tasks: ssh-access.yml
-  when: not ci_test and box_role in ['openclaw', 'mitm']
+  when: not ci_test and box_role in ['openclaw', 'mitm', 'gbrain']
 
 # Last step of an agent box: starting the agent confines the box and reports ready, so every task
 # that needs the open internet (npm above all) must already be done. See vm-agent-start.yml.
 - name: Start the VM agent (confines the box and reports ready)
   ansible.builtin.include_tasks: vm-agent-start.yml
-  when: vm_id is defined and box_role == 'openclaw'
+  when: vm_id is defined and box_role in ['openclaw', 'gbrain']
 
 - name: Include proxy box tasks (blind L4 proxy)
   ansible.builtin.include_tasks: proxy.yml
@@ -214,4 +227,4 @@
 # Last on purpose: what release this box runs, written only once everything above succeeded.
 - name: Record the installed release
   ansible.builtin.include_tasks: release.yml
-  when: box_role in ['openclaw', 'mitm']
+  when: box_role in ['openclaw', 'mitm', 'gbrain']

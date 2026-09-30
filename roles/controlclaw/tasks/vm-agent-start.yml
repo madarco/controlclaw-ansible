@@ -47,4 +47,4 @@
   retries: 10
   delay: 3
   until: novnc_gate is succeeded
-  when: vm_hostname is defined and not ci_test and browser_stream_enabled | bool
+  when: vm_hostname is defined and not ci_test and browser_stream_enabled | bool and box_role == 'openclaw'

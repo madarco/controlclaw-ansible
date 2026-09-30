@@ -1,0 +1,133 @@
+---
+# GBrain box, first half: what the box needs INSTALLED, and nothing that is the organization's.
+#
+# Runs before disk-encryption.yml, and has to: the container binds /var/lib/postgresql and GBrain's
+# home with `chown postgres:postgres` / `gbrain:gbrain`, so both accounts must exist before the
+# container is mounted. It also runs in the base-image build (ci_test), which is what lets a brain
+# boot without downloading Postgres or the 165 MB GBrain binary. Nothing here creates a database, a
+# key or a config: that is gbrain.yml, after the container is open.
+#
+# Design: controlclaw docs/plans/gbrain.md §3.
+
+# Before the packages, or the postgresql-common postinst creates a `main` cluster on the PLAIN disk
+# (/var/lib/postgresql/16/main) the moment it is installed. The brain's cluster is made by gbrain.yml
+# inside the container; a second one outside it would be an unencrypted database nobody uses.
+- name: GBrain | postgresql-common's drop-in directory (the package is not installed yet)
+  ansible.builtin.file:
+    path: /etc/postgresql-common/createcluster.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: GBrain | Postgres must not create its default cluster
+  ansible.builtin.copy:
+    dest: /etc/postgresql-common/createcluster.d/controlclaw.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (gbrain-packages.yml). The brain's cluster is created inside the
+      # encrypted container by gbrain.yml; the package's default one would sit on the plain disk.
+      create_main_cluster = false
+
+- name: GBrain | Postgres and pgvector
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ gbrain_pg_version }}"
+      - "postgresql-{{ gbrain_pg_version }}-pgvector"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+
+# A box built before the file above existed (or from an image that predates it) has a `main` cluster
+# on the plain disk. Only ever an empty one: nothing on a brain writes to `main`.
+- name: GBrain | Is there a default cluster left on the plain disk?
+  ansible.builtin.command: "pg_lsclusters --no-header {{ gbrain_pg_version }} main"
+  register: gbrain_main_cluster
+  changed_when: false
+  failed_when: false
+
+- name: GBrain | Drop it
+  ansible.builtin.command: "pg_dropcluster --stop {{ gbrain_pg_version }} main"
+  when: gbrain_main_cluster.rc == 0 and (gbrain_main_cluster.stdout | length) > 0
+
+- name: GBrain | The service account (no shell, no password)
+  ansible.builtin.user:
+    name: "{{ gbrain_user }}"
+    system: true
+    home: "{{ gbrain_home }}"
+    create_home: false
+    shell: /usr/sbin/nologin
+    password: '!'
+
+- name: GBrain | Binary directory
+  ansible.builtin.file:
+    path: "{{ gbrain_bin_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# By version AND checksum. The versioned file is kept, and the symlink below is what moves, so an
+# update that goes wrong can be put back by pointing the link at the previous file.
+- name: GBrain | The pinned release binary
+  ansible.builtin.get_url:
+    url: "{{ gbrain_download_url }}"
+    dest: "{{ gbrain_bin_dir }}/gbrain-{{ gbrain_version }}"
+    checksum: "sha256:{{ gbrain_sha256 }}"
+    owner: root
+    group: root
+    mode: '0755'
+  register: gbrain_binary
+
+- name: GBrain | /usr/local/bin/gbrain points at the pinned release
+  ansible.builtin.file:
+    src: "{{ gbrain_bin_dir }}/gbrain-{{ gbrain_version }}"
+    dest: /usr/local/bin/gbrain
+    state: link
+    force: true
+  register: gbrain_link
+
+- name: GBrain | The binary runs
+  ansible.builtin.command: /usr/local/bin/gbrain --version
+  register: gbrain_version_out
+  changed_when: false
+  failed_when: gbrain_version not in gbrain_version_out.stdout
+
+# The unit, written here so the base image carries it, and NOT enabled here: gbrain.yml enables it
+# once the database and config exist. `serve --http` binds loopback only.
+#
+# --public-url must be https (GBrain refuses an http issuer). It is what OAuth metadata and the admin
+# login links are built on, and the box's name is https://<vm_hostname> once it has one; until then
+# it is a name that resolves nowhere, which is exactly as reachable as the box is.
+- name: GBrain | The service unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/gbrain.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (gbrain-packages.yml).
+      [Unit]
+      Description=GBrain (the organization's shared brain)
+      Requires=postgresql@{{ gbrain_pg_version }}-{{ gbrain_pg_cluster }}.service
+      After=postgresql@{{ gbrain_pg_version }}-{{ gbrain_pg_cluster }}.service
+
+      [Service]
+      Type=simple
+      User={{ gbrain_user }}
+      Group={{ gbrain_user }}
+      WorkingDirectory={{ gbrain_home }}
+      Environment=HOME={{ gbrain_home }}
+      EnvironmentFile={{ gbrain_home }}/.gbrain/env
+      ExecStart=/usr/local/bin/gbrain serve --http --bind 127.0.0.1 --port {{ gbrain_port }} --public-url https://{{ vm_hostname | default('gbrain.invalid') }}
+      Restart=on-failure
+      RestartSec=5
+      NoNewPrivileges=true
+      PrivateTmp=true
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd

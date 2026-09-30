@@ -1,0 +1,218 @@
+---
+# GBrain box, second half: the organization's database and brain, inside the encrypted container.
+#
+# Runs after disk-encryption.yml has opened the container (which binds /var/lib/postgresql and
+# {{ gbrain_home }} into it) and after vm-agent.yml. Every step is create-or-adopt: a re-run
+# (cc-reprovision) finds the cluster, the env file, the database and the config already there and
+# changes nothing but the pinned binary and the settings below.
+#
+# Design: controlclaw docs/plans/gbrain.md §2 (what the spike found) and §3.
+
+# The same refusal disk-encryption.yml makes, for the two paths this file writes into. A cluster
+# created while the bind was missing would be an unencrypted database on the plain disk, and the
+# next successful unlock would hide it under the mount.
+- name: GBrain | refuse to go on unless the data directories are inside the container
+  ansible.builtin.command: "mountpoint -q {{ item }}"
+  loop:
+    - /var/lib/postgresql
+    - "{{ gbrain_home }}"
+  changed_when: false
+  when: disk_encryption | bool
+
+- name: GBrain | Postgres cluster (its data directory is inside the container)
+  ansible.builtin.command:
+    cmd: "pg_createcluster --port {{ gbrain_pg_port }} --start-conf auto {{ gbrain_pg_version }} {{ gbrain_pg_cluster }}"
+    creates: "/etc/postgresql/{{ gbrain_pg_version }}/{{ gbrain_pg_cluster }}/postgresql.conf"
+
+- name: GBrain | Postgres listens on loopback only
+  ansible.builtin.lineinfile:
+    path: "/etc/postgresql/{{ gbrain_pg_version }}/{{ gbrain_pg_cluster }}/postgresql.conf"
+    regexp: "^#?listen_addresses"
+    line: "listen_addresses = '127.0.0.1'"
+  register: gbrain_pg_conf
+
+- name: GBrain | Postgres is running
+  ansible.builtin.systemd:
+    name: "postgresql@{{ gbrain_pg_version }}-{{ gbrain_pg_cluster }}"
+    enabled: true
+    state: "{{ 'restarted' if gbrain_pg_conf is changed else 'started' }}"
+    daemon_reload: true
+
+# The env file GBrain's service reads. Made ONCE, on the box, and never by the control plane: the
+# database password and GBrain's owner credential (GBRAIN_ADMIN_BOOTSTRAP_TOKEN, what mints admin
+# login links) are born here and never leave. It is inside the container.
+#
+# OPENAI_API_KEY is a placeholder. The brain's model calls go to the AI Gateway through the org
+# firewall, which swaps the placeholder for the org's included key (docs/plans/gbrain.md §6); until
+# that is wired, embedding calls fail and keyword search still works.
+- name: GBrain | GBrain's config directory
+  ansible.builtin.file:
+    path: "{{ gbrain_home }}/.gbrain"
+    state: directory
+    owner: "{{ gbrain_user }}"
+    group: "{{ gbrain_user }}"
+    mode: '0700'
+
+- name: GBrain | The env file (database password and owner credential, generated here)
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      umask 077
+      f="{{ gbrain_home }}/.gbrain/env"
+      pw="$(openssl rand -hex 24)"
+      admin="$(openssl rand -hex 32)"
+      {
+        echo "# Managed by ControlClaw (gbrain.yml). Generated on this box; never sent anywhere."
+        echo "GBRAIN_DATABASE_URL=postgres://{{ gbrain_user }}:${pw}@127.0.0.1:{{ gbrain_pg_port }}/gbrain"
+        echo "GBRAIN_ADMIN_BOOTSTRAP_TOKEN=${admin}"
+        echo "OPENAI_BASE_URL=https://ai-gateway.vercel.sh/v1"
+        echo "OPENAI_API_KEY=vck-cc-included-pending"
+        echo "GBRAIN_NO_AUTOPILOT_INSTALL=1"
+      } > "$f.tmp"
+      chown {{ gbrain_user }}:{{ gbrain_user }} "$f.tmp"
+      mv "$f.tmp" "$f"
+    creates: "{{ gbrain_home }}/.gbrain/env"
+  no_log: true
+
+# SUPERUSER, deliberately. GBrain's migrations need BYPASSRLS (v24) and CREATE EVENT TRIGGER (v35,
+# superuser only); with a plain owner role `gbrain init` stops half-way and leaves a config that only
+# a dropped database recovers from (spike, 2026-09-29). This Postgres listens on loopback on a box
+# that runs nothing else, and its data is inside the container.
+- name: GBrain | Database role, database and pgvector
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      pw="$(sed -n 's#^GBRAIN_DATABASE_URL=postgres://[^:]*:\([^@]*\)@.*#\1#p' {{ gbrain_home }}/.gbrain/env)"
+      test -n "$pw"
+      sudo -u postgres psql -q -p {{ gbrain_pg_port }} -v ON_ERROR_STOP=1 -v pw="$pw" <<'SQL'
+      SELECT 'CREATE ROLE {{ gbrain_user }} LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ gbrain_user }}')\gexec
+      ALTER ROLE {{ gbrain_user }} WITH LOGIN SUPERUSER PASSWORD :'pw';
+      SELECT 'CREATE DATABASE gbrain OWNER {{ gbrain_user }}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'gbrain')\gexec
+      SQL
+      sudo -u postgres psql -q -p {{ gbrain_pg_port }} -d gbrain -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS vector'
+    executable: /bin/bash
+  changed_when: false
+  no_log: true
+
+- name: GBrain | Has this brain been initialised?
+  ansible.builtin.stat:
+    path: "{{ gbrain_home }}/.gbrain/config.json"
+  register: gbrain_config
+
+# Once. --non-interactive, because GBrain otherwise stops to ask an operator questions ([AGENT]
+# prompts, the search-mode matrix) that nobody on this box can answer. The content root is where
+# GBrain keeps the brain as markdown; its nightly cycle skips six of its phases without one.
+- name: GBrain | Initialise the brain
+  ansible.builtin.shell:
+    cmd: |
+      set -a; . {{ gbrain_home }}/.gbrain/env; set +a
+      /usr/local/bin/gbrain init --non-interactive \
+        --content-root {{ gbrain_home }}/content \
+        --embedding-model openai:text-embedding-3-small
+    chdir: "{{ gbrain_home }}"
+  become: true
+  become_user: "{{ gbrain_user }}"
+  environment:
+    HOME: "{{ gbrain_home }}"
+  when: not gbrain_config.stat.exists
+
+# An update moved the binary under an existing brain: apply its schema migrations before the server
+# starts on the new code. GBRAIN_NO_REEMBED so an upgrade can never start a paid re-embedding.
+- name: GBrain | Schema migrations for the new release
+  ansible.builtin.shell:
+    cmd: |
+      set -a; . {{ gbrain_home }}/.gbrain/env; set +a
+      GBRAIN_NO_REEMBED=1 /usr/local/bin/gbrain apply-migrations --yes --no-autopilot-install
+    chdir: "{{ gbrain_home }}"
+  become: true
+  become_user: "{{ gbrain_user }}"
+  environment:
+    HOME: "{{ gbrain_home }}"
+  when:
+    - gbrain_config.stat.exists
+    - gbrain_link is changed
+
+# Every run, so a box always has the settings this commit says, whatever it was built with.
+#   - model tiers: GBrain's defaults name models the AI Gateway does not serve (bare `gpt-5.6`);
+#     Luna for everything routine, Terra only for "deep" answers (docs/plans/gbrain.md §6).
+#   - agent.use_gateway_loop: without it the nightly cycle wants an Anthropic key.
+# self_upgrade is NOT set here: see the next task.
+- name: GBrain | Settings
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      set -a; . {{ gbrain_home }}/.gbrain/env; set +a
+      g=/usr/local/bin/gbrain
+      $g config set models.tier.utility openai:gpt-5.6-luna >/dev/null
+      $g config set models.tier.reasoning openai:gpt-5.6-luna >/dev/null
+      $g config set models.tier.subagent openai:gpt-5.6-luna >/dev/null
+      $g config set models.tier.deep openai:gpt-5.6-terra >/dev/null
+      $g config set agent.use_gateway_loop true >/dev/null
+    chdir: "{{ gbrain_home }}"
+  become: true
+  become_user: "{{ gbrain_user }}"
+  environment:
+    HOME: "{{ gbrain_home }}"
+  changed_when: false
+
+# self_upgrade.mode off: the version is this role's pin, and nothing else's. In config.json itself,
+# because `gbrain init` writes `self_upgrade.mode: notify` there, and the file plane SHADOWS the
+# database plane `gbrain config set` writes to (checked on an install in a local container: the DB said off, the
+# running config said notify).
+- name: GBrain | Self-upgrade off, in the file GBrain actually reads it from
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      f={{ gbrain_home }}/.gbrain/config.json
+      python3 - "$f" <<'PY'
+      import json, os, sys
+      p = sys.argv[1]
+      d = json.load(open(p))
+      su = d.setdefault("self_upgrade", {})
+      if su.get("mode") == "off":
+          print("unchanged")
+          raise SystemExit(0)
+      su["mode"] = "off"
+      tmp = p + ".tmp"
+      with open(tmp, "w") as fh:
+          json.dump(d, fh, indent=2)
+          fh.write("\n")
+      os.chmod(tmp, 0o600)
+      os.replace(tmp, p)
+      print("changed")
+      PY
+  become: true
+  become_user: "{{ gbrain_user }}"
+  register: gbrain_self_upgrade
+  changed_when: gbrain_self_upgrade.stdout == 'changed'
+
+- name: GBrain | The vm-agent may drive GBrain's unit and read its journal
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-gbrain
+    owner: root
+    group: root
+    mode: '0440'
+    validate: 'visudo -cf %s'
+    content: |
+      # Managed by ControlClaw (gbrain.yml). The vm-agent runs as {{ controlclaw_user }} and serves
+      # the console's Start / Stop / Restart / Logs for this box. Exactly these, nothing wider.
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl start gbrain
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl stop gbrain
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart gbrain
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl -u gbrain *
+
+- name: GBrain | Serve
+  ansible.builtin.systemd:
+    name: gbrain
+    enabled: true
+    state: "{{ 'restarted' if gbrain_link is changed else 'started' }}"
+    daemon_reload: true
+
+- name: GBrain | It answers on loopback
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gbrain_port }}/health"
+    return_content: true
+  register: gbrain_health
+  until: gbrain_health.status == 200 and (gbrain_health.json.status | default('')) == 'ok'
+  retries: 20
+  delay: 3
