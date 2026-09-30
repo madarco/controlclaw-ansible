@@ -70,13 +70,16 @@
       install -m 0644 /opt/controlclaw/keys/mitm-ca.crt \
         {{ mitm_ca_path }}
       update-ca-certificates
+      {% if box_role == 'openclaw' %}
       mkdir -p /etc/systemd/system/openclaw.service.d
       printf '[Service]\nEnvironment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}\n' \
         > /etc/systemd/system/openclaw.service.d/mitm-ca.conf
+      {% endif %}
       printf 'export NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}\n' \
         > /etc/profile.d/controlclaw-node-ca.sh
       chmod 0644 /etc/profile.d/controlclaw-node-ca.sh
 
+      {% if box_role == 'openclaw' %}
       # Chrome's trust store. BOTH paths, not one: Chrome M146+ defaults to
       # ~/.local/share/pki/nssdb and older builds use ~/.pki/nssdb, and which one a given box
       # ends up reading depends on whether Chrome ever ran before this script did — which it
@@ -107,10 +110,17 @@
             echo "cc-install-ca: CA missing from $NSSDB after import" >&2; exit 1; }
       done
 
+      {% endif %}
       systemctl daemon-reload
       systemctl try-restart openclaw.service caddy.service || true
+      {% if box_role == 'openclaw' %}
       # NSS trust is read once at browser start, so the running Chrome still distrusts the CA.
       systemctl try-restart browser-stream.service || true
+      {% elif box_role == 'gbrain' %}
+      # A brain's model calls go through the proxy, and Bun reads NODE_EXTRA_CA_CERTS (set on the
+      # unit) once at start: restart GBrain so it trusts the CA it could not see a moment ago.
+      systemctl try-restart gbrain.service || true
+      {% endif %}
 
 # --- Transparent egress via redsocks (app-agnostic; replaces HTTP_PROXY env) ---
 # All HTTP(S) is captured at the kernel level by an nftables REDIRECT → local redsocks, which opens
@@ -419,7 +429,9 @@
       # against a blocked path and nothing else would make it try again.
       systemctl reset-failed cc-egress-restore.service || true
       systemctl start cc-egress-restore.service || true
+      {% if box_role == 'openclaw' %}
       systemctl start --no-block openclaw.service || true
+      {% endif %}
       systemctl try-restart --no-block controlclaw-agent.service || true
       # Always 0: a timer that fails is a timer somebody has to go and reset, and this one has to
       # keep running exactly while the box is in the state it repairs.
@@ -544,7 +556,7 @@
     group: root
     mode: '0755'
   loop:
-    - /etc/systemd/system/openclaw.service.d
+    - "/etc/systemd/system/{{ 'gbrain' if box_role == 'gbrain' else 'openclaw' }}.service.d"
     - /etc/systemd/system/controlclaw-agent.service.d
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
 
@@ -558,7 +570,27 @@
       [Unit]
       Requires=cc-egress-restore.service
       After=cc-egress-restore.service
-  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+  when:
+    - box_role == 'openclaw'
+    - mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+  notify: reload systemd
+
+# The brain gets Wants=, not Requires=: unlike an agent, a brain with no way out is still useful —
+# it serves what it holds, by keyword, to the agents on the private network. It waits for the
+# restore so that its first model call at boot already goes through the proxy with the CA trusted.
+- name: Order GBrain behind the egress restore (brain)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/gbrain.service.d/egress.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Wants=cc-egress-restore.service
+      After=cc-egress-restore.service
+  when:
+    - box_role == 'gbrain'
+    - mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
   notify: reload systemd
 
 # The agent gets Wants=, not Requires=: a box whose restore failed is one somebody has to be able
@@ -585,6 +617,7 @@
     group: "{{ controlclaw_user }}"
     mode: '0644'
     directory_mode: '0755'
+  when: box_role == 'openclaw'
 
 - name: Link cc-perm into PATH
   ansible.builtin.copy:
@@ -593,3 +626,4 @@
     content: |
       #!/bin/sh
       exec /usr/bin/node /opt/controlclaw/cc-perm/dist/index.js "$@"
+  when: box_role == 'openclaw'

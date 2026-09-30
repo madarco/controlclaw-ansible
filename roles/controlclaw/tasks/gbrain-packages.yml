@@ -122,6 +122,10 @@
       WorkingDirectory={{ gbrain_home }}
       Environment=HOME={{ gbrain_home }}
       EnvironmentFile={{ gbrain_home }}/.gbrain/env
+      # The firewall's CA, which the vm-agent installs at first boot (the model calls go through the
+      # proxy). Bun reads this once at start, and a missing file is ignored, so the unit carries it
+      # from the start and cc-install-ca restarts GBrain once the file exists.
+      Environment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}
       ExecStart=/usr/local/bin/gbrain serve --http --bind 127.0.0.1 --port {{ gbrain_port }} --public-url https://{{ vm_hostname | default('gbrain.invalid') }}
       Restart=on-failure
       RestartSec=5
@@ -130,4 +134,59 @@
 
       [Install]
       WantedBy=multi-user.target
+  notify: reload systemd
+
+# The nightly maintenance run (`gbrain dream`: fact extraction, takes, embedding what is new) as a
+# timer of ours rather than `gbrain autopilot --install`, so our units stay the only units on the box.
+# Written here so the image carries it; enabled by gbrain.yml once there is a brain to run on.
+- name: GBrain | The nightly maintenance unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/gbrain-dream.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (gbrain-packages.yml).
+      [Unit]
+      Description=GBrain nightly maintenance (gbrain dream)
+      # Requisite, not Requires: a brain somebody stopped on the Brain page stays stopped, and the
+      # night's run is skipped rather than starting GBrain again behind their back.
+      Requisite=gbrain.service
+      After=gbrain.service
+
+      [Service]
+      Type=oneshot
+      User={{ gbrain_user }}
+      Group={{ gbrain_user }}
+      WorkingDirectory={{ gbrain_home }}
+      Environment=HOME={{ gbrain_home }}
+      EnvironmentFile={{ gbrain_home }}/.gbrain/env
+      Environment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}
+      ExecStart=/usr/local/bin/gbrain dream --json
+      # A run on a large brain takes minutes (195 s for 1,000 pages in the spike); an hour is the
+      # line past which something is wrong, not slow.
+      TimeoutStartSec=1h
+      NoNewPrivileges=true
+      PrivateTmp=true
+  notify: reload systemd
+
+- name: GBrain | The nightly maintenance timer
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/gbrain-dream.timer
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (gbrain-packages.yml). Once a night, at a random minute between 02:00
+      # and 05:00 box time, so an organization's brains do not all call the gateway at once.
+      [Unit]
+      Description=GBrain nightly maintenance
+
+      [Timer]
+      OnCalendar=*-*-* 02:00:00
+      RandomizedDelaySec=3h
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
   notify: reload systemd

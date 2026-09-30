@@ -186,6 +186,45 @@
   register: gbrain_self_upgrade
   changed_when: gbrain_self_upgrade.stdout == 'changed'
 
+# The brain's model key, as the firewall hands it over (docs/plans/gbrain.md §6). The vm-agent
+# receives it on a firewall-signed POST and cannot write GBrain's env file itself (it is GBrain's
+# account's, 0600), so this is the one root step it may ask for. It takes the value on stdin, accepts
+# only the included key's placeholder shape (or "-" to take it away), rewrites the one line, and
+# restarts GBrain only when the line changed: the firewall re-pushes every hour.
+- name: GBrain | cc-gbrain-key (root-owned, fixed file, one line)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-gbrain-key
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Managed by ControlClaw (gbrain.yml). Usage: printf '%s\n' <placeholder|-> | cc-gbrain-key
+      set -euo pipefail
+      ENV_FILE="{{ gbrain_home }}/.gbrain/env"
+      NONE="vck-cc-included-none"
+      read -r value || true
+      if [ "$value" = "-" ]; then
+        value="$NONE"
+      elif ! [[ "$value" =~ ^vck-cc-included-[A-Za-z0-9]{8,64}$ ]]; then
+        echo "cc-gbrain-key: not an included-key placeholder" >&2
+        exit 2
+      fi
+      [ -f "$ENV_FILE" ] || { echo "cc-gbrain-key: no env file at $ENV_FILE" >&2; exit 3; }
+      current="$(sed -n 's/^OPENAI_API_KEY=//p' "$ENV_FILE" | head -1)"
+      if [ "$current" = "$value" ]; then
+        echo unchanged
+        exit 0
+      fi
+      tmp="$(mktemp "$ENV_FILE.XXXXXX")"
+      grep -v '^OPENAI_API_KEY=' "$ENV_FILE" > "$tmp" || true
+      echo "OPENAI_API_KEY=$value" >> "$tmp"
+      chown {{ gbrain_user }}:{{ gbrain_user }} "$tmp"
+      chmod 0600 "$tmp"
+      mv "$tmp" "$ENV_FILE"
+      systemctl try-restart gbrain.service || true
+      echo changed
+
 - name: GBrain | The vm-agent may drive GBrain's unit and read its journal
   ansible.builtin.copy:
     dest: /etc/sudoers.d/controlclaw-gbrain
@@ -195,17 +234,26 @@
     validate: 'visudo -cf %s'
     content: |
       # Managed by ControlClaw (gbrain.yml). The vm-agent runs as {{ controlclaw_user }} and serves
-      # the console's Start / Stop / Restart / Logs for this box. Exactly these, nothing wider.
+      # the console's Start / Stop / Restart / Logs for this box, and hands GBrain the model key the
+      # firewall pushed (cc-gbrain-key). Exactly these, nothing wider.
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl start gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl stop gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl -u gbrain *
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-key
 
 - name: GBrain | Serve
   ansible.builtin.systemd:
     name: gbrain
     enabled: true
     state: "{{ 'restarted' if gbrain_link is changed else 'started' }}"
+    daemon_reload: true
+
+- name: GBrain | The nightly maintenance timer is on
+  ansible.builtin.systemd:
+    name: gbrain-dream.timer
+    enabled: true
+    state: started
     daemon_reload: true
 
 - name: GBrain | It answers on loopback

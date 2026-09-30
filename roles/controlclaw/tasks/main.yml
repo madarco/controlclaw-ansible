@@ -115,10 +115,13 @@
 # `keys/mitm_box_private_ip` marker written here to decide whether to wait for the mitm box, install
 # its CA and enable the redirect before reporting ready. Starting the agent first let it report
 # ready on an unconfined box, after which the control plane locked it down with no proxy path.
+# The brain's egress goes through the firewall the same way (docs/plans/gbrain.md §6): the
+# redirect, DNS, the CA and the boot-time restore are the same, and the file keeps OpenClaw's own
+# pieces (its drop-ins, Chrome's trust store, cc-perm) to agents.
 - name: Include OpenClaw egress wiring (route through the org mitm box)
   ansible.builtin.include_tasks: openclaw-egress.yml
   when:
-    - box_role == 'openclaw'
+    - box_role in ['openclaw', 'gbrain']
     - mitm_box_private_ip | default('') | length > 0
 
 # Before the vm-agent: the agent may be handed a mount set the moment it comes up (the firewall

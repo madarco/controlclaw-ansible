@@ -680,8 +680,8 @@ import { readFileSync as readFileSync4, realpathSync } from "fs";
 import { dirname } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "17d525a" : "unknown",
-  builtAt: true ? "2026-09-30T11:32:23+01:00" : "unknown"
+  commit: true ? "92deda8" : "unknown",
+  builtAt: true ? "2026-09-30T13:21:24+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -746,7 +746,7 @@ function sshReading(readSsh) {
   const status = readSsh?.();
   return status ? { ...status, at: (/* @__PURE__ */ new Date()).toISOString() } : void 0;
 }
-async function reportReady(readSsh) {
+async function reportReady(readSsh, extra = {}) {
   const vmId = readKeyFile2("vm_id");
   const readyUrl = readKeyFile2("ready_api_url");
   const privateKey = readKeyFile2("vm_private_key.pem");
@@ -765,7 +765,7 @@ async function reportReady(readSsh) {
         headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
         // `ssh` is absent, not null, when there is nothing to report: the control plane reads an
         // absent key as "this box is too old to say" and leaves the grant alone.
-        body: JSON.stringify({ software: boxSoftware(), ssh: sshReading(readSsh) })
+        body: JSON.stringify({ software: boxSoftware(), ssh: sshReading(readSsh), ...extra })
       });
       if (res.ok) {
         console.log(`[ready] reported ready to SaaS (attempt ${attempt})`);
