@@ -569,7 +569,7 @@ function shell(title, body, script = "") {
 function escapeHtml(s2) {
   return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
 }
-function loginPage(hostname) {
+function loginPage(hostname, steps = ["Pairing this browser with the agent", "Loading OpenClaw"]) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
   const host = hostname ? escapeHtml(hostname) : "";
   return shell(
@@ -577,8 +577,8 @@ function loginPage(hostname) {
     `<h1 id="h">Opening ${agent}</h1><p class="host">${host}</p>
 <ol class="steps">
   <li id="s1" class="active"><span class="dot"></span>Checking your ControlClaw pass</li>
-  <li id="s2"><span class="dot"></span>Pairing this browser with the agent</li>
-  <li id="s3"><span class="dot"></span>Loading OpenClaw</li>
+  <li id="s2"><span class="dot"></span>${escapeHtml(steps[0])}</li>
+  <li id="s3"><span class="dot"></span>${escapeHtml(steps[1])}</li>
 </ol>
 <div class="err" id="err"></div>
 <p class="note" id="note" style="display:none"></p>
@@ -605,6 +605,7 @@ function loginPage(hostname) {
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
   if (d.view === 'files') { $('h').textContent = 'Opening files'; step(3); location.replace(d.next); return; }
+  if (d.view === 'direct') { step(3); location.replace(d.next); return; }
   if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
   step(3); await wait(350);
@@ -832,14 +833,18 @@ async function dashboardAttempt(hostname, opts) {
   }
   return last;
 }
-async function handleAccess(req, res, pathname) {
+async function handleAccess(req, res, pathname, opts = {}) {
   const vmId = readKey("vm_id");
   if (!vmId) {
     json(res, 500, { error: "Box has no vm_id" });
     return;
   }
+  if (opts.only && !opts.only.has(pathname)) {
+    json(res, 404, { error: "Not found" });
+    return;
+  }
   if (pathname === "/__cc/login" && req.method === "GET") {
-    html(res, 200, loginPage(readKey("vm_hostname")));
+    html(res, 200, loginPage(readKey("vm_hostname"), opts.steps));
     return;
   }
   if (pathname === "/__cc/open" && req.method === "GET") {
@@ -892,6 +897,20 @@ async function handleAccess(req, res, pathname) {
     }
     const claims = { canWrite: payload.canWrite, ...payload.deviceId ? { deviceId: payload.deviceId } : {} };
     console.log(`[access] sign-in with a ${payload.issuer} ticket${payload.deviceId ? ` (browser ${payload.deviceId})` : ""}`);
+    if (opts.requireWrite && payload.canWrite !== true) {
+      json(res, 403, { error: opts.requireWrite });
+      return;
+    }
+    if (opts.landing) {
+      const landing = await opts.landing();
+      if ("error" in landing) {
+        json(res, 502, { error: landing.error });
+        return;
+      }
+      const session2 = await issueSession(vmId, claims);
+      json(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
+      return;
+    }
     if (payload.next === "files") {
       const session2 = await issueSession(vmId, claims);
       json(res, 200, { next: "/__cc/files", view: "files", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
@@ -1005,8 +1024,8 @@ import { readFileSync as readFileSync5, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0a71b73" : "unknown",
-  builtAt: true ? "2026-09-30T15:58:35+01:00" : "unknown"
+  commit: true ? "08cf92d" : "unknown",
+  builtAt: true ? "2026-09-30T16:52:15+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [

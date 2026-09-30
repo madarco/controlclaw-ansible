@@ -136,6 +136,55 @@
       WantedBy=multi-user.target
   notify: reload systemd
 
+# The night's run, with a summary the console's Activity can show (controlclaw docs/plans/gbrain.md
+# §10): what `gbrain dream --json` reports (status, duration, the totals of what it touched) and what
+# its model calls cost, which GBrain logs per call in `chat_usage_log`. Counts and a dollar figure,
+# nothing from any page, so it lives outside the encrypted container where the vm-agent (group
+# controlclaw) can read it. The run's own exit code is the unit's.
+- name: GBrain | cc-gbrain-dream (the nightly run, with its summary)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-gbrain-dream
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Managed by ControlClaw (gbrain-packages.yml). Runs as {{ gbrain_user }} with GBrain's env file.
+      set -uo pipefail
+      REPORT_DIR=/var/lib/gbrain-report
+      started="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+      out="$(/usr/local/bin/gbrain dream --json)"
+      rc=$?
+      finished="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+      usage="$(psql "$GBRAIN_DATABASE_URL" -Atc "select coalesce(sum(cost_usd),0)||' '||count(*) from chat_usage_log where created_at >= '$started'::timestamptz" 2>/dev/null || echo "")"
+      if [ -d "$REPORT_DIR" ]; then
+        tmp="$(mktemp "$REPORT_DIR/.last-cycle.XXXXXX")"
+        OUT="$out" RC="$rc" STARTED="$started" FINISHED="$finished" USAGE="$usage" python3 - > "$tmp" <<'PY'
+      import json, os
+      try:
+          d = json.loads(os.environ["OUT"])
+      except Exception:
+          d = {}
+      usage = os.environ.get("USAGE", "").split()
+      totals = d.get("totals") if isinstance(d.get("totals"), dict) else {}
+      print(json.dumps({
+          "started_at": os.environ["STARTED"],
+          "finished_at": os.environ["FINISHED"],
+          "exit_code": int(os.environ["RC"]),
+          "status": d.get("status") if isinstance(d.get("status"), str) else ("failed" if os.environ["RC"] != "0" else "unknown"),
+          "duration_ms": d.get("duration_ms") if isinstance(d.get("duration_ms"), (int, float)) else None,
+          "phases": [{"phase": p.get("phase"), "status": p.get("status")} for p in d.get("phases", []) if isinstance(p, dict)][:40],
+          "totals": {k: v for k, v in totals.items() if isinstance(v, (int, float))},
+          "cost_usd": float(usage[0]) if len(usage) == 2 else None,
+          "model_calls": int(usage[1]) if len(usage) == 2 else None,
+      }))
+      PY
+        chmod 0640 "$tmp"
+        mv "$tmp" "$REPORT_DIR/last-cycle.json"
+      fi
+      printf '%s\n' "$out"
+      exit "$rc"
+
 # The nightly maintenance run (`gbrain dream`: fact extraction, takes, embedding what is new) as a
 # timer of ours rather than `gbrain autopilot --install`, so our units stay the only units on the box.
 # Written here so the image carries it; enabled by gbrain.yml once there is a brain to run on.
@@ -162,7 +211,7 @@
       Environment=HOME={{ gbrain_home }}
       EnvironmentFile={{ gbrain_home }}/.gbrain/env
       Environment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}
-      ExecStart=/usr/local/bin/gbrain dream --json
+      ExecStart=/usr/local/bin/cc-gbrain-dream
       # A run on a large brain takes minutes (195 s for 1,000 pages in the spike); an hour is the
       # line past which something is wrong, not slow.
       TimeoutStartSec=1h

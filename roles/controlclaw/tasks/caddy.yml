@@ -87,9 +87,15 @@
 
 # The firewall's Caddyfile must serve the webhook prefix and nothing else. Asserted rather than
 # assumed: "one path and a 404" is the claim the whole ingress design rests on.
-- name: Check the brain's Caddyfile routes the control plane to its vm-agent and nothing of GBrain's
+# GBrain is reached in one place only, its admin page, and only behind the ControlClaw session check
+# that comes first in that block. Its MCP server stays off the public name.
+- name: Check the brain's Caddyfile routes the vm-agent, and GBrain only behind the session check
   ansible.builtin.shell:
-    cmd: grep -qF '/__cc/agent/*' /etc/caddy/Caddyfile && ! grep -qE '127\.0\.0\.1:{{ gbrain_port }}' /etc/caddy/Caddyfile
+    cmd: >-
+      grep -qF '/__cc/agent/*' /etc/caddy/Caddyfile
+      && [ "$(grep -cE '127\.0\.0\.1:{{ gbrain_port }}' /etc/caddy/Caddyfile)" = 1 ]
+      && grep -B8 -E '127\.0\.0\.1:{{ gbrain_port }}' /etc/caddy/Caddyfile | grep -qF 'uri /__cc/verify'
+      && ! grep -qE 'handle /mcp' /etc/caddy/Caddyfile
   changed_when: false
   when: vm_hostname is defined and box_role == 'gbrain'
 

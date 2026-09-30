@@ -285,6 +285,28 @@
     comment: "ControlClaw brain gate (private net)"
   when: not ci_test
 
+# Opening the GBrain admin from the console (controlclaw docs/plans/gbrain.md §9), and the activity
+# reader's admin cookie. GBrain issues a login link only to its owner credential, which is in the
+# env file only its account can read, and only over HTTPS or loopback: this runs
+# `gbrain mcp admin login-link` as that account against loopback and prints the link, nothing else.
+# No arguments, so the vm-agent can ask for a link and for nothing else.
+- name: GBrain | cc-gbrain-login-link (root-owned, no arguments)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-gbrain-login-link
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Managed by ControlClaw (gbrain.yml). Usage: cc-gbrain-login-link   prints a single-use link
+      set -euo pipefail
+      cd {{ gbrain_home }}
+      out="$(runuser -u {{ gbrain_user }} -- env HOME={{ gbrain_home }} bash -c \
+        'set -a; . {{ gbrain_home }}/.gbrain/env; set +a; exec /usr/local/bin/gbrain mcp admin login-link --url http://127.0.0.1:{{ gbrain_port }}/mcp --json' 2>/dev/null)"
+      url="$(printf '%s\n' "$out" | tail -1 | python3 -c 'import sys,json; print(json.load(sys.stdin).get("url",""))' 2>/dev/null || true)"
+      [[ "$url" =~ ^https://[^/]+/admin/auth/[A-Za-z0-9_.~-]+$ ]] || { echo "cc-gbrain-login-link: GBrain gave no login link" >&2; exit 3; }
+      printf '%s\n' "$url"
+
 - name: GBrain | The vm-agent may drive GBrain's unit and read its journal
   ansible.builtin.copy:
     dest: /etc/sudoers.d/controlclaw-gbrain
@@ -296,13 +318,15 @@
       # Managed by ControlClaw (gbrain.yml). The vm-agent runs as {{ controlclaw_user }} and serves
       # the console's Start / Stop / Restart / Logs for this box, and hands GBrain the model key the
       # firewall pushed (cc-gbrain-key), and mints and revokes the connected agents' tokens
-      # (cc-gbrain-token). Exactly these, nothing wider.
+      # (cc-gbrain-token), and asks GBrain for an owner login link (cc-gbrain-login-link, no
+      # arguments). Exactly these, nothing wider.
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl start gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl stop gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/journalctl -u gbrain *
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-key
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-token
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-login-link ""
 
 - name: GBrain | Serve
   ansible.builtin.systemd:
@@ -310,6 +334,18 @@
     enabled: true
     state: "{{ 'restarted' if gbrain_link is changed else 'started' }}"
     daemon_reload: true
+
+# Where cc-gbrain-dream leaves the night's summary for the vm-agent (group controlclaw) to ship to
+# Activity. Counts and a cost only, so it is on the plain disk.
+# setgid, so the file cc-gbrain-dream writes (as gbrain) is group controlclaw like the directory,
+# not gbrain's own group, which the vm-agent cannot read (found on the PR 5 round).
+- name: GBrain | The nightly run's report directory
+  ansible.builtin.file:
+    path: /var/lib/gbrain-report
+    state: directory
+    owner: "{{ gbrain_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '2750'
 
 - name: GBrain | The nightly maintenance timer is on
   ansible.builtin.systemd:

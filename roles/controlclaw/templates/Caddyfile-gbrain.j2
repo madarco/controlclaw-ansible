@@ -6,8 +6,10 @@
 # loopback and agents reach it over the private network, never through here.
 #
 # The reachable surface of a brain is what this file serves, and it stays small on purpose: the
-# vm-agent (which checks the control plane's bearer itself), the locked-disk route while the disk is
-# shut, and a bare 404 for everything else.
+# vm-agent (which checks the control plane's bearer itself), the Open exchange, GBrain's admin page
+# behind the ControlClaw session, the locked-disk route while the disk is shut, and a bare 404 for
+# everything else. GBrain's MCP, OAuth and metadata routes are in that 404: nothing made on the admin
+# page (a client, a token) can reach the brain from outside.
 {
     email {{ caddy_acme_email }}
     # The same issuers, in the same order, as every other box: Let's Encrypt, then ZeroSSL.
@@ -35,6 +37,30 @@
     }
 
 {% endif %}
+    # The Open exchange (login page, session, the check below, sign-out). The vm-agent serves these
+    # four and nothing else of an agent's shim. /__cc/agent/* and /__cc/disk/* win over this by
+    # matcher specificity, not by file order.
+    handle /__cc/* {
+        reverse_proxy 127.0.0.1:3100
+    }
+
+    # GBrain's admin page, for a browser the console signed in (owners and admins). GBrain's own
+    # admin cookie is on top of this, and the single-use link that sets it came through the
+    # exchange above. /__cc/verify also checks the Origin (controlclaw T-68): DO NOT strip Origin,
+    # Sec-Fetch-* or X-Forwarded-Method here. The admin page streams /admin/events, so no buffering.
+    @admin path /admin /admin/*
+    handle @admin {
+        header ?X-Frame-Options "DENY"
+        forward_auth 127.0.0.1:3100 {
+            uri /__cc/verify
+            header_up -Connection
+            header_up -Upgrade
+        }
+        reverse_proxy 127.0.0.1:{{ gbrain_port }} {
+            flush_interval -1
+        }
+    }
+
     # Everything else, including /, is a bare 404.
     handle {
         respond 404

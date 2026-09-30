@@ -2902,6 +2902,8 @@ var APPROVE_MS = 7e4;
 var LLM_PUSH_MS = 9e4;
 var DEVICE_APPROVE_MS = 6e4;
 var GBRAIN_CONNECT_MS = 3e4;
+var KILL_WINDOW_SEND_MS = 45e3;
+var KILL_WINDOW_RETRY_MS = 3e3;
 var GBRAIN_APPLY_MS = 6e4;
 var BACKUP_MS = 60 * 6e4;
 function deadline(startedAt, now2 = Date.now) {
@@ -4498,7 +4500,7 @@ var WRITE_CHECK_BACKOFF_MS = 2e3;
 var MIN_ATTEMPT_MS = 2e3;
 var realSleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
 async function probeFolderWrite(token2, folderId, fetchImpl = fetch, opts = {}) {
-  const sleep3 = opts.sleep ?? realSleep;
+  const sleep4 = opts.sleep ?? realSleep;
   const clock = opts.now ?? Date.now;
   const random = opts.random ?? Math.random;
   const deadline2 = clock() + (opts.budgetMs ?? WRITE_CHECK_BUDGET_MS);
@@ -4509,7 +4511,7 @@ async function probeFolderWrite(token2, folderId, fetchImpl = fetch, opts = {}) 
     const backoff = WRITE_CHECK_BACKOFF_MS * 3 ** (attempt - 1) * (0.5 + random());
     const wait = Math.max(backoff, answer.retryAfter ?? 0);
     if (clock() + wait + MIN_ATTEMPT_MS > deadline2) return answer.result;
-    await sleep3(wait);
+    await sleep4(wait);
   }
 }
 async function writeOnce(token2, folderId, fetchImpl, timeoutMs, clock) {
@@ -8005,6 +8007,7 @@ function saveKillStore(path, store, boxKeyB64, ids2) {
 }
 
 // src/kill.ts
+var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 var SCOPE_ORG = "kill:org";
 var SCOPE_PREFIX3 = "kill:agent:";
 var KILL_RECONCILE_MS = 6e4;
@@ -8100,7 +8103,9 @@ var KillFirewall = class {
   async reconcile(identityVmIds) {
     const locked = new Set(this.lockedVmIds(identityVmIds));
     if (locked.size === 0) return;
+    const windows = this.codeWindows();
     for (const vmId of locked) {
+      if (windows[vmId]) continue;
       const ref = this.known.get(vmId);
       if (!ref) continue;
       try {
@@ -8257,6 +8262,8 @@ var KillFirewall = class {
     const locked = new Set(this.lockedVmIds(p2.agents.map((a2) => a2.vmId)));
     const ordered = [...routes].sort((a2, b2) => Number(locked.has(a2.target.vmId)) - Number(locked.has(b2.target.vmId)));
     let sent = { ok: false, message: "No approved channel could be reached." };
+    const now2 = () => this.opts.now?.() ?? Date.now();
+    const waitUntil = now2() + KILL_WINDOW_SEND_MS;
     for (const route of ordered) {
       const dev = route.senders.some((x2) => x2 === DEV_SENDER);
       const needsWindow = !dev && locked.has(route.target.vmId);
@@ -8266,6 +8273,10 @@ var KillFirewall = class {
         await this.openCodeWindow(ref);
       }
       sent = await this.codes.send(key, p2, agentName, summary, [route]);
+      while (needsWindow && !sent.ok && /not running/i.test(sent.message) && now2() + KILL_WINDOW_RETRY_MS <= waitUntil) {
+        await (this.opts.sleep ?? sleep2)(KILL_WINDOW_RETRY_MS);
+        sent = await this.codes.send(key, p2, agentName, summary, [route]);
+      }
       if (sent.ok) break;
       if (needsWindow) await this.closeCodeWindow();
     }
@@ -8895,6 +8906,10 @@ var BrainFirewall = class {
   log;
   store;
   reconciling = false;
+  /** What the brain last accepted, as `<brainVmId>|<lock>`; null until one push has worked. */
+  pushedLock = null;
+  /** One push at a time, so two overlapping calls cannot record a lock the brain does not hold. */
+  lockChain = Promise.resolve();
   handlers() {
     return {
       "gbrain.propose": (p2) => this.propose(p2),
@@ -9028,6 +9043,36 @@ var BrainFirewall = class {
     return { ok: true, status: "applied", data: { agentVmId, removed: !!had, pending: errors.length > 0 } };
   }
   /**
+   * Push the emergency stop to the brain's gate when it differs from what the brain last accepted.
+   * Called on every kill-switch change and every minute, so a brain that was down when the stop
+   * was engaged is locked once it answers.
+   */
+  syncLock() {
+    const run = this.lockChain.then(() => this.syncLockOnce());
+    this.lockChain = run.catch(() => void 0);
+    return run;
+  }
+  async syncLockOnce() {
+    const brainVmId = this.brainVmId();
+    if (!brainVmId) return;
+    const want = this.desiredLock();
+    const key = `${brainVmId}|${JSON.stringify(want)}`;
+    if (key === this.pushedLock) return;
+    const brain2 = this.box(brainVmId, "gbrain");
+    await this.opts.agent.post(this.target(brain2), "/gbrain/lock", want, { timeoutMs: GBRAIN_CONNECT_MS });
+    this.pushedLock = key;
+    this.log(`[gbrain] brain gate lock: ${want.all ? "every agent" : want.vmIds.length ? want.vmIds.join(", ") : "none"}`);
+  }
+  desiredLock() {
+    const l2 = this.opts.lock?.() ?? { all: false, vmIds: [] };
+    return { all: l2.all, vmIds: [...new Set(l2.vmIds)].sort() };
+  }
+  /** The brain on record, or the one in the identity map when nothing is connected yet. */
+  brainVmId() {
+    if (this.store.brain) return this.store.brain.vmId;
+    return this.opts.boxes().find((b2) => (b2.role ?? "") === "gbrain")?.vm_id ?? null;
+  }
+  /**
    * Make the brain's gate match the store (see the header). Only removes access or re-points
    * access the owner already confirmed; never adds any.
    */
@@ -9053,6 +9098,7 @@ var BrainFirewall = class {
       this.log(`[gbrain] the brain ${stored.vmId} is gone; dropped ${Object.keys(this.store.connections).length} connection(s)`);
       this.store = emptyBrainStore();
       this.save();
+      this.pushedLock = null;
       return;
     }
     if (!stored || !brainRow) return;
@@ -9083,6 +9129,10 @@ var BrainFirewall = class {
     if (changed) this.save();
     const r2 = await this.opts.agent.get(this.target(brain2), "/gbrain/connections", { timeoutMs: GBRAIN_CONNECT_MS });
     const entries = Array.isArray(r2.connections) ? r2.connections : [];
+    const reported = r2.lock;
+    if (reported && JSON.stringify({ all: reported.all === true, vmIds: Array.isArray(reported.vmIds) ? [...reported.vmIds].sort() : [] }) !== JSON.stringify(this.desiredLock())) {
+      this.pushedLock = null;
+    }
     const onGate = new Map(entries.map((e) => [String(e.vmId), e]));
     for (const [vmId] of onGate) {
       if (!this.store.connections[vmId]) {
@@ -83707,8 +83757,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0a71b73" : "unknown",
-  builtAt: true ? "2026-09-30T15:58:35+01:00" : "unknown"
+  commit: true ? "08cf92d" : "unknown",
+  builtAt: true ? "2026-09-30T16:52:15+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -83747,7 +83797,7 @@ async function signReadyToken(vmId, privateKeyPem) {
   const key = await importPKCS8(privateKeyPem, "EdDSA");
   return new SignJWT({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
 }
-var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var sleep3 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 function sshReading(readSsh) {
   const status = readSsh?.();
   return status ? { ...status, at: (/* @__PURE__ */ new Date()).toISOString() } : void 0;
@@ -83779,7 +83829,7 @@ async function reportReady(readSsh) {
     } catch (err) {
       console.warn(`[ready] attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
     }
-    await sleep2(Math.min(2e3 * attempt, 15e3));
+    await sleep3(Math.min(2e3 * attempt, 15e3));
   }
   console.error(`[ready] gave up after ${maxAttempts} attempts`);
 }
@@ -84009,6 +84059,7 @@ async function publishKillSwitch(boxKey) {
     lastProxyConfig = { ...lastProxyConfig, identities: withKillSwitch(lastProxyConfig.identities) };
     writeProxyConfig(PROXY_CONFIG_DIR, lastProxyConfig);
   }
+  if (brain) void brain.syncLock().catch((e) => console.error("[gbrain] lock:", e.message));
 }
 async function publishUpdateWindows(boxKey) {
   try {
@@ -84219,7 +84270,12 @@ async function main() {
         // The whole map, brain included: `identities` above is agents only.
         boxes: () => lastProxyConfig?.identities ?? [],
         codeRoutes: () => channels?.codeRoutes() ?? [],
-        channelsReady: () => channels !== null
+        channelsReady: () => channels !== null,
+        // The emergency stop, from the kill store: the brain's gate refuses whoever it names.
+        lock: () => {
+          const k2 = kill?.summary();
+          return { all: !!k2?.org, vmIds: k2?.agents.map((a2) => a2.vmId) ?? [] };
+        }
       });
       const bs = brain.summary();
       console.log(`[mitm-agent] brain store loaded (${bs.connections} agent(s) connected)`);
@@ -84648,7 +84704,10 @@ async function main() {
     }
     if (kill) {
       const ks = kill;
-      const reconcileKill = () => void ks.reconcile(identities.map((i2) => String(i2.vm_id))).catch((e) => console.error("[kill] reconcile:", e.message));
+      const reconcileKill = () => {
+        void ks.reconcile(identities.map((i2) => String(i2.vm_id))).catch((e) => console.error("[kill] reconcile:", e.message));
+        if (brain) void brain.syncLock().catch((e) => console.error("[gbrain] lock:", e.message));
+      };
       setInterval(reconcileKill, KILL_RECONCILE_MS);
       reconcileKill();
     }
