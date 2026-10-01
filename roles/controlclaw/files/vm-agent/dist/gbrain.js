@@ -5113,8 +5113,8 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "06c39af" : "unknown",
-  builtAt: true ? "2026-09-30T21:20:09+01:00" : "unknown"
+  commit: true ? "6f08ed8" : "unknown",
+  builtAt: true ? "2026-10-01T09:30:34+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -6178,7 +6178,20 @@ p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink2)}
 p.lead{margin:0 0 1rem;color:var(--ink2)}
 input.code{width:100%;font:600 1.6rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3em;text-align:center;padding:.7rem;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink)}
 input.code:focus{outline:2px solid var(--brand);outline-offset:1px}
-button.btn{margin-top:1rem;width:100%;padding:.7rem;border:0;border-radius:10px;background:var(--brand);color:#fff;font-weight:600;font-size:15px;cursor:pointer}
+button.btn{margin-top:1rem;width:100%;padding:.7rem;border:0;border-radius:10px;background:var(--brand);color:#fff;font-weight:600;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:.4rem}
+button.btn:disabled{opacity:.5;cursor:not-allowed}
+[hidden]{display:none!important}
+.otp{--otp-line:#e7e4dc;--otp-ring:oklch(.52 .18 265);--otp-ink:#0d1117;--otp-bg:transparent;display:flex;align-items:center;justify-content:center;gap:8px}
+@media(prefers-color-scheme:dark){.otp{--otp-line:oklch(1 0 0/12%);--otp-ring:oklch(.7 .17 265);--otp-ink:oklch(.98 .005 265);--otp-bg:oklch(1 0 0/3.6%)}}
+.otp .g{display:flex;align-items:center}
+.otp input{position:relative;width:36px;height:36px;margin:0;padding:0;border:1px solid var(--otp-line);border-left-width:0;border-radius:0;background:var(--otp-bg);color:var(--otp-ink);font-family:inherit;font-size:14px;text-align:center;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);outline:none;transition:border-color .15s,box-shadow .15s}
+.otp .g input:first-child{border-left-width:1px;border-radius:8px 0 0 8px}
+.otp .g input:last-child{border-radius:0 8px 8px 0}
+.otp input:focus{z-index:1;border-color:var(--otp-ring);box-shadow:0 0 0 3px color-mix(in srgb,var(--otp-ring) 50%,transparent)}
+.otp .sep{display:flex;color:var(--otp-ink)}
+.otp.busy{opacity:.5}.otp.busy input{cursor:not-allowed}
+.line{display:flex;align-items:center;justify-content:center;gap:.4rem;margin:.75rem 0 0;font-size:12.5px;color:var(--ink2)}
+.spin{width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;flex:none}
 `;
 var MARK_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`;
 var CONSOLE_URL = "https://controlclaw.com/dashboard/agents";
@@ -6335,6 +6348,53 @@ function openPage(hostname) {
 })();`
   );
 }
+var MINUS_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg>`;
+var codeBox = (i2) => `<input id="d${i2}" inputmode="numeric" ${i2 === 0 ? 'autocomplete="one-time-code"' : 'autocomplete="off"'} aria-label="Digit ${i2 + 1} of 6">`;
+var CODE_BOXES = `<div class="otp" id="otp" role="group" aria-label="6-digit code" hidden><div class="g">${[0, 1, 2].map(codeBox).join("")}</div><div class="sep" role="separator">${MINUS_SVG}</div><div class="g">${[3, 4, 5].map(codeBox).join("")}</div></div>`;
+var CODE_BOXES_JS = `
+  const plain = $('code'), go = $('go'), line = $('line'), otp = $('otp');
+  const boxes = [0, 1, 2, 3, 4, 5].map((i) => $('d' + i));
+  plain.hidden = true; plain.required = false; plain.removeAttribute('pattern');
+  otp.hidden = false;
+  let busy = false;
+  const digits = (s) => String(s || '').replace(/[^0-9]/g, '');
+  const sync = () => { plain.value = boxes.map((b) => b.value).join(''); go.disabled = busy || plain.value.length !== 6; };
+  const fill = (i, d) => { for (const ch of d) { if (i > 5) break; boxes[i++].value = ch; } sync(); boxes[Math.min(i, 5)].focus(); };
+  const idle = () => { busy = false; otp.className = 'otp'; for (const b of boxes) b.readOnly = false; go.textContent = 'Continue'; line.hidden = true; sync(); };
+  boxes.forEach((b, i) => {
+    b.addEventListener('focus', () => b.select());
+    b.addEventListener('input', () => { const d = digits(b.value); b.value = ''; if (d.length >= 6) fill(0, d.slice(0, 6)); else if (d) fill(i, d); else sync(); });
+    b.addEventListener('paste', (ev) => {
+      ev.preventDefault();
+      if (busy) return;
+      const d = digits(ev.clipboardData && ev.clipboardData.getData('text'));
+      if (d.length >= 6) fill(0, d.slice(0, 6)); else if (d) fill(i, d);
+    });
+    b.addEventListener('keydown', (ev) => {
+      if (busy) return;
+      if (ev.key === 'Backspace') {
+        ev.preventDefault();
+        if (b.value) b.value = ''; else if (i > 0) { boxes[i - 1].value = ''; boxes[i - 1].focus(); }
+        sync();
+      } else if (ev.key === 'ArrowLeft' && i > 0) { ev.preventDefault(); boxes[i - 1].focus(); }
+      else if (ev.key === 'ArrowRight' && i < 5) { ev.preventDefault(); boxes[i + 1].focus(); }
+    });
+  });
+  $('f').addEventListener('submit', (ev) => {
+    if (busy || plain.value.length !== 6) { ev.preventDefault(); return; }
+    busy = true;
+    otp.className = 'otp busy';
+    for (const b of boxes) { b.readOnly = true; if (b.blur) { b.setSelectionRange(1, 1); b.blur(); } }
+    go.disabled = true;
+    go.innerHTML = '<span class="spin"></span>Confirming\u2026';
+    line.innerHTML = '<span class="spin"></span>Checking the code with your firewall\u2026';
+    line.hidden = false;
+    $('err').className = 'err';
+  });
+  // Back from the firewall to a page the browser kept: ready again, not stuck busy.
+  addEventListener('pageshow', (ev) => { if (ev.persisted) { for (const b of boxes) b.value = ''; idle(); } });
+  sync();
+  boxes[0].focus();`;
 var CHANNEL_NAMES = { telegram: "Telegram", slack: "Slack", whatsapp: "WhatsApp" };
 function enrollPage(hostname, firewall) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
@@ -6349,8 +6409,10 @@ function enrollPage(hostname, firewall) {
 <form id="f" method="post" action="${escapeHtml(firewall)}/__cc/enroll/confirm">
   <input type="hidden" name="p" id="p">
   <input class="code" name="code" id="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus aria-label="6-digit code">
+  ${CODE_BOXES}
+  <p class="line" id="line" hidden></p>
   <div class="err" id="err"></div>
-  <button class="btn" type="submit">Continue</button>
+  <button class="btn" id="go" type="submit">Continue</button>
 </form>
 <p class="note">Only type the code on this page, at ${host}. If you did not just press Open, close this tab.</p>`,
     `
@@ -6365,6 +6427,7 @@ function enrollPage(hostname, firewall) {
   history.replaceState(null, '', location.pathname + '#p=' + encodeURIComponent(p) + (via ? '&via=' + encodeURIComponent(via) : ''));
   if (via && NAMES[via]) $('lead').textContent = ${JSON.stringify("This browser has not opened your organization's agents before. We sent a 6-digit code to your ")} + NAMES[via] + ${JSON.stringify(`. Type it here to open ${agent}.`)};
   if (e === 'invalid_code') { $('err').textContent = 'Wrong code. ' + (left === '1' ? '1 try left.' : (left || 'A few') + ' tries left.'); $('err').className = 'err show'; }
+  ${CODE_BOXES_JS}
 })();`
   );
 }
