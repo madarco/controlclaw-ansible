@@ -15771,9 +15771,9 @@ function parseProposal11(payload) {
   for (const entry of raw) {
     const b2 = entry ?? {};
     const vmId = str15(b2.vmId);
-    const role = b2.role === "mitm" ? "mitm" : "openclaw";
+    const role = b2.role === "mitm" ? "mitm" : b2.role === "gbrain" ? "gbrain" : "openclaw";
     const hostname3 = str15(b2.hostname) ?? "";
-    if (!vmId || role === "openclaw" && !hostname3) throw new Error("malformed update-all.propose payload");
+    if (!vmId || role !== "mitm" && !hostname3) throw new Error("malformed update-all.propose payload");
     boxes.push({ vmId, name: str15(b2.name) ?? vmId, hostname: hostname3, role });
   }
   if (!changeId || boxes.length === 0) throw new Error("malformed update-all.propose payload");
@@ -15899,7 +15899,7 @@ var UpdateAllFirewall = class {
     const changeId = str15(payload.changeId);
     const vmId = str15(payload.vmId);
     if (!changeId || !vmId) throw new Error("malformed update-all.apply payload");
-    const role = payload.role === "mitm" ? "mitm" : "openclaw";
+    const role = payload.role === "mitm" ? "mitm" : payload.role === "gbrain" ? "gbrain" : "openclaw";
     const data = { changeId, vmId };
     const claim2 = this.opts.store.claim(changeId, vmId, this.now());
     if (!claim2.ok) {
@@ -83875,8 +83875,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "717bb30" : "unknown",
-  builtAt: true ? "2026-10-01T09:41:46+01:00" : "unknown"
+  commit: true ? "05ef649" : "unknown",
+  builtAt: true ? "2026-10-01T20:03:14+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

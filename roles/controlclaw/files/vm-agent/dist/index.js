@@ -61,7 +61,7 @@ var CONTROL_PLANE_ROUTES = {
     "GET /search/status",
     "GET /connectors/status"
   ]),
-  gbrain: /* @__PURE__ */ new Set(["GET /health", "GET /status", "POST /start", "POST /stop", "POST /restart", "POST /mitm-ca/refresh", "GET /logs"])
+  gbrain: /* @__PURE__ */ new Set(["GET /health", "GET /status", "POST /start", "POST /stop", "POST /restart", "POST /mitm-ca/refresh", "GET /logs", "GET /update"])
 };
 function controlPlaneMayCall(method, url2, service = process.env.CC_SERVICE ?? "openclaw") {
   let pathname;
@@ -1622,8 +1622,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "941ae42" : "unknown",
-  builtAt: true ? "2026-10-01T11:31:51+01:00" : "unknown"
+  commit: true ? "05ef649" : "unknown",
+  builtAt: true ? "2026-10-01T20:03:14+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
