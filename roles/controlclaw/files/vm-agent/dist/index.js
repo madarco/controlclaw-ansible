@@ -1622,8 +1622,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "6f08ed8" : "unknown",
-  builtAt: true ? "2026-10-01T09:30:34+01:00" : "unknown"
+  commit: true ? "941ae42" : "unknown",
+  builtAt: true ? "2026-10-01T11:31:51+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -2073,6 +2073,18 @@ function recentAutoRestarts() {
     return 0;
   }
 }
+var DEFERRED_WINDOW_S = 45;
+function restartStillDeferred() {
+  try {
+    const out = execSync2(`sudo -n journalctl -u ${SERVICE2} --since "-${DEFERRED_WINDOW_S}s" --no-pager -o cat`, {
+      encoding: "utf-8",
+      timeout: EXEC_TIMEOUT_MS
+    });
+    return out.includes("restart still deferred");
+  } catch {
+    return false;
+  }
+}
 function runStatusSummary() {
   try {
     return execSync2(`systemctl status ${SERVICE2} --no-pager -n 5`, {
@@ -2155,6 +2167,7 @@ function isRestartWindow(message) {
   return /unavailable during gateway restart|gateway not connected|gateway disconnected|ECONNREFUSED/i.test(message);
 }
 var DEFAULT_MAX_BACKOFF_MS = 2e3;
+var CONFIG_WRITE_METHODS = /* @__PURE__ */ new Set(["config.patch", "config.apply", "config.set"]);
 async function patchConfig(gw, patch, opts) {
   const raw = JSON.stringify(patch);
   const log = opts.log ?? ((l2) => console.log(`[gateway] ${l2}`));
@@ -2215,6 +2228,7 @@ var GatewayClient = class {
   handlers = /* @__PURE__ */ new Map();
   connectHandlers = /* @__PURE__ */ new Set();
   disconnectHandlers = /* @__PURE__ */ new Set();
+  configWriteHandlers = /* @__PURE__ */ new Set();
   backoff;
   reconnectTimer = null;
   stopped = false;
@@ -2266,10 +2280,33 @@ var GatewayClient = class {
     this.disconnectHandlers.add(handler);
     return () => this.disconnectHandlers.delete(handler);
   }
+  /**
+   * Runs when a config write (`config.patch`, `.apply`, `.set`) is sent and again when it settles,
+   * whatever its answer. `ConfigActivation` uses it to tell when the writes have gone quiet.
+   */
+  onConfigWrite(handler) {
+    this.configWriteHandlers.add(handler);
+    return () => this.configWriteHandlers.delete(handler);
+  }
   async call(method, params = {}, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
     const ws = this.ws;
     if (!ws || ws.readyState !== ws.OPEN) throw new Error("gateway not connected");
-    return this.send(ws, method, params, timeoutMs);
+    if (!CONFIG_WRITE_METHODS.has(method)) return this.send(ws, method, params, timeoutMs);
+    this.emitConfigWrite("start");
+    try {
+      return await this.send(ws, method, params, timeoutMs);
+    } finally {
+      this.emitConfigWrite("end");
+    }
+  }
+  emitConfigWrite(phase) {
+    for (const h2 of this.configWriteHandlers) {
+      try {
+        h2(phase);
+      } catch (err) {
+        this.log(`config write handler failed: ${err.message}`);
+      }
+    }
   }
   send(ws, method, params, timeoutMs) {
     const id = String(++this.seq);
@@ -2393,6 +2430,180 @@ var GatewayClient = class {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
+  }
+};
+
+// src/config-activation.ts
+var ACTIVATION_SETTLE_MS = 5e3;
+var ACTIVATION_GRACE_MS = 4e4;
+var ACTIVATION_POLL_MS = 2e3;
+var ACTIVATION_DOWN_MS = 12e4;
+var RESTART_COOLDOWN_MS = 10 * 6e4;
+var MAX_FORCED_RESTARTS = 3;
+var RESTART_WINDOW_MS = 30 * 6e4;
+function configActive(snapshot) {
+  const s2 = snapshot ?? {};
+  const saved = typeof s2.configRevisionHash === "string" && s2.configRevisionHash ? s2.configRevisionHash : null;
+  const applied = typeof s2.appliedConfigHash === "string" && s2.appliedConfigHash ? s2.appliedConfigHash : null;
+  if (!saved || !applied) return null;
+  return saved === applied;
+}
+var ConfigActivation = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+    this.settleMs = opts.settleMs ?? ACTIVATION_SETTLE_MS;
+    this.graceMs = opts.graceMs ?? ACTIVATION_GRACE_MS;
+    this.pollMs = opts.pollMs ?? ACTIVATION_POLL_MS;
+    this.downMs = opts.downMs ?? ACTIVATION_DOWN_MS;
+    this.cooldownMs = opts.cooldownMs ?? RESTART_COOLDOWN_MS;
+  }
+  log;
+  now;
+  settleMs;
+  graceMs;
+  pollMs;
+  downMs;
+  cooldownMs;
+  inFlight = 0;
+  lastChangeAt = 0;
+  /** Bumped on every change and reconnect, so a check can tell whether one landed while it was finishing. */
+  changes = 0;
+  /** Bumped on writes only. */
+  writes = 0;
+  /** `writes` when the last forced restart was run. */
+  writesAtRestart = -1;
+  timer = null;
+  running = null;
+  lastRestartAt = -Infinity;
+  forcedRestarts = [];
+  waiters = [];
+  /** A `config.patch` (or `.apply` / `.set`) was sent. No verdict while one is in flight. */
+  writeStarted() {
+    this.inFlight++;
+    this.changed();
+  }
+  writeEnded() {
+    this.inFlight = Math.max(0, this.inFlight - 1);
+    this.changed();
+  }
+  /** The config changed some other way: the gateway's `config.changed`, which covers the CLI. */
+  changed() {
+    this.writes++;
+    this.poke();
+  }
+  /**
+   * The socket to the gateway came back. Worth a look (a vm-agent restarted mid-window would
+   * otherwise forget), but it is not a write: after a forced restart, a gateway that comes back
+   * still behind with nothing written since is the loop the cooldown is there to stop.
+   */
+  reconnected() {
+    this.poke();
+  }
+  poke() {
+    this.lastChangeAt = this.now();
+    this.changes++;
+    if (!this.running) this.schedule();
+  }
+  /** Resolves with the outcome of the next check to finish. For tests and logs. */
+  nextVerdict() {
+    return new Promise((resolve2) => this.waiters.push(resolve2));
+  }
+  stop() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+  schedule() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.start();
+    }, this.settleMs);
+  }
+  start() {
+    const seen = this.changes;
+    this.running = this.check().catch((err) => {
+      this.log(`[config] activation check failed: ${err.message}`);
+      return "unknown";
+    }).then((outcome) => {
+      this.running = null;
+      if (this.changes !== seen) this.schedule();
+      for (const resolve2 of this.waiters.splice(0)) resolve2(outcome);
+      return outcome;
+    });
+  }
+  async check() {
+    const gw = this.opts.gateway;
+    let behindSince = null;
+    let downSince = null;
+    let changesAtBehind = this.changes;
+    for (; ; ) {
+      const now = this.now();
+      if (this.inFlight > 0 || now - this.lastChangeAt < this.settleMs) {
+        behindSince = null;
+        await this.sleep();
+        continue;
+      }
+      if (!gw.connected) {
+        behindSince = null;
+        downSince ??= now;
+        if (now - downSince >= this.downMs) return "down";
+        await this.sleep();
+        continue;
+      }
+      downSince = null;
+      let active;
+      try {
+        active = configActive(await gw.call("config.get", {}, GATEWAY_READ_MS));
+      } catch {
+        await this.sleep();
+        continue;
+      }
+      if (active === null) return "unknown";
+      if (active) {
+        this.lastRestartAt = -Infinity;
+        if (behindSince !== null) this.log(`[config] OpenClaw applied the saved settings after ${Math.round((this.now() - behindSince) / 1e3)} s`);
+        return "active";
+      }
+      if (behindSince === null || this.changes !== changesAtBehind) {
+        behindSince = this.now();
+        changesAtBehind = this.changes;
+      }
+      if (this.now() - behindSince < this.graceMs) {
+        await this.sleep();
+        continue;
+      }
+      if (this.opts.restartDeferred?.()) {
+        this.log("[config] OpenClaw is holding its restart back for work in flight; waiting for it");
+        behindSince = this.now();
+        await this.sleep();
+        continue;
+      }
+      if (this.now() - this.lastRestartAt < this.cooldownMs && this.writes === this.writesAtRestart) {
+        this.log("[config] OpenClaw is still not running its saved settings, and it was restarted for that a moment ago; leaving it");
+        return "stuck";
+      }
+      this.forcedRestarts = this.forcedRestarts.filter((at2) => this.now() - at2 < RESTART_WINDOW_MS);
+      if (this.forcedRestarts.length >= MAX_FORCED_RESTARTS) {
+        this.log(`[config] OpenClaw is still not running its saved settings after ${MAX_FORCED_RESTARTS} restarts from here; leaving it`);
+        return "stuck";
+      }
+      if (!gw.connected) continue;
+      this.log(`[config] OpenClaw has run behind its saved settings for ${Math.round((this.now() - behindSince) / 1e3)} s (its own restart was dropped); restarting it`);
+      this.lastRestartAt = this.now();
+      this.forcedRestarts.push(this.lastRestartAt);
+      this.writesAtRestart = this.writes;
+      const r2 = this.opts.restartService();
+      if (!r2.ok) {
+        this.log(`[config] restart failed: ${r2.error ?? "unknown"}`);
+        return "stuck";
+      }
+      return "restarted";
+    }
+  }
+  sleep() {
+    return new Promise((resolve2) => setTimeout(resolve2, this.pollMs));
   }
 };
 
@@ -11629,6 +11840,10 @@ function startGatewayBridge() {
   });
   const approvals = new ApprovalsBridge({ client, permissionUrl: `${base}/api/vm-agent/permission`, getToken });
   approvals.start();
+  const activation = new ConfigActivation({ gateway: client, restartService: () => runAction("restart"), restartDeferred: restartStillDeferred });
+  client.onConfigWrite((phase) => phase === "start" ? activation.writeStarted() : activation.writeEnded());
+  client.on("config.changed", () => activation.changed());
+  client.onConnected(() => activation.reconnected());
   client.start();
   const oneLine = (tag) => (err) => console.error(`${tag} tick failed: ${err.message}`);
   setInterval(() => void audit.tick().catch(oneLine("[audit]")), AUDIT_POLL_MS);
