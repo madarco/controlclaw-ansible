@@ -12251,7 +12251,7 @@ function silentListMessage(devices, max = 20) {
 ...and ${devices.length - max} more.` : "";
   return `ControlClaw: ${devices.length === 1 ? "this browser was" : "these browsers were"} signed in to your agents without a code, before anyone could receive one:
 ${lines.join("\n")}${more}
-Remove any you don't recognise on the Browsers page of your ControlClaw console.`;
+Remove any you don't recognise on the Devices page of your ControlClaw console.`;
 }
 var AccessFirewall = class {
   constructor(opts) {
@@ -83875,8 +83875,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "06c39af" : "unknown",
-  builtAt: true ? "2026-09-30T21:20:09+01:00" : "unknown"
+  commit: true ? "717bb30" : "unknown",
+  builtAt: true ? "2026-10-01T09:41:46+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
