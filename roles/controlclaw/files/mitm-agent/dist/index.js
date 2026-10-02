@@ -2937,7 +2937,7 @@ function timeoutFor(path, opts) {
   if (path.startsWith("/backup/")) return opts.backupTimeoutMs;
   if (path === "/channels/pairings/approve") return opts.approveTimeoutMs;
   if (path === "/channels/apply") return CHANNELS_APPLY_MS;
-  if (path === "/agentmail/apply" || path === "/search/apply" || path === "/connectors/apply") return CONFIG_WRITE_MS;
+  if (path === "/meetings/apply" || path === "/agentmail/apply" || path === "/search/apply" || path === "/connectors/apply") return CONFIG_WRITE_MS;
   return opts.timeoutMs;
 }
 function purposeForPath(path) {
@@ -84841,8 +84841,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "unknown" : "unknown",
-  builtAt: true ? "2026-10-02T18:21:53.160Z" : "unknown"
+  commit: true ? "6ca8508" : "unknown",
+  builtAt: true ? "2026-10-02T18:29:56+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

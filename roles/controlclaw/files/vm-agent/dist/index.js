@@ -2520,8 +2520,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ca5957a" : "unknown",
-  builtAt: true ? "2026-10-02T18:21:49+00:00" : "unknown"
+  commit: true ? "6ca8508" : "unknown",
+  builtAt: true ? "2026-10-02T18:29:56+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -5911,7 +5911,8 @@ var MeetingService = class {
     const runtime = {
       record: record2,
       cursor: 0,
-      polling: false
+      polling: false,
+      starting: true
     };
     this.opts.reserve?.(true);
     this.current = runtime;
@@ -5947,7 +5948,10 @@ var MeetingService = class {
       runtime.lease = await this.media("start");
       if (!this.alive(runtime)) return;
       runtime.timer = setInterval(
-        () => void this.poll(runtime).catch(() => this.captureFailure(runtime)),
+        () => {
+          void this.renew(runtime).catch(() => this.captureFailure(runtime));
+          void this.poll(runtime).catch(() => this.captureFailure(runtime));
+        },
         5e3
       );
       runtime.timer.unref();
@@ -5989,14 +5993,13 @@ var MeetingService = class {
         await this.finish(runtime, true);
       }
     } finally {
-      if (!this.alive(runtime) && !runtime.stopping) {
-        if (runtime.lease)
-          await this.media("stop", runtime.lease.id).catch(() => void 0);
-        await this.opts.browser(false).catch(() => void 0);
-      }
+      runtime.starting = false;
+      if (runtime.closing && !runtime.stopping)
+        await this.finish(runtime, runtime.record.state === "failed");
     }
   }
   async captureFailure(runtime) {
+    if (this.current !== runtime) return;
     runtime.closing = true;
     runtime.record.state = "failed";
     runtime.record.error = "Capture could not be saved. Free disk space, then press Stop to retry cleanup.";
@@ -6036,16 +6039,30 @@ var MeetingService = class {
     if (typeof result.nextIndex === "number") runtime.cursor = result.nextIndex;
     this.opts.archive.save(runtime.record);
   }
+  async renew(runtime) {
+    if (runtime.renewing || !this.alive(runtime) || !runtime.lease) return;
+    runtime.renewing = true;
+    try {
+      const lease = await this.media("renew", runtime.lease.id);
+      if (this.alive(runtime)) runtime.lease = lease;
+    } catch {
+      if (this.alive(runtime)) {
+        runtime.record.error = "Meeting media permission ended.";
+        await this.finish(runtime, true);
+      }
+    } finally {
+      runtime.renewing = false;
+    }
+  }
   async poll(runtime) {
     if (runtime.polling || !this.alive(runtime)) return;
     runtime.polling = true;
     try {
-      if (runtime.lease)
-        runtime.lease = await this.media("renew", runtime.lease.id);
       const sessionId = runtime.record.sessionIds.at(-1);
       if (!sessionId) return;
       const result = await this.opts.gateway.call("googlemeet.status", { sessionId }, 2e4);
       if (!this.alive(runtime)) return;
+      if (result.found === false) throw new Error("Native meeting session ended");
       const health2 = result.session?.chrome?.health;
       if (health2?.inCall && (health2.micMuted !== true || health2.cameraOff !== true))
         throw new Error("Mute could not be verified");
@@ -6130,7 +6147,7 @@ var MeetingService = class {
     if (!runtime.record.transcript.length)
       runtime.record.error = "No captions were captured. This meeting has no transcript.";
     this.opts.archive.save(runtime.record);
-    if (cleanupFailed) return;
+    if (cleanupFailed || runtime.starting) return;
     this.opts.reserve?.(false);
     if (this.current === runtime) this.current = null;
     if (runtime.record.transcript.length)
