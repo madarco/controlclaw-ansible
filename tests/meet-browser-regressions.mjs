@@ -19,6 +19,14 @@ for(const [name,html,permission,expected] of [
  console.log('PASS '+name);await page.close();
 }
 const captionSource=runInNewContext(fn+`;meetStatusScript({allowMicrophone:false,autoJoin:false,captureCaptions:true,captionSessionId:'regression',readOnly:false})`,{});
+const lobbyPage=await browser.newPage();
+await lobbyPage.setContent('<h1>Please wait until a meeting host brings you into the call</h1><button aria-label="Leave call">Leave call</button><div aria-live="polite">No one responded to your request to join.</div>');
+const lobbyHealth=JSON.parse(await lobbyPage.evaluate('('+captionSource+')()'));
+assert.equal(lobbyHealth.inCall,false);
+assert.equal(lobbyHealth.transcriptLines,0);
+assert.equal(await lobbyPage.evaluate(()=>Boolean(window.__openclawMeetCaptions)),false,'no caption observer starts in the lobby');
+await lobbyPage.close();
+console.log('PASS lobby never starts caption capture');
 const page=await browser.newPage();
 await page.route('https://meet.google.com/**',route=>route.fulfill({contentType:'text/html',body:'<button aria-label="Leave call">Leave call</button><div aria-live="polite">Your camera is off. Your microphone is muted.</div>'}));
 await page.goto('https://meet.google.com/test');

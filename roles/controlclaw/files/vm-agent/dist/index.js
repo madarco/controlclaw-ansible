@@ -2520,8 +2520,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "4aff40a" : "unknown",
-  builtAt: true ? "2026-10-02T21:02:35+00:00" : "unknown"
+  commit: true ? "bbc536b" : "unknown",
+  builtAt: true ? "2026-10-02T22:04:58+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -6024,6 +6024,7 @@ var MeetingService = class {
     return next;
   }
   async captureNow(runtime) {
+    if (!runtime.activeAt) return;
     const sessionId = runtime.record.sessionIds.at(-1);
     if (!sessionId) return;
     const disk = statfsSync(this.opts.archive.root);
