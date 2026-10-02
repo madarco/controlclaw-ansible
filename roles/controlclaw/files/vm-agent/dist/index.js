@@ -2520,8 +2520,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "157e521" : "unknown",
-  builtAt: true ? "2026-10-02T21:00:23+00:00" : "unknown"
+  commit: true ? "4aff40a" : "unknown",
+  builtAt: true ? "2026-10-02T21:02:35+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -5633,16 +5633,11 @@ function cleanCaptions(input2) {
       const current = item.text.replace(/[.!?…]+$/u, "");
       const sameSource = last.source && item.source && last.source.id === item.source.id;
       const legacy = !last.source && !item.source;
-      const words = (value) => value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/);
-      const before = words(previous), after = words(current);
-      let shared = 0;
-      while (shared < Math.min(before.length, after.length) && before[shared] === after[shared]) shared++;
-      const correction = sameSource && item.source.revision > last.source.revision && shared >= 4 && shared >= Math.min(before.length, after.length) * 0.6 && after.length >= before.length;
       if ((legacy || sameSource) && (current === previous || previous.startsWith(current + " "))) {
         last.updatedAt = item.updatedAt ?? item.at;
         continue;
       }
-      if ((legacy || sameSource) && current.startsWith(previous + " ") || correction) {
+      if ((legacy || sameSource) && current.startsWith(previous + " ")) {
         last.text = item.text;
         last.updatedAt = item.updatedAt ?? item.at;
         if (item.source) last.source = item.source;
