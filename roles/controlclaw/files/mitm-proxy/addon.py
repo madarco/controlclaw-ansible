@@ -1036,8 +1036,13 @@ def _log(record: dict[str, Any]) -> None:
 _TELEGRAM_TOKEN_RE = re.compile(r"/bot\d+:[A-Za-z0-9_-]{20,}(?=/|$)")
 
 
-def redact_path(path: str) -> str:
+def redact_path(path: str, host: str = "") -> str:
     """The query-stripped path with any embedded credential replaced by a marker."""
+    if host.lower() in ("api.agentmail.to", "ws.agentmail.to"):
+        # Only fixed resource names survive. IDs, addresses, search terms and arbitrary segments
+        # must never reach activity storage or an AI review prompt.
+        resources = {"v0", "inboxes", "messages", "threads", "drafts", "attachments", "send", "reply", "reply-all", "forward", "raw", "api-keys", "organizations"}
+        return "/".join(part if part in resources or not part else "{id}" for part in path.split("?", 1)[0].split("/"))
     return _TELEGRAM_TOKEN_RE.sub("/bot<redacted>", path.split("?", 1)[0])
 
 
@@ -1047,13 +1052,21 @@ def _base_record(flow, vm_id: str | None) -> dict[str, Any]:
     return {"flow_id": flow.id, "ts": time.time(), "tenant": TENANT, "vm_id": vm_id}
 
 
+def permission_path(path: str, host: str) -> str:
+    redacted = redact_path(path, host)
+    if host.lower() in ("api.agentmail.to", "ws.agentmail.to"):
+        # Keep grants specific to the original resource without storing its address or ID.
+        return redacted + "#" + hashlib.sha256(path.split("?", 1)[0].encode()).hexdigest()[:24]
+    return redacted
+
+
 def _http_record(flow: http.HTTPFlow, effect: str) -> dict[str, Any]:
     """One record per HTTP request. `path` is query-stripped so a credential swapped into a query
     string can never end up in a log line."""
     rec = _base_record(flow, flow.metadata.get("cc_vm_id"))
     rec.update({
         "host": flow.request.pretty_host, "method": flow.request.method,
-        "path": redact_path(flow.request.path), "effect": effect,
+        "path": redact_path(flow.request.path, flow.request.pretty_host), "effect": effect,
         "rule": flow.metadata.get("cc_rule"),
     })
     if flow.metadata.get("cc_ai"):
@@ -1103,6 +1116,8 @@ async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
                    approve: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Ask the local judge about one request. None means "no opinion": the rule's effect stands.
     Runs in a thread so a slow judge never stalls other flows."""
+    if flow.request.pretty_host.lower() in ("api.agentmail.to", "ws.agentmail.to"):
+        return None  # Mail content never goes to the judge or its remote model provider.
     if not AI_JUDGE_URL:
         return None
     raw_path = flow.request.path
@@ -1112,7 +1127,7 @@ async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
         "vm_id": vm_id,
         "method": flow.request.method,
         "host": flow.request.pretty_host,
-        "path": redact_path(raw_path)[:200],
+        "path": redact_path(raw_path, flow.request.pretty_host)[:200],
         "query_keys": sorted({kv.split("=", 1)[0] for kv in query.split("&") if kv})[:20],
         "content_type": (flow.request.headers.get("content-type") or "")[:100] or None,
         "body_start": _body_start(flow),
@@ -1927,7 +1942,7 @@ async def request(flow: http.HTTPFlow) -> None:
 
     if effect == "allow" and rule and rule.get("ai_review"):
         # A human grant for this exact request (after an earlier AI "ask") wins over asking again.
-        pid = permission_id_for(permission_scope(method, host, redact_path(path)))
+        pid = permission_id_for(permission_scope(method, host, permission_path(path, host)))
         if not grant_active(pid):
             verdict = await ai_judge(flow, rule, vm_id)
             if verdict:
@@ -1963,7 +1978,7 @@ async def request(flow: http.HTTPFlow) -> None:
         return
 
     if effect == "require_permission":
-        scope = permission_scope(method, host, redact_path(path))
+        scope = permission_scope(method, host, permission_path(path, host))
         pid = permission_id_for(scope)
         approved = None
         if (not grant_active(pid) and not flow.metadata.get("cc_ai") and rule
@@ -1987,7 +2002,7 @@ async def request(flow: http.HTTPFlow) -> None:
         else:
             record_pending(pid, {
                 "ts": time.time(), "tenant": TENANT, "vm_id": vm_id, "permission_id": pid,
-                "scope": scope, "host": host, "method": method, "path": redact_path(path),
+                "scope": scope, "host": host, "method": method, "path": redact_path(path, host),
                 **({"ai_category": flow.metadata["cc_ai"].get("category")} if flow.metadata.get("cc_ai") else {}),
             })
             flow.response = http.Response.make(
@@ -2074,7 +2089,7 @@ def error(flow: http.HTTPFlow) -> None:
     if NON_ROUTABLE_REFUSAL in str(getattr(flow.error, "msg", "") or ""):
         return  # `server_connect` refused the connection and already wrote the block record
     rec = _allow_record(flow)
-    rec["error"] = str(getattr(flow.error, "msg", "") or "upstream error")[:200]
+    rec["error"] = "AgentMail request failed" if flow.request.pretty_host in ("api.agentmail.to", "ws.agentmail.to") else str(getattr(flow.error, "msg", "") or "upstream error")[:200]
     start = flow.request.timestamp_start
     end = getattr(flow.error, "timestamp", None)
     if start and end:

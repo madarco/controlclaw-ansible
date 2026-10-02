@@ -851,20 +851,20 @@ var textEncoder = globalObject.TextEncoder ? new globalObject.TextEncoder() : nu
 function hexCharCodesToInt(a2, b2) {
   return (a2 & 15) + (a2 >> 6 | a2 >> 3 & 8) << 4 | (b2 & 15) + (b2 >> 6 | b2 >> 3 & 8);
 }
-function writeHexToUInt8(buf, str18) {
-  const size = str18.length >> 1;
+function writeHexToUInt8(buf, str19) {
+  const size = str19.length >> 1;
   for (let i2 = 0; i2 < size; i2++) {
     const index = i2 << 1;
-    buf[i2] = hexCharCodesToInt(str18.charCodeAt(index), str18.charCodeAt(index + 1));
+    buf[i2] = hexCharCodesToInt(str19.charCodeAt(index), str19.charCodeAt(index + 1));
   }
 }
-function hexStringEqualsUInt8(str18, buf) {
-  if (str18.length !== buf.length * 2) {
+function hexStringEqualsUInt8(str19, buf) {
+  if (str19.length !== buf.length * 2) {
     return false;
   }
   for (let i2 = 0; i2 < buf.length; i2++) {
     const strIndex = i2 << 1;
-    if (buf[i2] !== hexCharCodesToInt(str18.charCodeAt(strIndex), str18.charCodeAt(strIndex + 1))) {
+    if (buf[i2] !== hexCharCodesToInt(str19.charCodeAt(strIndex), str19.charCodeAt(strIndex + 1))) {
       return false;
     }
   }
@@ -2281,9 +2281,9 @@ var checkFailed = "check_failed";
 function invalidDuration() {
   throw new TypeError("Invalid time period format");
 }
-function secs(str18) {
-  typeof str18 != "string" && invalidDuration();
-  const matched = REGEX.exec(str18);
+function secs(str19) {
+  typeof str19 != "string" && invalidDuration();
+  const matched = REGEX.exec(str19);
   (!matched || matched[4] && matched[1]) && invalidDuration();
   const value = parseFloat(matched[2]), numericDate2 = Math.round(value * multipliers[matched[3][0].toLowerCase()]);
   return Number.isFinite(numericDate2) || invalidDuration(), matched[1] === "-" || matched[4] === "ago" ? -numericDate2 : numericDate2;
@@ -2937,7 +2937,7 @@ function timeoutFor(path, opts) {
   if (path.startsWith("/backup/")) return opts.backupTimeoutMs;
   if (path === "/channels/pairings/approve") return opts.approveTimeoutMs;
   if (path === "/channels/apply") return CHANNELS_APPLY_MS;
-  if (path === "/search/apply" || path === "/connectors/apply") return CONFIG_WRITE_MS;
+  if (path === "/agentmail/apply" || path === "/search/apply" || path === "/connectors/apply") return CONFIG_WRITE_MS;
   return opts.timeoutMs;
 }
 function purposeForPath(path) {
@@ -2949,6 +2949,7 @@ function purposeForPath(path) {
   if (path.startsWith("/ssh/")) return "ssh";
   if (path.startsWith("/tailscale/")) return "tailscale";
   if (path.startsWith("/drive/")) return "drive";
+  if (path.startsWith("/agentmail/")) return "agentmail";
   if (path.startsWith("/google/")) return "google";
   if (path.startsWith("/hooks/")) return "hooks";
   if (path === "/devices" || path.startsWith("/devices/")) return "devices";
@@ -6762,6 +6763,7 @@ var FIREWALL_BACKUP_FILES = [
   "/opt/controlclaw/state/backup.enc",
   "/opt/controlclaw/state/drive.enc",
   "/opt/controlclaw/state/google.enc",
+  "/opt/controlclaw/state/agentmail.enc",
   // Enrolled browsers and each agent's pinned hostname. Without it a restored firewall asks every
   // browser for a code again, and re-pins agents from whatever the identity map says that day.
   "/opt/controlclaw/state/access.enc",
@@ -7148,17 +7150,17 @@ function parseAgentAllowed(payload) {
   const raw = payload.allowedByAgent;
   if (!raw) return { senders: null, error: null };
   const list = Array.isArray(raw.senders) ? raw.senders : [];
-  const senders = [];
+  const senders2 = [];
   for (const a2 of list) {
     const senderId = str(a2.senderId);
     if (!isType(a2.type) || !senderId) continue;
-    if (senders.some((x2) => x2.type === a2.type && x2.senderId === senderId)) continue;
-    senders.push({ type: a2.type, senderId, label: str(a2.label), at: str(a2.at) });
-    if (senders.length >= AGENT_ALLOWED_CAP) break;
+    if (senders2.some((x2) => x2.type === a2.type && x2.senderId === senderId)) continue;
+    senders2.push({ type: a2.type, senderId, label: str(a2.label), at: str(a2.at) });
+    if (senders2.length >= AGENT_ALLOWED_CAP) break;
   }
   const err = raw.error;
   const message2 = err ? str(err.message) : null;
-  return { senders, error: message2 ? { busy: err.busy === true, message: message2 } : null };
+  return { senders: senders2, error: message2 ? { busy: err.busy === true, message: message2 } : null };
 }
 function parseApproved(payload) {
   const raw = Array.isArray(payload.approved) ? payload.approved : [];
@@ -9107,8161 +9109,8 @@ var DriveFirewall = class {
   }
 };
 
-// src/google.ts
+// src/agentmail.ts
 import { randomBytes as randomBytes5 } from "crypto";
-
-// src/google-store.ts
-function isGoogleAudience(v2) {
-  return v2 === "internal" || v2 === "external_production" || v2 === "external_testing";
-}
-var GOOGLE_MATCH_DOMAIN = "*.googleapis.com";
-var PENDING_AUTH_TTL_MS = 15 * 6e4;
-function aad4(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:google`;
-}
-function emptyGoogleStore() {
-  return { version: 1, accounts: {}, agents: {}, pending: null };
-}
-function loadGoogleStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("google", path, boxKeyB64, aad4(ids2));
-  if (!parsed || parsed.version !== 1 || !parsed.accounts || !parsed.agents) return emptyGoogleStore();
-  return { ...parsed, pending: parsed.pending ?? null };
-}
-function saveGoogleStore(path, store, boxKeyB64, ids2) {
-  saveStore("google", path, store, boxKeyB64, aad4(ids2));
-}
-var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
-function isValidProjectId(id) {
-  return PROJECT_ID_RE.test(id);
-}
-var CLIENT_ID_RE = /^[0-9]+(-[A-Za-z0-9_]+)?\.apps\.googleusercontent\.com$/;
-function isValidClientId(id) {
-  return CLIENT_ID_RE.test(id);
-}
-
-// src/google.ts
-var GOOGLE_REFRESH_AHEAD_MS = 15 * 6e4;
-var SCOPE3 = "org";
-var ACCOUNT_ID = "account";
-function isKind3(v2) {
-  return v2 === "connect_account" || v2 === "replace_account" || v2 === "forget_account" || v2 === "grant_agent" || v2 === "revoke_agent" || v2 === "set_services";
-}
-function serviceList(services) {
-  const names = {
-    gmail: "Gmail",
-    calendar: "Calendar",
-    drive: "Drive",
-    contacts: "Contacts",
-    sheets: "Sheets",
-    docs: "Docs"
-  };
-  return services.map((s2) => names[s2]).join(", ");
-}
-function agentList2(agents) {
-  const names = agents.map((a2) => a2.name).filter(Boolean);
-  if (names.length === 0) return "no agent yet";
-  if (names.length === 1) return names[0];
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-function summarize3(p2, accountLabel) {
-  switch (p2.kind) {
-    case "connect_account":
-      return `Connect the Google account ${accountLabel ?? ""} (${serviceList(p2.services)})`.replace(/\s+/g, " ");
-    case "replace_account":
-      return `Reconnect the Google account ${accountLabel ?? ""} (${serviceList(p2.services)})`.replace(/\s+/g, " ");
-    case "forget_account":
-      return "Disconnect the Google account and take it off every agent";
-    case "grant_agent":
-      return `Give ${agentList2(p2.agents)} the Google account`;
-    case "revoke_agent":
-      return `Take the Google account away from ${agentList2(p2.agents)}`;
-    case "set_services":
-      return `Change what the Google account covers to ${serviceList(p2.services)}`;
-  }
-}
-function parseClient(raw, clientSecret) {
-  if (!raw) return null;
-  const clientId = str2(raw.clientId);
-  const redirectUri = str2(raw.redirectUri);
-  if (!clientId || !clientSecret || !redirectUri) return null;
-  return { clientId, clientSecret, redirectUri, tokenEndpoint: str2(raw.tokenEndpoint) ?? GOOGLE_TOKEN_ENDPOINT };
-}
-function parseAgents2(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((a2) => a2).filter((a2) => str2(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str2(a2.name) ?? "", hostname: str2(a2.hostname) }));
-}
-function parseProposal3(payload) {
-  const changeId = str2(payload.changeId);
-  const kind = payload.kind;
-  if (!changeId || !isKind3(kind)) throw new Error("malformed google.propose payload");
-  const services = Array.isArray(payload.services) ? payload.services.filter(isGoogleService) : [];
-  return {
-    changeId,
-    kind,
-    client: parseClient(payload.client, str2(payload.clientSecret)),
-    services,
-    gmailScope: isGmailScope(payload.gmailScope) ? payload.gmailScope : "read-send",
-    driveScope: isDriveScopeChoice(payload.driveScope) ? payload.driveScope : "readonly",
-    audience: isGoogleAudience(payload.audience) ? payload.audience : "external_testing",
-    projectId: str2(payload.projectId),
-    agents: parseAgents2(payload.agents)
-  };
-}
-var GoogleFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
-    this.store = loadGoogleStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  now;
-  fetchImpl;
-  reports = [];
-  minting = false;
-  /**
-   * Which agents a pending connect should grant. Held beside the store rather than in it: it is
-   * only meaningful while one authorization is open, and a firewall restart drops the
-   * authorization anyway (the person gets a dead link and starts again, which is the honest
-   * outcome — the verifier is gone).
-   */
-  pendingAgents = [];
-  /**
-   * An exchanged account waiting for its confirmation code. In memory only, and dropped by a
-   * restart along with the pending code itself — the console then asks for a new connection, which
-   * is the right answer: there is no way to re-derive the account without a new authorization.
-   */
-  awaitingCode = null;
-  handlers() {
-    return {
-      "google.propose": (p2) => this.propose(p2),
-      "google.callback": (p2) => this.callback(p2),
-      "google.confirm": (p2) => this.confirm(p2),
-      "google.cancel": (p2) => this.cancel(p2),
-      "google.push": (p2) => this.push(p2),
-      "google.forget": (p2) => this.forget(p2),
-      "google.read": async () => ({ ok: true, status: "read", data: this.summary() })
-    };
-  }
-  /**
-   * Proxy credential entries: one per **granted** agent, scoped to that agent's own traffic.
-   *
-   * `*.googleapis.com` rather than Drive's `www.googleapis.com` because `gog` reaches
-   * `gmail.googleapis.com`, `people.googleapis.com`, `sheets.googleapis.com`, `docs.googleapis.com`,
-   * `calendar-json.googleapis.com`, `www.googleapis.com` and the `*.mtls.` variants of all of them
-   * (verified in gogcli v0.41.0, `internal/googleapi/read_only.go`). Still domain-scoped: the
-   * placeholder is refused everywhere else, so it cannot be exfiltrated to an attacker's host and
-   * spent there.
-   *
-   * A Drive placeholder and a `gog` placeholder can both match `www.googleapis.com` for the same
-   * box. That is fine: `credentials_for()` keys by placeholder and `apply_swaps()` only replaces a
-   * placeholder actually present in the header.
-   */
-  credentials() {
-    return this.grantedAgents().map(({ vmId, agent, account }) => ({
-      placeholder: agent.placeholder,
-      match_domain: GOOGLE_MATCH_DOMAIN,
-      secret: account.access.token,
-      locations: ["header:authorization"],
-      vm_id: vmId
-    }));
-  }
-  /**
-   * What the Drive folders module needs to borrow this account's Drive access (T-78).
-   *
-   * This is the ONE place the token crosses between the two modules, and it stays a read: nothing
-   * is copied into `drive.enc`, so there is one refresh loop, one copy of the refresh token and no
-   * second thing to expire. `drive.credentials()` calls this on every proxy sync, which is already
-   * triggered by this module's own refresh through `onCredentialsChanged`.
-   *
-   * `driveScope` is read out of the scopes **consent actually granted**, not out of `driveScope` or
-   * `services`, because those two record what was asked for. Google is the authority on what the
-   * token can do, and the widest scope present is what it can do. Returns null for an account with
-   * no Drive scope at all, which is the case the console has to explain rather than work around.
-   */
-  driveAccess() {
-    const entry = this.theAccount();
-    if (!entry) return null;
-    const a2 = entry.account;
-    const scopes = new Set(a2.scopes);
-    const driveScope = scopes.has("https://www.googleapis.com/auth/drive") ? "full" : scopes.has("https://www.googleapis.com/auth/drive.readonly") ? "readonly" : scopes.has("https://www.googleapis.com/auth/drive.file") ? "file" : null;
-    return {
-      accountLabel: a2.accountLabel,
-      token: a2.access && !a2.failed ? a2.access.token : null,
-      driveScope,
-      failed: a2.failed
-    };
-  }
-  /** What the console may see: no secret, no access token, no client secret. */
-  summary() {
-    const entry = this.theAccount();
-    return {
-      account: entry ? {
-        accountLabel: entry.account.accountLabel,
-        services: [...entry.account.services],
-        scopes: [...entry.account.scopes],
-        gmailScope: entry.account.gmailScope,
-        driveScope: entry.account.driveScope,
-        audience: entry.account.audience,
-        projectId: entry.account.projectId,
-        // Not a secret: it is public in every authorization URL, and the console shows it so
-        // the customer can find the client again in their Cloud console.
-        clientId: entry.account.oauth.clientId,
-        connected: !!entry.account.access && !entry.account.failed,
-        failed: entry.account.failed,
-        updatedAt: entry.account.updatedAt
-      } : null,
-      agents: Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, granted: a2.granted }))
-    };
-  }
-  /** Reports made outside a command (mint failures), drained by the heartbeat. */
-  drainReports() {
-    const r2 = this.reports;
-    this.reports = [];
-    return r2;
-  }
-  // ---- store helpers ----
-  save() {
-    saveGoogleStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  agentOf(ref) {
-    let a2 = this.store.agents[ref.vmId];
-    if (!a2) {
-      a2 = { name: ref.name, hostname: ref.hostname, placeholder: `CC-GOOG-${randomBytes5(12).toString("hex")}`, granted: false };
-      this.store.agents[ref.vmId] = a2;
-    }
-    if (ref.name) a2.name = ref.name;
-    if (ref.hostname) a2.hostname = ref.hostname;
-    return a2;
-  }
-  target(vmId) {
-    const host = this.store.agents[vmId]?.hostname ?? null;
-    if (!host) throw new Error("This agent has no hostname yet.");
-    return { vmId, hostname: host };
-  }
-  /** v1 holds one account; this is what "the organization's Google account" means. */
-  theAccount() {
-    const entry = Object.entries(this.store.accounts)[0];
-    return entry ? { id: entry[0], account: entry[1] } : null;
-  }
-  /** A live account, or null. "Live" is what makes a placeholder worth swapping. */
-  liveAccount() {
-    const entry = this.theAccount();
-    return entry && entry.account.access && !entry.account.failed ? entry.account : null;
-  }
-  grantedAgents() {
-    const account = this.liveAccount();
-    if (!account) return [];
-    return Object.entries(this.store.agents).filter(([, a2]) => a2.granted).map(([vmId, agent]) => ({ vmId, agent, account }));
-  }
-  /** Every agent this firewall has ever pushed to. Revoked ones included: they need clearing. */
-  knownAgents() {
-    return Object.keys(this.store.agents);
-  }
-  // ---- commands ----
-  async propose(payload) {
-    const p2 = parseProposal3(payload);
-    if (!this.opts.channelsReady()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
-        data: { changeId: p2.changeId }
-      };
-    }
-    this.validate(p2);
-    if (p2.kind === "connect_account" || p2.kind === "replace_account") {
-      return this.startAuthorization(p2);
-    }
-    const summary = summarize3(p2, this.theAccount()?.account.accountLabel);
-    const data = { changeId: p2.changeId, summary };
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(SCOPE3);
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.codes.send(SCOPE3, p2, "your organization's Google account", summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[google] code sent for ${p2.kind} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  /**
-   * Store the customer's client and a fresh PKCE pair, and answer with the URL to send them to.
-   *
-   * The agents named here are remembered on the pending authorization and granted when the change
-   * is confirmed, so "connect the account and give it to this agent" is one change and one code
-   * rather than two of each.
-   */
-  async startAuthorization(p2) {
-    const client = p2.client;
-    const { verifier, challenge } = makePkce();
-    const state = makeState();
-    const scopes = scopesFor({ services: p2.services, gmailScope: p2.gmailScope, driveScope: p2.driveScope });
-    const pending = {
-      changeId: p2.changeId,
-      state,
-      verifier,
-      services: [...p2.services],
-      gmailScope: p2.gmailScope,
-      driveScope: p2.driveScope,
-      audience: p2.audience,
-      projectId: p2.projectId,
-      oauth: client,
-      expires: this.now() + PENDING_AUTH_TTL_MS
-    };
-    this.store.pending = pending;
-    this.pendingAgents = p2.agents;
-    this.save();
-    const url2 = authorizeUrl({
-      clientId: client.clientId,
-      redirectUri: client.redirectUri,
-      scopes,
-      state,
-      challenge,
-      loginHint: this.theAccount()?.account.accountLabel ?? null
-    });
-    this.log(`[google] authorization started for ${p2.kind} (${scopes.length} scope(s))`);
-    return {
-      ok: true,
-      status: "awaiting_authorization",
-      data: { changeId: p2.changeId, summary: summarize3(p2), authorizeUrl: url2, scopes, expiresAt: new Date(pending.expires).toISOString() }
-    };
-  }
-  /**
-   * The relayed consent result. Where the code becomes a refresh token.
-   *
-   * This is the only place that holds the verifier and the client secret together. It exchanges,
-   * checks the grant against the APIs the organization asked for, stores the account **not yet
-   * spendable**, and then asks a person to confirm — because a credential that reaches a mailbox
-   * should not start working because somebody clicked a link.
-   */
-  async callback(payload) {
-    const state = str2(payload.state);
-    const code = str2(payload.code);
-    const error62 = str2(payload.error);
-    const pending = this.store.pending;
-    if (!state || !pending || pending.state !== state) {
-      return { ok: false, status: "failed", message: "This sign-in does not match an authorization your firewall started. Start the connection again." };
-    }
-    const data = { changeId: pending.changeId };
-    if (pending.expires < this.now()) {
-      this.store.pending = null;
-      this.save();
-      return { ok: false, status: "expired", message: "That sign-in link had expired. Start the connection again.", data };
-    }
-    if (error62 || !code) {
-      this.store.pending = null;
-      this.save();
-      const message2 = error62 === "access_denied" ? "The Google sign-in was cancelled." : `Google refused the sign-in: ${error62 ?? "no code was returned"}.`;
-      return { ok: false, status: "failed", message: message2, data };
-    }
-    const exchanged = await exchangeCode(
-      {
-        code,
-        verifier: pending.verifier,
-        clientId: pending.oauth.clientId,
-        clientSecret: pending.oauth.clientSecret,
-        redirectUri: pending.oauth.redirectUri,
-        tokenEndpoint: pending.oauth.tokenEndpoint
-      },
-      this.now(),
-      this.fetchImpl
-    );
-    this.store.pending = null;
-    if (!exchanged.ok) {
-      this.save();
-      return { ok: false, status: "failed", message: `Google refused this connection: ${exchanged.reason}`, data };
-    }
-    const refusals = await probeServices(exchanged.access, pending.services, pending.gmailScope, this.fetchImpl);
-    const fatal = refusals.filter((r2) => r2.permanent);
-    if (fatal.length > 0) {
-      this.save();
-      const named2 = fatal.map((r2) => `${serviceList([r2.service])}: ${r2.reason}`).join(" ");
-      return { ok: false, status: "failed", message: `This Google account cannot use everything you asked for. ${named2}`, data };
-    }
-    if (refusals.length > 0) {
-      this.log(`[google] ${refusals.length} service probe(s) inconclusive: ${refusals.map((r2) => r2.reason).join("; ")}`);
-    }
-    const account = {
-      accountLabel: exchanged.accountLabel,
-      services: [...pending.services],
-      scopes: exchanged.grantedScopes,
-      gmailScope: pending.gmailScope,
-      driveScope: pending.driveScope,
-      audience: pending.audience,
-      projectId: pending.projectId,
-      oauth: pending.oauth,
-      refresh: exchanged.refresh,
-      access: { token: exchanged.access, expires: exchanged.expires },
-      failed: null,
-      updatedAt: new Date(this.now()).toISOString()
-    };
-    const proposal = {
-      changeId: pending.changeId,
-      kind: this.theAccount() ? "replace_account" : "connect_account",
-      client: pending.oauth,
-      services: [...pending.services],
-      gmailScope: pending.gmailScope,
-      driveScope: pending.driveScope,
-      audience: pending.audience,
-      projectId: pending.projectId,
-      agents: this.pendingAgents
-    };
-    const summary = summarize3(proposal, account.accountLabel);
-    data.summary = summary;
-    data.accountLabel = account.accountLabel;
-    data.scopes = account.scopes;
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(SCOPE3);
-      this.save();
-      const applied = await this.applyAccount(account, proposal);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    this.awaitingCode = { account, proposal };
-    this.save();
-    const sent = await this.codes.send(SCOPE3, proposal, "your organization's Google account", summary, routes);
-    if (!sent.ok) {
-      this.awaitingCode = null;
-      return { ok: false, status: "failed", message: sent.message, data };
-    }
-    this.log(`[google] exchanged a code for ${account.accountLabel ?? "an account"}; confirmation sent via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str2(payload.changeId);
-    const code = str2(payload.code) ?? "";
-    if (!changeId) throw new Error("malformed google.confirm payload");
-    const data = { changeId };
-    const v2 = this.codes.verify(SCOPE3, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const held = this.awaitingCode;
-    if (held && held.proposal.changeId === changeId) {
-      this.awaitingCode = null;
-      const applied2 = await this.applyAccount(held.account, held.proposal);
-      return {
-        ok: true,
-        status: "applied",
-        data: { ...data, ...applied2, summary: summarize3(held.proposal, held.account.accountLabel), sentVia: v2.sentVia, tofu: false }
-      };
-    }
-    if (v2.proposal.kind === "connect_account" || v2.proposal.kind === "replace_account") {
-      return { ok: false, status: "failed", message: "Your firewall restarted before this connection was confirmed. Start the connection again.", data };
-    }
-    const applied = await this.apply(v2.proposal);
-    return {
-      ok: true,
-      status: "applied",
-      data: { ...data, ...applied, summary: summarize3(v2.proposal, this.theAccount()?.account.accountLabel), sentVia: v2.sentVia, tofu: false }
-    };
-  }
-  async cancel(payload) {
-    const changeId = str2(payload.changeId);
-    this.codes.cancel(SCOPE3, changeId);
-    if (this.awaitingCode?.proposal.changeId === changeId) this.awaitingCode = null;
-    if (this.store.pending && (!changeId || this.store.pending.changeId === changeId)) {
-      this.store.pending = null;
-      this.save();
-    }
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  async push(payload) {
-    const vmId = str2(payload.vmId);
-    if (!vmId) throw new Error("malformed google.push payload");
-    const agent = this.store.agents[vmId];
-    if (!agent) return { ok: true, status: "applied", data: { vmId, granted: false, failed: [] } };
-    if (str2(payload.hostname)) agent.hostname = String(payload.hostname);
-    if (str2(payload.name)) agent.name = String(payload.name);
-    this.save();
-    const failed = await this.pushAgents([vmId]);
-    this.log(`[google] re-applied on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
-    return {
-      ok: failed.length === 0,
-      status: failed.length ? "failed" : "applied",
-      message: failed.map((f2) => f2.error).join("; "),
-      data: { vmId, granted: agent.granted, failed }
-    };
-  }
-  /**
-   * An agent was deleted. Drop it from the store so the proxy stops carrying a credential for a box
-   * that does not exist, and so later changes do not report a push to it as failed for ever.
-   *
-   * No code: it takes nothing away from anybody. Same reasoning as `search.forget`.
-   */
-  async forget(payload) {
-    const vmId = str2(payload.vmId);
-    if (!vmId) throw new Error("malformed google.forget payload");
-    if (!this.store.agents[vmId]) return { ok: true, status: "applied", data: { vmId } };
-    delete this.store.agents[vmId];
-    this.save();
-    await this.opts.onCredentialsChanged?.();
-    this.log(`[google] forgot agent ${vmId}`);
-    return { ok: true, status: "applied", data: { vmId } };
-  }
-  // ---- validation ----
-  /** Refuse a proposal the control plane should not have sent. */
-  validate(p2) {
-    if (p2.kind === "connect_account" || p2.kind === "replace_account") {
-      if (!p2.client) throw new Error("a Google connection needs its client id, client secret and redirect URI");
-      if (!isValidClientId(p2.client.clientId)) {
-        throw new Error("That does not look like a Google OAuth client id. It ends in .apps.googleusercontent.com.");
-      }
-      if (p2.services.length === 0) throw new Error("Pick at least one Google service for the agents to use.");
-      if (p2.projectId !== null && !isValidProjectId(p2.projectId)) {
-        throw new Error("That does not look like a Google Cloud project id (lowercase letters, digits and hyphens).");
-      }
-      let redirect2;
-      try {
-        redirect2 = new URL(p2.client.redirectUri);
-      } catch {
-        throw new Error("The redirect URI is not a URL.");
-      }
-      if (redirect2.protocol !== "https:" && redirect2.hostname !== "localhost" && redirect2.hostname !== "127.0.0.1") {
-        throw new Error("The redirect URI has to be https (or localhost for a local dev run).");
-      }
-      return;
-    }
-    if (p2.kind === "set_services") {
-      if (p2.services.length === 0) throw new Error("Pick at least one Google service for the agents to use.");
-      const existing = this.theAccount();
-      if (!existing) throw new Error("Connect a Google account first.");
-      const added = p2.services.filter((s2) => !existing.account.services.includes(s2));
-      if (added.length > 0) {
-        throw new Error(`Google has to be asked again before the agents can use ${serviceList(added)}. Reconnect the account with those services ticked.`);
-      }
-      return;
-    }
-    if (p2.kind === "grant_agent" || p2.kind === "revoke_agent") {
-      if (p2.agents.length === 0) throw new Error("the proposal names no agent");
-      if (p2.kind === "grant_agent" && !this.theAccount()) throw new Error("Connect a Google account before giving it to an agent.");
-    }
-  }
-  // ---- applying ----
-  /**
-   * The whole desired state of one agent box.
-   *
-   * `placeholder: null` is how a revoked grant travels: the box clears its `gog.env` and `gog` stops
-   * having anything to send. `connected: false` means the organization has no working account, and
-   * the box says "not configured" rather than collecting 401s.
-   */
-  applyBody(vmId) {
-    const agent = this.store.agents[vmId];
-    const entry = this.theAccount();
-    const account = entry?.account ?? null;
-    const live = !!account?.access && !account.failed;
-    const granted = !!agent?.granted && live;
-    return {
-      placeholder: granted ? agent.placeholder : null,
-      connected: live,
-      projectId: account?.projectId ?? null,
-      services: granted ? [...account.services] : [],
-      accountLabel: account?.accountLabel ?? null
-    };
-  }
-  async pushAgents(vmIds) {
-    const failed = [];
-    for (const vmId of vmIds) {
-      try {
-        await this.opts.agent.post(this.target(vmId), "/google/apply", this.applyBody(vmId));
-      } catch (err) {
-        failed.push({ vmId, error: err.message });
-      }
-    }
-    return failed;
-  }
-  /**
-   * Save, re-sync the proxy, and push to everyone the change touched.
-   *
-   * `applied` is "boxes this push reached" and `granted` is "agents that may spend the account".
-   * They are **not** the same list and must not be conflated: a revoked agent is pushed too, with
-   * `placeholder: null`, precisely so its box clears the string. The control plane used to read
-   * `applied` as the grant list, which meant a reconnect re-granted every agent the firewall had
-   * ever pushed to — the console showing an agent as able to use the account while the firewall
-   * would refuse it. `granted` is read straight off this store, which is the only authority on it.
-   */
-  async finish(targets) {
-    this.save();
-    await this.opts.onCredentialsChanged?.();
-    const failed = await this.pushAgents(targets);
-    return {
-      applied: targets.filter((v2) => !failed.some((f2) => f2.vmId === v2)),
-      failed,
-      granted: Object.entries(this.store.agents).filter(([, a2]) => a2.granted).map(([vmId]) => vmId)
-    };
-  }
-  /**
-   * Store an exchanged account and make it spendable.
-   *
-   * v1 holds one identity, so this replaces whatever was there. Agents keep their grants across a
-   * reconnect — the organization already decided who may use its Google account, and making them
-   * re-tick every box after a token rotation would be busywork — and any agent named in the
-   * proposal is granted as well.
-   */
-  async applyAccount(account, p2) {
-    const before = this.knownAgents();
-    this.store.accounts = { [ACCOUNT_ID]: account };
-    for (const ref of p2.agents) this.agentOf(ref).granted = true;
-    const targets = [.../* @__PURE__ */ new Set([...before, ...p2.agents.map((a2) => a2.vmId)])];
-    this.log(`[google] connected ${account.accountLabel ?? "an account"} (${account.services.join(", ")})`);
-    return { accountId: ACCOUNT_ID, accountLabel: account.accountLabel, services: account.services, scopes: account.scopes, ...await this.finish(targets) };
-  }
-  async apply(p2) {
-    switch (p2.kind) {
-      case "connect_account":
-      case "replace_account":
-        throw new Error("a Google connection is applied by its callback, not by this path");
-      case "forget_account": {
-        const before = this.knownAgents();
-        this.store.accounts = {};
-        for (const a2 of Object.values(this.store.agents)) a2.granted = false;
-        this.log("[google] disconnected the Google account and cleared every grant");
-        return this.finish(before);
-      }
-      case "grant_agent": {
-        for (const ref of p2.agents) this.agentOf(ref).granted = true;
-        this.log(`[google] granted the Google account to ${agentList2(p2.agents)}`);
-        return this.finish(p2.agents.map((a2) => a2.vmId));
-      }
-      case "revoke_agent": {
-        for (const ref of p2.agents) {
-          const a2 = this.store.agents[ref.vmId];
-          if (a2) a2.granted = false;
-        }
-        this.log(`[google] revoked the Google account from ${agentList2(p2.agents)}`);
-        return this.finish(p2.agents.map((a2) => a2.vmId));
-      }
-      case "set_services": {
-        const entry = this.theAccount();
-        if (!entry) throw new Error("Connect a Google account first.");
-        entry.account.services = [...p2.services];
-        entry.account.updatedAt = new Date(this.now()).toISOString();
-        this.log(`[google] the account now covers ${serviceList(p2.services)}`);
-        return this.finish(this.knownAgents());
-      }
-    }
-  }
-  // ---- token minting ----
-  /**
-   * Keep the account's access token live. Called on a timer and once at start.
-   *
-   * A 4xx from Google is permanent (revoked, deleted, or seven days old on an External app still in
-   * Testing), so the account is marked failed and the console asks for a new connection; anything
-   * else is retried on the next tick with the old token still in place.
-   */
-  async refreshDue() {
-    if (this.minting) return;
-    this.minting = true;
-    try {
-      let changed = false;
-      for (const [id, account] of Object.entries(this.store.accounts)) {
-        if (account.failed) continue;
-        if (account.access && account.access.expires - this.now() > GOOGLE_REFRESH_AHEAD_MS) continue;
-        const minted = await this.mint(account);
-        if (this.store.accounts[id] !== account) {
-          this.log(`[google] token answer for ${id} arrived after the account was replaced; dropped`);
-          continue;
-        }
-        if (this.record(id, account, minted)) changed = true;
-      }
-      if (changed) {
-        this.save();
-        await this.opts.onCredentialsChanged?.();
-      }
-    } finally {
-      this.minting = false;
-    }
-  }
-  /** Spend the refresh token. Google requires the client secret here, which is why it is stored. */
-  async mint(account) {
-    let answer;
-    try {
-      answer = await postForm(this.fetchImpl, account.oauth.tokenEndpoint, {
-        grant_type: "refresh_token",
-        refresh_token: account.refresh,
-        client_id: account.oauth.clientId,
-        client_secret: account.oauth.clientSecret
-      });
-    } catch (err) {
-      return { ok: false, permanent: false, reason: err.message };
-    }
-    const token2 = str2(answer.body.access_token);
-    if (answer.status !== 200 || !token2) {
-      return { ok: false, permanent: isPermanentRefusal(answer.status, answer.body), reason: reasonOf(answer.body, answer.status) };
-    }
-    const expiresIn = typeof answer.body.expires_in === "number" ? answer.body.expires_in : 3600;
-    const rotated = str2(answer.body.refresh_token);
-    return {
-      ok: true,
-      token: token2,
-      expires: this.now() + expiresIn * 1e3,
-      ...rotated && rotated !== account.refresh ? { refresh: rotated } : {}
-    };
-  }
-  /** Apply a mint answer to an account still in the store. Returns whether anything changed. */
-  record(id, account, minted) {
-    if (!minted.ok) {
-      if (!minted.permanent) {
-        this.log(`[google] token for ${account.accountLabel ?? id} failed (${minted.reason}); will retry`);
-        return false;
-      }
-      const because = account.audience === "external_testing" ? " An app still in Testing expires its refresh token after seven days; publishing the app removes that." : "";
-      account.failed = `Google refused the connection: ${minted.reason}.${because} Connect the account again.`;
-      account.access = null;
-      this.reports.push({ command_id: `google.token:${id}`, ok: false, status: "failed", message: account.failed, data: { accountId: id } });
-      this.log(`[google] token for ${account.accountLabel ?? id} refused: ${minted.reason}`);
-      return true;
-    }
-    account.access = { token: minted.token, expires: minted.expires };
-    if (minted.refresh) account.refresh = minted.refresh;
-    account.updatedAt = new Date(this.now()).toISOString();
-    this.log(`[google] minted a token for ${account.accountLabel ?? id} (expires in ${Math.round((minted.expires - this.now()) / 6e4)} min)`);
-    return true;
-  }
-};
-
-// src/webhooks.ts
-import { randomBytes as randomBytes6 } from "crypto";
-
-// src/ingress.ts
-import { createHmac, timingSafeEqual as timingSafeEqual2 } from "crypto";
-import { appendFileSync } from "fs";
-var INGRESS_PATH_PREFIX = "/hook/";
-var INGRESS_DEFAULT_BODY_BYTES = 256 * 1024;
-var INGRESS_MAX_BODY_BYTES = 1024 * 1024;
-var INGRESS_DEFAULT_PER_MINUTE = 60;
-var INGRESS_MAX_PER_MINUTE = 180;
-var INGRESS_ORG_PER_MINUTE = 180;
-var INGRESS_IN_FLIGHT_PER_VM = 4;
-var INGRESS_IN_FLIGHT_ORG = 16;
-var INGRESS_FORWARD_TIMEOUT_MS = 8e3;
-var INGRESS_UNVERIFIED_PER_MINUTE = 20;
-var INGRESS_UNVERIFIED_LOCKOUT_MS = 15 * 6e4;
-var OIDC_DISCOVERY_TIMEOUT_MS = 5e3;
-var FORWARD_HEADER_ALLOWLIST = ["content-type", "authorization"];
-var FORWARD_HEADER_PREFIXES = ["x-goog-", "x-hub-signature", "x-github-", "x-slack-"];
-var INGRESS_TARGET_PORT_MIN = 8700;
-var INGRESS_TARGET_PORT_MAX = 8799;
-function clamp(value, low, high) {
-  return Math.min(Math.max(value, low), high);
-}
-function targetPortAllowed(port) {
-  return Number.isInteger(port) && port >= INGRESS_TARGET_PORT_MIN && port <= INGRESS_TARGET_PORT_MAX;
-}
-function ownsIngressPath(path) {
-  return path.startsWith(INGRESS_PATH_PREFIX);
-}
-function sameSecret(a2, b2) {
-  const left = Buffer.from(a2);
-  const right = Buffer.from(b2);
-  if (left.length !== right.length) {
-    timingSafeEqual2(left, left);
-    return false;
-  }
-  return timingSafeEqual2(left, right);
-}
-function headerValue(req, name25) {
-  const raw = req.headers[name25.toLowerCase()];
-  if (Array.isArray(raw)) return raw[0] ?? "";
-  return typeof raw === "string" ? raw : "";
-}
-var IngressRoutes = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? console.log;
-  }
-  now;
-  log;
-  /** Per registration: the deliveries that passed their checks. */
-  delivered = /* @__PURE__ */ new Map();
-  /** Org-wide, across registrations. */
-  orgDelivered = [];
-  /** Unverified attempts, counted apart from the above. */
-  unverified = [];
-  unverifiedLockedUntil = 0;
-  inFlightOrg = 0;
-  inFlightByVm = /* @__PURE__ */ new Map();
-  jwksCache = /* @__PURE__ */ new Map();
-  /**
-   * One delivery.
-   *
-   * The order is the part most likely to be got wrong later, and it was got wrong once already.
-   *
-   * An HMAC is computed over the whole body, so the body must be read before the delivery can be
-   * verified. That looks like it forces a choice between buffering a megabyte for any stranger who
-   * learns a URL, and letting a stranger's junk spend the real sender's rate limit. It does not:
-   * what bounds memory is the **in-flight cap**, taken before the read, and what the rate limiter
-   * sees is the **verdict**, because it runs after the checks.
-   *
-   * So: slot, read, verify, then charge. A refusal charges the unverified budget and a pass
-   * charges the delivered one, and the unverified lockout is consulted only on the refusal path.
-   * That is what makes "a verified delivery is never rate-limited by somebody else's noise" true
-   * rather than merely intended. `recovery.ts` is shaped the same way for the same reason, and
-   * `ingress.test.ts` fails if any of it is reordered.
-   */
-  async handle(req, res, path) {
-    const started = this.now();
-    const deliveryId = `wh_${started.toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-    const refuse = (status, verdict, reason, reg2, bytes = 0, close = false) => {
-      if (!res.headersSent) {
-        res.writeHead(status, close ? { "content-length": "0", connection: "close" } : { "content-length": "0" });
-        res.end(close ? () => req.socket?.destroy() : void 0);
-      }
-      this.record({
-        source: "webhook",
-        delivery_id: deliveryId,
-        ts: Math.floor(started / 1e3),
-        hook_id: reg2?.id ?? "",
-        hook_name: reg2?.name ?? "",
-        verdict,
-        reason,
-        target_vm_id: reg2?.target.vmId,
-        bytes,
-        duration_ms: this.now() - started,
-        arrived: "via proxy"
-      });
-    };
-    if (req.method !== "POST") {
-      res.writeHead(405, { "content-length": "0" });
-      res.end();
-      return;
-    }
-    const id = path.slice(INGRESS_PATH_PREFIX.length);
-    const reg = this.opts.registrations().find((r2) => r2.id === id && r2.enabled);
-    if (!reg) {
-      this.countUnverified();
-      return refuse(404, "unknown_hook", "no registration with that id", void 0);
-    }
-    if (reg.verify.length === 0) {
-      return refuse(503, "needs_setup", "this webhook has no checks on this firewall yet", reg);
-    }
-    if (!this.takeSlot(reg.target.vmId)) {
-      return refuse(503, "agent_unreachable", "too many deliveries in flight for that agent", reg);
-    }
-    try {
-      const cap = Math.min(reg.maxBodyBytes || INGRESS_DEFAULT_BODY_BYTES, INGRESS_MAX_BODY_BYTES);
-      let body;
-      try {
-        body = await readBody(req, cap);
-      } catch (error62) {
-        if (error62.tooLarge) {
-          this.countUnverified();
-          return refuse(413, "too_large", "body over the cap", reg, 0, true);
-        }
-        return refuse(400, "refused", "the sender stopped before the body arrived", reg);
-      }
-      for (const rule of reg.verify) {
-        const verdict = await this.check(rule, req, body);
-        if (verdict.ok) continue;
-        this.countUnverified();
-        if (this.unverifiedLockedUntil > this.now()) {
-          return refuse(429, "rate_limited", "too many refused deliveries", reg, body.byteLength);
-        }
-        return refuse(401, "refused", verdict.reason, reg, body.byteLength);
-      }
-      this.clearUnverified();
-      if (!this.chargeDelivered(reg)) {
-        return refuse(429, "rate_limited", "over this webhook's rate", reg, body.byteLength);
-      }
-      return await this.forward(reg, req, res, body, deliveryId, started);
-    } finally {
-      this.releaseSlot(reg.target.vmId);
-    }
-  }
-  async forward(reg, req, res, body, deliveryId, started) {
-    const refuse = (status, verdict, reason) => {
-      if (!res.headersSent) {
-        res.writeHead(status, { "content-length": "0" });
-        res.end();
-      }
-      this.record({
-        source: "webhook",
-        delivery_id: deliveryId,
-        ts: Math.floor(started / 1e3),
-        hook_id: reg.id,
-        hook_name: reg.name,
-        verdict,
-        reason,
-        target_vm_id: reg.target.vmId,
-        bytes: body.byteLength,
-        duration_ms: this.now() - started,
-        arrived: "via proxy"
-      });
-    };
-    try {
-      const { status } = await this.opts.deliver(reg, {
-        method: "POST",
-        headers: forwardHeaders(req),
-        bodyB64: body.toString("base64")
-      });
-      const out = status >= 200 && status < 300 ? 204 : status >= 500 ? 503 : status;
-      res.writeHead(out, { "content-length": "0" });
-      res.end();
-      const ok = status >= 200 && status < 300;
-      const verdict = ok ? "delivered" : status >= 500 ? "agent_unreachable" : "listener_refused";
-      this.record({
-        source: "webhook",
-        delivery_id: deliveryId,
-        ts: Math.floor(started / 1e3),
-        hook_id: reg.id,
-        hook_name: reg.name,
-        verdict,
-        ...ok ? {} : { reason: `the listener on the agent answered ${status}` },
-        target_vm_id: reg.target.vmId,
-        forward_status: status,
-        bytes: body.byteLength,
-        duration_ms: this.now() - started,
-        arrived: "via proxy"
-      });
-    } catch (error62) {
-      refuse(503, "agent_unreachable", error62.message);
-    }
-  }
-  // ---- checks ----
-  async check(rule, req, body) {
-    if (rule.kind === "hmac") {
-      const sent = headerValue(req, rule.header);
-      if (!sent) return { ok: false, reason: `no ${rule.header} header` };
-      let signed = body;
-      if (rule.timestampHeader) {
-        const raw = headerValue(req, rule.timestampHeader);
-        const ts = Number(raw);
-        if (!raw || !Number.isFinite(ts)) return { ok: false, reason: `no ${rule.timestampHeader} header` };
-        const ageS = Math.abs(this.now() / 1e3 - ts);
-        if (ageS > (rule.maxAgeS ?? 300)) return { ok: false, reason: "the delivery was too old to accept" };
-        const format = rule.signedFormat ?? "{ts}.{body}";
-        signed = Buffer.from(format.replace("{ts}", String(raw)).replace("{body}", body.toString("utf8")), "utf8");
-      }
-      const mac3 = createHmac(rule.algo, rule.secret).update(signed).digest(rule.encoding);
-      const want = `${rule.prefix ?? ""}${mac3}`;
-      return sameSecret(sent, want) ? { ok: true } : { ok: false, reason: "the signature did not match" };
-    }
-    const auth = headerValue(req, "authorization");
-    if (!auth.startsWith("Bearer ")) return { ok: false, reason: "no bearer token" };
-    try {
-      const jwks = this.opts.jwks?.(rule.issuer) ?? await this.jwksFor(rule.issuer);
-      const { payload } = await jwtVerify(auth.slice(7), jwks, {
-        issuer: rule.issuer,
-        // Exact, and required. Left to be rebuilt from forwarded headers it would be one proxy
-        // hop away from silently accepting a token minted for somebody else.
-        audience: rule.audience
-      });
-      if (rule.subjectEmail) {
-        const email3 = typeof payload.email === "string" ? payload.email : "";
-        if (email3 !== rule.subjectEmail) return { ok: false, reason: "the token came from a different service account" };
-      }
-      return { ok: true };
-    } catch (error62) {
-      const claim2 = error62.claim;
-      if (claim2 === "aud") return { ok: false, reason: "the token was for a different audience" };
-      if (claim2 === "iss") return { ok: false, reason: "the token came from a different issuer" };
-      if (error62.code === "ERR_JWT_EXPIRED") return { ok: false, reason: "the token had expired" };
-      return { ok: false, reason: "the token did not verify" };
-    }
-  }
-  /**
-   * The issuer's signing keys, found the way OIDC says to find them: fetch
-   * `/.well-known/openid-configuration` and use the `jwks_uri` it names.
-   *
-   * An earlier version guessed at `<issuer>/.well-known/openid-configuration/jwks` instead. That
-   * is not a path anybody serves. For `https://accounts.google.com` the discovery document points
-   * at `https://www.googleapis.com/oauth2/v3/certs`, on a different host entirely, so every OIDC
-   * delivery would have failed with "the token did not verify" and the first consumer of this
-   * feature is Gmail push. Discovery is one request, cached for the life of the process, and it is
-   * the only thing that makes this generic across issuers rather than Google-shaped.
-   */
-  async jwksFor(issuer) {
-    const hit = this.jwksCache.get(issuer);
-    if (hit) return hit;
-    const discovery = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
-    const res = await fetch(discovery, { signal: AbortSignal.timeout(OIDC_DISCOVERY_TIMEOUT_MS) });
-    if (!res.ok) throw new Error(`discovery for ${issuer} answered ${res.status}`);
-    const doc = await res.json();
-    if (typeof doc.jwks_uri !== "string" || !doc.jwks_uri) throw new Error(`discovery for ${issuer} names no jwks_uri`);
-    if (typeof doc.issuer === "string" && doc.issuer.replace(/\/$/, "") !== issuer.replace(/\/$/, "")) {
-      throw new Error(`discovery for ${issuer} claims to be ${doc.issuer}`);
-    }
-    const made = createRemoteJWKSet(new URL(doc.jwks_uri));
-    this.jwksCache.set(issuer, made);
-    return made;
-  }
-  // ---- budgets ----
-  /**
-   * One delivery that did not verify. Called only on the refusal path, so nothing a real sender
-   * does ever touches this counter.
-   */
-  countUnverified() {
-    const cutoff = this.now() - 6e4;
-    this.unverified = this.unverified.filter((t2) => t2 > cutoff);
-    this.unverified.push(this.now());
-    if (this.unverified.length < INGRESS_UNVERIFIED_PER_MINUTE) return;
-    this.unverifiedLockedUntil = this.now() + INGRESS_UNVERIFIED_LOCKOUT_MS;
-    this.unverified = [];
-    this.log(`[ingress] ${INGRESS_UNVERIFIED_PER_MINUTE} refused deliveries in a minute; refusing unverified callers for ${INGRESS_UNVERIFIED_LOCKOUT_MS / 6e4} minutes`);
-  }
-  /**
-   * A delivery passed its checks, so whoever sent it holds the secret: the run of bad attempts is
-   * forgotten and the lockout lifts. This is the half that makes the two budgets worth having.
-   */
-  clearUnverified() {
-    this.unverified = [];
-    this.unverifiedLockedUntil = 0;
-  }
-  chargeDelivered(reg) {
-    const cutoff = this.now() - 6e4;
-    const per = Math.min(reg.perMinute || INGRESS_DEFAULT_PER_MINUTE, INGRESS_MAX_PER_MINUTE);
-    const mine = (this.delivered.get(reg.id) ?? []).filter((t2) => t2 > cutoff);
-    this.orgDelivered = this.orgDelivered.filter((t2) => t2 > cutoff);
-    if (mine.length >= per || this.orgDelivered.length >= INGRESS_ORG_PER_MINUTE) {
-      this.delivered.set(reg.id, mine);
-      return false;
-    }
-    mine.push(this.now());
-    this.orgDelivered.push(this.now());
-    this.delivered.set(reg.id, mine);
-    return true;
-  }
-  takeSlot(vmId) {
-    const mine = this.inFlightByVm.get(vmId) ?? 0;
-    if (mine >= INGRESS_IN_FLIGHT_PER_VM || this.inFlightOrg >= INGRESS_IN_FLIGHT_ORG) return false;
-    this.inFlightByVm.set(vmId, mine + 1);
-    this.inFlightOrg++;
-    return true;
-  }
-  releaseSlot(vmId) {
-    this.inFlightByVm.set(vmId, Math.max(0, (this.inFlightByVm.get(vmId) ?? 1) - 1));
-    this.inFlightOrg = Math.max(0, this.inFlightOrg - 1);
-  }
-  // ---- Activity ----
-  /**
-   * Metadata only. Never the body, never a header value, never the token. A webhook body is
-   * exactly the kind of thing that must not end up in our database: someone's email, someone's
-   * ticket. The same rule the egress log and the AI review already follow.
-   */
-  record(rec) {
-    this.log(`[ingress] ${rec.verdict} ${rec.hook_name || rec.hook_id || "(unknown)"}${rec.reason ? `: ${rec.reason}` : ""}`);
-    if (!this.opts.logPath) return;
-    try {
-      appendFileSync(this.opts.logPath, `${JSON.stringify(rec)}
-`);
-    } catch (error62) {
-      this.log(`[ingress] could not record that delivery: ${error62.message}`);
-    }
-  }
-};
-var BodyTooLarge = class extends Error {
-  tooLarge = true;
-  constructor() {
-    super("body over the cap");
-    this.name = "BodyTooLarge";
-  }
-};
-function readBody(req, cap) {
-  return new Promise((resolve2, reject) => {
-    const declared = Number(req.headers["content-length"] ?? NaN);
-    if (Number.isFinite(declared) && declared > cap) {
-      req.pause();
-      reject(new BodyTooLarge());
-      return;
-    }
-    const chunks = [];
-    let total = 0;
-    let stopped = false;
-    req.on("data", (chunk) => {
-      if (stopped) return;
-      total += chunk.length;
-      if (total > cap) {
-        stopped = true;
-        req.pause();
-        reject(new BodyTooLarge());
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      if (!stopped) resolve2(Buffer.concat(chunks));
-    });
-    req.on("error", (error62) => {
-      if (!stopped) reject(error62);
-    });
-  });
-}
-function forwardHeaders(req) {
-  const out = {};
-  for (const [name25, raw] of Object.entries(req.headers)) {
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (typeof value !== "string") continue;
-    const lower = name25.toLowerCase();
-    if (FORWARD_HEADER_ALLOWLIST.includes(lower) || FORWARD_HEADER_PREFIXES.some((p2) => lower.startsWith(p2))) {
-      out[lower] = value;
-    }
-  }
-  return out;
-}
-function parseRegistrations(json3) {
-  if (!Array.isArray(json3)) return [];
-  const out = [];
-  for (const raw of json3) {
-    const r2 = raw;
-    const target = r2.target ?? {};
-    const port = Number(target.port);
-    if (typeof r2.id !== "string" || !r2.id) continue;
-    if (typeof target.vmId !== "string" || typeof target.hostname !== "string") continue;
-    if (!targetPortAllowed(port)) continue;
-    out.push({
-      id: r2.id,
-      name: typeof r2.name === "string" ? r2.name : r2.id,
-      target: {
-        vmId: target.vmId,
-        hostname: target.hostname,
-        port,
-        path: typeof target.path === "string" && target.path.startsWith("/") ? target.path : "/"
-      },
-      verify: parseVerify(r2.verify),
-      // Clamped at both ends. Without a lower bound a negative value passes straight through
-      // `Math.min` and every delivery, including a zero-byte one, is refused 413 forever.
-      maxBodyBytes: clamp(Number(r2.maxBodyBytes) || INGRESS_DEFAULT_BODY_BYTES, 1, INGRESS_MAX_BODY_BYTES),
-      perMinute: clamp(Number(r2.perMinute) || INGRESS_DEFAULT_PER_MINUTE, 1, INGRESS_MAX_PER_MINUTE),
-      enabled: r2.enabled !== false
-    });
-  }
-  return out;
-}
-function parseVerify(raw) {
-  if (!Array.isArray(raw)) return [];
-  const out = [];
-  for (const entry of raw) {
-    const v2 = entry;
-    if (v2.kind === "hmac" && typeof v2.secret === "string" && typeof v2.header === "string") {
-      out.push({
-        kind: "hmac",
-        header: v2.header,
-        algo: v2.algo === "sha1" ? "sha1" : "sha256",
-        encoding: v2.encoding === "base64" ? "base64" : "hex",
-        prefix: typeof v2.prefix === "string" ? v2.prefix : void 0,
-        secret: v2.secret,
-        timestampHeader: typeof v2.timestampHeader === "string" ? v2.timestampHeader : void 0,
-        signedFormat: typeof v2.signedFormat === "string" ? v2.signedFormat : void 0,
-        maxAgeS: Number.isFinite(Number(v2.maxAgeS)) && Number(v2.maxAgeS) > 0 ? Number(v2.maxAgeS) : void 0
-      });
-    } else if (v2.kind === "oidc" && typeof v2.issuer === "string" && typeof v2.audience === "string" && v2.audience) {
-      out.push({
-        kind: "oidc",
-        issuer: v2.issuer,
-        audience: v2.audience,
-        subjectEmail: typeof v2.subjectEmail === "string" ? v2.subjectEmail : void 0
-      });
-    }
-  }
-  return out;
-}
-
-// src/webhook-store.ts
-function aad5(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:webhooks`;
-}
-function emptyWebhookStore() {
-  return { version: 1, hooks: {}, pending: {} };
-}
-function loadWebhookStore(path, boxKeyB64, ids2, log = console.error) {
-  const parsed = loadStoreOrEmpty("webhooks", path, boxKeyB64, aad5(ids2), log);
-  if (!parsed || parsed.version !== 1 || !parsed.hooks) return emptyWebhookStore();
-  return { ...parsed, pending: parsed.pending ?? {} };
-}
-function saveWebhookStore(path, store, boxKeyB64, ids2) {
-  saveStore("webhooks", path, store, boxKeyB64, aad5(ids2));
-}
-function applySync(store, entries, now2 = Date.now) {
-  const listed = new Set(entries.map((e) => e.id));
-  const unknown2 = [];
-  const dropped = [];
-  let changed = false;
-  for (const entry of entries) {
-    const held = store.hooks[entry.id];
-    if (!held) {
-      unknown2.push(entry.id);
-      const label = entry.name || entry.id;
-      if (store.pending[entry.id] !== label) {
-        store.pending[entry.id] = label;
-        changed = true;
-      }
-      continue;
-    }
-    delete store.pending[entry.id];
-    const before = JSON.stringify(held);
-    if (typeof entry.name === "string" && entry.name) held.name = entry.name;
-    if (typeof entry.enabled === "boolean") held.enabled = entry.enabled;
-    if (Number.isFinite(entry.maxBodyBytes)) held.maxBodyBytes = Number(entry.maxBodyBytes);
-    if (Number.isFinite(entry.perMinute)) held.perMinute = Number(entry.perMinute);
-    if (JSON.stringify(held) !== before) {
-      held.updatedAt = new Date(now2()).toISOString();
-      changed = true;
-    }
-  }
-  for (const id of Object.keys(store.hooks)) {
-    if (listed.has(id)) continue;
-    delete store.hooks[id];
-    dropped.push(id);
-    changed = true;
-  }
-  for (const id of Object.keys(store.pending)) {
-    if (listed.has(id)) continue;
-    delete store.pending[id];
-    changed = true;
-  }
-  return { unknown: unknown2, dropped, changed };
-}
-function registrationsFor(store) {
-  const pending = Object.entries(store.pending).map(([id, name25]) => ({
-    id,
-    name: name25,
-    // Inert on purpose. The ingress refuses a registration with no checks before it reads the
-    // target, so these values are never used for anything.
-    target: { vmId: "", hostname: "", port: 0, path: "/" },
-    verify: [],
-    maxBodyBytes: 0,
-    perMinute: 0,
-    enabled: true
-  }));
-  return pending.concat(Object.values(store.hooks).map((h2) => ({
-    id: h2.id,
-    name: h2.name,
-    target: { ...h2.target },
-    verify: h2.verify,
-    maxBodyBytes: h2.maxBodyBytes,
-    perMinute: h2.perMinute,
-    enabled: h2.enabled
-  })));
-}
-function inventoryFor(store) {
-  return [
-    ...Object.keys(store.pending).map((id) => ({ id, ready: false })),
-    ...Object.values(store.hooks).map((h2) => ({ id: h2.id, ready: h2.verify.length > 0 }))
-  ];
-}
-
-// src/webhooks.ts
-var SCOPE4 = "webhooks";
-function clamp2(value, low, high, fallback) {
-  const n2 = Number(value);
-  if (!Number.isFinite(n2) || n2 <= 0) return fallback;
-  return Math.min(Math.max(n2, low), high);
-}
-function parseVerifyRules(raw) {
-  if (!Array.isArray(raw)) return [];
-  const out = [];
-  for (const entry of raw) {
-    const v2 = entry ?? {};
-    if (v2.kind === "hmac" && typeof v2.secret === "string" && v2.secret && typeof v2.header === "string" && v2.header) {
-      out.push({
-        kind: "hmac",
-        header: v2.header,
-        algo: v2.algo === "sha1" ? "sha1" : "sha256",
-        encoding: v2.encoding === "base64" ? "base64" : "hex",
-        prefix: typeof v2.prefix === "string" ? v2.prefix : void 0,
-        secret: v2.secret,
-        timestampHeader: typeof v2.timestampHeader === "string" ? v2.timestampHeader : void 0,
-        signedFormat: typeof v2.signedFormat === "string" ? v2.signedFormat : void 0,
-        maxAgeS: Number.isFinite(Number(v2.maxAgeS)) && Number(v2.maxAgeS) > 0 ? Number(v2.maxAgeS) : void 0
-      });
-    } else if (v2.kind === "oidc" && typeof v2.issuer === "string" && v2.issuer && typeof v2.audience === "string" && v2.audience) {
-      out.push({
-        kind: "oidc",
-        issuer: v2.issuer,
-        audience: v2.audience,
-        subjectEmail: typeof v2.subjectEmail === "string" ? v2.subjectEmail : void 0
-      });
-    }
-  }
-  return out;
-}
-function summarize4(p2) {
-  switch (p2.kind) {
-    case "register":
-      return `Let "${p2.name}" deliver to port ${p2.target?.port} on ${p2.target?.hostname ?? "an agent"}`;
-    case "retarget":
-      return `Point "${p2.name}" at port ${p2.target?.port} on ${p2.target?.hostname ?? "an agent"}`;
-    case "reverify":
-      return `Change how "${p2.name}" checks that a delivery is genuine`;
-    case "forget":
-      return `Remove the webhook "${p2.name}"`;
-  }
-}
-var WebhookFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
-    this.store = loadWebhookStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  now;
-  handlers() {
-    return {
-      "webhook.propose": (p2) => this.propose(p2),
-      "webhook.confirm": (p2) => this.confirm(p2),
-      "webhook.cancel": (p2) => this.cancel(p2),
-      "webhook.sync": (p2) => this.sync(p2),
-      // Revoking is not a coded change (§5.3), so it arrives as its own command rather than a
-      // proposal. Without this the control plane's revoke was an unknown action and the hook
-      // stayed served until the next sync dropped it.
-      "webhook.forget": (p2) => this.forget(p2),
-      "webhook.read": async () => ({ ok: true, status: "read", data: { hooks: this.summary() } })
-    };
-  }
-  /** The live set, for the ingress. Called per delivery, so a revoke lands on the next one. */
-  registrations() {
-    return registrationsFor(this.store);
-  }
-  /** For the beat: which registrations this firewall can actually serve (§5.2b). */
-  inventory() {
-    return inventoryFor(this.store);
-  }
-  /** What the console may see. Never a secret, and never the HMAC's bytes. */
-  summary() {
-    return Object.values(this.store.hooks).map((h2) => ({
-      id: h2.id,
-      name: h2.name,
-      target: { vmId: h2.target.vmId, hostname: h2.target.hostname, port: h2.target.port, path: h2.target.path },
-      // The kinds only, never the material. A console that could read the secret back would make
-      // the control plane a holder of it, which is exactly what this store exists to prevent.
-      checks: h2.verify.map((v2) => v2.kind === "hmac" ? { kind: "hmac", header: v2.header, algo: v2.algo, replayProtected: Boolean(v2.timestampHeader) } : { kind: "oidc", issuer: v2.issuer, audience: v2.audience, subjectEmail: v2.subjectEmail ?? null }),
-      ready: h2.verify.length > 0,
-      maxBodyBytes: h2.maxBodyBytes,
-      perMinute: h2.perMinute,
-      enabled: h2.enabled,
-      createdAt: h2.createdAt,
-      updatedAt: h2.updatedAt
-    }));
-  }
-  save() {
-    saveWebhookStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-    this.opts.onChange?.();
-  }
-  // ---- the family ----
-  async propose(payload) {
-    const p2 = this.parseProposal(payload);
-    if (typeof p2 === "string") return { ok: false, status: "refused", message: p2 };
-    if (p2.kind !== "register" && !this.store.hooks[p2.hookId]) {
-      return { ok: false, status: "refused", message: "This firewall does not hold that webhook." };
-    }
-    if (p2.kind === "register" && this.store.hooks[p2.hookId]) {
-      return { ok: false, status: "refused", message: "This firewall already holds a webhook with that id." };
-    }
-    const routes = await this.opts.codeRoutes();
-    const summary = summarize4(p2);
-    if (!this.opts.channelsReady()) {
-      return {
-        ok: false,
-        status: "no_channels",
-        message: "This firewall cannot read its channel list, so it cannot ask anyone to confirm this. Nothing was changed."
-      };
-    }
-    if (routes.length === 0) {
-      this.log(`[webhooks] no approved sender on any channel; applying "${summary}" without a code (first use)`);
-      if (!this.apply(p2)) return { ok: false, status: "gone", message: "That webhook is no longer on this firewall." };
-      return { ok: true, status: "applied", message: `${summary}. Nobody is approved on a channel yet, so this applied without a code.` };
-    }
-    const sent = await this.codes.send(SCOPE4, p2, p2.name, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message };
-    return { ok: true, status: "code_sent", message: summary, data: { sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = String(payload.changeId ?? "");
-    const code = String(payload.code ?? "");
-    const verdict = this.codes.verify(SCOPE4, changeId, code);
-    if (verdict.kind === "expired") return { ok: false, status: "expired", message: "That change is no longer waiting for a code." };
-    if (verdict.kind === "invalid") {
-      return { ok: false, status: "invalid_code", message: `That code is not right. ${verdict.attemptsLeft} attempt(s) left.`, data: { attemptsLeft: verdict.attemptsLeft } };
-    }
-    if (!this.apply(verdict.proposal)) {
-      return { ok: false, status: "gone", message: "That webhook was removed while this change was waiting." };
-    }
-    return { ok: true, status: "applied", message: summarize4(verdict.proposal) };
-  }
-  /** Drop a registration now. The sync would drop it too; this makes it immediate. */
-  async forget(payload) {
-    const hookId = String(payload.hookId ?? "");
-    const going = this.store.hooks[hookId];
-    if (!going) return { ok: true, status: "already_gone" };
-    delete this.store.hooks[hookId];
-    delete this.store.pending[hookId];
-    this.save();
-    void this.stopGmail(going);
-    return { ok: true, status: "forgotten" };
-  }
-  async cancel(payload) {
-    const changeId = payload.changeId ? String(payload.changeId) : null;
-    const dropped = this.codes.cancel(SCOPE4, changeId);
-    return { ok: true, status: dropped ? "cancelled" : "nothing_waiting" };
-  }
-  /**
-   * The control plane's half (§5.2). Carries ids, `enabled`, the name and the limits, and cannot
-   * create a registration or touch a target or a check: `applySync` enforces that, not this.
-   */
-  async sync(payload) {
-    const raw = Array.isArray(payload.hooks) ? payload.hooks : [];
-    const entries = raw.map((e) => e ?? {}).filter((e) => typeof e.id === "string" && e.id).map((e) => ({
-      id: String(e.id),
-      name: typeof e.name === "string" ? e.name : void 0,
-      enabled: typeof e.enabled === "boolean" ? e.enabled : void 0,
-      maxBodyBytes: Number.isFinite(Number(e.maxBodyBytes)) ? Number(e.maxBodyBytes) : void 0,
-      perMinute: Number.isFinite(Number(e.perMinute)) ? Number(e.perMinute) : void 0
-    }));
-    const outcome = applySync(this.store, entries, this.now);
-    if (outcome.changed) this.save();
-    if (outcome.unknown.length) {
-      this.log(`[webhooks] the sync listed ${outcome.unknown.length} registration(s) this firewall does not hold; ignored`);
-    }
-    if (outcome.dropped.length) this.log(`[webhooks] dropped ${outcome.dropped.length} revoked registration(s)`);
-    return { ok: true, status: "synced", data: { unknown: outcome.unknown, dropped: outcome.dropped, held: Object.keys(this.store.hooks).length } };
-  }
-  /**
-   * Tell the agent box to start (or stop) its Gmail watcher.
-   *
-   * Provider-specific knowledge stops here, at one `if`: the firewall knows a registration whose
-   * only check is an OIDC token from Google, and hands the agent the audience and the path. What
-   * Gmail is, and what to do with a push, lives on the agent box.
-   *
-   * Best effort on purpose. A registration is real the moment the firewall holds it; an agent that
-   * is down must not make a confirmed change fail, and the next apply picks it up.
-   */
-  async pushGmail(hook) {
-    const oidc = hook.verify.find((v2) => v2.kind === "oidc");
-    if (!oidc || oidc.kind !== "oidc" || !oidc.issuer.includes("accounts.google.com")) return;
-    try {
-      await this.opts.agent.post({ vmId: hook.target.vmId, hostname: hook.target.hostname }, "/hooks/gmail", {
-        audience: oidc.audience,
-        path: hook.target.path,
-        port: hook.target.port,
-        subjectEmail: oidc.subjectEmail ?? null,
-        // Both are needed for the renewal timer. Without them the watch dies after seven days
-        // and nothing says so.
-        account: this.opts.gmailAccount?.() ?? null,
-        topic: hook.gmailTopic ?? null
-      });
-      this.log(`[webhooks] gmail watcher configured on ${hook.target.hostname}`);
-    } catch (error62) {
-      this.log(`[webhooks] could not configure the gmail watcher on ${hook.target.hostname}: ${error62.message}`);
-    }
-  }
-  async stopGmail(hook) {
-    const oidc = hook.verify.find((v2) => v2.kind === "oidc");
-    if (!oidc || oidc.kind !== "oidc" || !oidc.issuer.includes("accounts.google.com")) return;
-    await this.opts.agent.post({ vmId: hook.target.vmId, hostname: hook.target.hostname }, "/hooks/gmail", { stop: true }).catch((error62) => this.log(`[webhooks] could not stop the gmail watcher: ${error62.message}`));
-  }
-  apply(p2) {
-    if (p2.kind === "forget") {
-      const going = this.store.hooks[p2.hookId];
-      delete this.store.hooks[p2.hookId];
-      this.save();
-      if (going) void this.stopGmail(going);
-      return true;
-    }
-    const iso = new Date(this.now()).toISOString();
-    const held = this.store.hooks[p2.hookId];
-    if (p2.kind !== "register" && !held) return false;
-    if (p2.kind === "register") {
-      this.store.hooks[p2.hookId] = {
-        id: p2.hookId,
-        name: p2.name,
-        target: p2.target,
-        verify: p2.verify,
-        maxBodyBytes: clamp2(p2.maxBodyBytes, 1, INGRESS_MAX_BODY_BYTES, INGRESS_DEFAULT_BODY_BYTES),
-        perMinute: clamp2(p2.perMinute, 1, INGRESS_MAX_PER_MINUTE, INGRESS_DEFAULT_PER_MINUTE),
-        enabled: true,
-        gmailTopic: p2.gmailTopic ?? null,
-        createdAt: iso,
-        updatedAt: iso
-      };
-    } else if (p2.kind === "retarget") {
-      held.target = p2.target;
-      held.updatedAt = iso;
-    } else {
-      held.verify = p2.verify;
-      held.updatedAt = iso;
-    }
-    delete this.store.pending[p2.hookId];
-    this.save();
-    void this.pushGmail(this.store.hooks[p2.hookId]);
-    return true;
-  }
-  parseProposal(payload) {
-    const changeId = String(payload.changeId ?? "");
-    const kind = String(payload.kind ?? "");
-    const hookId = String(payload.hookId ?? "");
-    const name25 = String(payload.name ?? "").slice(0, 120);
-    if (!changeId) return "This change carries no id.";
-    if (!["register", "retarget", "reverify", "forget"].includes(kind)) return "That is not a change this firewall knows how to make.";
-    if (!/^hk_[0-9a-f]{32}$/.test(hookId)) return "That is not a webhook id.";
-    if (!name25 && kind !== "forget") return "A webhook needs a name.";
-    const p2 = { changeId, kind, hookId, name: name25 || hookId };
-    if (kind === "register" || kind === "retarget") {
-      const t2 = payload.target ?? {};
-      const port = Number(t2.port);
-      if (typeof t2.vmId !== "string" || !t2.vmId) return "A webhook has to name the agent it delivers to.";
-      if (typeof t2.hostname !== "string" || !t2.hostname) return "A webhook has to name the agent's hostname.";
-      if (!targetPortAllowed(port)) return `A webhook may only deliver to a port between 8700 and 8799 (got ${t2.port}).`;
-      const path = typeof t2.path === "string" && t2.path.startsWith("/") ? t2.path : "/";
-      p2.target = { vmId: t2.vmId, hostname: t2.hostname, port, path };
-    }
-    if (kind === "register" || kind === "reverify") {
-      const verify = parseVerifyRules(payload.verify);
-      if (verify.length === 0) return "A webhook needs at least one way to check that a delivery is genuine.";
-      p2.verify = verify;
-    }
-    if (kind === "register") {
-      p2.maxBodyBytes = Number(payload.maxBodyBytes);
-      p2.perMinute = Number(payload.perMinute);
-      const topic = typeof payload.gmailTopic === "string" ? payload.gmailTopic : "";
-      if (topic && !/^projects\/[a-z0-9-]{4,30}\/topics\/[A-Za-z0-9._~%+-]{3,255}$/.test(topic)) {
-        return "That is not a Pub/Sub topic name.";
-      }
-      p2.gmailTopic = topic || null;
-    }
-    return p2;
-  }
-};
-
-// src/llm-store.ts
-function aad6(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:llm`;
-}
-function emptyLlmStore() {
-  return { version: 1, credentials: {}, agents: {} };
-}
-function withRoles(store) {
-  for (const agent of Object.values(store.agents)) {
-    const legacy = agent.bindings;
-    if (legacy.every((b2) => b2.role === "primary" || b2.role === "secondary")) continue;
-    const ordered = [...legacy].sort((a2, b2) => Number(b2.isPrimary ?? false) - Number(a2.isPrimary ?? false));
-    agent.bindings = ordered.slice(0, 2).map(({ credentialId, model }, i2) => ({ credentialId, model, role: i2 === 0 ? "primary" : "secondary" }));
-  }
-  return store;
-}
-function loadLlmStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("llm", path, boxKeyB64, aad6(ids2));
-  return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? withRoles(parsed) : emptyLlmStore();
-}
-function saveLlmStore(path, store, boxKeyB64, ids2) {
-  saveStore("llm", path, store, boxKeyB64, aad6(ids2));
-}
-
-// src/llm.ts
-var REFRESH_AHEAD_MS = 15 * 6e4;
-var REFRESH_TIMEOUT_MS = 3e4;
-var SCOPE5 = "org";
-function parseEmbeddingsRef(raw) {
-  if (raw === void 0) return void 0;
-  const r2 = raw;
-  if (!r2) return null;
-  const credentialId = str4(r2.credentialId);
-  const memory = parseMemorySearch(r2.memory);
-  if (!credentialId || !memory) return null;
-  return { credentialId, memory, allowedModels: parseModelList(r2.allowedModels) };
-}
-function str4(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function isKind4(v2) {
-  return v2 === "add" || v2 === "replace" || v2 === "remove" || v2 === "bind" || v2 === "unbind" || v2 === "set_model";
-}
-function roleLabel(role) {
-  return role === "primary" ? "main model" : "fallback";
-}
-function modelShort(model) {
-  const at2 = model.lastIndexOf("@");
-  const bare2 = at2 > 0 && model.slice(at2 + 1).includes(":") ? model.slice(0, at2) : model;
-  return bare2.includes("/") ? bare2.slice(bare2.indexOf("/") + 1) : bare2;
-}
-function modelFamily(model) {
-  const at2 = model.lastIndexOf("@");
-  const pinned = at2 > 0 && model.slice(at2 + 1).includes(":");
-  const bare2 = pinned ? model.slice(0, at2) : model;
-  return `${bare2.includes("/") ? bare2.slice(0, bare2.indexOf("/")) : ""}@${pinned ? model.slice(at2 + 1) : ""}`;
-}
-function summarize5(p2) {
-  const a2 = p2.agents[0];
-  const replaced = p2.replaces ? `, replacing ${p2.replaces}` : "";
-  switch (p2.kind) {
-    case "add":
-      return p2.credKind === "oauth" ? `Connect ${p2.providerName} (${p2.label ?? p2.hint ?? "account"})` : `Add ${p2.providerName} key (${p2.hint ?? "key"})`;
-    case "replace":
-      return p2.credKind === "oauth" ? `Reconnect ${p2.providerName} (${p2.label ?? p2.hint ?? "account"})` : `Replace the ${p2.providerName} key (${p2.hint ?? "new key"})`;
-    case "remove":
-      return `Remove ${p2.providerName} from the organization`;
-    case "bind":
-      return `Use ${p2.providerName} ${a2 ? modelShort(a2.model) : ""} on ${a2?.name ?? "the agent"} as the ${roleLabel(a2?.role ?? "primary")}${replaced}`.replace(/\s+/g, " ");
-    case "set_model":
-      return `Switch ${a2?.name ?? "the agent"}'s ${roleLabel(a2?.role ?? "primary")} to ${p2.providerName} ${a2 ? modelShort(a2.model) : ""}${replaced}`.replace(/\s+([,.])/g, "$1").trim();
-    case "unbind":
-      return `Stop using ${p2.providerName} on ${a2?.name ?? "the agent"}`;
-  }
-}
-function parseSecret2(secret) {
-  if (!secret) return void 0;
-  if (str4(secret.apiKey)) return { apiKey: String(secret.apiKey) };
-  if (str4(secret.token)) return { token: String(secret.token) };
-  const o2 = secret.oauth;
-  if (o2 && str4(o2.access) && str4(o2.refresh)) {
-    return {
-      access: String(o2.access),
-      refresh: String(o2.refresh),
-      expires: typeof o2.expires === "number" ? o2.expires : 0,
-      accountId: str4(o2.accountId),
-      email: str4(o2.email)
-    };
-  }
-  return void 0;
-}
-function parseProviderBlock(raw) {
-  const b2 = raw;
-  if (!b2 || !str4(b2.baseUrl) || !str4(b2.api) || !Array.isArray(b2.models)) return null;
-  const models = b2.models.filter((m2) => str4(m2?.id)).map((m2) => ({ id: String(m2.id), name: str4(m2.name) ?? String(m2.id) }));
-  return models.length ? { baseUrl: String(b2.baseUrl), api: String(b2.api), models } : null;
-}
-function parseMemorySearch(raw) {
-  const m2 = raw;
-  if (!m2 || !str4(m2.provider) || !str4(m2.model) || !str4(m2.baseUrl)) return null;
-  return { provider: String(m2.provider), model: String(m2.model), baseUrl: String(m2.baseUrl), dreaming: m2.dreaming === true };
-}
-function parseModelList(raw) {
-  if (!Array.isArray(raw)) return null;
-  const list = raw.filter((m2) => typeof m2 === "string" && m2.length > 0);
-  return list.length ? list : null;
-}
-function parseProposal4(payload) {
-  const changeId = str4(payload.changeId);
-  const credentialId = str4(payload.credentialId);
-  const provider = str4(payload.provider);
-  if (!changeId || !credentialId || !provider || !isKind4(payload.kind)) throw new Error("malformed llm.propose payload");
-  const swap = payload.swap;
-  const oauth = payload.oauth;
-  const agents = Array.isArray(payload.agents) ? payload.agents : [];
-  const credKind = payload.credKind;
-  return {
-    changeId,
-    kind: payload.kind,
-    credentialId,
-    provider,
-    providerName: str4(payload.providerName) ?? provider,
-    credKind: credKind === "api_key" || credKind === "token" || credKind === "oauth" ? credKind : null,
-    placeholder: str4(payload.placeholder),
-    hint: str4(payload.hint),
-    label: str4(payload.label),
-    profileId: str4(payload.profileId),
-    swap: swap && str4(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
-    oauth: oauth && str4(oauth.tokenEndpoint) && str4(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId), ...str4(oauth.clientSecret) ? { clientSecret: String(oauth.clientSecret) } : {} } : null,
-    providerBlock: parseProviderBlock(payload.providerBlock),
-    allowedModels: parseModelList(payload.allowedModels),
-    memory: parseMemorySearch(payload.memory),
-    replaces: str4(payload.replaces),
-    agents: agents.filter((a2) => str4(a2.vmId) && str4(a2.model)).map((a2) => ({
-      vmId: String(a2.vmId),
-      name: str4(a2.name) ?? String(a2.vmId),
-      hostname: str4(a2.hostname),
-      model: String(a2.model),
-      role: a2.role === "secondary" ? "secondary" : "primary",
-      // Spread, so "the field was not there" stays different from "the field was null".
-      ..."embeddings" in a2 ? { embeddings: parseEmbeddingsRef(a2.embeddings) } : {}
-    })),
-    secret: parseSecret2(payload.secret)
-  };
-}
-function removeEntry(c2) {
-  return { provider: c2.provider, profileId: c2.profileId, kind: c2.kind, ...c2.providerBlock ? { providerBlock: true } : {} };
-}
-function secretValue(s2) {
-  if ("apiKey" in s2) return s2.apiKey;
-  if ("token" in s2) return s2.token;
-  return s2.access;
-}
-var LlmFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
-    this.store = loadLlmStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  now;
-  fetchImpl;
-  reports = [];
-  refreshing = false;
-  handlers() {
-    return {
-      "llm.propose": (p2) => this.propose(p2),
-      "llm.confirm": (p2) => this.confirm(p2),
-      "llm.cancel": (p2) => this.cancel(p2),
-      "llm.push": (p2) => this.push(p2)
-    };
-  }
-  /**
-   * Proxy credential entries: one per agent binding, swapped only on that agent's traffic.
-   *
-   * An agent whose embeddings somebody else pays for gets a second entry for that credential, on
-   * the same `vm_id`. Without it the embedding request would leave the box carrying a placeholder
-   * the proxy does not know, and the gateway would refuse it — the box holds no real key, and the
-   * embeddings credential is deliberately not one of the agent's bindings, so nothing else in
-   * this list covers it. The entry carries the key's `allowed_models`, so the proxy still lets it
-   * be spent on nothing but the embedding model, and `vm_id` is what attributes the request to
-   * this agent on the Activity page.
-   */
-  credentials() {
-    const out = [];
-    const entry = (vmId, c2) => ({
-      placeholder: c2.placeholder,
-      match_domain: c2.swap.matchDomain,
-      secret: secretValue(c2.secret),
-      locations: c2.swap.locations,
-      vm_id: vmId,
-      ...c2.allowedModels ? { allowed_models: c2.allowedModels, included: true } : {}
-    });
-    for (const [vmId, agent] of Object.entries(this.store.agents)) {
-      const seen = /* @__PURE__ */ new Set();
-      for (const b2 of agent.bindings) {
-        const c2 = this.store.credentials[b2.credentialId];
-        if (!c2) continue;
-        if (this.plainOnBox(c2)) continue;
-        seen.add(b2.credentialId);
-        out.push(entry(vmId, c2));
-      }
-      const paid = agent.embeddings;
-      if (!paid || seen.has(paid.credentialId)) continue;
-      const payer = this.store.credentials[paid.credentialId];
-      if (!payer || this.plainOnBox(payer)) continue;
-      out.push({ ...entry(vmId, payer), allowed_models: paid.allowedModels, included: true });
-    }
-    return out;
-  }
-  /**
-   * The current secret of one credential (API key or OAuth access token), for the firewall's own
-   * model calls (the AI review). Null when unknown or its last refresh failed.
-   */
-  tokenFor(credentialId) {
-    const c2 = this.store.credentials[credentialId];
-    if (!c2 || c2.failed) return null;
-    return secretValue(c2.secret);
-  }
-  /**
-   * Plain mode puts real API keys on the boxes. Never an OAuth token (the firewall refreshes it)
-   * and never the included AI key: it is ours, and its model allow-list is enforced at the proxy.
-   */
-  plainOnBox(c2) {
-    return !!this.opts.plainKeys && c2.kind !== "oauth" && !c2.allowedModels;
-  }
-  /** The included-AI credential this firewall holds, if any (reported on the heartbeat). */
-  includedCredentialId() {
-    return Object.entries(this.store.credentials).find(([, c2]) => c2.allowedModels)?.[0] ?? null;
-  }
-  /** What the console may see: no secrets. */
-  summary() {
-    return {
-      credentials: Object.entries(this.store.credentials).map(([id, c2]) => ({ id, provider: c2.provider, kind: c2.kind, hint: c2.hint, failed: c2.failed })),
-      agents: Object.keys(this.store.agents).length
-    };
-  }
-  /** Reports made outside a command (refresh failures), drained by the heartbeat. */
-  drainReports() {
-    const r2 = this.reports;
-    this.reports = [];
-    return r2;
-  }
-  save() {
-    saveLlmStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  agentOf(ref) {
-    let a2 = this.store.agents[ref.vmId];
-    if (!a2) {
-      a2 = { name: ref.name, hostname: ref.hostname, bindings: [] };
-      this.store.agents[ref.vmId] = a2;
-    }
-    if (ref.name) a2.name = ref.name;
-    if (ref.hostname) a2.hostname = ref.hostname;
-    return a2;
-  }
-  target(vmId) {
-    const host = this.store.agents[vmId]?.hostname ?? null;
-    if (!host) throw new Error("This agent has no hostname yet.");
-    return { vmId, hostname: host };
-  }
-  // ---- commands ----
-  async propose(payload) {
-    const p2 = parseProposal4(payload);
-    const summary = summarize5(p2);
-    const data = { changeId: p2.changeId, summary };
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(SCOPE5);
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const why = this.newAgentBind(p2);
-    if (why === null) {
-      this.log(`[llm] ${p2.provider} on new agent ${p2.agents[0].name}: applied with the agent's creation, no code`);
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: false, newAgent: true } };
-    }
-    if (p2.kind === "bind") this.log(`[llm] bind of ${p2.provider} on ${p2.agents[0]?.name ?? "?"} needs a code: ${why}`);
-    const sent = await this.codes.send(SCOPE5, p2, "your organization's model providers", summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[llm] code sent for ${p2.kind} ${p2.provider} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  /**
-   * Null when this change is a new agent's first model on a credential the organisation already
-   * approved, which applies without a code; otherwise the reason it is not. Everything here is
-   * checked against what THIS firewall holds and has seen, never against what the proposal says
-   * about itself, because the exemption has to survive a control plane that lies
-   * (docs/security-design.md, "A new agent's first model").
-   *
-   * - `bind`, one agent, the main slot, nothing pushed out. Never `add` or `replace` (a new secret),
-   *   never `set_model` (the agent already has this credential), never a fallback.
-   * - The credential is on this firewall, has not failed, and is already bound to another agent
-   *   that is still in the identity map.
-   *   That binding is the approval being reused: it was confirmed with a code, or taken on first
-   *   use when nobody could be asked.
-   * - Same provider and same auth profile as that binding (`modelFamily`); only the model name may
-   *   differ, so a new agent can start on the provider's default.
-   * - The agent holds no model here and no channel connection, so nobody talks to it yet and
-   *   nothing it already answers with is changed.
-   * - This firewall saw the agent appear in its identity map less than `NEW_AGENT_WINDOW_MS` ago.
-   */
-  newAgentBind(p2) {
-    if (p2.kind !== "bind") return "not a bind";
-    const a2 = p2.agents[0];
-    if (!a2 || p2.agents.length !== 1) return "not exactly one agent";
-    if (a2.role !== "primary") return "not the main model";
-    if (p2.replaces) return "pushes another provider out";
-    const cred = this.store.credentials[p2.credentialId];
-    if (!cred) return "credential not on this firewall";
-    if (cred.failed) return "credential failed";
-    if (cred.provider !== p2.provider) return "provider does not match the stored credential";
-    const others = Object.entries(this.store.agents).filter(([vmId]) => vmId !== a2.vmId && (this.opts.isLiveAgent?.(vmId) ?? false)).flatMap(([, agent]) => agent.bindings.filter((b2) => b2.credentialId === p2.credentialId));
-    if (others.length === 0) return "no other live agent uses this credential";
-    if (!others.some((b2) => modelFamily(b2.model) === modelFamily(a2.model))) return "model is not on the provider and profile already in use";
-    if ((this.store.agents[a2.vmId]?.bindings.length ?? 0) > 0) return "agent already has a model";
-    if (this.opts.agentHasChannels?.(a2.vmId) ?? true) return "agent has a channel";
-    if (!(this.opts.isNewAgent?.(a2.vmId) ?? false)) return "agent is not new to this firewall";
-    return null;
-  }
-  async confirm(payload) {
-    const changeId = str4(payload.changeId);
-    const code = str4(payload.code) ?? "";
-    if (!changeId) throw new Error("malformed llm.confirm payload");
-    const data = { changeId };
-    const v2 = this.codes.verify(SCOPE5, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize5(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str4(payload.changeId);
-    this.codes.cancel(SCOPE5, changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  async push(payload) {
-    const vmId = str4(payload.vmId);
-    if (!vmId) throw new Error("malformed llm.push payload");
-    const name25 = str4(payload.name);
-    const embeddings = parseEmbeddingsRef(payload.embeddings);
-    const known = this.store.agents[vmId];
-    const fresh = !known && embeddings && this.store.credentials[embeddings.credentialId] ? this.agentOf({ vmId, name: name25 ?? vmId, hostname: str4(payload.hostname) }) : void 0;
-    const agent = known ?? fresh;
-    if (!agent) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
-    if (str4(payload.hostname)) agent.hostname = String(payload.hostname);
-    if (name25) agent.name = name25;
-    const refreshed = this.refreshCredential(payload.refresh);
-    const movedEmbeddings = this.applyEmbeddings(vmId, embeddings);
-    if (agent.bindings.length === 0 && !agent.embeddings && !agent.memory) {
-      if (fresh) delete this.store.agents[vmId];
-      if (known) this.save();
-      return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
-    }
-    this.save();
-    if (refreshed || movedEmbeddings) await this.opts.onCredentialsChanged?.();
-    const failed = await this.pushAgents([vmId], [], { timeoutMs: LLM_PUSH_TIMEOUT_MS });
-    this.log(`[llm] re-applied ${agent.bindings.length} provider(s)${agent.embeddings ? " + embeddings" : ""} on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
-    return {
-      ok: failed.length === 0,
-      status: failed.length ? "failed" : "applied",
-      message: failed.map((f2) => f2.error).join("; "),
-      data: { vmId, applied: failed.length ? [] : agent.bindings.map((b2) => b2.credentialId), failed }
-    };
-  }
-  // ---- applying ----
-  /**
-   * Put the catalog data a push carries onto the credential it names. Returns whether anything
-   * changed, because the model allow-list is also what the proxy enforces.
-   *
-   * The allow-list is the reason this exists at all: the memory descriptor is useless without an
-   * allow-list that covers its embedding model, since the proxy would answer every embedding
-   * request itself and OpenClaw would report memory search as unavailable rather than falling
-   * back to keyword ranking.
-   */
-  refreshCredential(raw) {
-    const r2 = raw;
-    const credentialId = r2 ? str4(r2.credentialId) : null;
-    if (!credentialId) return false;
-    const cred = this.store.credentials[credentialId];
-    if (!cred) return false;
-    const before = JSON.stringify([cred.memory ?? null, cred.allowedModels ?? null]);
-    const allowed = parseModelList(r2.allowedModels);
-    if (allowed && cred.allowedModels) cred.allowedModels = allowed;
-    const memory = parseMemorySearch(r2.memory);
-    if (memory && cred.allowedModels && !cred.allowedModels.includes(memory.model)) {
-      this.log(`[llm] ignoring a memory descriptor for ${cred.provider}: ${memory.model} is not on this key's allow-list`);
-      delete cred.memory;
-    } else if (memory) cred.memory = memory;
-    else delete cred.memory;
-    return before !== JSON.stringify([cred.memory ?? null, cred.allowedModels ?? null]);
-  }
-  /**
-   * Memory search for one agent box: the credential that pays for its embeddings, with that
-   * credential's placeholder as the key (`memory.search.remote.apiKey` on the box, which OpenClaw
-   * keeps separate from the credential the agent answers with).
-   *
-   * A bound credential that pays out of its own endpoint comes first — an agent answering on the
-   * included tokens uses those, and nothing else is needed. Otherwise the agent's `embeddings`
-   * credential, which the control plane named on a push: that is the ChatGPT / Claude / OpenRouter
-   * case, and the case of an agent with no model at all.
-   *
-   * Three answers, not two. A descriptor writes it. `null` takes ours back off, and is sent only
-   * when this firewall has a record of writing one — otherwise the box's own `memory.search`,
-   * which somebody may have set by hand, is none of our business and the key is left out
-   * entirely. What was pushed is remembered on the agent so the next push knows which it is.
-   */
-  memoryFor(vmId, bindings) {
-    for (const b2 of bindings) {
-      const c2 = this.store.credentials[b2.credentialId];
-      if (c2?.memory) return { memory: { ...c2.memory, apiKey: c2.placeholder } };
-    }
-    const agent = this.store.agents[vmId];
-    const paid = agent?.embeddings;
-    const payer = paid ? this.store.credentials[paid.credentialId] : void 0;
-    if (paid && payer) return { memory: { ...paid.memory, apiKey: payer.placeholder } };
-    return agent?.memory ? { memory: null } : {};
-  }
-  /**
-   * Record who pays for this agent's embeddings, and put the catalog data that credential needs on
-   * it. Returns whether the proxy has to be told, because the allow-list it enforces may have
-   * moved and a new swap entry may now be owed.
-   *
-   * `undefined` means the payload said nothing (an older control plane, or a change that takes a
-   * credential away and leaves the remaining bindings to decide): the agent keeps what it has.
-   */
-  applyEmbeddings(vmId, ref) {
-    const agent = this.store.agents[vmId];
-    if (!agent || ref === void 0) return false;
-    const before = JSON.stringify(agent.embeddings ?? null);
-    const moved = () => before !== JSON.stringify(agent.embeddings ?? null);
-    if (!ref) {
-      delete agent.embeddings;
-      return moved();
-    }
-    const cred = this.store.credentials[ref.credentialId];
-    if (!cred || !ref.allowedModels?.includes(ref.memory.model)) {
-      if (cred) this.log(`[llm] ignoring an embeddings payer for ${agent.name}: ${ref.memory.model} is not on the allow-list it came with`);
-      delete agent.embeddings;
-      return moved();
-    }
-    agent.embeddings = { credentialId: ref.credentialId, memory: ref.memory, allowedModels: ref.allowedModels };
-    return moved();
-  }
-  /**
-   * Record what a box actually took, once the POST has come back. Recording it while building the
-   * body would mean a push that never landed still counted: the clear would be forgotten and the
-   * box would keep a `memory.search` block nothing was going to take off it again.
-   */
-  rememberPushed(vmId, body) {
-    const agent = this.store.agents[vmId];
-    if (!agent || !("memory" in body)) return;
-    const memory = parseMemorySearch(body.memory);
-    if (memory) agent.memory = memory;
-    else delete agent.memory;
-  }
-  /** The whole desired state of one agent box. */
-  applyBody(vmId, remove) {
-    const agent = this.store.agents[vmId];
-    const bindings = agent?.bindings ?? [];
-    const credentials = bindings.map((b2) => ({ b: b2, c: this.store.credentials[b2.credentialId] })).filter((x2) => !!x2.c).map(({ b: b2, c: c2 }) => ({
-      provider: c2.provider,
-      kind: c2.kind,
-      profileId: c2.profileId,
-      value: this.plainOnBox(c2) ? secretValue(c2.secret) : c2.placeholder,
-      model: b2.model,
-      ..."accountId" in c2.secret && c2.secret.accountId ? { codex: { accountId: c2.secret.accountId } } : {},
-      ...c2.providerBlock ? { providerBlock: c2.providerBlock } : {}
-    }));
-    const primary = bindings.find((b2) => b2.role === "primary") ?? bindings[0];
-    const fallback = bindings.find((b2) => b2 !== primary && b2.role === "secondary");
-    return { model: { primary: primary?.model ?? null, fallbacks: fallback ? [fallback.model] : [] }, credentials, remove, ...this.memoryFor(vmId, bindings) };
-  }
-  async pushAgents(vmIds, remove, call) {
-    const failed = [];
-    for (const vmId of vmIds) {
-      const body = this.applyBody(vmId, remove);
-      try {
-        await this.opts.agent.post(this.target(vmId), "/llm/apply", body, call);
-        this.rememberPushed(vmId, body);
-      } catch (err) {
-        failed.push({ vmId, error: err.message, ...isAgentTimeout(err) ? { timedOut: true } : {} });
-      }
-    }
-    this.save();
-    return failed;
-  }
-  /**
-   * Put a credential in a slot, moving whoever held it: to the slot this credential vacates (a
-   * swap) or to the free one, and dropping it when there is none — the control plane refuses the
-   * case where the main model has nowhere to go, so only a replaced fallback ever falls out.
-   */
-  setBinding(ref, credentialId) {
-    const agent = this.agentOf(ref);
-    const other = ref.role === "primary" ? "secondary" : "primary";
-    const rest = agent.bindings.filter((b2) => b2.credentialId !== credentialId);
-    const holder = rest.find((b2) => b2.role === ref.role);
-    const kept = rest.filter((b2) => b2 !== holder && b2.role === other);
-    const moved = holder && kept.length === 0 ? [{ ...holder, role: other }] : [];
-    agent.bindings = [{ credentialId, model: ref.model, role: ref.role }, ...kept, ...moved];
-  }
-  /** Take a credential off an agent. A fallback left alone moves up: it is what the agent answers with. */
-  dropBinding(vmId, credentialId) {
-    const agent = this.store.agents[vmId];
-    if (!agent) return;
-    agent.bindings = agent.bindings.filter((b2) => b2.credentialId !== credentialId);
-    if (agent.bindings.length && !agent.bindings.some((b2) => b2.role === "primary")) agent.bindings[0].role = "primary";
-  }
-  boundAgents(credentialId) {
-    return Object.entries(this.store.agents).filter(([, a2]) => a2.bindings.some((b2) => b2.credentialId === credentialId)).map(([vmId]) => vmId);
-  }
-  /** Agents this credential pays the embeddings for without being one of their models. */
-  embeddingsAgents(credentialId) {
-    return Object.entries(this.store.agents).filter(([, a2]) => a2.embeddings?.credentialId === credentialId).map(([vmId]) => vmId);
-  }
-  async apply(p2) {
-    const mode = this.opts.plainKeys && p2.credKind !== "oauth" && !p2.allowedModels ? "plain" : "placeholder";
-    const existing = this.store.credentials[p2.credentialId];
-    switch (p2.kind) {
-      case "add":
-      case "replace": {
-        if (!p2.secret) throw new Error("no secret in the proposal");
-        if (!p2.placeholder || !p2.profileId || !p2.swap || !p2.credKind) throw new Error("the proposal is missing the placeholder, profile id or swap location");
-        if (p2.credKind === "oauth" && !p2.oauth) throw new Error("an OAuth credential needs its token endpoint");
-        this.store.credentials[p2.credentialId] = {
-          provider: p2.provider,
-          kind: p2.credKind,
-          placeholder: p2.placeholder,
-          hint: p2.hint,
-          label: p2.label,
-          profileId: p2.profileId,
-          swap: p2.swap,
-          ...p2.oauth ? { oauth: p2.oauth } : {},
-          ...p2.providerBlock ? { providerBlock: p2.providerBlock } : {},
-          ...p2.allowedModels ? { allowedModels: p2.allowedModels } : {},
-          ...p2.memory ? { memory: p2.memory } : {},
-          secret: p2.secret,
-          failed: null,
-          updatedAt: new Date(this.now()).toISOString()
-        };
-        for (const a2 of p2.agents) this.setBinding(a2, p2.credentialId);
-        const targets = /* @__PURE__ */ new Set([...this.boundAgents(p2.credentialId), ...p2.agents.map((a2) => a2.vmId)]);
-        for (const a2 of p2.agents) this.applyEmbeddings(a2.vmId, a2.embeddings);
-        this.save();
-        await this.opts.onCredentialsChanged?.();
-        const failed = await this.pushAgents([...targets], []);
-        return { mode, applied: [...targets].filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
-      }
-      case "remove": {
-        const bound = this.boundAgents(p2.credentialId);
-        const payees = this.embeddingsAgents(p2.credentialId);
-        const remove = existing ? [removeEntry(existing)] : [];
-        for (const vmId of bound) this.dropBinding(vmId, p2.credentialId);
-        for (const vmId of payees) delete this.store.agents[vmId]?.embeddings;
-        delete this.store.credentials[p2.credentialId];
-        this.save();
-        await this.opts.onCredentialsChanged?.();
-        const targets = [.../* @__PURE__ */ new Set([...bound, ...payees])];
-        const failed = await this.pushAgents(targets, remove);
-        return { applied: targets.filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
-      }
-      case "bind":
-      case "set_model": {
-        if (!existing) throw new Error("This provider is not set up on the firewall. Add it again.");
-        const a2 = p2.agents[0];
-        if (!a2) throw new Error("no agent in the proposal");
-        this.setBinding(a2, p2.credentialId);
-        this.applyEmbeddings(a2.vmId, a2.embeddings);
-        this.save();
-        await this.opts.onCredentialsChanged?.();
-        const failed = await this.pushAgents([a2.vmId], []);
-        return { mode, applied: failed.length ? [] : [a2.vmId], failed };
-      }
-      case "unbind": {
-        const a2 = p2.agents[0];
-        if (!a2) throw new Error("no agent in the proposal");
-        this.dropBinding(a2.vmId, p2.credentialId);
-        this.save();
-        await this.opts.onCredentialsChanged?.();
-        const remove = existing ? [removeEntry(existing)] : [];
-        const failed = await this.pushAgents([a2.vmId], remove);
-        return { applied: failed.length ? [] : [a2.vmId], failed };
-      }
-    }
-  }
-  // ---- OAuth refresh ----
-  /** Refresh every OAuth credential that expires within REFRESH_AHEAD_MS. Called on a timer. */
-  async refreshDue() {
-    if (this.refreshing) return;
-    this.refreshing = true;
-    try {
-      let changed = false;
-      for (const [id, c2] of Object.entries(this.store.credentials)) {
-        if (c2.kind !== "oauth" || !c2.oauth || !("refresh" in c2.secret) || c2.failed) continue;
-        if (c2.secret.expires - this.now() > REFRESH_AHEAD_MS) continue;
-        const r2 = await this.refreshOne(id, c2);
-        if (r2) changed = true;
-      }
-      if (changed) {
-        this.save();
-        await this.opts.onCredentialsChanged?.();
-      }
-    } finally {
-      this.refreshing = false;
-    }
-  }
-  async refreshOne(id, c2) {
-    if (!c2.oauth || !("refresh" in c2.secret)) return false;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
-    try {
-      const res = await this.fetchImpl(c2.oauth.tokenEndpoint, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-        // `client_secret` only when the provider needs one: a PKCE client refuses a refresh that
-        // carries one, and Google refuses one that does not.
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: c2.secret.refresh,
-          client_id: c2.oauth.clientId,
-          ...c2.oauth.clientSecret ? { client_secret: c2.oauth.clientSecret } : {}
-        }).toString(),
-        signal: controller.signal
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || typeof body.access_token !== "string") {
-        const reason = str4(body.error_description) ?? str4(body.error) ?? `HTTP ${res.status}`;
-        if (res.status >= 400 && res.status < 500) {
-          c2.failed = `Token refresh refused: ${reason}. Connect the account again.`;
-          this.reports.push({ command_id: `llm.refresh:${id}`, ok: false, status: "failed", message: c2.failed, data: { credentialId: id } });
-          this.log(`[llm] refresh of ${c2.provider} refused: ${reason}`);
-          return true;
-        }
-        this.log(`[llm] refresh of ${c2.provider} failed (${reason}); will retry`);
-        return false;
-      }
-      const expiresIn = typeof body.expires_in === "number" ? body.expires_in : 3600;
-      c2.secret = {
-        ...c2.secret,
-        access: body.access_token,
-        refresh: typeof body.refresh_token === "string" && body.refresh_token ? body.refresh_token : c2.secret.refresh,
-        expires: this.now() + expiresIn * 1e3
-      };
-      c2.updatedAt = new Date(this.now()).toISOString();
-      this.log(`[llm] refreshed ${c2.provider} token (expires in ${Math.round(expiresIn / 60)} min)`);
-      return true;
-    } catch (err) {
-      this.log(`[llm] refresh of ${c2.provider} errored (${err.message}); will retry`);
-      return false;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-};
-
-// src/search-store.ts
-function aad7(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:search`;
-}
-function emptySearchStore() {
-  return { version: 1, credentialId: null, credential: null, agents: {} };
-}
-function loadSearchStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("search", path, boxKeyB64, aad7(ids2));
-  return parsed && parsed.version === 1 && parsed.agents ? parsed : emptySearchStore();
-}
-function saveSearchStore(path, store, boxKeyB64, ids2) {
-  saveStore("search", path, store, boxKeyB64, aad7(ids2));
-}
-
-// src/search.ts
-var SCOPE6 = "org";
-function str5(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function isKind5(v2) {
-  return v2 === "add" || v2 === "replace" || v2 === "remove";
-}
-function summarize6(p2) {
-  switch (p2.kind) {
-    case "add":
-      return `Use ${p2.providerName} for web search (key ${p2.hint ?? "key"})`;
-    case "replace":
-      return p2.replaces ? `Switch web search from ${p2.replaces} to ${p2.providerName} (key ${p2.hint ?? "new key"})` : `Replace the ${p2.providerName} web search key (${p2.hint ?? "new key"})`;
-    case "remove":
-      return `Stop using ${p2.providerName} for web search`;
-  }
-}
-function parseConfig(raw) {
-  if (!raw || typeof raw !== "object") return null;
-  const out = {};
-  for (const [k2, v2] of Object.entries(raw)) if (typeof v2 === "string") out[k2] = v2;
-  return Object.keys(out).length ? out : null;
-}
-function parseProposal5(payload) {
-  const changeId = str5(payload.changeId);
-  const credentialId = str5(payload.credentialId);
-  const provider = str5(payload.provider);
-  if (!changeId || !credentialId || !provider || !isKind5(payload.kind)) throw new Error("malformed search.propose payload");
-  const swap = payload.swap;
-  const plugin = payload.plugin;
-  const agents = Array.isArray(payload.agents) ? payload.agents : [];
-  const remove = Array.isArray(payload.remove) ? payload.remove : [];
-  const secret = payload.secret;
-  return {
-    changeId,
-    kind: payload.kind,
-    credentialId,
-    provider,
-    providerName: str5(payload.providerName) ?? provider,
-    placeholder: str5(payload.placeholder),
-    hint: str5(payload.hint),
-    plugin: plugin && str5(plugin.id) && str5(plugin.package) ? { id: String(plugin.id), package: String(plugin.package) } : null,
-    baseUrl: str5(payload.baseUrl),
-    config: parseConfig(payload.config),
-    swap: swap && str5(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
-    defaultProvider: str5(payload.defaultProvider),
-    replaces: str5(payload.replaces),
-    remove: remove.filter((r2) => str5(r2.id)).map((r2) => ({ id: String(r2.id) })),
-    agents: agents.filter((a2) => str5(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str5(a2.name) ?? String(a2.vmId), hostname: str5(a2.hostname) })),
-    ...secret && str5(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {}
-  };
-}
-var SearchFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
-    this.store = loadSearchStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  now;
-  handlers() {
-    return {
-      "search.propose": (p2) => this.propose(p2),
-      "search.confirm": (p2) => this.confirm(p2),
-      "search.cancel": (p2) => this.cancel(p2),
-      "search.push": (p2) => this.push(p2),
-      "search.forget": (p2) => this.forget(p2)
-    };
-  }
-  /**
-   * The proxy credential entry for the search key: one entry, org-wide, scoped to the provider's
-   * own host, so a leaked placeholder cannot carry the key anywhere else.
-   */
-  credentials() {
-    const c2 = this.store.credential;
-    if (!c2 || this.opts.plainKeys) return [];
-    return [{ placeholder: c2.placeholder, match_domain: c2.swap.matchDomain, secret: c2.apiKey, locations: c2.swap.locations }];
-  }
-  /** What the console may see: no key. */
-  summary() {
-    return {
-      provider: this.store.credential?.provider ?? null,
-      credentialId: this.store.credentialId,
-      hint: this.store.credential?.hint ?? null,
-      agents: Object.keys(this.store.agents).length
-    };
-  }
-  save() {
-    saveSearchStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  remember(ref) {
-    const a2 = this.store.agents[ref.vmId] ?? { name: ref.name, hostname: ref.hostname };
-    if (ref.name) a2.name = ref.name;
-    if (ref.hostname) a2.hostname = ref.hostname;
-    this.store.agents[ref.vmId] = a2;
-  }
-  target(vmId) {
-    const host = this.store.agents[vmId]?.hostname ?? null;
-    if (!host) throw new Error("This agent has no hostname yet.");
-    return { vmId, hostname: host };
-  }
-  // ---- commands ----
-  async propose(payload) {
-    const p2 = parseProposal5(payload);
-    const summary = summarize6(p2);
-    const data = { changeId: p2.changeId, summary };
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(SCOPE6);
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.codes.send(SCOPE6, p2, "your organization's web search", summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[search] code sent for ${p2.kind} ${p2.provider} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str5(payload.changeId);
-    const code = str5(payload.code) ?? "";
-    if (!changeId) throw new Error("malformed search.confirm payload");
-    const data = { changeId };
-    const v2 = this.codes.verify(SCOPE6, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize6(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str5(payload.changeId);
-    this.codes.cancel(SCOPE6, changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  async push(payload) {
-    const vmId = str5(payload.vmId);
-    if (!vmId) throw new Error("malformed search.push payload");
-    if (!this.store.credential) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
-    this.remember({ vmId, name: str5(payload.name) ?? vmId, hostname: str5(payload.hostname) });
-    this.save();
-    const failed = await this.pushAgents([vmId], [], this.store.credential.defaultProvider);
-    this.log(`[search] re-applied ${this.store.credential.provider} on ${this.store.agents[vmId]?.name ?? vmId}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
-    return {
-      ok: failed.length === 0,
-      status: failed.length ? "failed" : "applied",
-      message: failed.map((f2) => f2.error).join("; "),
-      data: { vmId, provider: this.store.credential.provider, applied: failed.length ? [] : [vmId], failed }
-    };
-  }
-  /**
-   * An agent was deleted. Without this the box stays in the store for good, every later change
-   * pushes to a hostname that no longer answers, and the console shows it as "not applied" for a
-   * machine that does not exist. Takes nothing away from anyone, so no code is asked for.
-   */
-  async forget(payload) {
-    const vmId = str5(payload.vmId);
-    if (!vmId) throw new Error("malformed search.forget payload");
-    const had = !!this.store.agents[vmId];
-    if (had) {
-      delete this.store.agents[vmId];
-      this.save();
-    }
-    this.log(`[search] ${had ? "forgot" : "did not hold"} ${vmId}`);
-    return { ok: true, status: "applied", data: { vmId, forgotten: had } };
-  }
-  // ---- applying ----
-  /**
-   * The whole desired state of one agent box. `remove` names plugin entries the box should clear
-   * (the provider being switched away from); `defaultProvider` is what it goes back to when
-   * `search` is null. Both travel explicitly because the credential that held them may be gone.
-   */
-  applyBody(remove, defaultProvider) {
-    const c2 = this.store.credential;
-    return {
-      search: c2 ? {
-        provider: c2.provider,
-        plugin: c2.plugin,
-        baseUrl: c2.baseUrl,
-        ...c2.config ? { config: c2.config } : {},
-        apiKey: this.opts.plainKeys ? c2.apiKey : c2.placeholder
-      } : null,
-      defaultProvider,
-      remove
-    };
-  }
-  async pushAgents(vmIds, remove, defaultProvider) {
-    const failed = [];
-    const body = this.applyBody(remove, defaultProvider);
-    for (const vmId of vmIds) {
-      try {
-        await this.opts.agent.post(this.target(vmId), "/search/apply", body);
-      } catch (err) {
-        failed.push({ vmId, error: err.message });
-      }
-    }
-    return failed;
-  }
-  async apply(p2) {
-    for (const a2 of p2.agents) this.remember(a2);
-    if (p2.kind === "remove") {
-      const previous = this.store.credential;
-      const remove = previous ? [{ id: previous.plugin.id }] : p2.remove;
-      const defaultProvider = previous?.defaultProvider ?? p2.defaultProvider;
-      this.store.credential = null;
-      this.store.credentialId = null;
-      this.save();
-      await this.opts.onCredentialsChanged?.();
-      const vmIds2 = Object.keys(this.store.agents);
-      const failed2 = await this.pushAgents(vmIds2, remove, defaultProvider);
-      return { provider: previous?.provider ?? p2.provider, applied: vmIds2.filter((v2) => !failed2.some((f2) => f2.vmId === v2)), failed: failed2 };
-    }
-    if (!p2.apiKey) throw new Error("no key in the proposal");
-    if (!p2.placeholder || !p2.plugin || !p2.baseUrl || !p2.swap) throw new Error("the proposal is missing the placeholder, plugin, base URL or swap location");
-    const previousPlugin = this.store.credential && this.store.credential.plugin.id !== p2.plugin.id ? [{ id: this.store.credential.plugin.id }] : [];
-    const credential = {
-      provider: p2.provider,
-      hint: p2.hint,
-      placeholder: p2.placeholder,
-      plugin: p2.plugin,
-      baseUrl: p2.baseUrl,
-      config: p2.config,
-      swap: p2.swap,
-      defaultProvider: p2.defaultProvider,
-      apiKey: p2.apiKey,
-      updatedAt: new Date(this.now()).toISOString()
-    };
-    this.store.credential = credential;
-    this.store.credentialId = p2.credentialId;
-    this.save();
-    await this.opts.onCredentialsChanged?.();
-    const vmIds = Object.keys(this.store.agents);
-    const failed = await this.pushAgents(vmIds, [...previousPlugin, ...p2.remove], p2.defaultProvider);
-    return { mode: this.opts.plainKeys ? "plain" : "placeholder", provider: p2.provider, applied: vmIds.filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
-  }
-};
-
-// src/tailscale-store.ts
-function aad8(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:tailscale`;
-}
-function emptyTailscaleStore() {
-  return { version: 1, agents: {} };
-}
-function loadTailscaleStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("tailscale", path, boxKeyB64, aad8(ids2));
-  return parsed && parsed.version === 1 && parsed.agents ? parsed : emptyTailscaleStore();
-}
-function saveTailscaleStore(path, store, boxKeyB64, ids2) {
-  saveStore("tailscale", path, store, boxKeyB64, aad8(ids2));
-}
-
-// src/tailscale.ts
-var SCOPE_PREFIX = "tailscale:";
-function str6(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function summarize7(p2) {
-  return p2.kind === "join" ? `Put ${p2.agent.name} on your Tailscale network${p2.ssh ? ", with Tailscale SSH" : ""}` : `Take ${p2.agent.name} off your Tailscale network`;
-}
-function parseProposal6(payload) {
-  const changeId = str6(payload.changeId);
-  const kind = payload.kind === "leave" ? "leave" : payload.kind === "join" ? "join" : null;
-  const agent = payload.agent ?? {};
-  const vmId = str6(agent.vmId);
-  const hostname3 = str6(agent.hostname);
-  if (!changeId || !kind || !vmId || !hostname3) throw new Error("malformed tailscale.propose payload");
-  const authKey = str6(payload.authKey);
-  if (kind === "join" && !authKey) throw new Error("a join needs an auth key");
-  return {
-    changeId,
-    kind,
-    ssh: payload.ssh === true,
-    agent: { vmId, name: str6(agent.name) ?? vmId, hostname: hostname3, tailnetHostname: str6(agent.tailnetHostname) ?? str6(agent.name) ?? vmId },
-    ...authKey ? { authKey } : {}
-  };
-}
-var TailscaleFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
-    this.store = loadTailscaleStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  handlers() {
-    return {
-      "tailscale.propose": (p2) => this.propose(p2),
-      "tailscale.confirm": (p2) => this.confirm(p2),
-      "tailscale.cancel": (p2) => this.cancel(p2)
-    };
-  }
-  /**
-   * The agent boxes allowed to reach Tailscale's control plane and its relays through the proxy.
-   * Decided HERE and not by the control plane: it is the firewall that took the person's
-   * confirmation, so it is the firewall that says which box the hole is for.
-   */
-  enabledVmIds() {
-    return Object.keys(this.store.agents);
-  }
-  /** What the console may see: no key, because there is none. */
-  summary() {
-    return Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, ssh: a2.ssh, node: a2.node }));
-  }
-  save() {
-    saveTailscaleStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  /** One pending change per box, not per org: two agents can join at once. */
-  scope(vmId) {
-    return `${SCOPE_PREFIX}${vmId}`;
-  }
-  target(p2) {
-    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
-  }
-  async apply(p2) {
-    if (p2.kind === "leave") {
-      await this.opts.agent.post(this.target(p2), "/tailscale/logout", {});
-      delete this.store.agents[p2.agent.vmId];
-      this.save();
-      await this.opts.onEnabledChanged?.();
-      this.log(`[tailscale] ${p2.agent.name} left the tailnet`);
-      return { vmId: p2.agent.vmId, ssh: false, node: null };
-    }
-    const entry = {
-      name: p2.agent.name,
-      hostname: p2.agent.hostname,
-      ssh: p2.ssh,
-      node: null,
-      joinedAt: new Date(this.opts.now?.() ?? Date.now()).toISOString()
-    };
-    this.store.agents[p2.agent.vmId] = entry;
-    this.save();
-    await this.opts.onEnabledChanged?.();
-    let r2;
-    try {
-      r2 = await this.opts.agent.post(this.target(p2), "/tailscale/apply", {
-        authKey: p2.authKey,
-        ssh: p2.ssh,
-        hostname: p2.agent.tailnetHostname
-      });
-    } catch (err) {
-      await this.opts.agent.post(this.target(p2), "/tailscale/logout", {}).catch(() => void 0);
-      delete this.store.agents[p2.agent.vmId];
-      this.save();
-      await this.opts.onEnabledChanged?.();
-      throw err;
-    }
-    const node2 = r2.node ?? {};
-    entry.node = { name: str6(node2.name), ip: str6(node2.ip) };
-    entry.ssh = r2.ssh === true;
-    this.save();
-    this.log(`[tailscale] ${p2.agent.name} joined as ${entry.node.name ?? entry.node.ip ?? "an unnamed node"} (ssh ${entry.ssh ? "on" : "off"})`);
-    return { vmId: p2.agent.vmId, ssh: entry.ssh, node: entry.node };
-  }
-  async propose(payload) {
-    const p2 = parseProposal6(payload);
-    const summary = summarize7(p2);
-    const data = { changeId: p2.changeId, summary };
-    if (!this.opts.channelsReady()) {
-      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(this.scope(p2.agent.vmId));
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.codes.send(this.scope(p2.agent.vmId), p2, p2.agent.name, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[tailscale] code sent for ${p2.kind} on ${p2.agent.name} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str6(payload.changeId);
-    const vmId = str6(payload.vmId);
-    if (!changeId || !vmId) throw new Error("malformed tailscale.confirm payload");
-    const code = str6(payload.code) ?? "";
-    const data = { changeId };
-    const v2 = this.codes.verify(this.scope(vmId), changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize7(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str6(payload.changeId);
-    const vmId = str6(payload.vmId);
-    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/mac-devices.ts
-var SCOPE_PREFIX2 = "devices:";
-function str7(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function summarize8(p2) {
-  const what = p2.targetLabel ?? "an unnamed device";
-  switch (p2.kind) {
-    case "approve":
-      return `Let ${what} control ${p2.agent.name}`;
-    case "reject":
-      return `Refuse ${what} access to ${p2.agent.name}`;
-    case "remove":
-      return `Cut ${what} off from ${p2.agent.name}`;
-  }
-}
-function parseProposal7(payload) {
-  const changeId = str7(payload.changeId);
-  const kind = payload.kind === "approve" || payload.kind === "reject" || payload.kind === "remove" ? payload.kind : null;
-  const targetId = str7(payload.targetId);
-  const agent = payload.agent ?? {};
-  const vmId = str7(agent.vmId);
-  const hostname3 = str7(agent.hostname);
-  if (!changeId || !kind || !targetId || !vmId || !hostname3) throw new Error("malformed devices.propose payload");
-  return {
-    changeId,
-    kind,
-    targetId,
-    targetLabel: str7(payload.targetLabel),
-    agent: { vmId, name: str7(agent.name) ?? vmId, hostname: hostname3 }
-  };
-}
-var DevicesFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
-  }
-  codes;
-  log;
-  handlers() {
-    return {
-      "devices.propose": (p2) => this.propose(p2),
-      "devices.confirm": (p2) => this.confirm(p2),
-      "devices.cancel": (p2) => this.cancel(p2)
-    };
-  }
-  /** One pending change per box, not per org: two agents can be dealt with at once. */
-  scope(vmId) {
-    return `${SCOPE_PREFIX2}${vmId}`;
-  }
-  target(p2) {
-    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
-  }
-  async apply(p2) {
-    const path = p2.kind === "approve" ? "/devices/approve" : p2.kind === "reject" ? "/devices/reject" : "/devices/remove";
-    const body = p2.kind === "remove" ? { deviceId: p2.targetId } : { requestId: p2.targetId };
-    const r2 = await this.opts.agent.post(this.target(p2), path, body, { timeoutMs: DEVICE_APPROVE_MS });
-    this.log(`[devices] ${p2.kind} ${p2.targetId} on ${p2.agent.name}`);
-    return { vmId: p2.agent.vmId, targetId: p2.targetId, deviceId: str7(r2.deviceId) };
-  }
-  async propose(payload) {
-    const p2 = parseProposal7(payload);
-    const summary = summarize8(p2);
-    const data = { changeId: p2.changeId, summary };
-    if (!this.opts.channelsReady()) {
-      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(this.scope(p2.agent.vmId));
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.codes.send(this.scope(p2.agent.vmId), p2, p2.agent.name, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[devices] code sent for ${p2.kind} on ${p2.agent.name} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str7(payload.changeId);
-    const vmId = str7(payload.vmId);
-    if (!changeId || !vmId) throw new Error("malformed devices.confirm payload");
-    const code = str7(payload.code) ?? "";
-    const data = { changeId };
-    const v2 = this.codes.verify(this.scope(vmId), changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize8(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str7(payload.changeId);
-    const vmId = str7(payload.vmId);
-    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/kill-store.ts
-function aad9(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:kill`;
-}
-function emptyKillStore() {
-  return { version: 1, org: null, agents: {}, codeWindow: null };
-}
-function loadKillStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("kill", path, boxKeyB64, aad9(ids2));
-  if (!parsed || parsed.version !== 1 || !parsed.agents) return emptyKillStore();
-  return { version: 1, org: parsed.org ?? null, agents: parsed.agents, codeWindow: parsed.codeWindow ?? null };
-}
-function saveKillStore(path, store, boxKeyB64, ids2) {
-  saveStore("kill", path, store, boxKeyB64, aad9(ids2));
-}
-
-// src/kill.ts
-var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
-var SCOPE_ORG = "kill:org";
-var SCOPE_PREFIX3 = "kill:agent:";
-var KILL_RECONCILE_MS = 6e4;
-function str8(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function parseAgents3(payload) {
-  const raw = Array.isArray(payload.agents) ? payload.agents : [];
-  const out = [];
-  for (const a2 of raw) {
-    const vmId = str8(a2.vmId);
-    const hostname3 = str8(a2.hostname);
-    if (!vmId || !hostname3) continue;
-    out.push({ vmId, name: str8(a2.name) ?? vmId, hostname: hostname3 });
-  }
-  return out;
-}
-function summarize9(p2) {
-  const name25 = p2.scope === "agent" ? p2.agents.find((a2) => a2.vmId === p2.vmId)?.name ?? "this agent" : null;
-  if (p2.kind === "engage") {
-    return name25 ? `Emergency stop on ${name25}` : "Emergency stop on every agent";
-  }
-  return name25 ? `Lift the emergency stop on ${name25}` : "Lift the emergency stop on every agent";
-}
-function parseProposal8(payload, kind) {
-  const changeId = str8(payload.changeId);
-  const scope = payload.scope === "agent" ? "agent" : payload.scope === "org" ? "org" : "org";
-  const vmId = str8(payload.vmId);
-  if (!changeId) throw new Error(`malformed kill.${kind} payload`);
-  if (payload.scope !== "org" && payload.scope !== "agent") throw new Error(`malformed kill.${kind} payload`);
-  if (scope === "agent" && !vmId) throw new Error("an agent-scoped emergency stop has to name the agent");
-  return { changeId, kind, scope, vmId: scope === "agent" ? vmId : null, agents: parseAgents3(payload) };
-}
-var KillFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
-    this.store = loadKillStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  /** The last `agents` a command carried, so the reconcile has hostnames to call. */
-  known = /* @__PURE__ */ new Map();
-  handlers() {
-    return {
-      "kill.engage": (p2) => this.engage(p2),
-      "kill.release": (p2) => this.release(p2),
-      "kill.confirm": (p2) => this.confirm(p2),
-      "kill.cancel": (p2) => this.cancel(p2)
-    };
-  }
-  /** True while the whole organisation is stopped. */
-  orgStopped() {
-    return this.store.org !== null;
-  }
-  /**
-   * Which of the boxes in the identity map are cut off. Computed against the map rather than
-   * against a stored list, so an agent provisioned during an org-wide stop is locked the moment
-   * the firewall learns about it — which is the point of keeping `org` as a flag.
-   */
-  lockedVmIds(identityVmIds) {
-    if (this.store.org) return [.../* @__PURE__ */ new Set([...identityVmIds, ...Object.keys(this.store.agents)])];
-    return Object.keys(this.store.agents);
-  }
-  /**
-   * The open code window, as `{ vmId: untilEpochSeconds }` for the identity map. Empty when there
-   * is none, and empty again the moment it lapses — the proxy checks the deadline itself, but a
-   * config that still carries a dead window is a config that says something untrue.
-   */
-  codeWindows() {
-    const w2 = this.store.codeWindow;
-    if (!w2) return {};
-    if (w2.until * 1e3 <= (this.opts.now?.() ?? Date.now())) return {};
-    return { [w2.vmId]: w2.until };
-  }
-  /** What the console may see: who is stopped, since when, and how. */
-  summary() {
-    return {
-      org: this.store.org ? { at: this.store.org.at } : null,
-      agents: Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, source: a2.source, at: a2.at }))
-    };
-  }
-  /**
-   * Re-apply the stop to every locked box we know a hostname for. Runs on a timer, so a box that
-   * rebooted and started OpenClaw again is stopped within the minute — without the control plane
-   * being involved, reachable or correct.
-   *
-   * Only stops what is running: `GET /kill/status` first, so a settled emergency costs one small
-   * request per locked box per minute and writes nothing to the box's journal.
-   */
-  async reconcile(identityVmIds) {
-    const locked = new Set(this.lockedVmIds(identityVmIds));
-    if (locked.size === 0) return;
-    const windows = this.codeWindows();
-    for (const vmId of locked) {
-      if (windows[vmId]) continue;
-      const ref = this.known.get(vmId);
-      if (!ref) continue;
-      try {
-        const status = await this.opts.agent.get({ vmId, hostname: ref.hostname }, "/kill/status");
-        if (status.active !== true) continue;
-        this.log(`[kill] ${ref.name} came back running under an emergency stop; stopping it again`);
-        await this.opts.agent.post({ vmId, hostname: ref.hostname }, "/kill/apply", { locked: true });
-      } catch (err) {
-        this.log(`[kill] could not re-check ${ref.name}: ${err.message}`);
-      }
-    }
-  }
-  note(agents) {
-    for (const a2 of agents) this.known.set(a2.vmId, a2);
-  }
-  save() {
-    saveKillStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  scopeKey(p2) {
-    return p2.scope === "org" ? SCOPE_ORG : `${SCOPE_PREFIX3}${p2.vmId}`;
-  }
-  /** The boxes a proposal is about: one, or every one the control plane named. */
-  targets(p2) {
-    if (p2.scope === "agent") {
-      const known = this.known.get(p2.vmId);
-      return p2.agents.filter((a2) => a2.vmId === p2.vmId).concat(known && !p2.agents.some((a2) => a2.vmId === p2.vmId) ? [known] : []);
-    }
-    return p2.agents;
-  }
-  /** Ask a box whether OpenClaw is running. Unknown counts as running: a release then starts it. */
-  async wasRunning(ref) {
-    try {
-      const status = await this.opts.agent.get({ vmId: ref.vmId, hostname: ref.hostname }, "/kill/status");
-      return status.active === true;
-    } catch {
-      return true;
-    }
-  }
-  /**
-   * Let ONE agent carry a code out of a locked organisation: the proxy opens its channel hosts for
-   * the life of the code, and OpenClaw is started so there is something to send it. See
-   * `KillCodeWindow` for why this exists at all.
-   */
-  async openCodeWindow(ref) {
-    const until = Math.ceil(((this.opts.now?.() ?? Date.now()) + CODE_TTL_MS) / 1e3);
-    this.store.codeWindow = { vmId: ref.vmId, until };
-    this.save();
-    await this.opts.onLockedChanged();
-    await this.setOpenClaw(ref, false);
-    this.log(`[kill] ${ref.name} may reach its channel for ten minutes, to carry the code`);
-  }
-  /** Shut it again, and stop OpenClaw if that agent is still under the stop. */
-  async closeCodeWindow() {
-    const w2 = this.store.codeWindow;
-    if (!w2) return;
-    this.store.codeWindow = null;
-    this.save();
-    const stillLocked = this.store.org !== null || this.store.agents[w2.vmId] !== void 0;
-    const ref = this.known.get(w2.vmId);
-    if (stillLocked && ref) await this.setOpenClaw(ref, true);
-    await this.opts.onLockedChanged();
-    this.log("[kill] the code window is closed");
-  }
-  async setOpenClaw(ref, locked) {
-    try {
-      const r2 = await this.opts.agent.post({ vmId: ref.vmId, hostname: ref.hostname }, "/kill/apply", { locked });
-      const active = r2.active === true;
-      return { vmId: ref.vmId, name: ref.name, stopped: !active, error: r2.ok === true ? null : str8(r2.message) ?? "the box could not change the service" };
-    } catch (err) {
-      return { vmId: ref.vmId, name: ref.name, stopped: false, error: err.message.slice(0, 200) };
-    }
-  }
-  /**
-   * Cut the agents off, then stop OpenClaw on them.
-   *
-   * The order is the whole safety argument. The store is written and the proxy config rebuilt
-   * FIRST, so egress is dead before anything that can fail is attempted; a crash between the two
-   * halves leaves an organisation locked out of the internet with its agents still running, which
-   * is the safe side of that line. Doing it the other way round would leave a window where a box
-   * had been told to stop and could still reach anything it liked on the way down.
-   */
-  async applyEngage(p2) {
-    const targets = this.targets(p2);
-    this.note(p2.agents);
-    const at2 = new Date(this.opts.now?.() ?? Date.now()).toISOString();
-    const running = /* @__PURE__ */ new Map();
-    for (const ref of targets) running.set(ref.vmId, await this.wasRunning(ref));
-    if (p2.scope === "org") {
-      this.store.org = { at: at2, wasRunning: Object.fromEntries(running) };
-    } else {
-      const ref = targets[0];
-      this.store.agents[p2.vmId] = { name: ref?.name ?? p2.vmId, source: "agent", wasRunning: running.get(p2.vmId) ?? true, at: at2 };
-    }
-    this.save();
-    await this.opts.onLockedChanged();
-    this.log(`[kill] ${summarize9(p2)} \u2014 egress is cut off`);
-    const outcomes = [];
-    for (const ref of targets) outcomes.push(await this.setOpenClaw(ref, true));
-    const failed = outcomes.filter((o2) => o2.error);
-    if (failed.length) this.log(`[kill] ${failed.length} box(es) did not confirm OpenClaw stopped: ${failed.map((f2) => `${f2.name} (${f2.error})`).join(", ")}`);
-    return { scope: p2.scope, vmId: p2.vmId, at: at2, agents: outcomes };
-  }
-  /**
-   * Put it back: OpenClaw first for the boxes that were running, then the lockdown comes off.
-   *
-   * The mirror of `applyEngage`, and for the mirror reason — a crash part-way leaves the agents
-   * still cut off rather than out on the internet before anybody meant them to be.
-   */
-  async applyRelease(p2) {
-    const targets = this.targets(p2);
-    this.note(p2.agents);
-    const wasRunning = (vmId) => p2.scope === "org" ? this.store.org?.wasRunning[vmId] ?? true : this.store.agents[vmId]?.wasRunning ?? true;
-    const stillLocked = p2.scope === "agent" && this.store.org !== null;
-    const outcomes = [];
-    for (const ref of targets) {
-      if (p2.scope === "org" && this.store.agents[ref.vmId]) continue;
-      if (stillLocked || !wasRunning(ref.vmId)) {
-        outcomes.push({ vmId: ref.vmId, name: ref.name, stopped: true, error: null });
-        continue;
-      }
-      outcomes.push(await this.setOpenClaw(ref, false));
-    }
-    if (p2.scope === "org") this.store.org = null;
-    else delete this.store.agents[p2.vmId];
-    this.save();
-    await this.opts.onLockedChanged();
-    this.log(stillLocked ? `[kill] ${summarize9(p2)}, but the whole organisation is still stopped, so it stays cut off` : `[kill] ${summarize9(p2)} \u2014 the agents are back`);
-    return { scope: p2.scope, vmId: p2.vmId, stillLocked, agents: outcomes };
-  }
-  /** Engaging restricts and nothing else, so it applies at once. No code, ever. */
-  async engage(payload) {
-    const p2 = parseProposal8(payload, "engage");
-    this.codes.drop(this.scopeKey(p2));
-    await this.closeCodeWindow();
-    const applied = await this.applyEngage(p2);
-    return { ok: true, status: "applied", data: { changeId: p2.changeId, summary: summarize9(p2), ...applied } };
-  }
-  async release(payload) {
-    const p2 = parseProposal8(payload, "release");
-    const summary = summarize9(p2);
-    const data = { changeId: p2.changeId, summary, scope: p2.scope, vmId: p2.vmId };
-    this.note(p2.agents);
-    if (!this.opts.channelsReady()) {
-      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(this.scopeKey(p2));
-      const applied = await this.applyRelease(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const agentName = p2.scope === "agent" ? this.targets(p2)[0]?.name ?? "your agent" : "your agents";
-    const key = this.scopeKey(p2);
-    const locked = new Set(this.lockedVmIds(p2.agents.map((a2) => a2.vmId)));
-    const ordered = [...routes].sort((a2, b2) => Number(locked.has(a2.target.vmId)) - Number(locked.has(b2.target.vmId)));
-    let sent = { ok: false, message: "No approved channel could be reached." };
-    const now2 = () => this.opts.now?.() ?? Date.now();
-    const waitUntil = now2() + KILL_WINDOW_SEND_MS;
-    for (const route of ordered) {
-      const dev = route.senders.some((x2) => x2 === DEV_SENDER);
-      const needsWindow = !dev && locked.has(route.target.vmId);
-      if (needsWindow) {
-        const ref = this.known.get(route.target.vmId) ?? p2.agents.find((a2) => a2.vmId === route.target.vmId);
-        if (!ref) continue;
-        await this.openCodeWindow(ref);
-      }
-      sent = await this.codes.send(key, p2, agentName, summary, [route]);
-      while (needsWindow && !sent.ok && /not running/i.test(sent.message) && now2() + KILL_WINDOW_RETRY_MS <= waitUntil) {
-        await (this.opts.sleep ?? sleep2)(KILL_WINDOW_RETRY_MS);
-        sent = await this.codes.send(key, p2, agentName, summary, [route]);
-      }
-      if (sent.ok) break;
-      if (needsWindow) await this.closeCodeWindow();
-    }
-    if (!sent.ok) {
-      return {
-        ok: false,
-        status: "failed",
-        message: sent.message,
-        data
-      };
-    }
-    this.log(`[kill] code sent to lift the emergency stop via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str8(payload.changeId);
-    if (!changeId) throw new Error("malformed kill.confirm payload");
-    const scope = payload.scope === "agent" ? "agent" : "org";
-    const vmId = str8(payload.vmId);
-    if (scope === "agent" && !vmId) throw new Error("malformed kill.confirm payload");
-    const key = this.scopeKey({ scope, vmId });
-    const data = { changeId, scope, vmId };
-    const v2 = this.codes.verify(key, changeId, str8(payload.code) ?? "");
-    if (v2.kind === "expired") {
-      await this.closeCodeWindow();
-      return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    }
-    if (v2.kind === "invalid") {
-      if (v2.attemptsLeft <= 0) await this.closeCodeWindow();
-      return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    }
-    this.store.codeWindow = null;
-    this.save();
-    const applied = await this.applyRelease(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize9(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str8(payload.changeId);
-    const scope = payload.scope === "agent" ? "agent" : "org";
-    const vmId = str8(payload.vmId);
-    const dropped = this.codes.cancel(this.scopeKey({ scope, vmId }), changeId);
-    if (dropped) await this.closeCodeWindow();
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/access.ts
-import { createHash as createHash3, randomBytes as randomBytes7, timingSafeEqual as timingSafeEqual3 } from "crypto";
-
-// src/access-store.ts
-function aad10(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:access`;
-}
-function emptyAccessStore() {
-  return { version: 1, devices: {}, pins: {} };
-}
-function loadAccessStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("access", path, boxKeyB64, aad10(ids2));
-  if (!parsed || parsed.version !== 1) return emptyAccessStore();
-  const devices = parsed.devices ?? {};
-  for (const d2 of Object.values(devices)) if (d2.via === "migration") d2.via = "tofu";
-  return { version: 1, devices, pins: parsed.pins ?? {} };
-}
-function saveAccessStore(path, store, boxKeyB64, ids2) {
-  saveStore("access", path, store, boxKeyB64, aad10(ids2));
-}
-
-// src/access.ts
-var OPEN_PATH = "/__cc/open";
-var CONFIRM_PATH = "/__cc/enroll/confirm";
-function ownsAccessPath(path) {
-  return path === OPEN_PATH || path === CONFIRM_PATH;
-}
-var INTENT_MAX_LIFETIME_S = 120;
-var TICKET_TTL_S = 60;
-var DEVICE_TTL_MS = 90 * 24 * 60 * 6e4;
-var PENDING_PER_HOUR = 5;
-var OPEN_PER_MINUTE = 30;
-var CONFIRM_PER_MINUTE = 30;
-var ACCESS_BODY_BYTES = 8 * 1024;
-var MAX_DEVICES = 500;
-var BEAT_DEVICES = 200;
-var CONFIG_RETRY_FIRST_MS = 15e3;
-var CONFIG_RETRY_MS = 10 * 6e4;
-var DEV_COOKIE = "__Host-cc_dev";
-var DEVICES_PER_BROWSER = 5;
-var PEND_COOKIE = "__Host-cc_pend";
-var SCOPE7 = "access";
-var NEXT = {
-  chat: { purpose: "browser-login", path: "/__cc/login" },
-  screen: { purpose: "browser-view", path: "/__cc/browser" },
-  files: { purpose: "browser-login", path: "/__cc/login", next: "files" },
-  // The agent's log on the box (browser-enrollment.md §7): the same shape as Files.
-  logs: { purpose: "browser-login", path: "/__cc/login", next: "logs" },
-  // The WhatsApp link QR on the box (§7): shown there only to a session that may change the agent.
-  whatsapp: { purpose: "browser-login", path: "/__cc/login", next: "whatsapp" }
-};
-function sha2562(s2) {
-  return createHash3("sha256").update(s2).digest("hex");
-}
-function token(bytes) {
-  return randomBytes7(bytes).toString("base64url");
-}
-function sameHash(a2, b2) {
-  const left = Buffer.from(a2);
-  const right = Buffer.from(b2);
-  return left.length === right.length && timingSafeEqual3(left, right);
-}
-function cookieValue(req, name25) {
-  const raw = req.headers.cookie;
-  if (!raw) return null;
-  for (const part of raw.split(";")) {
-    const i2 = part.indexOf("=");
-    if (i2 < 0) continue;
-    if (part.slice(0, i2).trim() === name25) return part.slice(i2 + 1).trim() || null;
-  }
-  return null;
-}
-function setCookie(name25, value, maxAgeS) {
-  return `${name25}=${value}; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=${maxAgeS}`;
-}
-function deviceLabel(ua2) {
-  const browser = /Edg\//.test(ua2) ? "Edge" : /OPR\//.test(ua2) ? "Opera" : /Firefox\//.test(ua2) ? "Firefox" : /Chrome\//.test(ua2) || /CriOS\//.test(ua2) ? "Chrome" : /Safari\//.test(ua2) ? "Safari" : "A browser";
-  const os = /iPhone/.test(ua2) ? "iPhone" : /iPad/.test(ua2) ? "iPad" : /Android/.test(ua2) ? "Android" : /CrOS/.test(ua2) ? "ChromeOS" : /Mac OS X|Macintosh/.test(ua2) ? "Mac" : /Windows/.test(ua2) ? "Windows" : /Linux/.test(ua2) ? "Linux" : null;
-  return os ? `${browser} on ${os}` : browser;
-}
-function plausibleHostname(h2) {
-  return typeof h2 === "string" && h2.length <= 253 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(h2);
-}
-function plausibleBinding(c2) {
-  return typeof c2 === "string" && /^[A-Za-z0-9_-]{43}$/.test(c2);
-}
-var Window = class {
-  constructor(max, ms) {
-    this.max = max;
-    this.ms = ms;
-  }
-  hits = [];
-  /** Counts the hit when there is room; false when the window is full. */
-  take(now2) {
-    this.hits = this.hits.filter((t2) => t2 > now2 - this.ms);
-    if (this.hits.length >= this.max) return false;
-    this.hits.push(now2);
-    return true;
-  }
-};
-function openCodeMessage(agentName, label, email3, agentHostname, code) {
-  const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
-  const who2 = email3 ? ` ControlClaw says this is ${email3}.` : "";
-  return `ControlClaw: a new browser wants to open ${agentName}: ${label}.${who2}
-Code: ${pretty}
-Type it only on the page that asked for it, at ${agentHostname}. It expires in 10 minutes. If you did not just press Open, ignore this.`;
-}
-function silentListMessage(devices, max = 20) {
-  const day = (iso) => iso.slice(0, 10);
-  const lines = devices.slice(0, max).map((d2) => `- ${d2.label}${d2.email ? `, ${d2.email}` : ""}: first ${day(d2.createdAt)}, last ${day(d2.lastUsedAt)}`);
-  const more = devices.length > max ? `
-...and ${devices.length - max} more.` : "";
-  return `ControlClaw: ${devices.length === 1 ? "this browser was" : "these browsers were"} signed in to your agents without a code, before anyone could receive one:
-${lines.join("\n")}${more}
-Remove any you don't recognise on the Devices page of your ControlClaw console.`;
-}
-var AccessFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
-    this.store = loadAccessStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  pending = null;
-  now;
-  log;
-  usedJti = /* @__PURE__ */ new Map();
-  opens = new Window(OPEN_PER_MINUTE, 6e4);
-  confirms = new Window(CONFIRM_PER_MINUTE, 6e4);
-  pendings = new Window(PENDING_PER_HOUR, 60 * 6e4);
-  signing = null;
-  verifying = null;
-  /** vmId -> the firewall origin that agent last took, so `/access/config` is pushed once. */
-  configured = /* @__PURE__ */ new Map();
-  configTried = /* @__PURE__ */ new Map();
-  listing = false;
-  // ---- state ----
-  /** `https://<this firewall's hostname>`, or null when it has none (a firewall built before webhook ingress). */
-  origin() {
-    const h2 = this.opts.hostname();
-    return plausibleHostname(h2) ? `https://${h2.toLowerCase()}` : null;
-  }
-  /** Whether this firewall can take Opens: `open_v1` on the heartbeat. */
-  ready() {
-    return this.origin() !== null && this.opts.saasPublicKey() !== null;
-  }
-  /** Real people a code can go to. The dev route is not a person, so it never closes the free window. */
-  realRoutes() {
-    return this.opts.codeRoutes().map((r2) => ({ target: r2.target, senders: r2.senders.filter((s2) => s2 !== DEV_SENDER) })).filter((r2) => r2.senders.length > 0);
-  }
-  /** Nobody approved on any channel: the same trust-on-first-use test every other change uses. */
-  freeWindow() {
-    return this.opts.channelsReady() && this.realRoutes().length === 0;
-  }
-  /**
-   * Pin every agent in the identity map the first time it appears, and never move a pin. Called
-   * after each sync. A hostname that differs from the pin is logged and ignored.
-   */
-  notePins() {
-    let changed = false;
-    for (const i2 of this.opts.identities()) {
-      const vmId = String(i2.vm_id ?? "");
-      const offered = i2.hostname;
-      if (!vmId || !plausibleHostname(offered)) continue;
-      const hostname3 = offered.toLowerCase();
-      const alias = i2.access_hostname?.toLowerCase();
-      const accessHostname = plausibleHostname(alias) && alias !== hostname3 && alias.split(".").slice(1).join(".") === hostname3.split(".").slice(1).join(".") ? alias.toLowerCase() : void 0;
-      const pin = this.store.pins[vmId];
-      if (!pin) {
-        this.store.pins[vmId] = { hostname: hostname3, ...accessHostname ? { accessHostname } : {}, at: new Date(this.now()).toISOString() };
-        changed = true;
-        this.log(`[access] pinned ${vmId} to ${hostname3}`);
-      } else if (pin.hostname === hostname3 && !pin.accessHostname && accessHostname) {
-        pin.accessHostname = accessHostname;
-        changed = true;
-      } else if (pin.hostname !== hostname3 || pin.accessHostname !== accessHostname) {
-        this.log(`[access] the identity map says ${vmId} is at ${hostname3}; it stays pinned to ${pin.hostname}`);
-      }
-    }
-    if (changed) this.save();
-  }
-  /**
-   * Only agents still in the identity map answer for an origin. A hostname is derived from the
-   * agent's name, so an agent deleted and made again under the same name is a new vmId on the old
-   * hostname, and the dead agent's pin must not shadow it. Hiding a live agent from the map gains
-   * nothing: a ticket names one vmId, and a real box refuses a ticket for any other.
-   */
-  pinnedByOrigin(origin) {
-    const want = origin.toLowerCase();
-    const live = new Set(this.opts.identities().map((i2) => String(i2.vm_id)));
-    for (const [vmId, pin] of Object.entries(this.store.pins)) {
-      if (!live.has(vmId)) continue;
-      for (const hostname3 of [pin.hostname, pin.accessHostname]) {
-        if (hostname3 && `https://${hostname3}` === want) return { vmId, hostname: hostname3 };
-      }
-    }
-    return null;
-  }
-  agentName(vmId) {
-    const i2 = this.opts.identities().find((x2) => String(x2.vm_id) === vmId);
-    return i2?.name || this.store.pins[vmId]?.hostname || vmId;
-  }
-  save() {
-    saveAccessStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  // ---- the two routes ----
-  async handle(req, res, path) {
-    if (req.method !== "POST") return bare(res, 405);
-    if (path === OPEN_PATH) return this.open(req, res);
-    return this.confirm(req, res);
-  }
-  /**
-   * The order matters. The Origin decides where a redirect may go at all, so it is checked first
-   * and a request from anywhere else gets a bare 403 with nothing to follow. Everything after it
-   * redirects to that agent's own pages, which is the only place a browser can be sent.
-   */
-  async open(req, res) {
-    const agent = this.agentFor(req);
-    if (!agent) return bare(res, 403);
-    const fail2 = (e) => redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=${e}`);
-    const form = await readForm(req);
-    if (!form) return bare(res, 400);
-    const intent = await this.verifyIntent(form.get("intent") ?? "");
-    const c2 = form.get("c");
-    if (!intent || intent.vmId !== agent.vmId || !plausibleBinding(c2)) return fail2("invalid");
-    if (!this.opens.take(this.now())) return fail2("busy");
-    if (!this.consumeJti(intent.jti, intent.exp)) return fail2("used");
-    if (this.opts.stopped(intent.vmId)) return fail2("stopped");
-    const label = deviceLabel(String(req.headers["user-agent"] ?? ""));
-    const device = this.enrolled(req, intent.userId);
-    if (device) {
-      device.record.lastUsedAt = new Date(this.now()).toISOString();
-      this.save();
-      this.log(`[access] open ${intent.next} on ${agent.hostname}: enrolled browser ${device.id}`);
-      return this.issue(res, agent.hostname, intent, c2, device.id, [this.deviceCookie(req)]);
-    }
-    const free = this.freeWindow();
-    if (free) {
-      const via = "tofu";
-      const enrolled = this.enroll(intent, label, via);
-      this.log(`[access] open ${intent.next} on ${agent.hostname}: browser ${enrolled.id} enrolled without a code (${via})`);
-      void this.maybeList();
-      return this.issue(res, agent.hostname, intent, c2, enrolled.id, [this.deviceCookie(req, enrolled.cookie)]);
-    }
-    if (!this.opts.channelsReady()) return fail2("unreachable");
-    if (!this.pendings.take(this.now())) return fail2("busy");
-    const pendCookie = token(32);
-    const pending = {
-      changeId: `acc_${token(16)}`,
-      vmId: intent.vmId,
-      intent,
-      c: c2,
-      pendHash: sha2562(pendCookie),
-      label,
-      expiresAt: this.now() + CODE_TTL_MS
-    };
-    const sent = await this.codes.send(
-      SCOPE7,
-      pending,
-      this.agentName(intent.vmId),
-      label,
-      this.opts.codeRoutes(),
-      (code) => openCodeMessage(this.agentName(intent.vmId), label, intent.email, agent.hostname, code)
-    );
-    if (!sent.ok) {
-      this.log(`[access] could not send a code for a new browser on ${agent.hostname}: ${sent.message}`);
-      return fail2("unreachable");
-    }
-    this.pending = pending;
-    const channel = sent.sentVia.split(":")[0];
-    if (channel === DEV_SENDER.type) this.log(`[access] dev build: the code for ${pending.changeId} is ${sent.sentVia.slice(channel.length + 1)}`);
-    else this.log(`[access] open ${intent.next} on ${agent.hostname}: new browser, code sent via ${channel}`);
-    return redirect(res, `https://${agent.hostname}/__cc/enroll#p=${pending.changeId}&via=${encodeURIComponent(channel)}`, [
-      setCookie(PEND_COOKIE, pendCookie, CODE_TTL_MS / 1e3)
-    ]);
-  }
-  async confirm(req, res) {
-    const agent = this.agentFor(req);
-    if (!agent) return bare(res, 403);
-    const expired = () => redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=code_expired`);
-    const form = await readForm(req);
-    if (!form) return bare(res, 400);
-    const p2 = form.get("p") ?? "";
-    const code = (form.get("code") ?? "").replace(/\s+/g, "");
-    const pending = this.pending;
-    if (!pending || pending.changeId !== p2 || pending.vmId !== agent.vmId || this.now() > pending.expiresAt) return expired();
-    const pend = cookieValue(req, PEND_COOKIE);
-    if (!pend || !sameHash(sha2562(pend), pending.pendHash)) return expired();
-    if (!this.confirms.take(this.now())) return redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=busy`);
-    if (this.opts.stopped(pending.vmId)) return redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=stopped`);
-    const v2 = this.codes.verify(SCOPE7, p2, code);
-    if (v2.kind === "expired") {
-      this.pending = null;
-      return expired();
-    }
-    if (v2.kind === "invalid") {
-      if (v2.attemptsLeft <= 0) {
-        this.pending = null;
-        this.log(`[access] the code for a new browser on ${agent.hostname} ran out of tries`);
-        return expired();
-      }
-      return redirect(res, `https://${agent.hostname}/__cc/enroll#p=${p2}&e=invalid_code&left=${v2.attemptsLeft}`);
-    }
-    this.pending = null;
-    const enrolled = this.enroll(pending.intent, pending.label, "code");
-    this.log(`[access] browser ${enrolled.id} enrolled with a code (${pending.label}) on ${agent.hostname}`);
-    return this.issue(res, agent.hostname, pending.intent, pending.c, enrolled.id, [this.deviceCookie(req, enrolled.cookie), setCookie(PEND_COOKIE, "", 0)]);
-  }
-  /** The agent this request came from, by its exact Origin against the pins. No Origin is no agent. */
-  agentFor(req) {
-    const origin = req.headers.origin;
-    if (typeof origin !== "string" || !origin) return null;
-    return this.pinnedByOrigin(origin);
-  }
-  async issue(res, hostname3, intent, c2, deviceId, cookies) {
-    const route = NEXT[intent.next];
-    const ticket = await this.signTicket({ vmId: intent.vmId, purpose: route.purpose, c: c2, deviceId, canWrite: intent.canWrite, ...route.next ? { next: route.next } : {} });
-    return redirect(res, `https://${hostname3}${route.path}#t=${ticket}`, cookies);
-  }
-  // ---- intents, tickets, devices ----
-  async verifyIntent(jwt2) {
-    const pem = this.opts.saasPublicKey();
-    if (!pem || !jwt2) return null;
-    try {
-      if (this.verifying?.pem !== pem) this.verifying = { pem, key: await importSPKI(pem, "EdDSA") };
-      const { payload } = await jwtVerify(jwt2, this.verifying.key, { algorithms: ["EdDSA"], currentDate: new Date(this.now()) });
-      const p2 = payload;
-      if (p2.purpose !== "open-intent" || p2.orgId !== this.opts.ids.orgId) return null;
-      if (typeof p2.vmId !== "string" || typeof p2.userId !== "string" || !p2.userId || typeof p2.jti !== "string" || !p2.jti) return null;
-      if (typeof p2.exp !== "number" || p2.exp - this.now() / 1e3 > INTENT_MAX_LIFETIME_S) return null;
-      const next = typeof p2.next === "string" && p2.next in NEXT ? p2.next : null;
-      if (!next) return null;
-      return {
-        orgId: p2.orgId,
-        vmId: p2.vmId,
-        userId: p2.userId,
-        email: typeof p2.email === "string" && p2.email ? p2.email.slice(0, 200) : null,
-        canWrite: p2.canWrite === true,
-        next,
-        jti: p2.jti,
-        exp: p2.exp
-      };
-    } catch {
-      return null;
-    }
-  }
-  consumeJti(jti, exp) {
-    const nowS = this.now() / 1e3;
-    for (const [k2, e] of this.usedJti) if (e < nowS) this.usedJti.delete(k2);
-    if (this.usedJti.has(jti)) return false;
-    this.usedJti.set(jti, exp);
-    return true;
-  }
-  async signTicket(claims) {
-    const pem = this.opts.signingKey();
-    if (this.signing?.pem !== pem) this.signing = { pem, key: await importPKCS8(pem, "EdDSA") };
-    const nowS = Math.floor(this.now() / 1e3);
-    return new SignJWT({ ...claims }).setProtectedHeader({ alg: "EdDSA" }).setIssuer(`fw:${this.opts.ids.boxId}`).setJti(token(16)).setIssuedAt(nowS).setExpirationTime(nowS + TICKET_TTL_S).sign(this.signing.key);
-  }
-  /** The live devices this browser's cookie names, in the order it holds them. */
-  liveDevices(req) {
-    const raw = cookieValue(req, DEV_COOKIE);
-    if (!raw) return [];
-    const out = [];
-    for (const token2 of raw.split(".").slice(-DEVICES_PER_BROWSER)) {
-      if (!/^[A-Za-z0-9_-]{43}$/.test(token2)) continue;
-      const hash2 = sha2562(token2);
-      const hit = Object.entries(this.store.devices).find(([, d2]) => sameHash(d2.hash, hash2));
-      if (!hit || Date.parse(hit[1].lastUsedAt) + DEVICE_TTL_MS < this.now()) continue;
-      out.push({ id: hit[0], record: hit[1], token: token2 });
-    }
-    return out;
-  }
-  /** The browser's device for this user. A second member on the same browser enrolls separately (§5). */
-  enrolled(req, userId) {
-    return this.liveDevices(req).find((d2) => d2.record.userId === userId) ?? null;
-  }
-  /**
-   * The device cookie to send back: every live device this browser already holds, plus `added`.
-   * A revoked or expired token is dropped here, so the cookie only ever names live devices.
-   */
-  deviceCookie(req, added) {
-    const tokens = this.liveDevices(req).map((d2) => d2.token);
-    if (added) tokens.push(added);
-    return setCookie(DEV_COOKIE, tokens.slice(-DEVICES_PER_BROWSER).join("."), DEVICE_TTL_MS / 1e3);
-  }
-  enroll(intent, label, via) {
-    const cookie = token(32);
-    const id = `dev_${token(12)}`;
-    const at2 = new Date(this.now()).toISOString();
-    this.store.devices[id] = { hash: sha2562(cookie), userId: intent.userId, email: intent.email, label, via, createdAt: at2, lastUsedAt: at2, listedAt: null };
-    this.prune();
-    this.save();
-    return { id, cookie };
-  }
-  prune() {
-    for (const [id, d2] of Object.entries(this.store.devices)) {
-      if (Date.parse(d2.lastUsedAt) + DEVICE_TTL_MS < this.now()) delete this.store.devices[id];
-    }
-    const all = Object.entries(this.store.devices);
-    if (all.length <= MAX_DEVICES) return;
-    all.sort((a2, b2) => Date.parse(a2[1].lastUsedAt) - Date.parse(b2[1].lastUsedAt));
-    for (const [id] of all.slice(0, all.length - MAX_DEVICES)) delete this.store.devices[id];
-  }
-  // ---- the owner's list, config, revocation ----
-  /**
-   * Send the owner the browsers enrolled without a code, once there is an owner to send them to:
-   * at the organization's first approved sender (§6). The list comes from here, so a compromised
-   * console cannot hide an entry from the channel message. Retried from `tick` until it lands.
-   */
-  async maybeList() {
-    if (this.listing || !this.opts.channelsReady()) return;
-    const routes = this.realRoutes();
-    if (routes.length === 0) return;
-    const unlisted = Object.entries(this.store.devices).filter(([, d2]) => d2.via !== "code" && !d2.listedAt);
-    if (unlisted.length === 0) return;
-    this.listing = true;
-    try {
-      const text2 = silentListMessage(unlisted.map(([, d2]) => d2));
-      for (const route of routes) {
-        for (const sender of route.senders) {
-          try {
-            await this.opts.agent.post(route.target, "/channels/send", { type: sender.type, to: sender.id, text: text2 });
-            const at2 = new Date(this.now()).toISOString();
-            for (const [id] of unlisted) if (this.store.devices[id]) this.store.devices[id].listedAt = at2;
-            this.save();
-            this.log(`[access] listed ${unlisted.length} browser(s) enrolled without a code to the owner via ${sender.type}`);
-            return;
-          } catch (err) {
-            this.log(`[access] could not send the browser list via ${sender.type} on ${route.target.hostname}: ${err.message}`);
-          }
-        }
-      }
-    } finally {
-      this.listing = false;
-    }
-  }
-  /**
-   * Tell each agent where its firewall is (`POST /access/config`, purpose `access`). The agent
-   * refuses an Open flow until it has this, and takes it only with this box's signature. Agents
-   * older than PR 2 answer 404. A failed push is tried again with a backoff (`CONFIG_RETRY_FIRST_MS`
-   * doubling to `CONFIG_RETRY_MS`).
-   */
-  async pushConfig() {
-    const origin = this.origin();
-    if (!origin) return;
-    for (const [vmId, pin] of Object.entries(this.store.pins)) {
-      if (!this.opts.identities().some((i2) => String(i2.vm_id) === vmId)) continue;
-      if (this.configured.get(vmId) === origin) continue;
-      const tried = this.configTried.get(vmId);
-      if (tried !== void 0 && this.now() - tried.at < tried.wait) continue;
-      this.configTried.set(vmId, { at: this.now(), wait: tried ? Math.min(tried.wait * 2, CONFIG_RETRY_MS) : CONFIG_RETRY_FIRST_MS });
-      try {
-        await this.opts.agent.post({ vmId, hostname: pin.hostname }, "/access/config", { firewallOrigin: origin });
-        this.configured.set(vmId, origin);
-        this.log(`[access] ${pin.hostname} knows this firewall is at ${origin}`);
-      } catch (err) {
-        if (tried === void 0) this.log(`[access] could not tell ${pin.hostname} where this firewall is (${err.message}); trying again later`);
-      }
-    }
-  }
-  async tick() {
-    this.notePins();
-    await this.pushConfig();
-    await this.maybeList();
-  }
-  handlers() {
-    return {
-      "access.revoke": (p2) => this.revoke(p2),
-      "access.revoke_all": () => this.revokeAll()
-    };
-  }
-  async revoke(payload) {
-    const ids2 = Array.isArray(payload.deviceIds) ? payload.deviceIds.filter((x2) => typeof x2 === "string") : [];
-    if (ids2.length === 0) throw new Error("malformed access.revoke payload");
-    const revoked = ids2.filter((id) => this.store.devices[id]);
-    for (const id of revoked) delete this.store.devices[id];
-    if (revoked.length) this.save();
-    this.log(`[access] removed ${revoked.length} browser(s)`);
-    const pushed = await this.pushRevoke({ deviceIds: ids2 });
-    return { ok: true, status: "applied", data: { revoked, unknown: ids2.filter((id) => !revoked.includes(id)), ...pushed } };
-  }
-  async revokeAll() {
-    const count = Object.keys(this.store.devices).length;
-    this.store.devices = {};
-    this.save();
-    if (this.pending) {
-      this.codes.drop(SCOPE7);
-      this.pending = null;
-    }
-    this.log(`[access] signed out every browser (${count})`);
-    const pushed = await this.pushRevoke({ all: true });
-    return { ok: true, status: "applied", data: { revoked: count, ...pushed } };
-  }
-  /**
-   * Best effort: the firewall has already stopped issuing tickets to those browsers, which is the
-   * part that matters. What an agent could not be told is reported, not retried, and the session it
-   * still honours ends within its 12 hours.
-   */
-  async pushRevoke(body) {
-    const pushed = [];
-    const failed = [];
-    for (const [vmId, pin] of Object.entries(this.store.pins)) {
-      if (!this.opts.identities().some((i2) => String(i2.vm_id) === vmId)) continue;
-      const target = { vmId, hostname: pin.hostname };
-      try {
-        await this.opts.agent.post(target, "/access/revoke", body);
-        pushed.push(vmId);
-      } catch (err) {
-        failed.push({ vmId, error: err.message.slice(0, 200) });
-      }
-    }
-    return { pushed, failed };
-  }
-  /** The heartbeat's `access` section. Ids, labels and dates; never a cookie or a hash. */
-  status() {
-    const devices = Object.entries(this.store.devices).sort((a2, b2) => Date.parse(b2[1].lastUsedAt) - Date.parse(a2[1].lastUsedAt)).slice(0, BEAT_DEVICES).map(([deviceId, d2]) => ({
-      deviceId,
-      userId: d2.userId,
-      email: d2.email,
-      label: d2.label,
-      via: d2.via,
-      createdAt: d2.createdAt,
-      lastUsedAt: d2.lastUsedAt,
-      listed: Boolean(d2.listedAt)
-    }));
-    return {
-      origin: this.origin(),
-      freeWindow: this.freeWindow(),
-      pending: this.pending && this.now() <= this.pending.expiresAt ? { vmId: this.pending.vmId, expiresAt: new Date(this.pending.expiresAt).toISOString() } : null,
-      devices,
-      deviceCount: Object.keys(this.store.devices).length
-    };
-  }
-};
-async function readForm(req) {
-  const type = String(req.headers["content-type"] ?? "").toLowerCase();
-  if (!type.startsWith("application/x-www-form-urlencoded")) return null;
-  try {
-    return new URLSearchParams((await readBody(req, ACCESS_BODY_BYTES)).toString("utf8"));
-  } catch {
-    return null;
-  }
-}
-var NO_CACHE = { "cache-control": "no-store", "referrer-policy": "no-referrer", "content-length": "0" };
-function bare(res, status) {
-  res.writeHead(status, NO_CACHE);
-  res.end();
-}
-function redirect(res, location, cookies = []) {
-  res.writeHead(303, { ...NO_CACHE, location, ...cookies.length ? { "set-cookie": cookies } : {} });
-  res.end();
-}
-
-// src/gbrain.ts
-var SCOPE_PREFIX4 = "gbrain:";
-var GBRAIN_GATE_PORT = 3131;
-var GBRAIN_RECONCILE_MS = 5 * 6e4;
-function str9(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function scopeOf(v2) {
-  return v2 === "read" || v2 === "read_write" ? v2 : null;
-}
-function summarize10(p2) {
-  if (p2.kind === "rescope") {
-    return p2.scope === "read_write" ? `Let ${p2.agent.name} write to your organization's brain as well as read it` : `Make ${p2.agent.name} read-only on your organization's brain`;
-  }
-  return p2.scope === "read_write" ? `Connect ${p2.agent.name} to your organization's brain (read and write). It will see what your other agents saved` : `Let ${p2.agent.name} read your organization's brain. It will see what your other agents saved`;
-}
-function brainUrl(brainIp) {
-  return `http://${brainIp}:${GBRAIN_GATE_PORT}/mcp`;
-}
-function aad11(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:gbrain`;
-}
-function emptyBrainStore() {
-  return { version: 1, brain: null, connections: {} };
-}
-var BrainFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
-    const loaded2 = loadStoreOrEmpty("gbrain", opts.storePath, opts.boxKey, aad11(opts.ids));
-    this.store = loaded2 && loaded2.version === 1 && loaded2.connections ? { version: 1, brain: loaded2.brain ?? null, connections: loaded2.connections } : emptyBrainStore();
-  }
-  codes;
-  log;
-  store;
-  reconciling = false;
-  /** What the brain last accepted, as `<brainVmId>|<lock>`; null until one push has worked. */
-  pushedLock = null;
-  /** One push at a time, so two overlapping calls cannot record a lock the brain does not hold. */
-  lockChain = Promise.resolve();
-  handlers() {
-    return {
-      "gbrain.propose": (p2) => this.propose(p2),
-      "gbrain.confirm": (p2) => this.confirm(p2),
-      "gbrain.cancel": (p2) => this.cancel(p2),
-      "gbrain.disconnect": (p2) => this.disconnect(p2)
-    };
-  }
-  summary() {
-    return { brain: this.store.brain?.vmId ?? null, connections: Object.keys(this.store.connections).length };
-  }
-  save() {
-    saveStore("gbrain", this.opts.storePath, this.store, this.opts.boxKey, aad11(this.opts.ids));
-  }
-  /** One pending change per agent. */
-  scope(agentVmId) {
-    return `${SCOPE_PREFIX4}${agentVmId}`;
-  }
-  box(vmId, role) {
-    const row = this.opts.boxes().find((b2) => b2.vm_id === vmId);
-    const what = role === "gbrain" ? "The brain" : "That agent";
-    if (!row || (row.role ?? "openclaw") !== role) throw new Error(`${what} is not known to your firewall yet. Try again in a minute.`);
-    const ip = str9(row.private_ip);
-    const hostname3 = str9(row.hostname);
-    if (!ip || !hostname3) throw new Error(`${what} has no private address yet. Try again once it is running.`);
-    return { vmId, ip, hostname: hostname3, name: str9(row.name) ?? vmId };
-  }
-  target(b2) {
-    return { vmId: b2.vmId, hostname: b2.hostname };
-  }
-  async apply(p2) {
-    if (this.store.brain && this.store.brain.vmId !== p2.brain.vmId) this.store = emptyBrainStore();
-    const had = this.store.connections[p2.agent.vmId];
-    await this.opts.agent.post(this.target(p2.brain), "/gbrain/connect", { vmId: p2.agent.vmId, ip: p2.agent.ip, scope: p2.scope }, { timeoutMs: GBRAIN_CONNECT_MS });
-    const sameBrain = this.store.brain?.vmId === p2.brain.vmId && this.store.brain.ip === p2.brain.ip;
-    if (!had || !sameBrain) {
-      await this.opts.agent.post(this.target(p2.agent), "/gbrain/apply", { url: brainUrl(p2.brain.ip) }, { timeoutMs: GBRAIN_APPLY_MS });
-    }
-    if (!this.store.brain) this.store.brain = { vmId: p2.brain.vmId, ip: p2.brain.ip };
-    this.store.connections[p2.agent.vmId] = { scope: p2.scope, ip: p2.agent.ip, name: p2.agent.name, at: new Date(this.opts.now?.() ?? Date.now()).toISOString() };
-    this.save();
-    this.log(`[gbrain] ${p2.agent.name} connected to the brain (${p2.scope})`);
-    return { agentVmId: p2.agent.vmId, brainVmId: p2.brain.vmId, scope: p2.scope, agentPrivateIp: p2.agent.ip };
-  }
-  async propose(payload) {
-    const changeId = str9(payload.changeId);
-    const agentVmId = str9(payload.agentVmId);
-    const brainVmId = str9(payload.brainVmId);
-    const scope = scopeOf(payload.scope);
-    if (!changeId || !agentVmId || !brainVmId || !scope) throw new Error("malformed gbrain.propose payload");
-    const data = { changeId };
-    let agent;
-    let brain2;
-    try {
-      agent = this.box(agentVmId, "openclaw");
-      brain2 = this.box(brainVmId, "gbrain");
-    } catch (err) {
-      return { ok: false, status: "failed", message: err.message, data };
-    }
-    const current = this.store.brain?.vmId === brainVmId ? this.store.connections[agentVmId] : void 0;
-    const p2 = { changeId, kind: current ? "rescope" : "connect", scope, agent, brain: brain2 };
-    const summary = summarize10(p2);
-    data.summary = summary;
-    if (current && (current.scope === scope || scope === "read")) {
-      this.codes.drop(this.scope(agentVmId));
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: false } };
-    }
-    if (!this.opts.channelsReady()) {
-      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(this.scope(agentVmId));
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.codes.send(this.scope(agentVmId), p2, agent.name, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[gbrain] code sent to connect ${agent.name} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str9(payload.changeId);
-    const agentVmId = str9(payload.agentVmId);
-    if (!changeId || !agentVmId) throw new Error("malformed gbrain.confirm payload");
-    const data = { changeId };
-    const v2 = this.codes.verify(this.scope(agentVmId), changeId, str9(payload.code) ?? "");
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize10(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str9(payload.changeId);
-    const agentVmId = str9(payload.agentVmId);
-    if (agentVmId) this.codes.cancel(this.scope(agentVmId), changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  /**
-   * No code: it only takes access away. Out of the store first, so whatever part of it fails here
-   * is finished by `reconcile`: the brain's gate entry is removed on the next tick, and an agent that
-   * kept its MCP entry has a URL that answers 403.
-   */
-  async disconnect(payload) {
-    const agentVmId = str9(payload.agentVmId);
-    if (!agentVmId) throw new Error("malformed gbrain.disconnect payload");
-    this.codes.drop(this.scope(agentVmId));
-    const had = this.store.connections[agentVmId];
-    delete this.store.connections[agentVmId];
-    this.save();
-    const brainVmId = this.store.brain?.vmId;
-    const errors = [];
-    if (brainVmId) {
-      try {
-        const brain2 = this.box(brainVmId, "gbrain");
-        await this.opts.agent.post(this.target(brain2), "/gbrain/disconnect", { vmId: agentVmId }, { timeoutMs: GBRAIN_CONNECT_MS });
-      } catch (err) {
-        errors.push(`brain: ${err.message}`);
-      }
-    }
-    const agentRow = this.opts.boxes().find((b2) => b2.vm_id === agentVmId);
-    if (agentRow && str9(agentRow.hostname)) {
-      try {
-        await this.opts.agent.post({ vmId: agentVmId, hostname: String(agentRow.hostname) }, "/gbrain/apply", { remove: true }, { timeoutMs: GBRAIN_APPLY_MS });
-      } catch (err) {
-        errors.push(`agent: ${err.message}`);
-      }
-    }
-    this.log(`[gbrain] ${had?.name ?? agentVmId} disconnected from the brain${errors.length ? ` (to finish on the next reconcile: ${errors.join("; ")})` : ""}`);
-    return { ok: true, status: "applied", data: { agentVmId, removed: !!had, pending: errors.length > 0 } };
-  }
-  /**
-   * Push the emergency stop to the brain's gate when it differs from what the brain last accepted.
-   * Called on every kill-switch change and every minute, so a brain that was down when the stop
-   * was engaged is locked once it answers.
-   */
-  syncLock() {
-    const run = this.lockChain.then(() => this.syncLockOnce());
-    this.lockChain = run.catch(() => void 0);
-    return run;
-  }
-  async syncLockOnce() {
-    const brainVmId = this.brainVmId();
-    if (!brainVmId) return;
-    const want = this.desiredLock();
-    const key = `${brainVmId}|${JSON.stringify(want)}`;
-    if (key === this.pushedLock) return;
-    const brain2 = this.box(brainVmId, "gbrain");
-    await this.opts.agent.post(this.target(brain2), "/gbrain/lock", want, { timeoutMs: GBRAIN_CONNECT_MS });
-    this.pushedLock = key;
-    this.log(`[gbrain] brain gate lock: ${want.all ? "every agent" : want.vmIds.length ? want.vmIds.join(", ") : "none"}`);
-  }
-  desiredLock() {
-    const l2 = this.opts.lock?.() ?? { all: false, vmIds: [] };
-    return { all: l2.all, vmIds: [...new Set(l2.vmIds)].sort() };
-  }
-  /** The brain on record, or the one in the identity map when nothing is connected yet. */
-  brainVmId() {
-    if (this.store.brain) return this.store.brain.vmId;
-    return this.opts.boxes().find((b2) => (b2.role ?? "") === "gbrain")?.vm_id ?? null;
-  }
-  /**
-   * Make the brain's gate match the store (see the header). Only removes access or re-points
-   * access the owner already confirmed; never adds any.
-   */
-  async reconcile() {
-    if (this.reconciling) return;
-    this.reconciling = true;
-    try {
-      await this.reconcileOnce();
-    } finally {
-      this.reconciling = false;
-    }
-  }
-  async reconcileOnce() {
-    const boxes = this.opts.boxes();
-    if (boxes.length === 0) return;
-    const stored = this.store.brain;
-    const brainRow = boxes.find((b2) => (b2.role ?? "") === "gbrain");
-    let changed = false;
-    if (stored && (!brainRow || brainRow.vm_id !== stored.vmId)) {
-      for (const [vmId, c2] of Object.entries(this.store.connections)) {
-        await this.removeFromAgent(vmId).catch((e) => this.log(`[gbrain] could not take the brain off ${c2.name}: ${e.message}`));
-      }
-      this.log(`[gbrain] the brain ${stored.vmId} is gone; dropped ${Object.keys(this.store.connections).length} connection(s)`);
-      this.store = emptyBrainStore();
-      this.save();
-      this.pushedLock = null;
-      return;
-    }
-    if (!stored || !brainRow) return;
-    const brain2 = this.box(stored.vmId, "gbrain");
-    for (const vmId of Object.keys(this.store.connections)) {
-      if (!boxes.some((b2) => b2.vm_id === vmId && (b2.role ?? "openclaw") === "openclaw")) {
-        this.log(`[gbrain] ${this.store.connections[vmId].name} is gone; disconnecting it`);
-        delete this.store.connections[vmId];
-        changed = true;
-      }
-    }
-    if (brain2.ip !== stored.ip) {
-      let all = true;
-      for (const vmId of Object.keys(this.store.connections)) {
-        try {
-          const agent = this.box(vmId, "openclaw");
-          await this.opts.agent.post(this.target(agent), "/gbrain/apply", { url: brainUrl(brain2.ip) }, { timeoutMs: GBRAIN_APPLY_MS });
-        } catch (err) {
-          all = false;
-          this.log(`[gbrain] could not re-point ${this.store.connections[vmId].name} at the brain's new address: ${err.message}`);
-        }
-      }
-      if (all) {
-        this.store.brain = { vmId: brain2.vmId, ip: brain2.ip };
-        changed = true;
-      }
-    }
-    if (changed) this.save();
-    const r2 = await this.opts.agent.get(this.target(brain2), "/gbrain/connections", { timeoutMs: GBRAIN_CONNECT_MS });
-    const entries = Array.isArray(r2.connections) ? r2.connections : [];
-    const reported = r2.lock;
-    if (reported && JSON.stringify({ all: reported.all === true, vmIds: Array.isArray(reported.vmIds) ? [...reported.vmIds].sort() : [] }) !== JSON.stringify(this.desiredLock())) {
-      this.pushedLock = null;
-    }
-    const onGate = new Map(entries.map((e) => [String(e.vmId), e]));
-    for (const [vmId] of onGate) {
-      if (!this.store.connections[vmId]) {
-        await this.opts.agent.post(this.target(brain2), "/gbrain/disconnect", { vmId }, { timeoutMs: GBRAIN_CONNECT_MS });
-        this.log(`[gbrain] removed ${vmId} from the brain's gate: it is not connected`);
-      }
-    }
-    for (const [vmId, c2] of Object.entries(this.store.connections)) {
-      let agent;
-      try {
-        agent = this.box(vmId, "openclaw");
-      } catch {
-        continue;
-      }
-      const e = onGate.get(vmId);
-      if (e && e.ip === agent.ip && e.scope === c2.scope) continue;
-      await this.opts.agent.post(this.target(brain2), "/gbrain/connect", { vmId, ip: agent.ip, scope: c2.scope }, { timeoutMs: GBRAIN_CONNECT_MS });
-      if (c2.ip !== agent.ip) {
-        this.store.connections[vmId] = { ...c2, ip: agent.ip };
-        this.save();
-      }
-      this.log(`[gbrain] re-applied ${c2.name}'s connection on the brain's gate`);
-    }
-  }
-  async removeFromAgent(vmId) {
-    const row = this.opts.boxes().find((b2) => b2.vm_id === vmId);
-    if (!row || !str9(row.hostname)) return;
-    await this.opts.agent.post({ vmId, hostname: String(row.hostname) }, "/gbrain/apply", { remove: true }, { timeoutMs: GBRAIN_APPLY_MS });
-  }
-};
-
-// src/exit.ts
-import { createHmac as createHmac2, randomBytes as randomBytes8 } from "crypto";
-
-// src/exit-check.ts
-import { connect as tcpConnect } from "net";
-import { connect as tlsConnect } from "tls";
-var CHECK_SESSION = "__check";
-var DEFAULT_URL = "https://ipinfo.io/json";
-var TIMEOUT_MS2 = 15e3;
-function fail(socket, message2) {
-  socket?.destroy();
-  return { ok: false, exitIp: null, exitCountry: null, latencyMs: 0, error: message2.slice(0, 200) };
-}
-function readUntil(socket, done, timeoutMs, endsOk = false) {
-  return new Promise((resolve2, reject) => {
-    let buf = Buffer.alloc(0);
-    const timer = setTimeout(() => cleanup(new Error("timed out")), timeoutMs);
-    const onData = (chunk) => {
-      buf = Buffer.concat([buf, chunk]);
-      if (done(buf)) cleanup(null);
-    };
-    const onEnd = () => cleanup(endsOk ? null : new Error("the connection closed early"));
-    function cleanup(err) {
-      clearTimeout(timer);
-      socket.off("data", onData);
-      socket.off("end", onEnd);
-      socket.off("error", onErr);
-      if (err) reject(err);
-      else resolve2(buf);
-    }
-    const onErr = (err) => cleanup(err);
-    socket.on("data", onData);
-    socket.on("end", onEnd);
-    socket.on("error", onErr);
-  });
-}
-function dial(host, port, timeoutMs) {
-  return new Promise((resolve2, reject) => {
-    const socket = tcpConnect({ host, port });
-    socket.setTimeout(timeoutMs, () => socket.destroy(new Error("timed out connecting to the exit")));
-    socket.once("connect", () => resolve2(socket));
-    socket.once("error", reject);
-  });
-}
-function startTls(socket, servername, timeoutMs) {
-  return new Promise((resolve2, reject) => {
-    const tls = tlsConnect({ socket, servername });
-    const timer = setTimeout(() => tls.destroy(new Error("timed out negotiating TLS with the exit")), timeoutMs);
-    tls.once("secureConnect", () => {
-      clearTimeout(timer);
-      resolve2(tls);
-    });
-    tls.once("error", (err) => {
-      clearTimeout(timer);
-      tls.destroy();
-      reject(err);
-    });
-  });
-}
-async function httpConnect(socket, target, user, password) {
-  const auth = Buffer.from(`${user}:${password}`).toString("base64");
-  socket.write(
-    `CONNECT ${target} HTTP/1.1\r
-Host: ${target}\r
-Proxy-Authorization: Basic ${auth}\r
-Proxy-Connection: keep-alive\r
-\r
-`
-  );
-  const head = await readUntil(socket, (b2) => b2.includes("\r\n\r\n"), TIMEOUT_MS2);
-  const status = head.subarray(0, head.indexOf("\r\n")).toString();
-  if (!/^HTTP\/1\.[01] 2\d\d/.test(status)) throw new Error(`the exit refused the tunnel: ${status}`);
-}
-async function socks5Connect(socket, host, port, user, password) {
-  socket.write(Buffer.from([5, 1, 2]));
-  const greeting = await readUntil(socket, (b2) => b2.length >= 2, TIMEOUT_MS2);
-  if (greeting[0] !== 5 || greeting[1] !== 2) throw new Error("the exit refused username/password auth");
-  const u2 = Buffer.from(user, "utf8");
-  const p2 = Buffer.from(password, "utf8");
-  socket.write(Buffer.concat([Buffer.from([1, u2.length]), u2, Buffer.from([p2.length]), p2]));
-  const authReply = await readUntil(socket, (b2) => b2.length >= 2, TIMEOUT_MS2);
-  if (authReply[1] !== 0) throw new Error("the exit rejected the credential");
-  const name25 = Buffer.from(host, "utf8");
-  socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, name25.length]), name25, portBytes(port)]));
-  const reply = await readUntil(socket, socks5ReplyComplete, TIMEOUT_MS2);
-  if (reply[1] !== 0) throw new Error(`the exit refused the connection (reply ${reply[1]})`);
-}
-function socks5ReplyComplete(b2) {
-  if (b2.length < 5) return false;
-  const atyp = b2[3];
-  if (atyp === 1) return b2.length >= 10;
-  if (atyp === 4) return b2.length >= 22;
-  if (atyp === 3) return b2.length >= 7 + b2[4];
-  return true;
-}
-function responseComplete(b2) {
-  const end = b2.indexOf("\r\n\r\n");
-  if (end < 0) return false;
-  const head = b2.subarray(0, end).toString("latin1");
-  const length = /content-length:\s*(\d+)/i.exec(head);
-  if (!length) return false;
-  return b2.length >= end + 4 + Number(length[1]);
-}
-function portBytes(port) {
-  const b2 = Buffer.alloc(2);
-  b2.writeUInt16BE(port);
-  return b2;
-}
-function parseEcho(body) {
-  const ip = /"ip"\s*:\s*"([0-9a-fA-F.:]{7,45})"/.exec(body)?.[1] ?? body.split("\n").map((l2) => l2.trim()).find((l2) => /^[0-9a-fA-F.:]{7,45}$/.test(l2)) ?? null;
-  const country = /"country"\s*:\s*"([A-Za-z]{2})"/.exec(body)?.[1]?.toUpperCase() ?? null;
-  return { ip, country };
-}
-async function checkExit(upstream, render, opts = {}) {
-  const started = Date.now();
-  const url2 = new URL(opts.url || process.env.MITM_EXIT_CHECK_URL || DEFAULT_URL);
-  const host = url2.hostname;
-  const port = Number(url2.port || 443);
-  const session = opts.session === void 0 ? CHECK_SESSION : opts.session;
-  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS2;
-  const country = opts.country ?? null;
-  const user = render(upstream.usernameTemplate, { username: upstream.username, session, country });
-  const password = render(upstream.passwordTemplate, { password: upstream.password, session, country });
-  let socket = null;
-  try {
-    socket = await dial(upstream.host, upstream.port, timeoutMs);
-    if (upstream.scheme === "https") socket = await startTls(socket, upstream.host, timeoutMs);
-    if (upstream.scheme === "socks5") await socks5Connect(socket, host, port, user, password);
-    else await httpConnect(socket, `${host}:${port}`, user, password);
-    const tls = tlsConnect({ socket, servername: host });
-    await new Promise((resolve2, reject) => {
-      tls.once("secureConnect", () => resolve2());
-      tls.once("error", reject);
-    });
-    tls.write(`GET ${url2.pathname}${url2.search} HTTP/1.1\r
-Host: ${host}\r
-User-Agent: controlclaw-firewall\r
-Connection: close\r
-\r
-`);
-    const raw = await readUntil(tls, responseComplete, timeoutMs, true);
-    tls.destroy();
-    const head = raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("latin1");
-    const echoStatus = Number(/^HTTP\/1\.[01]\s+(\d{3})/.exec(head)?.[1]);
-    if (!Number.isFinite(echoStatus) || echoStatus < 200 || echoStatus > 299) {
-      return {
-        ok: true,
-        exitIp: null,
-        exitCountry: null,
-        latencyMs: Date.now() - started,
-        // Recorded, not blamed on the credential. The card shows it next to "Reachable" so the
-        // missing address is explained rather than just absent.
-        error: `the tunnel opened, but ${host} answered ${Number.isFinite(echoStatus) ? echoStatus : "nothing readable"}, so the address could not be read`
-      };
-    }
-    const body = raw.subarray(raw.indexOf("\r\n\r\n") + 4).toString("utf8").trim();
-    const { ip, country: country2 } = parseEcho(body);
-    return { ok: true, exitIp: ip, exitCountry: country2, latencyMs: Date.now() - started, error: null };
-  } catch (err) {
-    return fail(socket, err.message || "the exit could not be reached");
-  } finally {
-    socket?.destroy();
-  }
-}
-
-// src/exit-store.ts
-function aad12(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:exit`;
-}
-function monthKey(now2) {
-  return new Date(now2).toISOString().slice(0, 7);
-}
-function emptyExitStore(now2 = Date.now()) {
-  return {
-    version: 1,
-    upstream: null,
-    sticky: false,
-    stickySalt: "",
-    capBytes: null,
-    country: null,
-    usage: { month: monthKey(now2), bytesIn: 0, bytesOut: 0 },
-    lastCheck: null,
-    updatedAt: new Date(now2).toISOString()
-  };
-}
-function loadExitStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("exit", path, boxKeyB64, aad12(ids2));
-  return parsed && parsed.version === 1 ? { ...emptyExitStore(), ...parsed } : emptyExitStore();
-}
-function saveExitStore(path, store, boxKeyB64, ids2) {
-  saveStore("exit", path, store, boxKeyB64, aad12(ids2));
-}
-
-// src/exit.ts
-var SCOPE8 = "org";
-var CHECK_INTERVAL_MS = 15 * 6e4;
-var DEFAULT_CAP_BYTES = 5 * 1024 ** 3;
-var COUNTED_IDS_KEPT = 2e4;
-function str10(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function num(v2) {
-  return typeof v2 === "number" && Number.isFinite(v2) ? v2 : null;
-}
-function isKind6(v2) {
-  return v2 === "add" || v2 === "replace" || v2 === "remove" || v2 === "settings";
-}
-function isScheme(v2) {
-  return v2 === "http" || v2 === "https" || v2 === "socks5";
-}
-function templatesOf(v2) {
-  if (!v2 || typeof v2 !== "object") return null;
-  const t2 = v2;
-  const u2 = str10(t2.usernameTemplate);
-  const p2 = str10(t2.passwordTemplate);
-  return u2 && p2 ? { usernameTemplate: u2, passwordTemplate: p2 } : null;
-}
-function normalizeCountry(v2) {
-  const clean = typeof v2 === "string" ? v2.trim().toUpperCase() : "";
-  return /^[A-Z]{2}$/.test(clean) ? clean : null;
-}
-var PLACEHOLDERS = /\{(username|password|session|country|country_lc)\}/g;
-function placeholderValue(name25, v2) {
-  switch (name25) {
-    case "username":
-      return v2.username || "";
-    case "password":
-      return v2.password || "";
-    case "session":
-      return v2.session || "";
-    case "country":
-      return (v2.country || "").toUpperCase();
-    case "country_lc":
-      return (v2.country || "").toLowerCase();
-    default:
-      return "";
-  }
-}
-function renderTemplate(template, values) {
-  const out = (template || "").replace(/\[([^[\]]*)\]/g, (_m, inner) => {
-    const names = [...inner.matchAll(PLACEHOLDERS)].map((m2) => m2[1]);
-    if (names.length === 0) return values.session ? inner : "";
-    return names.every((n2) => placeholderValue(n2, values) !== "") ? inner : "";
-  });
-  return out.replace(PLACEHOLDERS, (_m, name25) => placeholderValue(name25, values));
-}
-function summarize11(p2, current) {
-  const who2 = p2.usernameHint ? ` (${p2.usernameHint})` : "";
-  switch (p2.kind) {
-    case "add":
-      return `Send some sites out through ${p2.providerName}${who2} instead of your firewall`;
-    case "replace":
-      return `Replace the ${p2.providerName} credential${who2}`;
-    case "remove":
-      return "Stop sending any traffic out through a residential exit";
-    case "settings":
-      if (p2.country !== void 0 && (p2.country ?? null) !== (current?.country ?? null)) {
-        return p2.country ? `Have your residential traffic come out in ${p2.country}` : "Stop asking for a particular country on your residential traffic";
-      }
-      return p2.sticky ? "Give each agent its own residential IP" : "Stop giving each agent its own residential IP";
-  }
-}
-function parseProposal9(payload) {
-  const changeId = str10(payload.changeId);
-  if (!changeId || !isKind6(payload.kind)) throw new Error("malformed exit.propose payload");
-  const kind = payload.kind;
-  const port = num(payload.port);
-  const provider = str10(payload.provider) ?? "custom";
-  if (kind === "add" || kind === "replace") {
-    if (!str10(payload.host) || !port || !isScheme(payload.scheme)) throw new Error("malformed exit.propose payload");
-  }
-  return {
-    changeId,
-    kind,
-    provider,
-    providerName: str10(payload.providerName) ?? provider,
-    scheme: isScheme(payload.scheme) ? payload.scheme : "http",
-    host: str10(payload.host) ?? "",
-    port: port ?? 0,
-    usernameTemplate: str10(payload.usernameTemplate) ?? "{username}",
-    passwordTemplate: str10(payload.passwordTemplate) ?? "{password}",
-    usernameHint: str10(payload.usernameHint),
-    sticky: payload.sticky === true,
-    // An absent key and an explicit `undefined` mean the same thing — say nothing about the cap.
-    // Only `null` removes it. (Over the wire only the absent form can occur, but the two must not
-    // diverge: the difference between "leave it" and "remove it" is a customer's invoice.)
-    capBytes: payload.capBytes === void 0 ? void 0 : num(payload.capBytes),
-    // Same tri-state as the cap. A malformed code is read as "any country" rather than passed on:
-    // a provider given junk here refuses the whole credential, which would take the credential's
-    // own traffic down with a typo in a setting.
-    country: payload.country === void 0 ? void 0 : normalizeCountry(payload.country),
-    // Nested under its own key, never read off the top-level `usernameTemplate` an add/replace
-    // already carries: a settings change must move the credential's shape only when it is ABOUT
-    // that, not because the two happen to share a field name.
-    ...templatesOf(payload.templates) ? { templates: templatesOf(payload.templates) } : {},
-    ...str10(payload.username) ? { username: String(payload.username) } : {},
-    ...str10(payload.password) ? { password: String(payload.password) } : {}
-  };
-}
-var ExitFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.check = opts.checkImpl ?? checkExit;
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
-    this.store = loadExitStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  now;
-  check;
-  reports = [];
-  checking = false;
-  lastCheckStartedAt = 0;
-  /**
-   * Flow ids already added to this month's total. Shipping is at-least-once — a POST that
-   * succeeded but whose cursor write did not lands the same batch again — and the control plane
-   * dedupes on `flow_id` but this counter had nothing to dedupe on, so a retry pushed the org
-   * towards its cap on bytes it had already been charged for. Bounded and in memory: a restart
-   * loses it, which leaves one batch's worth of a window, and the cap is a courtesy, not a ledger.
-   */
-  counted = /* @__PURE__ */ new Set();
-  handlers() {
-    return {
-      "exit.propose": (p2) => this.propose(p2),
-      "exit.confirm": (p2) => this.confirm(p2),
-      "exit.cancel": (p2) => this.cancel(p2),
-      "exit.check": () => this.runCheckCommand()
-    };
-  }
-  /**
-   * What the proxy reads (`exit.json`). The password is in it: the proxy is the one process that
-   * has to present it, and the file is written to a tmpfs the agent owns. Same bargain as the
-   * credential swap.
-   */
-  exitConfig() {
-    const u2 = this.store.upstream;
-    if (!u2) return { enabled: false };
-    return {
-      enabled: true,
-      upstream: {
-        scheme: u2.scheme,
-        host: u2.host,
-        port: u2.port,
-        username: u2.username,
-        password: u2.password,
-        username_template: u2.usernameTemplate,
-        password_template: u2.passwordTemplate
-      },
-      sticky: this.store.sticky,
-      sticky_salt: this.store.stickySalt,
-      cap_bytes: this.store.capBytes,
-      used_bytes: this.usedThisMonth(),
-      // The org default. A rule's own `exit_country` wins over it; the proxy resolves that.
-      country: this.store.country
-    };
-  }
-  /** What rides the heartbeat. No secret, and no field the control plane could mistake for policy. */
-  status() {
-    const u2 = this.store.upstream;
-    this.rollMonth();
-    return {
-      configured: !!u2,
-      provider: u2?.provider ?? null,
-      sticky: this.store.sticky,
-      hint: u2?.usernameHint ?? null,
-      cap_bytes: this.store.capBytes,
-      country: this.store.country,
-      last_check: this.store.lastCheck ? {
-        at: Math.round(this.store.lastCheck.at / 1e3),
-        ok: this.store.lastCheck.ok,
-        exit_ip: this.store.lastCheck.exitIp,
-        exit_country: this.store.lastCheck.exitCountry,
-        error: this.store.lastCheck.error
-      } : null,
-      usage: { month: this.store.usage.month, bytes_in: this.store.usage.bytesIn, bytes_out: this.store.usage.bytesOut }
-    };
-  }
-  /** Reports made without a command behind them (a check that ran on its own), drained per beat. */
-  drainReports() {
-    const r2 = this.reports;
-    this.reports = [];
-    return r2;
-  }
-  usedThisMonth() {
-    this.rollMonth();
-    return this.store.usage.bytesIn + this.store.usage.bytesOut;
-  }
-  rollMonth() {
-    const month = monthKey(this.now());
-    if (this.store.usage.month !== month) {
-      this.store.usage = { month, bytesIn: 0, bytesOut: 0 };
-      this.save();
-    }
-  }
-  /**
-   * Add up what the relayed flows moved. Fed from the traffic log by the activity shipper, which
-   * is already reading every record on its way to the control plane, so this needs no second
-   * reader and no IPC. One consequence worth knowing: while the control plane is unreachable the
-   * shipper does not advance, so the cap under-counts for the length of the outage.
-   */
-  noteTraffic(records) {
-    if (!this.store.upstream) return;
-    let bytesIn = 0;
-    let bytesOut = 0;
-    for (const raw of records) {
-      const r2 = raw;
-      if (r2?.effect !== "residential") continue;
-      const id = typeof r2.flow_id === "string" ? r2.flow_id : null;
-      if (id) {
-        if (this.counted.has(id)) continue;
-        this.counted.add(id);
-        if (this.counted.size > COUNTED_IDS_KEPT) {
-          for (const old of [...this.counted].slice(0, this.counted.size - COUNTED_IDS_KEPT)) this.counted.delete(old);
-        }
-      }
-      if (typeof r2.bytes_in === "number") bytesIn += Math.max(0, r2.bytes_in);
-      if (typeof r2.bytes_out === "number") bytesOut += Math.max(0, r2.bytes_out);
-    }
-    if (!bytesIn && !bytesOut) return;
-    this.rollMonth();
-    this.store.usage.bytesIn += bytesIn;
-    this.store.usage.bytesOut += bytesOut;
-    this.save();
-  }
-  /** Called on a timer. Runs the reachability check when it is due and the org has an exit. */
-  async tick() {
-    if (!this.store.upstream || this.checking) return;
-    if (this.now() - this.lastCheckStartedAt < CHECK_INTERVAL_MS) return;
-    await this.runCheck();
-  }
-  /** Run the reachability check now, whatever the schedule says. */
-  async forceCheck() {
-    this.lastCheckStartedAt = 0;
-    return this.runCheck();
-  }
-  async runCheck() {
-    const upstream = this.store.upstream;
-    if (!upstream || this.checking) return null;
-    this.checking = true;
-    this.lastCheckStartedAt = this.now();
-    try {
-      const result = await this.check(upstream, renderTemplate, {
-        session: this.store.sticky ? CHECK_SESSION : null,
-        // The org default, so what the card reports as the exit IP is the country most rules get.
-        country: this.store.country
-      });
-      const before = this.store.lastCheck;
-      this.store.lastCheck = { at: this.now(), ok: result.ok, exitIp: result.exitIp, exitCountry: result.exitCountry, error: result.error };
-      this.save();
-      if (!before || before.ok !== result.ok || before.exitIp !== result.exitIp || before.exitCountry !== result.exitCountry) {
-        const where = `${result.exitIp ?? "an unknown address"}${result.exitCountry ? ` in ${result.exitCountry}` : ""}`;
-        this.log(`[exit] ${result.ok ? `reachable, exiting from ${where}` : `unreachable: ${result.error}`}`);
-      }
-      return result;
-    } catch (err) {
-      this.store.lastCheck = { at: this.now(), ok: false, exitIp: null, exitCountry: null, error: err.message.slice(0, 200) };
-      this.save();
-      return null;
-    } finally {
-      this.checking = false;
-    }
-  }
-  save() {
-    this.store.updatedAt = new Date(this.now()).toISOString();
-    saveExitStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  // ---- commands ----
-  async runCheckCommand() {
-    if (!this.store.upstream) return { ok: false, status: "failed", message: "No residential exit is set up." };
-    const result = await this.forceCheck();
-    if (!result) return { ok: false, status: "failed", message: "The check could not run." };
-    return {
-      ok: result.ok,
-      status: result.ok ? "applied" : "failed",
-      message: result.error ?? "",
-      data: { exitIp: result.exitIp, exitCountry: result.exitCountry, latencyMs: result.latencyMs }
-    };
-  }
-  async apply(p2) {
-    if (p2.kind === "remove") {
-      this.store.upstream = null;
-      this.store.stickySalt = "";
-      this.store.lastCheck = null;
-      this.save();
-      await this.opts.onExitChanged?.();
-      this.log("[exit] residential exit removed");
-      return { configured: false };
-    }
-    if (p2.kind === "settings") {
-      this.store.sticky = p2.sticky;
-      if (p2.capBytes !== void 0) this.store.capBytes = p2.capBytes;
-      const countryMoved = p2.country !== void 0 && p2.country !== this.store.country;
-      if (p2.country !== void 0) this.store.country = p2.country;
-      const templatesMoved = !!p2.templates && !!this.store.upstream && (this.store.upstream.usernameTemplate !== p2.templates.usernameTemplate || this.store.upstream.passwordTemplate !== p2.templates.passwordTemplate);
-      if (templatesMoved && this.store.upstream && p2.templates) {
-        this.store.upstream.usernameTemplate = p2.templates.usernameTemplate;
-        this.store.upstream.passwordTemplate = p2.templates.passwordTemplate;
-      }
-      this.save();
-      await this.opts.onExitChanged?.();
-      this.log(`[exit] sticky ${p2.sticky ? "on" : "off"}, cap ${p2.capBytes ?? "none"}, country ${this.store.country ?? "any"}${templatesMoved ? ", credential shape updated" : ""}`);
-      const result2 = countryMoved || templatesMoved ? await this.forceCheck() : null;
-      return {
-        configured: !!this.store.upstream,
-        sticky: p2.sticky,
-        country: this.store.country,
-        ...result2 ? { reachable: result2.ok, exitIp: result2.exitIp, exitCountry: result2.exitCountry, ...result2.ok ? {} : { checkError: result2.error } } : {}
-      };
-    }
-    const previous = this.store.upstream;
-    const username = p2.username ?? previous?.username ?? "";
-    const password = p2.password ?? previous?.password ?? "";
-    if (!password) throw new Error("This change carries no credential.");
-    const upstream = {
-      provider: p2.provider,
-      scheme: p2.scheme,
-      host: p2.host,
-      port: p2.port,
-      username,
-      password,
-      usernameTemplate: p2.usernameTemplate,
-      passwordTemplate: p2.passwordTemplate,
-      usernameHint: p2.usernameHint ?? previous?.usernameHint ?? null
-    };
-    this.store.upstream = upstream;
-    this.store.sticky = p2.sticky;
-    if (p2.country !== void 0) this.store.country = p2.country;
-    if (p2.capBytes !== void 0) this.store.capBytes = p2.capBytes;
-    else if (!previous) this.store.capBytes = DEFAULT_CAP_BYTES;
-    this.store.stickySalt = randomBytes8(32).toString("hex");
-    this.store.lastCheck = null;
-    this.save();
-    await this.opts.onExitChanged?.();
-    this.log(`[exit] ${p2.kind === "add" ? "connected" : "replaced"} ${p2.providerName} (${p2.scheme}://${p2.host}:${p2.port}, sticky ${p2.sticky ? "on" : "off"}, country ${this.store.country ?? "any"})`);
-    const result = await this.runCheck();
-    return {
-      configured: true,
-      sticky: p2.sticky,
-      country: this.store.country,
-      reachable: result?.ok ?? false,
-      exitIp: result?.exitIp ?? null,
-      exitCountry: result?.exitCountry ?? null,
-      ...result && !result.ok ? { checkError: result.error } : {}
-    };
-  }
-  async propose(payload) {
-    const p2 = parseProposal9(payload);
-    const summary = summarize11(p2, { country: this.store.country });
-    const data = { changeId: p2.changeId, summary };
-    if (!this.opts.channelsReady()) {
-      return { ok: false, status: "failed", data, message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly." };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(SCOPE8);
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.codes.send(SCOPE8, p2, "your organization's exit", summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[exit] code sent for ${p2.kind} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str10(payload.changeId);
-    if (!changeId) throw new Error("malformed exit.confirm payload");
-    const code = str10(payload.code) ?? "";
-    const data = { changeId };
-    const v2 = this.codes.verify(SCOPE8, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const summary = summarize11(v2.proposal, { country: this.store.country });
-    const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary, sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str10(payload.changeId);
-    this.codes.cancel(SCOPE8, changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/connector-client.ts
-var DEFAULT_TIMEOUT_MS = 4e4;
-var ConnectorRuntimeError = class extends Error {
-  constructor(message2, code, status) {
-    super(message2);
-    this.code = code;
-    this.status = status;
-  }
-};
-var ConnectorRuntime = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.base = opts.baseUrl.replace(/\/$/, "");
-  }
-  fetchImpl;
-  timeoutMs;
-  base;
-  get baseUrl() {
-    return this.base;
-  }
-  async call(method, path, body, auth = true) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    let res;
-    try {
-      res = await this.fetchImpl(`${this.base}${path}`, {
-        method,
-        headers: {
-          ...auth ? { Authorization: `Bearer ${this.opts.adminToken}` } : {},
-          ...body !== void 0 ? { "content-type": "application/json" } : {}
-        },
-        body: body !== void 0 ? JSON.stringify(body) : void 0,
-        signal: controller.signal,
-        redirect: "manual"
-      });
-    } catch (err) {
-      if (err.name === "AbortError") throw new ConnectorRuntimeError("The connector runtime did not answer in time.", "timeout", 504);
-      throw new ConnectorRuntimeError("The connector runtime is not reachable on this firewall.", "unreachable", 503);
-    } finally {
-      clearTimeout(timer);
-    }
-    const text2 = await res.text();
-    let parsed = {};
-    try {
-      parsed = text2 ? JSON.parse(text2) : {};
-    } catch {
-      parsed = {};
-    }
-    if (res.status >= 300 && res.status < 400) return {};
-    if (!res.ok || parsed.success === false) {
-      const code = typeof parsed.errorCode === "string" ? parsed.errorCode : null;
-      const message2 = typeof parsed.message === "string" && parsed.message ? parsed.message : `connector runtime ${res.status}`;
-      throw new ConnectorRuntimeError(message2, code, res.status);
-    }
-    return parsed.data !== void 0 ? parsed.data : parsed;
-  }
-  // ---- reads ----
-  async health() {
-    try {
-      await this.call("GET", "/v1/health", void 0, false);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  setup(service) {
-    return this.call("GET", `/v1/providers/${encodeURIComponent(service)}/setup`);
-  }
-  connections() {
-    return this.call("GET", "/v1/connections");
-  }
-  /** Redacted audit records; never a credential, never a request body. */
-  async runs(limit) {
-    const r2 = await this.call("GET", `/api/runs?limit=${limit}`);
-    return Array.isArray(r2) ? r2 : r2.items ?? [];
-  }
-  requestStatus(requestId) {
-    return this.call("GET", `/v1/connection-requests/${encodeURIComponent(requestId)}`);
-  }
-  // ---- connections ----
-  connectApiKey(service, body) {
-    return this.call("POST", `/v1/connections/${encodeURIComponent(service)}/connect/api-key`, body);
-  }
-  connectCustom(service, body) {
-    return this.call("POST", `/v1/connections/${encodeURIComponent(service)}/connect/custom-credential`, body);
-  }
-  replaceApiKey(appId, body) {
-    return this.call("POST", `/v1/connections/by-id/${encodeURIComponent(appId)}/connect/api-key`, body);
-  }
-  replaceCustom(appId, body) {
-    return this.call("POST", `/v1/connections/by-id/${encodeURIComponent(appId)}/connect/custom-credential`, body);
-  }
-  /** There is no `/v1` delete, so this is the console route the runtime documents for it. */
-  deleteConnection(service, alias) {
-    const q2 = alias ? `?connectionName=${encodeURIComponent(alias)}` : "";
-    return this.call("DELETE", `/api/connections/${encodeURIComponent(service)}${q2}`);
-  }
-  // ---- OAuth (the customer's own app) ----
-  putOAuthConfig(service, body) {
-    return this.call("PUT", `/api/oauth/configs/${encodeURIComponent(service)}`, body);
-  }
-  startAuthorization(service, body) {
-    return this.call("POST", `/v1/connections/${encodeURIComponent(service)}/connect`, body);
-  }
-  reauthorize(appId, body) {
-    return this.call("POST", `/v1/connections/by-id/${encodeURIComponent(appId)}/connect`, body);
-  }
-  /**
-   * Replay a callback the provider delivered to the control plane. Unauthenticated on the
-   * runtime's side by design: it is the route a browser is redirected to, and the `code` is
-   * worthless without the PKCE verifier and the client secret, which never leave this box.
-   */
-  completeCallback(query) {
-    return this.call("GET", `/oauth/callback?${query}`, void 0, false);
-  }
-  // ---- runtime tokens ----
-  createToken(body) {
-    return this.call("POST", "/api/runtime-tokens", { ...body, blockedActions: [], allowedProxies: [] });
-  }
-  /** A PUT must always send `allowedConnections`, or it silently drops the restriction. */
-  updateToken(id, body) {
-    return this.call("PUT", `/api/runtime-tokens/${encodeURIComponent(id)}`, { ...body, blockedActions: [], allowedProxies: [] });
-  }
-  revokeToken(id) {
-    return this.call("DELETE", `/api/runtime-tokens/${encodeURIComponent(id)}`);
-  }
-};
-
-// src/connector-store.ts
-function aad13(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:connectors`;
-}
-function emptyConnectorStore() {
-  return { version: 1, connections: {}, agents: {} };
-}
-function loadConnectorStore(path, boxKeyB64, ids2) {
-  const parsed = loadStoreOrEmpty("connectors", path, boxKeyB64, aad13(ids2));
-  return parsed && parsed.version === 1 && parsed.connections && parsed.agents ? parsed : emptyConnectorStore();
-}
-function saveConnectorStore(path, store, boxKeyB64, ids2) {
-  saveStore("connectors", path, store, boxKeyB64, aad13(ids2));
-}
-function servicesFor(store, agent) {
-  const services = /* @__PURE__ */ new Set();
-  for (const id of agent.connections) {
-    const c2 = store.connections[id];
-    if (c2) services.add(c2.service);
-  }
-  return [...services].sort();
-}
-
-// src/connectors.ts
-var SCOPE9 = "org";
-var OAUTH_PENDING_MS = 15 * 6e4;
-function str11(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function strMap(v2, max = 20) {
-  const out = {};
-  if (!v2 || typeof v2 !== "object") return out;
-  for (const [k2, value] of Object.entries(v2)) {
-    if (Object.keys(out).length >= max) break;
-    if (typeof value === "string" && value.length > 0 && /^[A-Za-z0-9_]{1,64}$/.test(k2)) out[k2] = value.slice(0, 4096);
-  }
-  return out;
-}
-function isKind7(v2) {
-  return v2 === "connect" || v2 === "replace" || v2 === "remove" || v2 === "assign" || v2 === "unassign" || v2 === "oauth_connect" || v2 === "oauth_reconnect";
-}
-var SERVICE_RE = /^[a-z0-9][a-z0-9_]{0,60}$/;
-function parseConnectorProposal(payload) {
-  const changeId = str11(payload.changeId);
-  const service = str11(payload.service);
-  if (!changeId || !service || !SERVICE_RE.test(service) || !isKind7(payload.kind)) throw new Error("malformed connectors.propose payload");
-  const agents = Array.isArray(payload.agents) ? payload.agents : [];
-  const secret = payload.secret;
-  return {
-    changeId,
-    kind: payload.kind,
-    service,
-    serviceName: str11(payload.serviceName) ?? service,
-    connectionId: str11(payload.connectionId),
-    label: str11(payload.label),
-    extra: strMap(payload.extra),
-    clientId: str11(payload.clientId),
-    authorizationOptionIds: Array.isArray(payload.authorizationOptionIds) ? payload.authorizationOptionIds.filter((s2) => typeof s2 === "string" && s2.length > 0).slice(0, 40) : [],
-    agents: agents.filter((a2) => str11(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str11(a2.name) ?? String(a2.vmId), hostname: str11(a2.hostname), privateIp: str11(a2.privateIp) })),
-    ...secret ? {
-      secret: {
-        ...str11(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {},
-        ...secret.values ? { values: strMap(secret.values, 30) } : {},
-        ...str11(secret.clientSecret) ? { clientSecret: String(secret.clientSecret) } : {},
-        ...secret.extraSecret ? { extraSecret: strMap(secret.extraSecret, 20) } : {}
-      }
-    } : {}
-  };
-}
-function summarizeConnector(p2) {
-  const named2 = p2.label ? `${p2.serviceName} (${p2.label})` : p2.serviceName;
-  const one = p2.agents[0];
-  const on = p2.agents.length === 1 ? ` to ${one.name}` : p2.agents.length > 1 ? ` to ${p2.agents.length} agents` : "";
-  switch (p2.kind) {
-    case "connect":
-    case "oauth_connect":
-      return `Connect ${named2}${on}`;
-    case "replace":
-      return `Replace the credentials of ${named2}`;
-    case "oauth_reconnect":
-      return `Sign in to ${named2} again`;
-    case "remove":
-      return `Remove ${named2} from the organization`;
-    case "assign":
-      return `Let ${one?.name ?? "the agent"} use ${named2}`;
-    case "unassign":
-      return `Stop ${one?.name ?? "the agent"} using ${named2}`;
-  }
-}
-var ConnectorsFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
-    this.store = loadConnectorStore(opts.storePath, opts.boxKey, opts.ids);
-  }
-  store;
-  codes;
-  log;
-  now;
-  pendingOauth = /* @__PURE__ */ new Map();
-  handlers() {
-    return {
-      "connectors.read": (p2) => this.read(p2),
-      "connectors.propose": (p2) => this.propose(p2),
-      "connectors.confirm": (p2) => this.confirm(p2),
-      "connectors.cancel": (p2) => this.cancel(p2),
-      "connectors.callback": (p2) => this.callback(p2),
-      "connectors.push": (p2) => this.push(p2),
-      "connectors.forget": (p2) => this.forget(p2)
-    };
-  }
-  /** What the console may see about this firewall's connectors: counts, never a credential. */
-  summary() {
-    return { connections: Object.keys(this.store.connections).length, agents: Object.keys(this.store.agents).length };
-  }
-  /** Token id → vm id, so a run record can be attributed to the agent that made the call. */
-  agentForToken(tokenId) {
-    return Object.entries(this.store.agents).find(([, a2]) => a2.tokenId === tokenId)?.[0] ?? null;
-  }
-  /** Runtime token → vm id and its private IP, for the connector gate's source check. */
-  agentForRuntimeToken(token2) {
-    const hit = Object.entries(this.store.agents).find(([, a2]) => a2.token === token2);
-    return hit ? { vmId: hit[0], privateIp: hit[1].privateIp } : null;
-  }
-  save() {
-    saveConnectorStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  // ---- reads ----
-  async read(payload) {
-    const kind = str11(payload.kind);
-    try {
-      if (kind === "setup") {
-        const service = str11(payload.service);
-        if (!service || !SERVICE_RE.test(service)) throw new Error("connectors.read setup needs a service");
-        const setup = await this.opts.runtime.setup(service);
-        return { ok: true, status: "done", data: { kind, service, auth: setup.auth ?? [], oauthClient: setup.oauthClient ?? null } };
-      }
-      if (kind === "connections") {
-        await this.reconcileConnections();
-        return { ok: true, status: "done", data: { kind, connections: Object.values(this.store.connections), agents: this.agentView() } };
-      }
-      throw new Error(`unknown connectors.read kind ${kind ?? "(none)"}`);
-    } catch (err) {
-      return { ok: false, status: "failed", message: messageOf(err), data: { kind } };
-    }
-  }
-  agentView() {
-    return Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, connections: a2.connections, hasToken: !!a2.token }));
-  }
-  /**
-   * Bring the store's view of the connections in line with the runtime's. The runtime is the
-   * owner: it can change a connection's state on its own (an OAuth credential that expired reads
-   * `reauth_required`), and a connection it no longer has must stop being offered here.
-   */
-  async reconcileConnections() {
-    const live = await this.opts.runtime.connections();
-    const byId = new Map(live.map((c2) => [c2.id, c2]));
-    let changed = false;
-    for (const [id, stored] of Object.entries(this.store.connections)) {
-      const l2 = byId.get(id);
-      if (!l2) {
-        delete this.store.connections[id];
-        for (const a2 of Object.values(this.store.agents)) a2.connections = a2.connections.filter((c2) => c2 !== id);
-        changed = true;
-        continue;
-      }
-      const next = this.mergeConnection(stored, l2);
-      if (JSON.stringify(next) !== JSON.stringify(stored)) {
-        this.store.connections[id] = next;
-        changed = true;
-      }
-    }
-    if (changed) this.save();
-  }
-  mergeConnection(stored, live) {
-    return {
-      ...stored,
-      service: live.service,
-      alias: live.alias ?? stored.alias,
-      authType: live.authType ?? stored.authType,
-      accountLabel: live.accountLabel ?? live.displayName ?? stored.accountLabel,
-      state: live.status ?? stored.state,
-      lastError: live.status && live.status !== "active" ? stored.lastError ?? null : null
-    };
-  }
-  // ---- proposing ----
-  async propose(payload) {
-    const p2 = parseConnectorProposal(payload);
-    const summary = summarizeConnector(p2);
-    const data = { changeId: p2.changeId, summary };
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(SCOPE9);
-      try {
-        const applied = await this.apply(p2);
-        return { ok: true, status: applied.status, message: applied.message ?? "", data: { ...data, ...applied.data, tofu: true } };
-      } catch (err) {
-        return { ok: false, status: "failed", message: messageOf(err), data };
-      }
-    }
-    const sent = await this.codes.send(SCOPE9, p2, "your organization's app connections", summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[connectors] code sent for ${p2.kind} ${p2.service} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str11(payload.changeId);
-    const code = str11(payload.code) ?? "";
-    if (!changeId) throw new Error("malformed connectors.confirm payload");
-    const data = { changeId };
-    const v2 = this.codes.verify(SCOPE9, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    try {
-      const applied = await this.apply(v2.proposal);
-      return { ok: true, status: applied.status, message: applied.message ?? "", data: { ...data, ...applied.data, summary: summarizeConnector(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-    } catch (err) {
-      return { ok: false, status: "failed", message: messageOf(err), data: { ...data, summary: summarizeConnector(v2.proposal) } };
-    }
-  }
-  async cancel(payload) {
-    const changeId = str11(payload.changeId);
-    this.codes.cancel(SCOPE9, changeId);
-    for (const [state, pending] of this.pendingOauth) if (pending.proposal.changeId === changeId) this.pendingOauth.delete(state);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  // ---- applying ----
-  async apply(p2) {
-    switch (p2.kind) {
-      case "connect":
-      case "replace":
-        return this.applyCredential(p2);
-      case "remove":
-        return this.applyRemove(p2);
-      case "assign":
-      case "unassign":
-        return this.applyAssignment(p2);
-      case "oauth_connect":
-      case "oauth_reconnect":
-        return this.applyOauthStart(p2);
-    }
-  }
-  /** An API key or a set of custom-credential fields: straight into the runtime, which validates it. */
-  async applyCredential(p2) {
-    const secret = p2.secret;
-    if (!secret || !secret.apiKey && !secret.values) throw new Error("no credential in the proposal");
-    const comment = p2.label ?? void 0;
-    let conn;
-    if (p2.kind === "replace") {
-      if (!p2.connectionId) throw new Error("a replacement needs the connection it replaces");
-      conn = secret.apiKey ? await this.opts.runtime.replaceApiKey(p2.connectionId, { apiKey: secret.apiKey, extra: p2.extra, comment }) : await this.opts.runtime.replaceCustom(p2.connectionId, { values: { ...p2.extra, ...secret.values }, comment });
-    } else {
-      conn = secret.apiKey ? await this.opts.runtime.connectApiKey(p2.service, { apiKey: secret.apiKey, extra: p2.extra, comment }) : await this.opts.runtime.connectCustom(p2.service, { values: { ...p2.extra, ...secret.values }, comment });
-    }
-    return this.recordAndAssign(p2, conn);
-  }
-  /** The connection exists in the runtime: remember it, put it on the named agents, push. */
-  async recordAndAssign(p2, conn) {
-    const iso = new Date(this.now()).toISOString();
-    const existing = this.store.connections[conn.id];
-    this.store.connections[conn.id] = {
-      id: conn.id,
-      service: conn.service,
-      alias: conn.alias ?? "default",
-      authType: conn.authType ?? "api_key",
-      accountLabel: conn.accountLabel ?? conn.displayName ?? null,
-      label: p2.label ?? existing?.label ?? null,
-      state: conn.status ?? "active",
-      lastError: null,
-      createdAt: existing?.createdAt ?? iso,
-      updatedAt: iso
-    };
-    for (const a2 of p2.agents) this.grant(a2, conn.id, true);
-    this.save();
-    const pushed = await this.pushAgents(this.agentsHolding(conn.id));
-    return {
-      status: "applied",
-      data: {
-        connection: this.publicConnection(conn.id),
-        assigned: p2.agents.map((a2) => a2.vmId),
-        applied: pushed.applied,
-        failed: pushed.failed
-      }
-    };
-  }
-  async applyRemove(p2) {
-    if (!p2.connectionId) throw new Error("a removal needs a connection id");
-    const stored = this.store.connections[p2.connectionId];
-    const holders = this.agentsHolding(p2.connectionId);
-    if (stored) {
-      try {
-        await this.opts.runtime.deleteConnection(stored.service, stored.alias);
-      } catch (err) {
-        if (!(err instanceof ConnectorRuntimeError) || err.status !== 404) throw err;
-      }
-    }
-    delete this.store.connections[p2.connectionId];
-    for (const a2 of Object.values(this.store.agents)) a2.connections = a2.connections.filter((c2) => c2 !== p2.connectionId);
-    this.save();
-    const pushed = await this.pushAgents(holders);
-    return { status: "applied", data: { connectionId: p2.connectionId, applied: pushed.applied, failed: pushed.failed } };
-  }
-  async applyAssignment(p2) {
-    if (!p2.connectionId) throw new Error("an assignment needs a connection id");
-    if (!this.store.connections[p2.connectionId]) throw new Error("This app is not connected on the firewall. Connect it again.");
-    const a2 = p2.agents[0];
-    if (!a2) throw new Error("no agent in the proposal");
-    this.grant(a2, p2.connectionId, p2.kind === "assign");
-    this.save();
-    const pushed = await this.pushAgents([a2.vmId]);
-    return { status: "applied", data: { connectionId: p2.connectionId, vmId: a2.vmId, assigned: p2.kind === "assign", applied: pushed.applied, failed: pushed.failed } };
-  }
-  /**
-   * Store the customer's own OAuth client and start an authorization. The `code` the provider
-   * hands back later cannot be spent without the verifier and the client secret, and both stay
-   * in the runtime on this box — which is what makes the control-plane relay safe.
-   */
-  async applyOauthStart(p2) {
-    if (p2.kind === "oauth_connect") {
-      if (!p2.clientId || !p2.secret?.clientSecret) throw new Error("an OAuth app needs its client id and secret");
-      const extra = { ...p2.extra, ...p2.secret.extraSecret ?? {} };
-      await this.opts.runtime.putOAuthConfig(p2.service, {
-        clientId: p2.clientId,
-        clientSecret: p2.secret.clientSecret,
-        ...Object.keys(extra).length ? { extra } : {}
-      });
-    }
-    const auth = p2.kind === "oauth_reconnect" && p2.connectionId ? await this.opts.runtime.reauthorize(p2.connectionId, {}) : await this.opts.runtime.startAuthorization(p2.service, { ...p2.authorizationOptionIds.length ? { authorizationOptionIds: p2.authorizationOptionIds } : {} });
-    this.forgetStaleOauth();
-    this.pendingOauth.set(auth.stateHandle, {
-      state: auth.stateHandle,
-      service: p2.service,
-      requestId: auth.connectionRequestId,
-      appId: p2.connectionId,
-      proposal: p2,
-      startedAt: this.now()
-    });
-    this.log(`[connectors] ${p2.service} authorization started (state ${auth.stateHandle.slice(0, 8)}\u2026)`);
-    return {
-      status: "awaiting_authorization",
-      data: { authorizationUrl: auth.authorizationUrl, state: auth.stateHandle, requestId: auth.connectionRequestId, expiresAt: auth.expiresAt ?? null }
-    };
-  }
-  /**
-   * The relayed callback. The control plane only carries `state` and `code` here; this checks the
-   * state is one WE minted (so the relay cannot complete an authorization nobody asked for),
-   * replays it on loopback, and reads the outcome from the runtime's own request record.
-   */
-  async callback(payload) {
-    const state = str11(payload.state);
-    const code = str11(payload.code);
-    const error62 = str11(payload.error);
-    if (!state) throw new Error("malformed connectors.callback payload");
-    this.forgetStaleOauth();
-    const pending = this.pendingOauth.get(state);
-    if (!pending) {
-      return { ok: false, status: "expired", message: "This sign-in is no longer waiting on your firewall. Start it again.", data: { state } };
-    }
-    this.pendingOauth.delete(state);
-    const data = { changeId: pending.proposal.changeId, state };
-    const query = new URLSearchParams({ state, ...code ? { code } : {}, ...error62 ? { error: error62 } : {} }).toString();
-    try {
-      await this.opts.runtime.completeCallback(query);
-    } catch (err) {
-      this.log(`[connectors] callback for ${pending.service} refused: ${messageOf(err)}`);
-    }
-    let status;
-    try {
-      status = await this.opts.runtime.requestStatus(pending.requestId);
-    } catch (err) {
-      return { ok: false, status: "failed", message: messageOf(err), data };
-    }
-    if (status.status !== "connected" || !status.appId) {
-      const message2 = status.errorMessage || (error62 ? `The provider refused the sign-in (${error62}).` : "The sign-in did not complete.");
-      return { ok: false, status: "failed", message: message2, data };
-    }
-    const live = (await this.opts.runtime.connections()).find((c2) => c2.id === status.appId);
-    if (!live) return { ok: false, status: "failed", message: "The sign-in completed but the connection is gone.", data };
-    const applied = await this.recordAndAssign(pending.proposal, live);
-    return { ok: true, status: "applied", message: "", data: { ...data, ...applied.data, summary: summarizeConnector(pending.proposal), tofu: false } };
-  }
-  forgetStaleOauth() {
-    for (const [state, p2] of this.pendingOauth) if (this.now() - p2.startedAt > OAUTH_PENDING_MS) this.pendingOauth.delete(state);
-  }
-  // ---- agents ----
-  agentOf(ref) {
-    let a2 = this.store.agents[ref.vmId];
-    if (!a2) {
-      a2 = { name: ref.name, hostname: ref.hostname, privateIp: ref.privateIp, tokenId: null, token: null, connections: [] };
-      this.store.agents[ref.vmId] = a2;
-    }
-    if (ref.name) a2.name = ref.name;
-    if (ref.hostname) a2.hostname = ref.hostname;
-    if (ref.privateIp) a2.privateIp = ref.privateIp;
-    return a2;
-  }
-  grant(ref, connectionId, on) {
-    const a2 = this.agentOf(ref);
-    a2.connections = on ? [.../* @__PURE__ */ new Set([...a2.connections, connectionId])] : a2.connections.filter((c2) => c2 !== connectionId);
-  }
-  agentsHolding(connectionId) {
-    return Object.entries(this.store.agents).filter(([, a2]) => a2.connections.includes(connectionId)).map(([vmId]) => vmId);
-  }
-  publicConnection(id) {
-    return this.store.connections[id] ?? null;
-  }
-  target(vmId) {
-    const host = this.store.agents[vmId]?.hostname ?? null;
-    if (!host) throw new Error("This agent has no hostname yet.");
-    return { vmId, hostname: host };
-  }
-  /**
-   * Bring an agent's runtime token in line with its grants and push the MCP entry to its box.
-   * A token is created on the first grant and narrowed on every change after that, so a
-   * connection taken away stops working the moment the firewall applies it — the agent box never
-   * has to be reachable for a revocation to bite.
-   */
-  async syncAgent(vmId) {
-    const a2 = this.store.agents[vmId];
-    if (!a2) return;
-    const services = servicesFor(this.store, a2);
-    const allowedActions = services.map((s2) => `${s2}.*`);
-    if (a2.connections.length === 0) {
-      if (a2.tokenId) {
-        try {
-          await this.opts.runtime.revokeToken(a2.tokenId);
-        } catch (err) {
-          this.log(`[connectors] could not revoke ${a2.name}'s token: ${messageOf(err)}`);
-        }
-      }
-      a2.tokenId = null;
-      a2.token = null;
-      this.save();
-      await this.opts.agent.post(this.target(vmId), "/connectors/apply", { remove: true });
-      return;
-    }
-    if (!a2.tokenId || !a2.token) {
-      const minted = await this.opts.runtime.createToken({ name: `controlclaw-agent-${vmId}`, allowedActions, allowedConnections: a2.connections });
-      a2.tokenId = minted.record.id;
-      a2.token = minted.token;
-    } else {
-      await this.opts.runtime.updateToken(a2.tokenId, { name: `controlclaw-agent-${vmId}`, allowedActions, allowedConnections: a2.connections });
-    }
-    this.save();
-    await this.opts.agent.post(this.target(vmId), "/connectors/apply", {
-      gateway: { url: this.opts.gatewayUrl, token: a2.token },
-      connections: a2.connections.map((id) => this.store.connections[id]).filter((c2) => !!c2).map((c2) => ({ id: c2.id, service: c2.service, alias: c2.alias, label: c2.label, accountLabel: c2.accountLabel }))
-    });
-  }
-  async pushAgents(vmIds) {
-    const applied = [];
-    const failed = [];
-    for (const vmId of vmIds) {
-      try {
-        await this.syncAgent(vmId);
-        applied.push(vmId);
-      } catch (err) {
-        failed.push({ vmId, error: messageOf(err) });
-      }
-    }
-    return { applied, failed };
-  }
-  /**
-   * A box came up: re-push what it should have. Nothing to confirm — it holds this already.
-   *
-   * "This firewall holds nothing for that agent" is reported as `empty`, never as `applied`. The
-   * control plane only asks for a push when its own rows say the agent has apps, so the two
-   * disagreeing means something is gone — most often this box was rebuilt and its store went with
-   * it. Answering `applied` there told the console every agent was fine while no token existed
-   * and no MCP entry had been pushed.
-   */
-  async push(payload) {
-    const vmId = str11(payload.vmId);
-    if (!vmId) throw new Error("malformed connectors.push payload");
-    const a2 = this.store.agents[vmId];
-    if (!a2 || a2.connections.length === 0) {
-      return {
-        ok: true,
-        status: "empty",
-        message: "This firewall has no app connections for that agent. Connect the apps again.",
-        data: { vmId, applied: [], failed: [], held: 0 }
-      };
-    }
-    if (str11(payload.hostname)) a2.hostname = String(payload.hostname);
-    if (str11(payload.name)) a2.name = String(payload.name);
-    if (str11(payload.privateIp)) a2.privateIp = String(payload.privateIp);
-    this.save();
-    const pushed = await this.pushAgents([vmId]);
-    return {
-      ok: pushed.failed.length === 0,
-      status: pushed.failed.length ? "failed" : "applied",
-      message: pushed.failed.map((f2) => f2.error).join("; "),
-      data: { vmId, applied: pushed.applied, failed: pushed.failed, connections: a2.connections }
-    };
-  }
-  /**
-   * An agent was deleted. Its token is revoked and its grants dropped with no code: this only
-   * takes access away, and leaving a live token behind for a box that no longer exists would be
-   * the insecure outcome.
-   */
-  async forget(payload) {
-    const vmId = str11(payload.vmId);
-    if (!vmId) throw new Error("malformed connectors.forget payload");
-    const a2 = this.store.agents[vmId];
-    if (!a2) return { ok: true, status: "applied", data: { vmId, revoked: false } };
-    let revoked = false;
-    if (a2.tokenId) {
-      try {
-        await this.opts.runtime.revokeToken(a2.tokenId);
-        revoked = true;
-      } catch (err) {
-        this.log(`[connectors] could not revoke the token of the deleted agent ${vmId}: ${messageOf(err)}`);
-      }
-    }
-    delete this.store.agents[vmId];
-    this.save();
-    return { ok: true, status: "applied", data: { vmId, revoked } };
-  }
-};
-function messageOf(err) {
-  return (err?.message ?? "the connector runtime failed").slice(0, 500);
-}
-
-// src/connector-runs.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync7, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname3 } from "path";
-var DEFAULT_BATCH = 50;
-function toRunRecord(run, vmId) {
-  if (!run.id || !run.startedAt) return null;
-  const at2 = Date.parse(run.startedAt);
-  if (!Number.isFinite(at2)) return null;
-  return {
-    source: "connector_run",
-    run_id: run.id,
-    ts: at2 / 1e3,
-    vm_id: vmId,
-    service: run.service ?? "",
-    action_id: run.actionId ?? "",
-    caller: run.caller ?? null,
-    ok: run.ok === true,
-    // Rounded: the ingest schema is `z.number().int()`, and one fractional value would fail
-    // validation for the WHOLE batch — a 400, which the shipper treats as permanent and skips
-    // past, silently dropping every run in it.
-    duration_ms: typeof run.durationMs === "number" ? Math.round(run.durationMs) : null,
-    error_code: run.errorCode ?? null
-  };
-}
-var ConnectorRunShipper = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.state = readState(opts.statePath);
-  }
-  state;
-  fetchImpl;
-  log;
-  inFlight = false;
-  backoffMs = 0;
-  nextAttemptAt = 0;
-  async tick() {
-    if (this.inFlight || Date.now() < this.nextAttemptAt) return { shipped: 0 };
-    this.inFlight = true;
-    try {
-      const runs = await this.opts.runtime.runs(this.opts.batchSize ?? DEFAULT_BATCH);
-      const since = this.state.since ? Date.parse(this.state.since) : 0;
-      const fresh = runs.filter((r2) => r2.startedAt && Date.parse(r2.startedAt) > since);
-      if (fresh.length === 0) return { shipped: 0 };
-      const records = fresh.map((r2) => toRunRecord(r2, r2.runtimeTokenId ? this.opts.agentForToken(r2.runtimeTokenId) : null)).filter((r2) => !!r2);
-      if (records.length === 0) return { shipped: 0 };
-      const res = await this.fetchImpl(this.opts.activityUrl, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
-        body: JSON.stringify({ records })
-      });
-      if (res.status === 400 || res.status === 413) {
-        this.log(`[connectors] run batch rejected (HTTP ${res.status}); skipping ${records.length} record(s)`);
-      } else if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const newest = fresh.reduce((max, r2) => Math.max(max, Date.parse(r2.startedAt)), since);
-      this.state = { since: new Date(newest).toISOString() };
-      writeState(this.opts.statePath, this.state);
-      this.backoffMs = 0;
-      return { shipped: records.length };
-    } catch (err) {
-      this.backoffMs = Math.min(this.backoffMs ? this.backoffMs * 2 : 5e3, 6e4);
-      this.nextAttemptAt = Date.now() + this.backoffMs;
-      this.log(`[connectors] run ship failed (${err.message}); retry in ${this.backoffMs / 1e3}s`);
-      return { shipped: 0 };
-    } finally {
-      this.inFlight = false;
-    }
-  }
-};
-function readState(path) {
-  if (!existsSync5(path)) return { since: null };
-  try {
-    const parsed = JSON.parse(readFileSync7(path, "utf8"));
-    return { since: typeof parsed.since === "string" ? parsed.since : null };
-  } catch {
-    return { since: null };
-  }
-}
-function writeState(path, state) {
-  mkdirSync4(dirname3(path), { recursive: true });
-  const tmp = `${path}.tmp`;
-  writeFileSync5(tmp, JSON.stringify(state), { mode: 384 });
-  renameSync2(tmp, path);
-}
-
-// src/connector-gate.ts
-import { createServer, request as httpRequest } from "http";
-var ALLOWED = [
-  /^\/mcp$/,
-  /^\/mcp\/tools$/,
-  /^\/v1\/health$/,
-  /^\/v1\/apps(\/|$)/,
-  /^\/v1\/actions(\/|$)/,
-  /^\/v1\/proxy\//
-];
-var GATEWAY_TIMEOUT_MS = 12e4;
-function gateAllows(path) {
-  return ALLOWED.some((re2) => re2.test(path));
-}
-function deny(res, status, message2) {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify({ success: false, message: message2, errorCode: status === 403 ? "source_not_allowed" : "not_found" }));
-}
-function bearer(req) {
-  const header = req.headers.authorization;
-  if (!header || Array.isArray(header)) return null;
-  const m2 = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return m2 ? m2[1].trim() : null;
-}
-function sameAddress(a2, b2) {
-  const norm = (v2) => (v2 ?? "").replace(/^::ffff:/i, "").trim();
-  const left = norm(a2);
-  return left.length > 0 && left === norm(b2);
-}
-function createConnectorGate(opts) {
-  const log = opts.log ?? ((l2) => console.log(l2));
-  return createServer((req, res) => {
-    const path = (req.url ?? "/").split("?")[0];
-    if (!gateAllows(path)) {
-      deny(res, 404, "Not found.");
-      req.resume();
-      return;
-    }
-    const token2 = bearer(req);
-    const agent = token2 ? opts.resolve(token2) : null;
-    if (agent) {
-      if (agent.privateIp && !sameAddress(req.socket.remoteAddress, agent.privateIp)) {
-        log(`[connectors] refused ${agent.vmId}'s token from ${req.socket.remoteAddress} (expected ${agent.privateIp})`);
-        deny(res, 403, "This token belongs to another agent.");
-        req.resume();
-        return;
-      }
-      if (!agent.privateIp) log(`[connectors] ${agent.vmId} has no private IP on file; allowing on the token alone`);
-    }
-    const upstream = httpRequest(
-      { host: opts.target.host, port: opts.target.port, method: req.method, path: req.url, headers: { ...req.headers, host: `${opts.target.host}:${opts.target.port}` } },
-      (up) => {
-        res.writeHead(up.statusCode ?? 502, up.headers);
-        up.pipe(res);
-      }
-    );
-    upstream.setTimeout(GATEWAY_TIMEOUT_MS, () => upstream.destroy(new Error("timeout")));
-    upstream.on("error", (err) => {
-      log(`[connectors] gate upstream failed: ${err.message}`);
-      if (!res.headersSent) deny(res, 502, "The connector runtime is not answering on this firewall.");
-      else res.end();
-    });
-    req.pipe(upstream);
-  });
-}
-
-// src/update.ts
-var SCOPE_PREFIX5 = "update:";
-var UPDATE_WINDOW_MS = 60 * 6e4;
-var UPDATE_POLL_MS = 3e4;
-function str12(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function summarize12(p2) {
-  return `Update the software on ${p2.agent.name}`;
-}
-function parseProposal10(payload) {
-  const changeId = str12(payload.changeId);
-  const agent = payload.agent ?? {};
-  const vmId = str12(agent.vmId);
-  const hostname3 = str12(agent.hostname);
-  if (!changeId || !vmId || !hostname3) throw new Error("malformed update.propose payload");
-  return { changeId, agent: { vmId, name: str12(agent.name) ?? vmId, hostname: hostname3 } };
-}
-var UpdateFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode, recovery: opts.recovery });
-  }
-  codes;
-  log;
-  now;
-  open = /* @__PURE__ */ new Map();
-  timer = null;
-  /**
-   * The boxes updating right now, as vm id → the window's deadline in epoch seconds (the proxy
-   * compares it with `time.time()`). Only this process opens a window, and only once the update was
-   * confirmed, so the control plane cannot open one.
-   */
-  windows() {
-    const out = {};
-    const now2 = this.now();
-    for (const [vmId, w2] of this.open) if (w2.until > now2) out[vmId] = Math.floor(w2.until / 1e3);
-    return out;
-  }
-  async openWindow(target) {
-    const openedAt = this.now();
-    this.open.set(target.vmId, { target, openedAt, until: openedAt + UPDATE_WINDOW_MS, sawRunning: false });
-    try {
-      await this.opts.onWindowsChanged?.();
-    } catch (err) {
-      this.open.delete(target.vmId);
-      throw new Error("Your firewall could not prepare for the update. Try again shortly.", { cause: err });
-    }
-    const pollMs = this.opts.pollMs ?? UPDATE_POLL_MS;
-    if (pollMs > 0 && !this.timer) {
-      this.timer = setInterval(() => void this.pollWindows(), pollMs);
-      this.timer.unref?.();
-    }
-  }
-  async closeWindow(vmId, why) {
-    if (!this.open.delete(vmId)) return;
-    this.log(`[update] window closed for ${vmId} (${why})`);
-    if (this.open.size === 0 && this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    try {
-      await this.opts.onWindowsChanged?.();
-    } catch (err) {
-      this.log(`[update] could not resync after closing the window for ${vmId}: ${err.message}`);
-    }
-  }
-  /**
-   * Ask each updating box how its run is going, and close the window once the run has finished.
-   *
-   * The box answers from a state file, and until cc-reprovision writes its first phase that file
-   * still holds the previous run's `done` or `failed`. So a finished phase only counts once this
-   * window has seen the run in progress, or when it was written after the window opened. A box that
-   * does not answer (it restarts its own agent part way through the run) keeps its window until the
-   * deadline.
-   */
-  async pollWindows() {
-    const now2 = this.now();
-    for (const [vmId, w2] of [...this.open]) {
-      if (w2.until <= now2) {
-        await this.closeWindow(vmId, "deadline");
-        continue;
-      }
-      let status;
-      try {
-        status = await this.opts.agent.get(w2.target, "/update");
-      } catch {
-        continue;
-      }
-      const phase = typeof status?.phase === "string" ? status.phase : "";
-      if (phase === "resolving" || phase === "installing" || phase === "running") {
-        w2.sawRunning = true;
-        continue;
-      }
-      if (phase !== "done" && phase !== "failed") continue;
-      const at2 = typeof status?.at === "string" ? Date.parse(status.at) : NaN;
-      if (w2.sawRunning || Number.isFinite(at2) && at2 > w2.openedAt) await this.closeWindow(vmId, `run ${phase}`);
-    }
-  }
-  handlers() {
-    return {
-      "update.propose": (p2) => this.propose(p2),
-      "update.confirm": (p2) => this.confirm(p2),
-      "update.cancel": (p2) => this.cancel(p2)
-    };
-  }
-  /** One pending update per box, not per org: updating two agents at once is legitimate. */
-  scope(vmId) {
-    return `${SCOPE_PREFIX5}${vmId}`;
-  }
-  target(p2) {
-    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
-  }
-  async apply(p2) {
-    await this.openWindow(this.target(p2));
-    let r2;
-    try {
-      r2 = await this.opts.agent.post(this.target(p2), "/update", {});
-    } catch (err) {
-      await this.closeWindow(p2.agent.vmId, "the box did not start the run");
-      throw err;
-    }
-    this.log(`[update] started on ${p2.agent.name}`);
-    return { vmId: p2.agent.vmId, phase: r2?.status?.phase ?? "resolving" };
-  }
-  /**
-   * Start a run on one agent box for a batch whose code was already confirmed (T-100).
-   *
-   * Exposed rather than copied, because everything that matters about starting an agent update is
-   * in `apply`: the update window has to be open before the run's first download, it has to be
-   * closed again if the box refuses to start, and the polling that eventually closes it has to be
-   * running. A second copy of that would be a second way to leave a window open for an hour.
-   *
-   * It performs NO consent check of its own. The caller — `UpdateAllFirewall` — is the only thing
-   * that calls it, and it does so after claiming this box out of a grant that a verified code
-   * wrote. Nothing on the command path reaches this method directly.
-   */
-  async applyToTarget(target, name25) {
-    return this.apply({ changeId: "", agent: { vmId: target.vmId, name: name25, hostname: target.hostname } });
-  }
-  async propose(payload) {
-    const p2 = parseProposal10(payload);
-    const summary = summarize12(p2);
-    const data = { changeId: p2.changeId, summary };
-    const routes = this.opts.codeRoutes();
-    if (!this.opts.channelsReady()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
-        data
-      };
-    }
-    if (routes.length === 0) {
-      this.codes.drop(this.scope(p2.agent.vmId));
-      const applied = await this.apply(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.codes.send(this.scope(p2.agent.vmId), p2, p2.agent.name, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[update] code sent for ${p2.agent.name} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, ...awaitingCodeData(sent) } };
-  }
-  async confirm(payload) {
-    const changeId = str12(payload.changeId);
-    const vmId = str12(payload.vmId);
-    if (!changeId || !vmId) throw new Error("malformed update.confirm payload");
-    const code = str12(payload.code) ?? "";
-    const data = { changeId };
-    const v2 = this.codes.verify(this.scope(vmId), changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = await this.apply(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize12(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str12(payload.changeId);
-    const vmId = str12(payload.vmId);
-    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/backup-store.ts
-function aad14(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:backup`;
-}
-function emptyBackupStore() {
-  return { version: 1, keypair: null, recovery: null };
-}
-function loadBackupStore(path, boxKey, ids2) {
-  const loaded2 = loadStoreOrEmpty("backup", path, boxKey, aad14(ids2));
-  if (!loaded2) return emptyBackupStore();
-  return { version: 1, keypair: loaded2.keypair ?? null, recovery: loaded2.recovery ? { ...loaded2.recovery, signingPublicKey: loaded2.recovery.signingPublicKey ?? null } : null };
-}
-function saveBackupStore(path, store, boxKey, ids2) {
-  saveStore("backup", path, store, boxKey, aad14(ids2));
-}
-
-// src/self-backup.ts
-import { readFile as readFile2, stat } from "fs/promises";
-var SELF_BACKUP_KIND = "firewall";
-var MAX_SELF_BACKUP_BYTES = 8 * 1024 * 1024;
-var SelfBackup = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-  }
-  fetchImpl;
-  now;
-  log;
-  async run(input2) {
-    const files = [];
-    const entries = [];
-    let plainBytes = 0;
-    for (const path of this.opts.files ?? FIREWALL_BACKUP_FILES) {
-      let st2;
-      try {
-        st2 = await stat(path);
-      } catch {
-        continue;
-      }
-      if (!st2.isFile()) continue;
-      if (plainBytes + st2.size > MAX_SELF_BACKUP_BYTES) throw new Error("This firewall's state is larger than a firewall backup is meant to carry.");
-      const body = await readFile2(path);
-      files.push({ path, mode: st2.mode & 4095, base64: body.toString("base64") });
-      entries.push({ path, bytes: body.length, mode: st2.mode & 4095, kind: "file" });
-      plainBytes += body.length;
-    }
-    if (entries.length === 0) throw new Error("There is nothing on this firewall to back up yet.");
-    const manifest = {
-      version: 1,
-      kind: SELF_BACKUP_KIND,
-      takenAt: new Date(this.now()).toISOString(),
-      root: "/",
-      entries,
-      totalBytes: plainBytes,
-      excluded: []
-    };
-    const hash2 = await manifestHash(manifest);
-    const enc = await makeEncryptor(input2.dataKey, {
-      orgId: this.opts.ids.orgId,
-      vmId: this.opts.ids.boxId,
-      backupId: input2.backupId,
-      kind: SELF_BACKUP_KIND
-    });
-    const plain = Buffer.from(JSON.stringify({ manifest, files }), "utf8");
-    const parts = [];
-    for (let at2 = 0; at2 < plain.length; at2 += CHUNK_BYTES) parts.push(enc.push(plain.subarray(at2, Math.min(at2 + CHUNK_BYTES, plain.length))));
-    parts.push(enc.final());
-    const blob = Buffer.concat(parts);
-    const res = await this.fetchImpl(input2.uploadUrl, {
-      method: "PUT",
-      headers: { "content-length": String(blob.length), "content-type": "application/octet-stream" },
-      body: blob
-    });
-    if (!res.ok) throw new Error(`The backup store refused the upload (HTTP ${res.status}).`);
-    this.log(`[backup] firewall state sealed: ${entries.length} file(s), ${blob.length} bytes`);
-    return {
-      header: enc.header,
-      manifestHash: hash2,
-      plainBytes,
-      cipherBytes: blob.length,
-      entries: entries.length,
-      wrapped: await wrapDataKey(input2.dataKey, input2.recovery.publicKey),
-      recoveryFingerprint: input2.recovery.fingerprint,
-      takenAt: manifest.takenAt
-    };
-  }
-};
-
-// src/backup.ts
-var RUN_REPORT_PREFIX = "backup.done:";
-var RESTORE_REPORT_PREFIX = "backup.restored:";
-var SELF_RESTORE_REPORT_PREFIX = "backup.firewall-restored:";
-var RESTORE_PREFIX = "backup-restore:";
-var RECOVERY_SCOPE = "backup-recovery:org";
-var SELF_RESTORE_SCOPE = "backup-firewall-restore:self";
-var KINDS = /* @__PURE__ */ new Set(["workspace", "state", "gbrain"]);
-function str13(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function isPublicKey(v2) {
-  return v2.length === 44 && /^[A-Za-z0-9+/]{43}=$/.test(v2);
-}
-function httpsUrl(v2) {
-  const s2 = str13(v2);
-  if (!s2 || s2.length > 4096) return null;
-  try {
-    return new URL(s2).protocol === "https:" ? s2 : null;
-  } catch {
-    return null;
-  }
-}
-function summarizeRestore(p2) {
-  const when = p2.takenAt ? ` from ${p2.takenAt.slice(0, 16).replace("T", " ")} UTC` : "";
-  if (p2.kind === "gbrain") return `Replace everything in your organization's brain with a backup${when}`;
-  const what = p2.kind === "workspace" ? "files" : "settings";
-  return `Replace ${p2.agent.name}'s ${what} with a backup${when}`;
-}
-function summarizeRecovery(p2, own2) {
-  return p2.replaces ? `Replace your backup recovery key (new ${p2.fingerprint}, old ${p2.replaces}); this firewall's key is ${own2}` : `Set your backup recovery key to ${p2.fingerprint}; this firewall's key is ${own2}`;
-}
-function summarizeSelfRestore(p2, own2) {
-  const when = p2.takenAt ? ` from ${p2.takenAt.slice(0, 16).replace("T", " ")} UTC` : "";
-  return `Replace this firewall's keys, certificate authority and rules with its backup${when}; the key being replaced is ${own2}`;
-}
-var BackupFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.store = loadBackupStore(opts.storePath, opts.boxKey, opts.ids);
-    const codeOpts = { agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode };
-    this.restoreCodes = new ConsentCodes(codeOpts);
-    this.recoveryCodes = new ConsentCodes(codeOpts);
-    this.selfRestoreCodes = new ConsentCodes(codeOpts);
-    void this.refreshControlFingerprint();
-  }
-  store;
-  /** Outcomes of work that outlived its command, drained onto the next heartbeat. */
-  reports = [];
-  /** In-flight work, so a second ask for the same backup does not start a second archive. */
-  running = /* @__PURE__ */ new Set();
-  restoreCodes;
-  recoveryCodes;
-  selfRestoreCodes;
-  log;
-  now;
-  /**
-   * `recoveryKeyFingerprint` of the pair this firewall holds — the string the owner compares with
-   * what `npx @controlclaw/recover` prints. Cached because it rides every heartbeat and hashing it
-   * is the only async thing `status()` would otherwise need.
-   */
-  controlFingerprint = null;
-  async refreshControlFingerprint() {
-    const r2 = this.store.recovery;
-    this.controlFingerprint = r2?.signingPublicKey ? await recoveryKeyFingerprint({ publicKey: r2.publicKey, signingPublicKey: r2.signingPublicKey }) : null;
-  }
-  /** Drained by `FirewallControl.extraResults` on every beat. */
-  drainReports() {
-    const out = this.reports;
-    this.reports = [];
-    return out;
-  }
-  /**
-   * Run `work` detached and report its outcome later under `commandId`. Nothing here throws: a
-   * failure becomes a report, because the command that started it has already been settled and
-   * there is nobody left to throw to.
-   */
-  later(commandId, label, work) {
-    if (this.running.has(commandId)) return;
-    this.running.add(commandId);
-    void work().then((data) => {
-      this.reports.push({ command_id: commandId, ok: true, status: "done", message: "", data });
-    }).catch((err) => {
-      const message2 = (err.message ?? "the backup failed").slice(0, 500);
-      this.log(`[backup] ${label} failed: ${message2}`);
-      this.reports.push({ command_id: commandId, ok: false, status: "failed", message: message2, data: {} });
-    }).finally(() => this.running.delete(commandId));
-  }
-  handlers() {
-    const frozen = {
-      ok: false,
-      status: "retry",
-      message: "This firewall has been put back from its backup and is restarting onto it. Try again in a minute.",
-      data: {}
-    };
-    const guard = (h2) => (p2) => this.restoring ? Promise.resolve(frozen) : h2(p2);
-    const handlers = {
-      "backup.run": (p2) => this.run(p2),
-      "backup.firewall-run": (p2) => this.runSelf(p2),
-      "backup.restore.propose": (p2) => this.proposeRestore(p2),
-      "backup.restore.confirm": (p2) => this.confirmRestore(p2),
-      "backup.restore.cancel": (p2) => this.cancelRestore(p2),
-      "backup.recovery.propose": (p2) => this.proposeRecovery(p2),
-      "backup.recovery.confirm": (p2) => this.confirmRecovery(p2),
-      "backup.recovery.cancel": (p2) => this.cancelRecovery(p2),
-      "backup.recovery.rebind": (p2) => this.rebindRecovery(p2),
-      "backup.firewall-restore": (p2) => this.proposeSelfRestore(p2),
-      "backup.firewall-restore.confirm": (p2) => this.confirmSelfRestore(p2),
-      "backup.firewall-restore.cancel": (p2) => this.cancelSelfRestore(p2)
-    };
-    return Object.fromEntries(Object.entries(handlers).map(([k2, h2]) => [k2, guard(h2)]));
-  }
-  /**
-   * What the console shows about backups, carried on the heartbeat because nothing can call in here.
-   * Both fingerprints and the public key are safe to publish — the point of a public key — and the
-   * fingerprint is what lets an owner check they are wrapping to the right firewall.
-   */
-  status() {
-    const kp = this.store.keypair;
-    if (!kp) return null;
-    return {
-      publicKey: kp.publicKey,
-      fingerprint: kp.fingerprint,
-      recovery: this.store.recovery ? {
-        fingerprint: this.store.recovery.fingerprint,
-        tofu: this.store.recovery.tofu,
-        setAt: this.store.recovery.setAt,
-        // Set once the console has sent the Ed25519 half. Null means the recovery CLI cannot
-        // talk to this box yet, which is what the console tells the owner.
-        control: this.controlFingerprint
-      } : null
-    };
-  }
-  /**
-   * What `recovery.ts` needs to check a signature: the two public halves of the recovery key this
-   * firewall was given, or null when it has none. Nothing secret crosses this boundary.
-   */
-  recoveryKeys() {
-    const r2 = this.store.recovery;
-    return r2 ? { publicKey: r2.publicKey, signingPublicKey: r2.signingPublicKey ?? null, fingerprint: r2.fingerprint } : null;
-  }
-  /** This box's own backup keypair, so a CLI can seal a data key to it. Null before first use. */
-  ownKeypair() {
-    return this.store.keypair;
-  }
-  /**
-   * Made at start-up (`ensureKeypair`, from index.ts) rather than on first use: a rebuilt firewall
-   * has to report a key on its first beat, or the console keeps showing the torn-down box's key as
-   * this one's and "Put the firewall back" seals to a key that no longer exists.
-   */
-  async ensureKeypair() {
-    await this.keypair();
-  }
-  async keypair() {
-    if (this.store.keypair) return this.store.keypair;
-    if (isStoreUnreadable("backup")) {
-      throw new Error("this firewall cannot read its backup store, so it will not mint a replacement key over it");
-    }
-    const kp = await generateRecipientKeypair();
-    this.store = { ...this.store, keypair: kp };
-    this.save();
-    this.log(`[backup] generated this firewall's backup key (${kp.fingerprint})`);
-    return kp;
-  }
-  /**
-   * Set the moment a self-restore has landed on disk. From then until systemd restarts this
-   * process, everything in memory (the box key above all) describes the box that was just
-   * replaced, and a single `save()` would put it back over the restored store — which is exactly
-   * what a `backup.recovery.rebind` handled in that window did on prod, 2026-09-22.
-   */
-  restoring = false;
-  save() {
-    if (this.restoring) {
-      this.log("[backup] not writing the store: this firewall has been put back from its backup and is restarting onto it");
-      return;
-    }
-    saveBackupStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
-  }
-  target(agent) {
-    return { vmId: agent.vmId, hostname: agent.hostname };
-  }
-  parseAgent(payload) {
-    const a2 = payload.agent ?? {};
-    const vmId = str13(a2.vmId);
-    const hostname3 = str13(a2.hostname);
-    if (!vmId || !hostname3) throw new Error("malformed backup payload: the agent is not named");
-    return { vmId, name: str13(a2.name) ?? vmId, hostname: hostname3 };
-  }
-  // ---- taking one ----
-  /**
-   * Seal and upload both archives of one backup. One data key for the backup, wrapped once per
-   * recipient; the archives differ only in the associated data the box binds into each stream, so
-   * one blob can never be served in place of the other.
-   */
-  async run(payload) {
-    const backupId = str13(payload.backupId);
-    if (!backupId) throw new Error("malformed backup.run payload: no backupId");
-    const agent = this.parseAgent(payload);
-    const uploads = payload.uploads ?? {};
-    const kinds = (Array.isArray(payload.kinds) ? payload.kinds : []).filter((k2) => typeof k2 === "string" && KINDS.has(k2));
-    if (kinds.length === 0) throw new Error("malformed backup.run payload: no archives asked for");
-    const urls = [];
-    for (const kind of kinds) {
-      const uploadUrl = httpsUrl(uploads[kind]);
-      if (!uploadUrl) return { ok: false, status: "failed", message: `No upload address for the ${kind} archive.`, data: { backupId } };
-      urls.push({ kind, uploadUrl });
-    }
-    const kp = await this.keypair();
-    const dataKey = await randomDataKey();
-    const wraps = [
-      { recipient: "firewall", fingerprint: kp.fingerprint, wrapped: await wrapDataKey(dataKey, kp.publicKey) }
-    ];
-    if (this.store.recovery) {
-      wraps.push({
-        recipient: "recovery",
-        fingerprint: this.store.recovery.fingerprint,
-        wrapped: await wrapDataKey(dataKey, this.store.recovery.publicKey)
-      });
-    }
-    this.later(`${RUN_REPORT_PREFIX}${backupId}`, `backup of ${agent.name}`, async () => {
-      const archives = [];
-      for (const { kind, uploadUrl } of urls) {
-        const r2 = await this.opts.agent.post(this.target(agent), "/backup/run", {
-          orgId: this.opts.ids.orgId,
-          vmId: agent.vmId,
-          backupId,
-          kind,
-          dataKey,
-          uploadUrl
-        });
-        archives.push({
-          kind,
-          header: r2.header,
-          manifestHash: r2.manifestHash,
-          plainBytes: r2.plainBytes,
-          cipherBytes: r2.cipherBytes,
-          entries: r2.entries,
-          excludedBytes: r2.excludedBytes,
-          takenAt: r2.takenAt
-        });
-      }
-      this.log(`[backup] sealed ${archives.length} archive(s) of ${agent.name} for ${wraps.length} recipient(s)`);
-      return { backupId, archives, wraps, recovery: this.store.recovery !== null };
-    });
-    return { ok: true, status: "running", data: { backupId, wraps, recovery: this.store.recovery !== null } };
-  }
-  /** This box's own state. Wrapped to the recovery key only — its own key is one of the files. */
-  async runSelf(payload) {
-    const backupId = str13(payload.backupId);
-    const uploadUrl = httpsUrl(payload.uploadUrl);
-    if (!backupId || !uploadUrl) throw new Error("malformed backup.firewall-run payload");
-    if (!this.opts.selfBackup) return { ok: false, status: "unavailable", message: "This firewall cannot back itself up.", data: { backupId } };
-    const recovery = this.store.recovery;
-    if (!recovery) {
-      return {
-        ok: false,
-        status: "no_recovery_key",
-        message: "A firewall backup can only be sealed to your recovery key, and this organisation has not set one yet.",
-        data: { backupId }
-      };
-    }
-    const dataKey = await randomDataKey();
-    const selfBackup = this.opts.selfBackup;
-    const own2 = await this.keypair();
-    this.later(`${RUN_REPORT_PREFIX}${backupId}`, "backup of this firewall", async () => {
-      const r2 = await selfBackup.run({ backupId, uploadUrl, dataKey, recovery });
-      return {
-        backupId,
-        archives: [
-          {
-            kind: "firewall",
-            header: r2.header,
-            manifestHash: r2.manifestHash,
-            plainBytes: r2.plainBytes,
-            cipherBytes: r2.cipherBytes,
-            entries: r2.entries,
-            takenAt: r2.takenAt,
-            firewallFingerprint: own2.fingerprint
-          }
-        ],
-        wraps: [{ recipient: "recovery", fingerprint: r2.recoveryFingerprint, wrapped: r2.wrapped }]
-      };
-    });
-    return { ok: true, status: "running", data: { backupId } };
-  }
-  // ---- putting one back ----
-  parseRestore(payload) {
-    const changeId = str13(payload.changeId);
-    const backupId = str13(payload.backupId);
-    const kind = str13(payload.kind);
-    const header = str13(payload.header);
-    const manifestHash2 = str13(payload.manifestHash);
-    const downloadUrl = httpsUrl(payload.downloadUrl);
-    const wrapped = str13(payload.wrapped);
-    if (!changeId || !backupId || !kind || !KINDS.has(kind) || !header || !manifestHash2 || !downloadUrl || !wrapped) {
-      throw new Error("malformed backup.restore.propose payload");
-    }
-    return {
-      changeId,
-      backupId,
-      agent: this.parseAgent(payload),
-      kind,
-      header,
-      manifestHash: manifestHash2,
-      downloadUrl,
-      wrapped,
-      takenAt: str13(payload.takenAt),
-      sourceVmId: (() => {
-        const v2 = str13(payload.sourceVmId);
-        return v2 && /^[A-Za-z0-9_-]{1,64}$/.test(v2) ? v2 : null;
-      })()
-    };
-  }
-  /**
-   * Unwrap the data key and hand it to the box with the download address. This is the only moment a
-   * data key leaves this file, and it goes over the same signed channel as a channel token: HTTPS to
-   * the agent's hostname with a 30 s token this box signed, `purpose: "backup"`, which the agent
-   * accepts only against the pinned mitm key.
-   */
-  async applyRestore(p2) {
-    const kp = this.store.keypair;
-    if (!kp) throw new Error("This firewall has no backup key, so it cannot open a backup.");
-    let dataKey;
-    try {
-      dataKey = await unwrapDataKey(p2.wrapped, kp.secretKey);
-    } catch {
-      throw new Error("This firewall cannot open that backup. It was taken before the firewall was rebuilt, so it needs your recovery key.");
-    }
-    this.later(`${RESTORE_REPORT_PREFIX}${p2.changeId}`, `restore of ${p2.kind} onto ${p2.agent.name}`, async () => {
-      const r2 = await this.opts.agent.post(this.target(p2.agent), "/backup/restore", {
-        orgId: this.opts.ids.orgId,
-        vmId: p2.agent.vmId,
-        backupId: p2.backupId,
-        kind: p2.kind,
-        dataKey,
-        header: p2.header,
-        manifestHash: p2.manifestHash,
-        downloadUrl: p2.downloadUrl,
-        ...p2.sourceVmId && p2.sourceVmId !== p2.agent.vmId ? { sourceVmId: p2.sourceVmId } : {}
-      });
-      this.log(`[backup] restored ${p2.kind} onto ${p2.agent.name}`);
-      return { changeId: p2.changeId, vmId: p2.agent.vmId, kind: p2.kind, entries: r2.entries, restarted: r2.restarted };
-    });
-    return { vmId: p2.agent.vmId, kind: p2.kind, backupId: p2.backupId };
-  }
-  async proposeRestore(payload) {
-    const p2 = this.parseRestore(payload);
-    const summary = summarizeRestore(p2);
-    const data = { changeId: p2.changeId, backupId: p2.backupId, summary };
-    if (!this.opts.channelsReady()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
-        data
-      };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.restoreCodes.drop(this.scopeFor(p2.agent.vmId));
-      const applied = await this.applyRestore(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    if (this.store.keypair) {
-      try {
-        await unwrapDataKey(p2.wrapped, this.store.keypair.secretKey);
-      } catch {
-        return {
-          ok: false,
-          status: "needs_recovery_key",
-          message: "This firewall cannot open that backup. It was taken before the firewall was rebuilt, so it needs your recovery key.",
-          data
-        };
-      }
-    }
-    const sent = await this.restoreCodes.send(this.scopeFor(p2.agent.vmId), p2, p2.agent.name, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[backup] restore code sent for ${p2.agent.name} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  /** One pending restore per box, not per org: restoring two agents at once is legitimate. */
-  scopeFor(vmId) {
-    return `${RESTORE_PREFIX}${vmId}`;
-  }
-  async confirmRestore(payload) {
-    const changeId = str13(payload.changeId);
-    const vmId = str13(payload.vmId);
-    if (!changeId || !vmId) throw new Error("malformed backup.restore.confirm payload");
-    const data = { changeId };
-    const v2 = this.restoreCodes.verify(this.scopeFor(vmId), changeId, str13(payload.code) ?? "");
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No restore is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = await this.applyRestore(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeRestore(v2.proposal), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancelRestore(payload) {
-    const changeId = str13(payload.changeId);
-    const vmId = str13(payload.vmId);
-    if (vmId) this.restoreCodes.cancel(this.scopeFor(vmId), changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  // ---- the recovery key ----
-  async proposeRecovery(payload) {
-    const changeId = str13(payload.changeId);
-    const publicKey = str13(payload.publicKey);
-    if (!changeId || !publicKey) throw new Error("malformed backup.recovery.propose payload");
-    if (!isPublicKey(publicKey)) {
-      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
-    }
-    const signingPublicKey = str13(payload.signingPublicKey);
-    if (signingPublicKey && !isPublicKey(signingPublicKey)) {
-      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
-    }
-    const own2 = await this.keypair();
-    const p2 = {
-      changeId,
-      publicKey,
-      signingPublicKey,
-      fingerprint: await fingerprint(publicKey),
-      replaces: this.store.recovery?.fingerprint ?? null
-    };
-    const summary = summarizeRecovery(p2, own2.fingerprint);
-    const data = { changeId, summary, fingerprint: p2.fingerprint, firewallFingerprint: own2.fingerprint, firewallPublicKey: own2.publicKey };
-    if (!this.opts.channelsReady()) {
-      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.recoveryCodes.drop(RECOVERY_SCOPE);
-      this.setRecovery(p2, true);
-      return { ok: true, status: "applied", data: { ...data, tofu: true } };
-    }
-    const sent = await this.recoveryCodes.send(RECOVERY_SCOPE, p2, "your organization's backups", summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[backup] recovery key code sent via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  setRecovery(p2, tofu) {
-    this.store = {
-      ...this.store,
-      recovery: {
-        publicKey: p2.publicKey,
-        signingPublicKey: p2.signingPublicKey,
-        fingerprint: p2.fingerprint,
-        tofu,
-        setAt: new Date(this.now()).toISOString()
-      }
-    };
-    this.save();
-    void this.announceRecovery();
-    this.log(`[backup] recovery key ${p2.replaces ? "replaced" : "set"}: ${p2.fingerprint}${tofu ? " (first use, no code)" : ""}`);
-  }
-  /**
-   * On the console, deliberately, and the one line the whole offline path rests on. The control
-   * plane relayed this key; if it substituted one of its own, everything else about the restore
-   * would still look right. So the box prints what it was actually given, on the serial console the
-   * provider gives the owner, and `npx @controlclaw/recover` prints the same string from the key
-   * they typed. See `docs/security-design.md` § Backups.
-   */
-  async announceRecovery() {
-    const r2 = this.store.recovery;
-    if (!r2) return;
-    await this.refreshControlFingerprint();
-    this.log(`[mitm-agent] recovery key fingerprint: ${r2.fingerprint}`);
-    this.log(
-      this.controlFingerprint ? `[mitm-agent] recovery command key: ${this.controlFingerprint} \u2014 npx @controlclaw/recover must print this exact line` : "[mitm-agent] recovery command key: none (this key predates the recovery CLI; replace it in Settings \u2192 Backups to use one)"
-    );
-  }
-  /**
-   * A freshly rebuilt firewall holds no recovery key, so it can neither wrap a backup to one nor
-   * check a signature from one. `backup.recovery.rebind` gives it back the pair the organisation
-   * already had, and is accepted ONLY on a firewall that holds none — a box that has one is not in
-   * this situation, and changing it is `backup.recovery.propose`, which asks a person first.
-   *
-   * There is no consent code, for the same reason the first recovery key has none: a box with no
-   * recovery key has no channels either, so there is nobody to ask. That makes this the one thing
-   * the control plane could lie about, which is why the box prints what it was given.
-   */
-  async rebindRecovery(payload) {
-    const publicKey = str13(payload.publicKey);
-    const signingPublicKey = str13(payload.signingPublicKey);
-    if (!publicKey || !signingPublicKey || !isPublicKey(publicKey) || !isPublicKey(signingPublicKey)) {
-      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: {} };
-    }
-    if (this.store.recovery) {
-      return {
-        ok: false,
-        status: "already_set",
-        message: `This firewall already holds a recovery key (${this.store.recovery.fingerprint}), so it will not take another without a confirmation.`,
-        data: { fingerprint: this.store.recovery.fingerprint }
-      };
-    }
-    const own2 = await this.keypair();
-    const fingerprint2 = await fingerprint(publicKey);
-    this.setRecovery({ changeId: "", publicKey, signingPublicKey, fingerprint: fingerprint2, replaces: null }, true);
-    return {
-      ok: true,
-      status: "applied",
-      // Computed rather than read off the cache, which `setRecovery` refreshes asynchronously.
-      data: {
-        fingerprint: fingerprint2,
-        control: await recoveryKeyFingerprint({ publicKey, signingPublicKey }),
-        firewallFingerprint: own2.fingerprint,
-        firewallPublicKey: own2.publicKey
-      }
-    };
-  }
-  async confirmRecovery(payload) {
-    const changeId = str13(payload.changeId);
-    if (!changeId) throw new Error("malformed backup.recovery.confirm payload");
-    const data = { changeId };
-    const v2 = this.recoveryCodes.verify(RECOVERY_SCOPE, changeId, str13(payload.code) ?? "");
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No recovery key is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const own2 = await this.keypair();
-    this.setRecovery(v2.proposal, false);
-    return {
-      ok: true,
-      status: "applied",
-      data: {
-        ...data,
-        summary: summarizeRecovery(v2.proposal, own2.fingerprint),
-        fingerprint: v2.proposal.fingerprint,
-        firewallFingerprint: own2.fingerprint,
-        firewallPublicKey: own2.publicKey,
-        sentVia: v2.sentVia,
-        tofu: false
-      }
-    };
-  }
-  async cancelRecovery(payload) {
-    const changeId = str13(payload.changeId);
-    this.recoveryCodes.cancel(RECOVERY_SCOPE, changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  // ---- putting this firewall back from its own backup ----
-  parseSelfRestore(payload) {
-    const changeId = str13(payload.changeId);
-    const backupId = str13(payload.backupId);
-    const sourceBoxId = str13(payload.sourceBoxId);
-    const header = str13(payload.header);
-    const manifestHash2 = str13(payload.manifestHash);
-    const downloadUrl = httpsUrl(payload.downloadUrl);
-    const wrapped = str13(payload.wrappedKey);
-    if (!changeId || !backupId || !sourceBoxId || !header || !manifestHash2 || !downloadUrl || !wrapped) {
-      throw new Error("malformed backup.firewall-restore payload");
-    }
-    return { changeId, backupId, sourceBoxId, header, manifestHash: manifestHash2, downloadUrl, wrapped, takenAt: str13(payload.takenAt) };
-  }
-  /**
-   * Unseal the data key and hand the whole job to `self-restore.ts`. The unwrap happens HERE,
-   * before the command is settled, so "that key does not fit" is answered to the person who just
-   * asked rather than arriving minutes later as a report.
-   *
-   * Everything after it takes as long as a download, so it runs detached and reports under
-   * `backup.firewall-restored:<changeId>`. The process then exits — after a delay, so the report
-   * has beats to ride out on (`index.ts`) — and systemd starts it again on the restored state.
-   */
-  async applySelfRestore(p2) {
-    const service = this.opts.selfRestore;
-    if (!service) throw new Error("This firewall cannot put itself back.");
-    const kp = this.store.keypair;
-    if (!kp) throw new Error("This firewall has no backup key, so it cannot open a backup.");
-    let dataKey;
-    try {
-      dataKey = await unwrapDataKey(p2.wrapped, kp.secretKey);
-    } catch {
-      throw new Error("This firewall cannot open that backup. Paste your recovery key and try again.");
-    }
-    this.later(`${SELF_RESTORE_REPORT_PREFIX}${p2.changeId}`, "restore of this firewall", async () => {
-      const r2 = await service.run({
-        backupId: p2.backupId,
-        sourceBoxId: p2.sourceBoxId,
-        downloadUrl: p2.downloadUrl,
-        header: p2.header,
-        manifestHash: p2.manifestHash,
-        dataKey
-      });
-      this.restoring = true;
-      return { changeId: p2.changeId, backupId: p2.backupId, entries: r2.entries, takenAt: r2.takenAt, fingerprint: r2.fingerprint, quarantined: r2.quarantined };
-    });
-    return { backupId: p2.backupId, replaces: kp.fingerprint };
-  }
-  async proposeSelfRestore(payload) {
-    const p2 = this.parseSelfRestore(payload);
-    const own2 = await this.keypair();
-    const summary = summarizeSelfRestore(p2, own2.fingerprint);
-    const data = { changeId: p2.changeId, backupId: p2.backupId, summary, firewallFingerprint: own2.fingerprint };
-    if (!this.opts.selfRestore) {
-      return { ok: false, status: "unavailable", message: "This firewall cannot put itself back.", data };
-    }
-    if (!this.opts.channelsReady()) {
-      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
-    }
-    try {
-      await unwrapDataKey(p2.wrapped, (await this.keypair()).secretKey);
-    } catch {
-      return { ok: false, status: "needs_recovery_key", message: "This firewall cannot open that backup. Paste your recovery key and try again.", data };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.selfRestoreCodes.drop(SELF_RESTORE_SCOPE);
-      const applied = await this.applySelfRestore(p2);
-      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
-    }
-    const sent = await this.selfRestoreCodes.send(SELF_RESTORE_SCOPE, p2, "your firewall", summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[backup] firewall restore code sent via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirmSelfRestore(payload) {
-    const changeId = str13(payload.changeId);
-    if (!changeId) throw new Error("malformed backup.firewall-restore.confirm payload");
-    const data = { changeId };
-    const v2 = this.selfRestoreCodes.verify(SELF_RESTORE_SCOPE, changeId, str13(payload.code) ?? "");
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No firewall restore is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const own2 = await this.keypair();
-    const applied = await this.applySelfRestore(v2.proposal);
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeSelfRestore(v2.proposal, own2.fingerprint), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancelSelfRestore(payload) {
-    const changeId = str13(payload.changeId);
-    this.selfRestoreCodes.cancel(SELF_RESTORE_SCOPE, changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/self-restore.ts
-import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync5, readFileSync as readFileSync8, readdirSync, renameSync as renameSync3, rmSync, statSync, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname4, join } from "path";
-var ENC_PURPOSES = {
-  "channels.enc": "channels",
-  "llm.enc": "llm",
-  "backup.enc": "backup",
-  "connectors.enc": "connectors",
-  "drive.enc": "drive",
-  "google.enc": "google",
-  "access.enc": "access"
-};
-var MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
-function basename(path) {
-  return path.slice(path.lastIndexOf("/") + 1);
-}
-function writeAtomic(path, bytes, mode) {
-  mkdirSync5(dirname4(path), { recursive: true });
-  const tmp = `${path}.cc-restoring`;
-  writeFileSync6(tmp, bytes, { mode });
-  chmodSync(tmp, mode);
-  renameSync3(tmp, path);
-}
-var SelfRestore = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-  }
-  fetchImpl;
-  log;
-  allowed() {
-    return this.opts.files ?? [...FIREWALL_BACKUP_FILES];
-  }
-  /**
-   * Download, verify and swap. Throws with a sentence a person can act on; the box is untouched
-   * unless it returns.
-   *
-   * `sourceBoxId` is the box the archive was taken on, and is not taken on trust: it goes into the
-   * envelope's associated data, so a wrong one simply fails to decrypt.
-   */
-  async run(input2) {
-    const stagingDir = join(this.opts.workDir ?? "/opt/controlclaw/state", `cc-restore-${Date.now()}`);
-    try {
-      const { manifest, staged } = await this.stage(input2, stagingDir);
-      const quarantined = this.swap(staged, input2.sourceBoxId);
-      const fingerprint2 = await this.fingerprintAfter(staged);
-      this.log(`[backup] firewall state restored: ${staged.length} file(s) from ${manifest.takenAt}, backup key ${fingerprint2 ?? "unknown"}`);
-      this.opts.restart?.();
-      return { entries: staged.length, takenAt: manifest.takenAt, fingerprint: fingerprint2, quarantined };
-    } finally {
-      rmSync(stagingDir, { recursive: true, force: true });
-    }
-  }
-  // ---- before the swap: nothing on this box changes ----
-  async stage(input2, stagingDir) {
-    const blob = input2.archive ? Buffer.from(input2.archive) : await this.download(input2.downloadUrl);
-    if (blob.length > MAX_ARCHIVE_BYTES) throw new Error("That archive is far larger than a firewall backup, so it is not one.");
-    const dec = await makeDecryptor(input2.dataKey, input2.header, {
-      orgId: this.opts.ids.orgId,
-      vmId: input2.sourceBoxId,
-      backupId: input2.backupId,
-      kind: "firewall"
-    });
-    const parts = dec.push(blob);
-    dec.end();
-    const plain = Buffer.concat(parts.map((p2) => Buffer.from(p2)));
-    let doc;
-    try {
-      doc = JSON.parse(plain.toString("utf8"));
-    } catch {
-      throw new Error("That archive opened but is not a firewall backup.");
-    }
-    const manifest = parseManifest(JSON.stringify(doc.manifest ?? null));
-    if (manifest.kind !== "firewall") throw new Error(`That archive is a ${manifest.kind} backup, not a firewall backup.`);
-    if (await manifestHash(manifest) !== input2.manifestHash) {
-      throw new Error("That archive is not the one recorded for this backup. Nothing was changed.");
-    }
-    const allowed = new Set(this.allowed());
-    const files = Array.isArray(doc.files) ? doc.files : [];
-    mkdirSync5(stagingDir, { recursive: true, mode: 448 });
-    const staged = [];
-    for (const [i2, f2] of files.entries()) {
-      const path = typeof f2.path === "string" ? f2.path : "";
-      const b642 = typeof f2.base64 === "string" ? f2.base64 : null;
-      if (!allowed.has(path)) throw new Error(`That archive carries a file this firewall will not restore (${path || "unnamed"}).`);
-      if (b642 === null) throw new Error(`The ${path} entry in that archive has no content.`);
-      const entry = manifest.entries.find((e) => e.path === path);
-      if (!entry) throw new Error(`The ${path} entry is in that archive but not in its manifest.`);
-      const bytes = Buffer.from(b642, "base64");
-      if (bytes.length !== entry.bytes) throw new Error(`The ${path} entry is ${bytes.length} bytes, and its manifest says ${entry.bytes}.`);
-      const stagedPath = join(stagingDir, String(i2));
-      writeFileSync6(stagedPath, bytes, { mode: 384 });
-      staged.push({ path, mode: entry.mode & 4095, staged: stagedPath, bytes: bytes.length });
-    }
-    if (staged.length === 0) throw new Error("That archive holds no files, so there is nothing to put back.");
-    this.deriveCaPair(staged, stagingDir);
-    staged.sort((a2, b2) => this.allowed().indexOf(a2.path) - this.allowed().indexOf(b2.path));
-    return { manifest, staged };
-  }
-  /**
-   * Backups taken before 2026-09-22 carry the proxy's combined `mitmproxy-ca.pem` but not the
-   * `ca-cert.pem` / `ca-key.pem` pair next to it (the file list named files that did not exist).
-   * Restoring only the combined file left the proxy signing with the old CA while the pair the
-   * firewall publishes, and the agents install, stayed the rebuilt box's. The combined file IS the
-   * pair concatenated (see gen-ca.sh), so when an archive has the one and not the other, the pair
-   * is split out of it here and staged like any other entry. Only for paths on the allow-list.
-   */
-  deriveCaPair(staged, stagingDir) {
-    const combined = staged.find((f2) => basename(f2.path) === "mitmproxy-ca.pem");
-    if (!combined) return;
-    const dir = dirname4(combined.path);
-    const certPath = join(dir, "ca-cert.pem");
-    const keyPath = join(dir, "ca-key.pem");
-    const allowed = new Set(this.allowed());
-    if (!allowed.has(certPath) || !allowed.has(keyPath)) return;
-    if (staged.some((f2) => f2.path === certPath) && staged.some((f2) => f2.path === keyPath)) return;
-    const pem = readFileSync8(combined.staged, "utf8");
-    const key = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----\n?/.exec(pem)?.[0];
-    const cert = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\n?/.exec(pem)?.[0];
-    if (!key || !cert) {
-      this.log("[backup] the archive's mitmproxy-ca.pem holds no key+certificate pair; the published CA is left as it is");
-      return;
-    }
-    const add = (path, body, mode) => {
-      if (staged.some((f2) => f2.path === path)) return;
-      const stagedPath = join(stagingDir, `derived-${basename(path)}`);
-      writeFileSync6(stagedPath, body, { mode: 384 });
-      staged.push({ path, mode, staged: stagedPath, bytes: Buffer.byteLength(body) });
-    };
-    add(certPath, cert, 420);
-    add(keyPath, key, 384);
-    this.log("[backup] the archive carried only the proxy's combined CA file; ca-cert.pem and ca-key.pem were split out of it so the published CA matches the one the proxy signs with");
-  }
-  async download(downloadUrl) {
-    if (!downloadUrl) throw new Error("There is no archive to put back: neither the bytes nor an address for them.");
-    const res = await this.fetchImpl(downloadUrl);
-    if (!res.ok) throw new Error(`The backup store did not serve the archive (HTTP ${res.status}).`);
-    return Buffer.from(await res.arrayBuffer());
-  }
-  // ---- the swap ----
-  /**
-   * Replace the live files, keeping a copy of what was there. Anything that throws puts the copy
-   * back before rethrowing, so the box is left running the state it was running a moment ago.
-   */
-  swap(staged, sourceBoxId) {
-    const rollback = staged.map((file2) => {
-      const stat2 = existsSync6(file2.path) ? statSync(file2.path) : null;
-      const isFile = stat2?.isFile() === true;
-      return { path: file2.path, before: isFile ? readFileSync8(file2.path) : null, mode: isFile ? stat2.mode & 4095 : file2.mode };
-    });
-    try {
-      this.opts.stopProxy?.();
-    } catch (error62) {
-      throw new Error("The proxy could not be stopped, so nothing was replaced.", { cause: error62 });
-    }
-    const startProxy = () => {
-      try {
-        this.opts.startProxy?.();
-      } catch (error62) {
-        this.log(`[backup] the proxy did not start again: ${error62.message}. Start it from the Firewall page.`);
-      }
-    };
-    try {
-      for (const file2 of staged) writeAtomic(file2.path, this.rebind(file2, sourceBoxId), file2.mode);
-    } catch (error62) {
-      for (const entry of rollback) {
-        try {
-          if (entry.before) writeAtomic(entry.path, entry.before, entry.mode);
-          else rmSync(entry.path, { force: true });
-        } catch (undoError) {
-          this.log(`[backup] could not undo ${entry.path}: ${undoError.message}`);
-        }
-      }
-      startProxy();
-      throw new Error(`The swap failed and this firewall was put back as it was: ${error62.message}`);
-    }
-    startProxy();
-    try {
-      return this.quarantineStrangers(staged);
-    } catch (error62) {
-      this.log(`[backup] could not move the replaced box's other stores aside: ${error62.message}`);
-      return [];
-    }
-  }
-  /**
-   * An encrypted store, re-sealed under this box's id (see the file header). The box key used is
-   * the RESTORED one: `box_key` is first in `FIREWALL_BACKUP_FILES` and the staged list is sorted
-   * by it, so by the time a store is written the key that opens it is already in place.
-   */
-  rebind(file2, sourceBoxId) {
-    const bytes = readFileSync8(file2.staged);
-    const purpose = ENC_PURPOSES[basename(file2.path)];
-    if (!purpose || sourceBoxId === this.opts.ids.boxId) return bytes;
-    const boxKey = this.restoredBoxKey();
-    const { orgId, boxId } = this.opts.ids;
-    let value;
-    try {
-      value = decryptJson(bytes.toString("utf8"), boxKey, `${orgId}:${sourceBoxId}:${purpose}`);
-    } catch (error62) {
-      throw new Error(`The ${basename(file2.path)} in that archive cannot be opened with the box key that came with it.`, { cause: error62 });
-    }
-    return Buffer.from(encryptJson(value, boxKey, `${orgId}:${boxId}:${purpose}`), "utf8");
-  }
-  restoredBoxKey() {
-    const path = this.allowed().find((p2) => basename(p2) === "box_key");
-    if (!path || !existsSync6(path)) throw new Error("The restored box key is not in place, so the stores cannot be re-sealed.");
-    return readFileSync8(path, "utf8").trim();
-  }
-  /**
-   * The backup-key fingerprint this firewall now has: the old one. Read back from the file that was
-   * written rather than from the archive, so what is reported is the state actually on disk.
-   */
-  async fingerprintAfter(staged) {
-    const store = staged.find((f2) => basename(f2.path) === "backup.enc");
-    if (!store) return null;
-    try {
-      const { orgId, boxId } = this.opts.ids;
-      const loaded2 = decryptJson(readFileSync8(store.path, "utf8"), this.restoredBoxKey(), `${orgId}:${boxId}:backup`);
-      return loaded2.keypair?.publicKey ? await fingerprint(loaded2.keypair.publicKey) : null;
-    } catch (error62) {
-      this.log(`[backup] restored, but this box's own backup key could not be read back: ${error62.message}`);
-      return null;
-    }
-  }
-  /**
-   * Any `*.enc` in the state directory that the archive did NOT bring — `connectors.enc` is the
-   * real one. It is sealed under the box key this box generated when it was rebuilt, which the
-   * restore has just replaced, so it can never be opened again; and an unreadable store is how the
-   * integrations module turns itself off with an alarming line in the log. Move it aside instead.
-   */
-  quarantineStrangers(staged) {
-    const stateDir = staged.map((f2) => dirname4(f2.path)).find((d2) => d2.endsWith("/state"));
-    if (!stateDir || !existsSync6(stateDir)) return [];
-    const brought = new Set(staged.map((f2) => f2.path));
-    const moved = [];
-    for (const name25 of readdirSync(stateDir)) {
-      const path = join(stateDir, name25);
-      if (!name25.endsWith(".enc") || brought.has(path)) continue;
-      const aside = `${path}.cc-previous-${Date.now()}`;
-      renameSync3(path, aside);
-      moved.push(name25);
-      this.log(`[backup] ${name25} was sealed under the replaced box key; moved to ${aside}`);
-    }
-    return moved;
-  }
-};
-
-// src/self-update.ts
-import { readFileSync as readFileSync9 } from "fs";
-import { spawn } from "child_process";
-var IDLE = { phase: "idle", detail: null, ref: null, at: null };
-var STALE_MS = 45 * 6e4;
-var LAUNCH_GRACE_MS = 2 * 6e4;
-var RUNNING = /* @__PURE__ */ new Set(["resolving", "installing", "running"]);
-function detach(file2, args) {
-  try {
-    const child = spawn(file2, args, { detached: true, stdio: "ignore" });
-    child.on("error", (error62) => console.error(`[firewall-update] could not start cc-reprovision: ${error62.message}`));
-    child.unref();
-    return { ok: true };
-  } catch (error62) {
-    return { ok: false, error: error62.message };
-  }
-}
-var SelfUpdateService = class {
-  /**
-   * When this process last launched a run, or null. In memory on purpose: the run restarts this
-   * agent, and an agent that restarted is proof the run did start. What this catches is the
-   * opposite case — a launch that never became a run, whose only other trace is a console line.
-   */
-  launchedAt = null;
-  statePath;
-  confPath;
-  spawnImpl;
-  log;
-  now;
-  constructor(opts = {}) {
-    this.statePath = opts.statePath ?? "/opt/controlclaw/state/update.json";
-    this.confPath = opts.confPath ?? "/etc/controlclaw/update.conf";
-    this.spawnImpl = opts.spawnImpl ?? detach;
-    this.log = opts.log ?? ((line) => console.log(line));
-    this.now = opts.now ?? Date.now;
-  }
-  /** Whether this box was provisioned with an update pin at all. */
-  pinned() {
-    return this.conf() !== null;
-  }
-  conf() {
-    let raw;
-    try {
-      raw = readFileSync9(this.confPath, "utf8");
-    } catch {
-      return null;
-    }
-    const out = {};
-    for (const line of raw.split("\n")) {
-      const m2 = /^([A-Z_]+)=(.*)$/.exec(line.trim());
-      if (m2) out[m2[1]] = m2[2];
-    }
-    return out.ANSIBLE_REPO ? out : null;
-  }
-  status() {
-    const status = this.readState();
-    if (this.launchedAt !== null) {
-      const reportedAt = status.at ? Date.parse(status.at) : NaN;
-      const forThisRun = Number.isFinite(reportedAt) && reportedAt >= this.launchedAt;
-      if (!forThisRun) {
-        if (this.now() - this.launchedAt > LAUNCH_GRACE_MS) {
-          return {
-            phase: "failed",
-            detail: "The update never started. Check the firewall's logs.",
-            ref: null,
-            at: new Date(this.launchedAt).toISOString()
-          };
-        }
-        return { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(this.launchedAt).toISOString() };
-      }
-    }
-    if (RUNNING.has(status.phase) && status.at && this.now() - Date.parse(status.at) > STALE_MS) {
-      return { ...status, phase: "failed", detail: "The update stopped reporting. Check the firewall's logs." };
-    }
-    return status;
-  }
-  readState() {
-    let raw;
-    try {
-      raw = readFileSync9(this.statePath, "utf8");
-    } catch {
-      return IDLE;
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return IDLE;
-    }
-    return {
-      phase: typeof parsed.phase === "string" ? parsed.phase : "idle",
-      detail: typeof parsed.detail === "string" && parsed.detail.length > 0 ? parsed.detail : null,
-      ref: typeof parsed.ref === "string" && parsed.ref.length > 0 ? parsed.ref : null,
-      at: typeof parsed.at === "string" ? parsed.at : null
-    };
-  }
-  running() {
-    return RUNNING.has(this.status().phase);
-  }
-  /**
-   * Start a run, unless one is already going. Returns as soon as it is launched — the run itself
-   * takes minutes and will restart this process before it finishes.
-   */
-  start() {
-    if (!this.pinned()) {
-      throw new Error("This firewall was created before in-place updates; it has to be rebuilt instead.");
-    }
-    const current = this.status();
-    if (RUNNING.has(current.phase)) return current;
-    const launchedAt = this.now();
-    const r2 = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", "/usr/local/bin/cc-reprovision"]);
-    if (!r2.ok) throw new Error(`The update could not be started: ${r2.error ?? "unknown error"}`);
-    this.launchedAt = launchedAt;
-    this.log("[firewall-update] started cc-reprovision");
-    return { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(launchedAt).toISOString() };
-  }
-};
-
-// src/firewall-update.ts
-var SCOPE_PREFIX6 = "firewall-update:";
-var SCOPE10 = `${SCOPE_PREFIX6}self`;
-function str14(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function summarize13() {
-  return "Update the software on your firewall";
-}
-var FirewallUpdate = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.boxName = opts.boxName ?? "your firewall";
-    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode, recovery: opts.recovery });
-  }
-  codes;
-  log;
-  boxName;
-  handlers() {
-    return {
-      "firewall-update.propose": (p2) => this.propose(p2),
-      "firewall-update.confirm": (p2) => this.confirm(p2),
-      "firewall-update.cancel": (p2) => this.cancel(p2)
-    };
-  }
-  /** Whether this box was provisioned with a pin; false means rebuild-only, as for an old agent. */
-  supported() {
-    return this.opts.service.pinned();
-  }
-  /** What the console shows while a run is going; rides the heartbeat, the only path out of here. */
-  status() {
-    return this.opts.service.status();
-  }
-  /** Local, and that is the whole point: nothing is asked of any other box. */
-  apply() {
-    const status = this.opts.service.start();
-    this.log("[firewall-update] started on this box");
-    return { phase: status.phase };
-  }
-  /**
-   * Start this box's own run for a batch whose code was already confirmed (T-100).
-   *
-   * Thin, because `apply` is thin — the self-update is a local spawn. It is here rather than
-   * inlined in `update-all.ts` so that there stays exactly one caller of `SelfUpdateService.start`,
-   * and `supported()` is still the thing that says whether it can be called at all.
-   *
-   * No consent check of its own; see the note on `UpdateFirewall.applyToTarget`.
-   */
-  applyForBatch() {
-    return this.apply();
-  }
-  async propose(payload) {
-    const changeId = str14(payload.changeId);
-    if (!changeId) throw new Error("malformed firewall-update.propose payload");
-    const summary = summarize13();
-    const data = { changeId, summary };
-    if (!this.opts.service.pinned()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "This firewall was created before in-place updates; it has to be rebuilt instead.",
-        data
-      };
-    }
-    if (!this.opts.channelsReady()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
-        data
-      };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(SCOPE10);
-      const no = noRecipients(this.opts.agentAllowedCount?.());
-      return {
-        ok: false,
-        status: "failed",
-        message: `${no.message} Your firewall cannot be updated until then.`,
-        data: { ...data, ...no.data }
-      };
-    }
-    const sent = await this.codes.send(SCOPE10, { changeId }, this.boxName, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[firewall-update] code sent via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, ...awaitingCodeData(sent) } };
-  }
-  async confirm(payload) {
-    const changeId = str14(payload.changeId);
-    if (!changeId) throw new Error("malformed firewall-update.confirm payload");
-    const code = str14(payload.code) ?? "";
-    const data = { changeId };
-    const v2 = this.codes.verify(SCOPE10, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const applied = this.apply();
-    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize13(), sentVia: v2.sentVia, tofu: false } };
-  }
-  async cancel(payload) {
-    const changeId = str14(payload.changeId);
-    this.codes.cancel(SCOPE10, changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/update-all.ts
-var SCOPE11 = "update-all:org";
-var BATCH_GRANT_MS = 150 * 6e4;
-function str15(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function summarize14(p2) {
-  const names = p2.boxes.map((b2) => b2.name);
-  if (names.length === 0) return "Update the software on nothing";
-  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-  return `Update the software on ${list}`;
-}
-function parseProposal11(payload) {
-  const changeId = str15(payload.changeId);
-  const raw = Array.isArray(payload.boxes) ? payload.boxes : [];
-  const boxes = [];
-  for (const entry of raw) {
-    const b2 = entry ?? {};
-    const vmId = str15(b2.vmId);
-    const role = b2.role === "mitm" ? "mitm" : b2.role === "gbrain" ? "gbrain" : "openclaw";
-    const hostname3 = str15(b2.hostname) ?? "";
-    if (!vmId || role !== "mitm" && !hostname3) throw new Error("malformed update-all.propose payload");
-    boxes.push({ vmId, name: str15(b2.name) ?? vmId, hostname: hostname3, role });
-  }
-  if (!changeId || boxes.length === 0) throw new Error("malformed update-all.propose payload");
-  if (new Set(boxes.map((b2) => b2.vmId)).size !== boxes.length) throw new Error("malformed update-all.propose payload");
-  return { changeId, boxes };
-}
-var CLAIM_REFUSALS = {
-  no_grant: "Your firewall no longer has a confirmed batch. Start the update again.",
-  wrong_batch: "That code confirmed a different batch. Start the update again.",
-  not_listed: "That box was not in the batch you confirmed.",
-  already_used: "That box has already been started by this batch."
-};
-var UpdateAllFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.now = opts.now ?? Date.now;
-    this.boxName = opts.boxName ?? "your organization";
-    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode, recovery: opts.recovery });
-  }
-  codes;
-  log;
-  now;
-  boxName;
-  handlers() {
-    return {
-      "update-all.propose": (p2) => this.propose(p2),
-      "update-all.confirm": (p2) => this.confirm(p2),
-      "update-all.apply": (p2) => this.applyOne(p2),
-      "update-all.cancel": (p2) => this.cancel(p2)
-    };
-  }
-  /**
-   * Write the grant, then say the batch is confirmed.
-   *
-   * See `BATCH_GRANT_MS` for why the deadline is not one box's update window.
-   */
-  grantFor(p2) {
-    this.opts.store.put({
-      changeId: p2.changeId,
-      until: this.now() + BATCH_GRANT_MS,
-      pending: p2.boxes.map((b2) => b2.vmId),
-      used: [],
-      at: new Date(this.now()).toISOString()
-    });
-  }
-  async propose(payload) {
-    const p2 = parseProposal11(payload);
-    const summary = summarize14(p2);
-    const includesSelf = p2.boxes.some((b2) => b2.role === "mitm");
-    const data = { changeId: p2.changeId, summary, boxes: p2.boxes.map((b2) => b2.vmId) };
-    if (includesSelf && !this.opts.self.supported()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "This firewall was created before in-place updates; it has to be rebuilt instead. Leave it out of the batch.",
-        data
-      };
-    }
-    if (!this.opts.channelsReady()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
-        data
-      };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      if (includesSelf) {
-        const no = noRecipients(this.opts.agentAllowedCount?.());
-        return {
-          ok: false,
-          status: "failed",
-          message: `${no.message} Your firewall cannot be updated until then.`,
-          data: { ...data, ...no.data }
-        };
-      }
-      this.codes.drop(SCOPE11);
-      this.grantFor(p2);
-      this.log(`[update-all] no code recipient: ${p2.boxes.length} agent(s) applied on first use`);
-      return { ok: true, status: "applied", data: { ...data, tofu: true } };
-    }
-    const sent = await this.codes.send(SCOPE11, p2, this.boxName, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[update-all] code sent for ${p2.boxes.length} box(es) via ${sent.sentVia}`);
-    return {
-      ok: true,
-      status: "awaiting_code",
-      data: { ...data, ...awaitingCodeData(sent) }
-    };
-  }
-  /**
-   * Check the one code and write the grant. Starts nothing: the control plane's workflow asks for
-   * each box in turn, because the firewall's own run would kill whatever was sequencing them.
-   */
-  async confirm(payload) {
-    const changeId = str15(payload.changeId);
-    if (!changeId) throw new Error("malformed update-all.confirm payload");
-    const code = str15(payload.code) ?? "";
-    const data = { changeId };
-    const v2 = this.codes.verify(SCOPE11, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    this.grantFor(v2.proposal);
-    this.log(`[update-all] confirmed for ${v2.proposal.boxes.length} box(es)`);
-    return {
-      ok: true,
-      status: "applied",
-      data: { ...data, summary: summarize14(v2.proposal), sentVia: v2.sentVia, tofu: false, boxes: v2.proposal.boxes.map((b2) => b2.vmId) }
-    };
-  }
-  /**
-   * Start one box out of a confirmed batch.
-   *
-   * The whole consent check is `store.claim`: this box id has to be in the grant this code wrote,
-   * the grant has to be live, and it has to not have been started already. The payload's name and
-   * hostname are used to REACH the box, never to decide whether it may be reached — a tampered
-   * hostname points the run at a box that then rejects the firewall's token, and a tampered vm id
-   * is refused here.
-   */
-  async applyOne(payload) {
-    const changeId = str15(payload.changeId);
-    const vmId = str15(payload.vmId);
-    if (!changeId || !vmId) throw new Error("malformed update-all.apply payload");
-    const role = payload.role === "mitm" ? "mitm" : payload.role === "gbrain" ? "gbrain" : "openclaw";
-    const data = { changeId, vmId };
-    const claim2 = this.opts.store.claim(changeId, vmId, this.now());
-    if (!claim2.ok) {
-      return { ok: false, status: "failed", message: CLAIM_REFUSALS[claim2.reason] ?? "Your firewall refused that box.", data };
-    }
-    try {
-      if (role === "mitm") {
-        if (!this.opts.self.supported()) throw new Error("This firewall has nothing pinned to update from.");
-        const applied2 = this.opts.self.applyForBatch();
-        this.log("[update-all] started on this box");
-        return { ok: true, status: "applied", data: { ...data, ...applied2 } };
-      }
-      const hostname3 = str15(payload.hostname);
-      if (!hostname3) throw new Error("malformed update-all.apply payload");
-      const target = { vmId, hostname: hostname3 };
-      const applied = await this.opts.agents.applyToTarget(target, str15(payload.name) ?? vmId);
-      return { ok: true, status: "applied", data: { ...data, ...applied } };
-    } catch (err) {
-      this.opts.store.unclaim(changeId, vmId);
-      return { ok: false, status: "failed", message: err.message || "The box did not start the run.", data };
-    }
-  }
-  async cancel(payload) {
-    const changeId = str15(payload.changeId);
-    this.codes.cancel(SCOPE11, changeId);
-    this.opts.store.drop(changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-};
-
-// src/recovery-notices.ts
-var NOTICE_RETRY_MS = 5 * 6e4;
-var NOTICE_TTL_MS = 30 * 24 * 60 * 6e4;
-var MAX_NOTICES = 20;
-function aad15(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:recovery-notices`;
-}
-function noticeText(n2) {
-  const when = new Date(n2.at).toISOString().slice(0, 16).replace("T", " ");
-  return `ControlClaw: a change to ${n2.subject} was confirmed with your recovery key on ${when} UTC, because no channel could reach you.
-${n2.summary}
-If that was not you, somebody else has your recovery key. Make a new one in Settings \u2192 Backups and check your ControlClaw console.`;
-}
-var RecoveryNotices = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    const loaded2 = loadStoreOrEmpty("recovery-notices", opts.storePath, opts.boxKey, aad15(opts.ids), this.log);
-    this.store = loaded2?.version === 1 && Array.isArray(loaded2.notices) ? loaded2 : { version: 1, notices: [] };
-  }
-  store;
-  now;
-  log;
-  /** The run in progress, so a second caller waits for it rather than sending the same notice twice. */
-  running = null;
-  publicKey() {
-    return this.opts.publicKey();
-  }
-  used(note) {
-    this.store.notices = [...this.store.notices, note].slice(-MAX_NOTICES);
-    this.save();
-    this.log(`[recovery-notices] "${note.summary}" was confirmed with the recovery key; the owner is told when a channel answers`);
-    void this.tick();
-  }
-  pending() {
-    return this.store.notices.length;
-  }
-  /** Try to deliver every waiting notice. On the retry timer, and right after a `used`. */
-  tick() {
-    if (this.running) return this.running;
-    if (this.store.notices.length === 0) return Promise.resolve();
-    this.running = this.run().finally(() => {
-      this.running = null;
-    });
-    return this.running;
-  }
-  async run() {
-    const cutoff = this.now() - NOTICE_TTL_MS;
-    const done = /* @__PURE__ */ new Set();
-    for (const n2 of [...this.store.notices]) {
-      if (n2.at < cutoff || await this.deliver(noticeText(n2))) done.add(n2);
-    }
-    if (done.size > 0) {
-      this.store.notices = this.store.notices.filter((n2) => !done.has(n2));
-      this.save();
-    }
-  }
-  /** The first real person an agent box can reach. Never the dev route: it has nobody to read this. */
-  async deliver(text2) {
-    for (const route of this.opts.codeRoutes()) {
-      for (const sender of route.senders) {
-        if (sender.type === DEV_SENDER_TYPE) continue;
-        try {
-          await this.opts.agent.post(route.target, "/channels/send", { type: sender.type, to: sender.id, text: text2 });
-          this.log(`[recovery-notices] told ${sender.type}:${sender.label ?? sender.id} that the recovery key was used`);
-          return true;
-        } catch {
-        }
-      }
-    }
-    return false;
-  }
-  save() {
-    saveStore("recovery-notices", this.opts.storePath, this.store, this.opts.boxKey, aad15(this.opts.ids));
-  }
-};
-
-// src/update-all-store.ts
-var EMPTY = { version: 1, grant: null };
-function aad16(ids2) {
-  return `${ids2.orgId}:${ids2.boxId}:update-all`;
-}
-var UpdateAllStoreFile = class {
-  constructor(path, boxKeyB64, ids2, log = console.error) {
-    this.path = path;
-    this.boxKeyB64 = boxKeyB64;
-    this.ids = ids2;
-    this.state = loadStoreOrEmpty("update-all", path, boxKeyB64, aad16(ids2), log) ?? { ...EMPTY };
-    if (this.state.version !== 1) this.state = { ...EMPTY };
-  }
-  state;
-  save() {
-    saveStore("update-all", this.path, this.state, this.boxKeyB64, aad16(this.ids));
-  }
-  /** The live grant, or null when there is none or it has run out. */
-  grant(now2) {
-    const g2 = this.state.grant;
-    if (!g2) return null;
-    if (g2.until <= now2) return null;
-    return g2;
-  }
-  put(grant) {
-    this.state.grant = grant;
-    this.save();
-  }
-  /**
-   * Take one box out of the grant, or say why it cannot be taken.
-   *
-   * The write happens BEFORE the caller starts anything, so a crash between the two leaves the box
-   * unstarted and consumed rather than startable twice. Repeating an update is harmless; a loop
-   * that keeps restarting one is not, and this is the side to fail on.
-   */
-  claim(changeId, vmId, now2) {
-    const g2 = this.grant(now2);
-    if (!g2) return { ok: false, reason: "no_grant" };
-    if (g2.changeId !== changeId) return { ok: false, reason: "wrong_batch" };
-    if (g2.used.includes(vmId)) return { ok: false, reason: "already_used" };
-    if (!g2.pending.includes(vmId)) return { ok: false, reason: "not_listed" };
-    g2.pending = g2.pending.filter((id) => id !== vmId);
-    g2.used.push(vmId);
-    this.save();
-    return { ok: true };
-  }
-  /** Give a claimed box back, for a start that threw before the box did anything. */
-  unclaim(changeId, vmId) {
-    const g2 = this.state.grant;
-    if (!g2 || g2.changeId !== changeId) return;
-    g2.used = g2.used.filter((id) => id !== vmId);
-    if (!g2.pending.includes(vmId)) g2.pending.push(vmId);
-    this.save();
-  }
-  drop(changeId) {
-    if (!this.state.grant) return;
-    if (changeId && this.state.grant.changeId !== changeId) return;
-    this.state.grant = null;
-    this.save();
-  }
-};
-
-// src/ssh.ts
-var SCOPE_PREFIX7 = "ssh:";
-var SELF = "self";
-function str16(v2) {
-  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
-}
-function hours(seconds) {
-  const h2 = Math.round(seconds / 3600);
-  if (h2 >= 24 && h2 % 24 === 0) return `${h2 / 24} day${h2 === 24 ? "" : "s"}`;
-  return `${h2} hour${h2 === 1 ? "" : "s"}`;
-}
-function summarize15(p2, boxName) {
-  return `Let ControlClaw support open a shell on ${p2.agent?.name ?? boxName} for ${hours(p2.seconds)}`;
-}
-function parseProposal12(payload) {
-  const changeId = str16(payload.changeId);
-  const seconds = typeof payload.seconds === "number" ? Math.round(payload.seconds) : 0;
-  if (!changeId || !Number.isFinite(seconds) || seconds <= 0) throw new Error("malformed ssh.propose payload");
-  const raw = payload.agent;
-  if (!raw) return { changeId, seconds, agent: null };
-  const vmId = str16(raw.vmId);
-  const hostname3 = str16(raw.hostname);
-  if (!vmId || !hostname3) throw new Error("malformed ssh.propose payload");
-  return { changeId, seconds, agent: { vmId, name: str16(raw.name) ?? vmId, hostname: hostname3 } };
-}
-var SshFirewall = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-    this.boxName = opts.boxName ?? "your firewall";
-    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode });
-  }
-  codes;
-  log;
-  boxName;
-  handlers() {
-    return {
-      "ssh.propose": (p2) => this.propose(p2),
-      "ssh.confirm": (p2) => this.confirm(p2),
-      "ssh.cancel": (p2) => this.cancel(p2),
-      "ssh.close": (p2) => this.close(p2)
-    };
-  }
-  /** One pending grant per box: opening one on the firewall and one on an agent is legitimate. */
-  scope(p2) {
-    return `${SCOPE_PREFIX7}${p2.agent?.vmId ?? SELF}`;
-  }
-  target(p2) {
-    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
-  }
-  async openOn(p2) {
-    if (!p2.agent) {
-      if (!this.opts.local) throw new Error("This firewall cannot open a shell session on itself.");
-      return { ...await this.opts.local.open({ grantId: p2.changeId, seconds: p2.seconds }) };
-    }
-    const r2 = await this.opts.agent.post(this.target(p2), "/ssh/open", { grantId: p2.changeId, seconds: p2.seconds });
-    if (typeof r2.privateKey !== "string" || typeof r2.fingerprint !== "string") {
-      throw new Error("The box did not hand back a key. Nothing was opened.");
-    }
-    return r2;
-  }
-  async closeOn(p2) {
-    if (!p2.agent) {
-      if (!this.opts.local) return { closed: false };
-      return { ...await this.opts.local.close() };
-    }
-    return this.opts.agent.post({ vmId: p2.agent.vmId, hostname: p2.agent.hostname }, "/ssh/close", {});
-  }
-  async propose(payload) {
-    const p2 = parseProposal12(payload);
-    const summary = summarize15(p2, this.boxName);
-    const data = { changeId: p2.changeId, summary };
-    if (!this.opts.channelsReady()) {
-      return {
-        ok: false,
-        status: "failed",
-        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
-        data
-      };
-    }
-    const routes = this.opts.codeRoutes();
-    if (routes.length === 0) {
-      this.codes.drop(this.scope(p2));
-      const no = noRecipients(this.opts.agentAllowedCount?.());
-      return {
-        ok: false,
-        status: "failed",
-        message: `${no.message} Letting support in has no first-use shortcut.`,
-        data: { ...data, ...no.data }
-      };
-    }
-    const sent = await this.codes.send(this.scope(p2), p2, p2.agent?.name ?? this.boxName, summary, routes);
-    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
-    this.log(`[ssh] code sent for ${p2.agent?.name ?? "this firewall"} via ${sent.sentVia}`);
-    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
-  }
-  async confirm(payload) {
-    const changeId = str16(payload.changeId);
-    if (!changeId) throw new Error("malformed ssh.confirm payload");
-    const vmId = str16(payload.vmId);
-    const code = str16(payload.code) ?? "";
-    const data = { changeId };
-    const v2 = this.codes.verify(`${SCOPE_PREFIX7}${vmId ?? SELF}`, changeId, code);
-    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No shell access is waiting for a code, or the code expired.", data };
-    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
-    const opened = await this.openOn(v2.proposal);
-    return {
-      ok: true,
-      status: "opened",
-      // `privateKey` rides in here and is taken out of the result by the control plane before
-      // anything is written down (`app/(ssh)/lib/ssh-access.server.ts`). It is not logged here.
-      data: { ...data, ...opened, summary: summarize15(v2.proposal, this.boxName), sentVia: v2.sentVia, vmId: v2.proposal.agent?.vmId ?? null }
-    };
-  }
-  async cancel(payload) {
-    const changeId = str16(payload.changeId);
-    const vmId = str16(payload.vmId);
-    this.codes.cancel(`${SCOPE_PREFIX7}${vmId ?? SELF}`, changeId);
-    return { ok: true, status: "cancelled", data: { changeId } };
-  }
-  /**
-   * Take a session away. No code: revoking is never the dangerous direction, and the console
-   * offers "Close now" while a grant is open as well as when the control plane has lost track of
-   * one. Dropping any pending proposal too, so "Close now" on a grant still waiting for a code
-   * does what it says.
-   */
-  async close(payload) {
-    const changeId = str16(payload.changeId);
-    const raw = payload.agent;
-    const agent = raw && str16(raw.vmId) && str16(raw.hostname) ? { vmId: str16(raw.vmId), hostname: str16(raw.hostname) } : null;
-    this.codes.drop(`${SCOPE_PREFIX7}${agent?.vmId ?? SELF}`);
-    const closed = await this.closeOn({ agent });
-    this.log(`[ssh] closed on ${agent?.vmId ?? "this firewall"}`);
-    return { ok: true, status: "closed", data: { changeId, ...closed, vmId: agent?.vmId ?? null } };
-  }
-};
-
-// src/ssh-local.ts
-import { createHash as createHash4 } from "crypto";
-import { execFile } from "child_process";
-import { mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync10, rmSync as rmSync2, writeFileSync as writeFileSync7 } from "fs";
-import { tmpdir } from "os";
-import { dirname as dirname5, join as join2 } from "path";
-var MIN_SECONDS = 5 * 60;
-var MAX_SECONDS = 72 * 60 * 60;
-var KEYGEN_TIMEOUT_MS = 2e4;
-var SUDO_TIMEOUT_MS = 3e4;
-var SUPPORT_USER = "ccsupport";
-var MARK = "controlclaw-rescue";
-function fingerprintOf(publicKey) {
-  const blob = publicKey.trim().split(/\s+/)[1] ?? "";
-  return `SHA256:${createHash4("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
-}
-var defaultRun = (file2, args, timeoutMs, stdin) => new Promise((resolve2, reject) => {
-  const child = execFile(file2, args, { timeout: timeoutMs }, (err, stdout) => err ? reject(err) : resolve2(String(stdout ?? "")));
-  child.stdin?.on("error", () => void 0);
-  child.stdin?.end(stdin ?? "");
-});
-var OPEN_OK = "key=installed";
-var SshLocal = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.user = opts.user ?? SUPPORT_USER;
-    this.run = opts.run ?? defaultRun;
-    this.log = opts.log ?? ((line) => console.log(line));
-    this.now = opts.now ?? Date.now;
-  }
-  user;
-  run;
-  log;
-  now;
-  status() {
-    const state = this.readState();
-    if (!state) return { open: false, user: this.user, grantId: null, fingerprint: null, endsAt: null };
-    return {
-      open: Date.parse(state.endsAt) > this.now(),
-      user: this.user,
-      grantId: state.grantId,
-      fingerprint: state.fingerprint,
-      endsAt: state.endsAt
-    };
-  }
-  /** Not idempotent, for the reason in `packages/vm-agent/src/ssh.ts`: a repeat replaces the key. */
-  async open(input2) {
-    const seconds = Math.round(input2.seconds);
-    if (!Number.isFinite(seconds) || seconds < MIN_SECONDS || seconds > MAX_SECONDS) {
-      throw new Error(`a shell access window must be between ${MIN_SECONDS} and ${MAX_SECONDS} seconds`);
-    }
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(input2.grantId)) throw new Error("malformed grant id");
-    const dir = mkdtempSync(join2(this.opts.workDir ?? tmpdir(), "cc-ssh-"));
-    const path = join2(dir, "key");
-    let publicKey;
-    let privateKey;
-    try {
-      await this.run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", `${MARK}-${input2.grantId}`, "-f", path], KEYGEN_TIMEOUT_MS);
-      publicKey = readFileSync10(`${path}.pub`, "utf8").trim();
-      privateKey = readFileSync10(path, "utf8");
-    } finally {
-      rmSync2(dir, { recursive: true, force: true });
-    }
-    const endsAt = new Date(this.now() + seconds * 1e3).toISOString();
-    const opened = await this.run("sudo", ["/usr/local/bin/cc-ssh-open", String(seconds)], SUDO_TIMEOUT_MS, `${publicKey}
-`);
-    if (!opened.includes(OPEN_OK)) {
-      await this.run("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS).catch(() => void 0);
-      throw new Error("this firewall is running a cc-ssh-open that predates root support access; re-provision it and try again");
-    }
-    const fingerprint2 = fingerprintOf(publicKey);
-    this.writeState({ grantId: input2.grantId, fingerprint: fingerprint2, endsAt, openedAt: new Date(this.now()).toISOString() });
-    this.log(`[ssh] opened on this firewall for ${this.user} until ${endsAt} (${fingerprint2})`);
-    return { user: this.user, fingerprint: fingerprint2, publicKey, privateKey, endsAt, sudo: true };
-  }
-  /**
-   * Take root away, take the key out, shut the port. `cc-ssh-close` is the only thing that can do
-   * it now — `ccsupport`'s home is not writable by this process — so a failure propagates rather
-   * than being swallowed. The box's own timer, `cc-ssh-close-at-boot` and the provider's port-22
-   * firewall are what stand behind it.
-   */
-  async close() {
-    const was = this.readState();
-    await this.run("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
-    rmSync2(this.opts.statePath, { force: true });
-    if (was) this.log(`[ssh] closed on this firewall (was ${was.fingerprint})`);
-    return { user: this.user, closed: !!was };
-  }
-  readState() {
-    try {
-      const parsed = JSON.parse(readFileSync10(this.opts.statePath, "utf8"));
-      if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
-      return {
-        grantId: parsed.grantId,
-        fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : "",
-        endsAt: parsed.endsAt,
-        openedAt: typeof parsed.openedAt === "string" ? parsed.openedAt : parsed.endsAt
-      };
-    } catch {
-      return null;
-    }
-  }
-  writeState(state) {
-    mkdirSync6(dirname5(this.opts.statePath), { recursive: true });
-    writeFileSync7(this.opts.statePath, JSON.stringify(state), { mode: 384 });
-  }
-};
-
-// src/ssh-logins.ts
-import { createHash as createHash5 } from "crypto";
-import { execFile as execFile2 } from "child_process";
-var POLL_TIMEOUT_MS = 15e3;
-var MAX_PER_TICK = 50;
-var MAX_BUFFERED = 500;
-function parseSshdLine(line) {
-  const m2 = /Accepted publickey for (\S+) from (\S+) port \d+ ssh2:\s+\S+\s+(SHA256:\S+)/.exec(line);
-  if (!m2) return null;
-  const stamp = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z)?)/.exec(line);
-  const at2 = stamp ? Date.parse(stamp[1].replace(/([+-]\d{2})(\d{2})$/, "$1:$2")) : NaN;
-  return { user: m2[1], fromIp: m2[2], fingerprint: m2[3], at: Number.isFinite(at2) ? at2 : null };
-}
-function journal(cursorPath) {
-  return new Promise((resolve2) => {
-    execFile2(
-      "journalctl",
-      ["-u", "ssh", "-u", "sshd", "--no-pager", "-q", "-o", "short-iso", `--cursor-file=${cursorPath}`],
-      { timeout: POLL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
-      (err, stdout) => {
-        if (err && !stdout) return resolve2([]);
-        resolve2(String(stdout ?? "").split("\n").filter(Boolean));
-      }
-    );
-  });
-}
-var SshLoginWatcher = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.readJournal = opts.readJournal ?? (() => journal(opts.cursorPath));
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-    this.log = opts.log ?? ((line) => console.log(line));
-    this.now = opts.now ?? Date.now;
-  }
-  readJournal;
-  fetchImpl;
-  log;
-  now;
-  /**
-   * Records read but not yet accepted. `journalctl --cursor-file` moves the cursor when it READS,
-   * so a failed POST would otherwise lose those logins for good — a hole in the one audit trail
-   * this feature exists to produce.
-   */
-  pending = [];
-  /** One pass. Returns how many sessions it reported, for the tests. */
-  async tick() {
-    const lines = await this.readJournal();
-    const tickTs = Math.round(this.now() / 1e3);
-    for (const line of lines) {
-      const parsed = parseSshdLine(line);
-      if (!parsed) continue;
-      this.pending.push({
-        source: "ssh_login",
-        // The line itself is the identity of the session: same second, same port, same key means
-        // the same login. The journal cursor already stops the common repeat; this stops the rest.
-        login_id: createHash5("sha256").update(line).digest("hex").slice(0, 32),
-        // The journal's own stamp, so a backlog shipped after a restart does not land as "now"
-        // and sort wrongly against the grant it belongs to.
-        ts: parsed.at !== null ? Math.round(parsed.at / 1e3) : tickTs,
-        user: parsed.user,
-        fingerprint: parsed.fingerprint,
-        from_ip: parsed.fromIp
-      });
-    }
-    if (this.pending.length > MAX_BUFFERED) this.pending = this.pending.slice(-MAX_BUFFERED);
-    if (this.pending.length === 0) return 0;
-    const records = this.pending.slice(0, MAX_PER_TICK);
-    const res = await this.fetchImpl(this.opts.activityUrl, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
-      body: JSON.stringify({ records })
-    });
-    if (!res.ok) {
-      this.log(`[ssh] could not report ${records.length} login(s): HTTP ${res.status}; keeping them for the next pass`);
-      return 0;
-    }
-    this.pending = this.pending.slice(records.length);
-    this.log(`[ssh] reported ${records.length} login(s)`);
-    return records.length;
-  }
-};
-
-// src/sync.ts
-import { writeFileSync as writeFileSync8, mkdirSync as mkdirSync7, renameSync as renameSync4 } from "fs";
-import { join as join3 } from "path";
-function decryptToConfig(record2, boxKey, ids2) {
-  const plaintext = openWithBoxKey(record2, boxKey, ids2);
-  const cfg = JSON.parse(plaintext);
-  return cfg;
-}
-function writeProxyConfig(dir, cfg) {
-  mkdirSync7(dir, { recursive: true });
-  const writeAtomic2 = (name25, data) => {
-    const tmp = join3(dir, `.${name25}.tmp`);
-    const dst = join3(dir, name25);
-    writeFileSync8(tmp, JSON.stringify(data, null, 2), { mode: 384 });
-    renameSync4(tmp, dst);
-  };
-  writeAtomic2("credentials.json", cfg.credentials ?? []);
-  writeAtomic2("rules.json", cfg.rules ?? []);
-  writeAtomic2("identities.json", cfg.identities ?? []);
-  writeAtomic2("exit.json", cfg.exit ?? { enabled: false });
-}
-
-// src/permissions.ts
-import { readFileSync as readFileSync12, existsSync as existsSync8 } from "fs";
-
-// src/grants.ts
-import { existsSync as existsSync7, readFileSync as readFileSync11, renameSync as renameSync5, writeFileSync as writeFileSync9 } from "fs";
-import { basename as basename2, dirname as dirname6, join as join4 } from "path";
-var GrantStore = class {
-  constructor(path) {
-    this.path = path;
-    if (existsSync7(path)) {
-      try {
-        this.grants = JSON.parse(readFileSync11(path, "utf8"));
-      } catch {
-        this.grants = {};
-      }
-    }
-  }
-  grants = {};
-  get(id) {
-    return this.grants[id];
-  }
-  /** Whether `id` has a grant that has not expired at `nowSec`. */
-  active(id, nowSec) {
-    const g2 = this.grants[id];
-    return !!g2 && g2.expires_at > nowSec;
-  }
-  set(id, grant) {
-    this.grants[id] = grant;
-    this.save();
-  }
-  delete(id) {
-    if (!(id in this.grants)) return;
-    delete this.grants[id];
-    this.save();
-  }
-  /** Drop expired grants so the file does not grow forever. */
-  prune(nowSec) {
-    let changed = false;
-    for (const [id, g2] of Object.entries(this.grants)) {
-      if (g2.expires_at <= nowSec) {
-        delete this.grants[id];
-        changed = true;
-      }
-    }
-    if (changed) this.save();
-  }
-  size() {
-    return Object.keys(this.grants).length;
-  }
-  save() {
-    const tmp = join4(dirname6(this.path), `.${basename2(this.path)}.tmp`);
-    writeFileSync9(tmp, JSON.stringify(this.grants, null, 2), { mode: 384 });
-    renameSync5(tmp, this.path);
-  }
-};
-
-// src/permissions.ts
-var PermissionBridge = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.grants = opts.grants ?? new GrantStore(opts.grantsPath);
-  }
-  submitted = /* @__PURE__ */ new Set();
-  meta = /* @__PURE__ */ new Map();
-  grants;
-  async authHeaders(extra = {}) {
-    return { Authorization: `Bearer ${await this.opts.getToken()}`, ...extra };
-  }
-  async tick() {
-    await this.drainPending();
-    await this.pollGrants();
-  }
-  /** Submit any new pending permission requests to ControlClaw (idempotent). */
-  async drainPending() {
-    if (!existsSync8(this.opts.pendingPath)) return;
-    const lines = readFileSync12(this.opts.pendingPath, "utf8").split("\n").filter(Boolean);
-    for (const line of lines) {
-      let rec;
-      try {
-        rec = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (!rec.permission_id || this.submitted.has(rec.permission_id)) continue;
-      this.submitted.add(rec.permission_id);
-      this.meta.set(rec.permission_id, rec);
-      try {
-        await fetch(this.opts.permissionUrl, {
-          method: "POST",
-          headers: await this.authHeaders({ "content-type": "application/json" }),
-          body: JSON.stringify({
-            permission_id: rec.permission_id,
-            scope: rec.scope,
-            summary: rec.scope,
-            host: rec.host,
-            method: rec.method,
-            path: rec.path,
-            ...rec.ai_category ? { ai_reason: rec.ai_category } : {}
-          })
-        });
-      } catch (err) {
-        this.submitted.delete(rec.permission_id);
-        console.error(`[perm] submit failed: ${err.message}`);
-      }
-    }
-  }
-  /** Poll outstanding requests; on approval, write a scoped, expiring grant for the proxy. */
-  async pollGrants() {
-    const now2 = Math.floor(Date.now() / 1e3);
-    this.grants.prune(now2);
-    for (const pid of this.submitted) {
-      if (this.grants.active(pid, now2)) continue;
-      try {
-        const res = await fetch(
-          `${this.opts.permissionUrl}?permission_id=${encodeURIComponent(pid)}`,
-          { headers: await this.authHeaders() }
-        );
-        if (!res.ok) continue;
-        const { status } = await res.json();
-        if (status === "approved") {
-          this.grants.set(pid, { expires_at: now2 + this.opts.ttlSeconds, scope: this.meta.get(pid)?.scope ?? "" });
-          console.log(`[perm] granted ${pid}`);
-        } else if (status === "denied" || status === "expired") {
-          this.grants.delete(pid);
-        }
-      } catch {
-      }
-    }
-  }
-};
-
-// src/log-tail.ts
-import { closeSync, existsSync as existsSync9, fstatSync, mkdirSync as mkdirSync8, openSync, readSync, readFileSync as readFileSync13, renameSync as renameSync6, statSync as statSync2, writeFileSync as writeFileSync10 } from "fs";
-import { basename as basename3, dirname as dirname7, join as join5 } from "path";
-var MAX_CHUNK = 4 * 1024 * 1024;
-var LogTail = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.batchSize = opts.batchSize ?? 200;
-    this.cursor = this.loadCursor();
-  }
-  cursor;
-  batchSize;
-  loadCursor() {
-    try {
-      const c2 = JSON.parse(readFileSync13(this.opts.cursorPath, "utf8"));
-      if (typeof c2.inode === "number" && typeof c2.offset === "number") return c2;
-    } catch {
-    }
-    return { inode: 0, offset: 0 };
-  }
-  saveCursor() {
-    mkdirSync8(dirname7(this.opts.cursorPath), { recursive: true });
-    const tmp = join5(dirname7(this.opts.cursorPath), `.${basename3(this.opts.cursorPath)}.tmp`);
-    writeFileSync10(tmp, JSON.stringify(this.cursor), { mode: 384 });
-    renameSync6(tmp, this.opts.cursorPath);
-  }
-  /** Start at the end of the live file (a consumer that only cares about new records). */
-  skipToEnd() {
-    if (!existsSync9(this.opts.logPath)) return;
-    const live = statSync2(this.opts.logPath);
-    this.cursor = { inode: Number(live.ino), offset: live.size };
-    this.saveCursor();
-  }
-  hasCursor() {
-    return this.cursor.inode !== 0;
-  }
-  /** One pass: hand every unread batch to `onBatch` until caught up or a batch is refused. */
-  async drain(onBatch) {
-    const total = { read: 0, skipped: 0 };
-    if (!existsSync9(this.opts.logPath)) return total;
-    const live = statSync2(this.opts.logPath);
-    const liveInode = Number(live.ino);
-    if (this.cursor.inode && this.cursor.inode !== liveInode) {
-      const rotated = this.opts.logPath + ".1";
-      if (existsSync9(rotated) && Number(statSync2(rotated).ino) === this.cursor.inode) {
-        const done = await this.drainFrom(rotated, onBatch, total);
-        if (!done) return total;
-      }
-      this.cursor = { inode: liveInode, offset: 0 };
-      this.saveCursor();
-    } else if (!this.cursor.inode) {
-      this.cursor = { inode: liveInode, offset: 0 };
-    } else if (live.size < this.cursor.offset) {
-      this.cursor.offset = 0;
-    }
-    await this.drainFrom(this.opts.logPath, onBatch, total);
-    return total;
-  }
-  /** True when `path` is fully read, false when a batch was refused. */
-  async drainFrom(path, onBatch, total) {
-    for (; ; ) {
-      const { records, consumed, skipped } = this.readBatch(path);
-      total.skipped += skipped;
-      if (records.length === 0) {
-        if (consumed > 0) {
-          this.cursor.offset += consumed;
-          this.saveCursor();
-          continue;
-        }
-        return true;
-      }
-      if (!await onBatch(records)) return false;
-      total.read += records.length;
-      this.cursor.offset += consumed;
-      this.saveCursor();
-      if (records.length < this.batchSize) return true;
-    }
-  }
-  readBatch(path) {
-    const fd = openSync(path, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const want = Math.min(MAX_CHUNK, Math.max(0, size - this.cursor.offset));
-      if (want === 0) return { records: [], consumed: 0, skipped: 0 };
-      const buf = Buffer.alloc(want);
-      const n2 = readSync(fd, buf, 0, want, this.cursor.offset);
-      const text2 = buf.subarray(0, n2).toString("utf8");
-      const records = [];
-      let consumed = 0;
-      let skipped = 0;
-      let from = 0;
-      while (records.length < this.batchSize) {
-        const nl = text2.indexOf("\n", from);
-        if (nl === -1) break;
-        const line = text2.slice(from, nl);
-        from = nl + 1;
-        consumed = Buffer.byteLength(text2.slice(0, from), "utf8");
-        if (!line.trim()) continue;
-        try {
-          records.push(JSON.parse(line));
-        } catch {
-          skipped += 1;
-        }
-      }
-      return { records, consumed, skipped };
-    } finally {
-      closeSync(fd);
-    }
-  }
-};
-function readAllRecords(logPath) {
-  const out = [];
-  for (const path of [logPath + ".1", logPath]) {
-    if (!existsSync9(path)) continue;
-    for (const line of readFileSync13(path, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        out.push(JSON.parse(line));
-      } catch {
-      }
-    }
-  }
-  return out;
-}
-
-// src/activity.ts
-var ActivityShipper = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.tail = new LogTail({ logPath: opts.logPath, cursorPath: opts.cursorPath, batchSize: opts.batchSize });
-    this.fetchImpl = opts.fetchImpl ?? fetch;
-  }
-  tail;
-  backoffMs = 0;
-  nextAttemptAt = 0;
-  fetchImpl;
-  /** A slow POST must not overlap the next interval: two passes would ship the batch twice. */
-  inFlight = false;
-  /** One pass: ship everything unshipped, one batch at a time, until caught up or an error. */
-  async tick() {
-    const total = { read: 0, accepted: 0, duplicates: 0, skipped: 0 };
-    if (this.inFlight) return total;
-    if (Date.now() < this.nextAttemptAt) return total;
-    this.inFlight = true;
-    try {
-      const r2 = await this.tail.drain(async (records) => {
-        const ok = await this.post(records);
-        if (!ok) return false;
-        total.accepted += ok.accepted;
-        total.duplicates += ok.duplicates;
-        try {
-          if (ok.delivered) this.opts.onShipped?.(records);
-        } catch (err) {
-          console.error(`[activity] onShipped failed: ${err.message}`);
-        }
-        return true;
-      });
-      total.read = r2.read;
-      total.skipped = r2.skipped;
-      return total;
-    } finally {
-      this.inFlight = false;
-    }
-  }
-  async post(records) {
-    try {
-      const res = await this.fetchImpl(this.opts.activityUrl, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
-        body: JSON.stringify({ records })
-      });
-      if (res.status === 400 || res.status === 413) {
-        console.error(`[activity] batch rejected (HTTP ${res.status}); dropping ${records.length} records`);
-        this.backoffMs = 0;
-        return { accepted: 0, duplicates: 0, delivered: false };
-      }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
-      this.backoffMs = 0;
-      return { accepted: body.accepted ?? 0, duplicates: body.duplicates ?? 0, delivered: true };
-    } catch (err) {
-      this.backoffMs = Math.min(this.backoffMs ? this.backoffMs * 2 : 5e3, 6e4);
-      this.nextAttemptAt = Date.now() + this.backoffMs;
-      console.error(`[activity] ship failed (${err.message}); retry in ${this.backoffMs / 1e3}s`);
-      return null;
-    }
-  }
-};
-
-// src/included-credit.ts
-var REPORT_INTERVAL_MS = 5 * 6e4;
-var IncludedCreditWatch = class {
-  seen = 0;
-  firstAt = null;
-  lastAt = null;
-  reportedAt = 0;
-  /** A refusal report went out and has not been followed by a recovery one. */
-  outstanding = false;
-  /** A call got through after that report: say so on the next beat. */
-  recovered = false;
-  now;
-  log;
-  constructor(opts = {}) {
-    this.now = opts.now ?? Date.now;
-    this.log = opts.log ?? ((l2) => console.log(l2));
-  }
-  /**
-   * Walk one shipped batch in the order the proxy wrote it, counting refusals and watching for a
-   * call that got through. A success wipes the refusals still waiting to be reported: they are
-   * already out of date, and reporting them would pause a console that should not be paused.
-   */
-  note(records) {
-    for (const r2 of records) {
-      if (typeof r2 !== "object" || r2 === null) continue;
-      const mark = r2.included;
-      if (mark === "no_credit") {
-        this.recovered = false;
-        const ts = r2.ts;
-        const at2 = typeof ts === "number" && Number.isFinite(ts) ? ts * 1e3 : this.now();
-        if (this.firstAt === null || at2 < this.firstAt) this.firstAt = at2;
-        if (this.lastAt === null || at2 > this.lastAt) this.lastAt = at2;
-        this.seen++;
-        if (this.seen === 1) this.log("[included] the AI gateway refused a call for lack of credit on our account");
-        continue;
-      }
-      if (mark !== "ok") continue;
-      this.seen = 0;
-      this.firstAt = null;
-      this.lastAt = null;
-      if (this.outstanding && !this.recovered) {
-        this.recovered = true;
-        this.log("[included] the AI gateway is answering again");
-      }
-    }
-  }
-  /**
-   * The line for this beat, or nothing. Rate-limited rather than drained: a firewall whose agents
-   * keep retrying must not turn one outage into a report every five seconds, and the count is
-   * what says how bad it is, so it is only cleared once a report actually goes out.
-   */
-  drainReports() {
-    const now2 = this.now();
-    if (this.recovered) {
-      this.recovered = false;
-      this.outstanding = false;
-      this.reportedAt = now2;
-      return [
-        {
-          command_id: `included.recovered:${Math.floor(now2 / 1e3)}`,
-          ok: true,
-          status: "gateway_recovered",
-          message: "The AI Gateway is answering included-tokens calls again.",
-          data: {}
-        }
-      ];
-    }
-    if (this.seen === 0 || now2 - this.reportedAt < REPORT_INTERVAL_MS) return [];
-    const seen = this.seen;
-    const firstAt = this.firstAt;
-    const lastAt = this.lastAt;
-    this.reportedAt = now2;
-    this.outstanding = true;
-    this.seen = 0;
-    this.firstAt = null;
-    this.lastAt = null;
-    return [
-      {
-        command_id: `included.no-credit:${Math.floor(now2 / 1e3)}`,
-        ok: false,
-        status: "gateway_no_credit",
-        message: `The AI Gateway refused ${seen} included-tokens call(s) for lack of credit on ControlClaw's account.`,
-        data: {
-          seen,
-          ...firstAt ? { firstAt: new Date(firstAt).toISOString() } : {},
-          ...lastAt ? { lastAt: new Date(lastAt).toISOString() } : {}
-        }
-      }
-    ];
-  }
-};
-
-// src/inventory.ts
-var INVENTORY_CAP = 50;
-var WEBHOOK_INVENTORY_CAP = 100;
-function firewallInventory(channels2, llm2, hooks = null, unreadable2 = isStoreUnreadable) {
-  const out = {};
-  const cs = unreadable2("channels") ? void 0 : channels2?.summary();
-  if (cs && cs.length <= INVENTORY_CAP) out.channels = cs.map((c2) => ({ id: c2.id, type: c2.type, assignedVmId: c2.assignedVmId }));
-  const ls = unreadable2("llm") ? void 0 : llm2?.summary().credentials;
-  if (ls && ls.length <= INVENTORY_CAP) out.credentials = ls.map((c2) => ({ id: c2.id, provider: c2.provider }));
-  const ws = unreadable2("webhooks") ? void 0 : hooks?.inventory();
-  if (ws && ws.length <= WEBHOOK_INVENTORY_CAP) out.webhooks = ws;
-  return out.channels || out.credentials || out.webhooks ? out : null;
-}
-
-// ../../node_modules/.pnpm/@ai-sdk+provider@4.0.18/node_modules/@ai-sdk/provider/dist/index.js
-var marker = "vercel.ai.error";
-var symbol = Symbol.for(marker);
-var _a3;
-var _b;
-var AISDKError = class _AISDKError extends (_b = Error, _a3 = symbol, _b) {
-  /**
-   * Creates an AI SDK Error.
-   *
-   * @param {Object} params - The parameters for creating the error.
-   * @param {string} params.name - The name of the error.
-   * @param {string} params.message - The error message.
-   * @param {unknown} [params.cause] - The underlying cause of the error.
-   */
-  constructor({
-    name: name163,
-    message: message2,
-    cause
-  }) {
-    super(message2);
-    this[_a3] = true;
-    this.name = name163;
-    this.cause = cause;
-  }
-  /**
-   * Checks if the given error is an AI SDK Error.
-   * @param {unknown} error - The error to check.
-   * @returns {boolean} True if the error is an AI SDK Error, false otherwise.
-   */
-  static isInstance(error62) {
-    return _AISDKError.hasMarker(error62, marker);
-  }
-  static hasMarker(error62, marker173) {
-    const markerSymbol = Symbol.for(marker173);
-    return error62 != null && typeof error62 === "object" && markerSymbol in error62 && typeof error62[markerSymbol] === "boolean" && error62[markerSymbol] === true;
-  }
-};
-var name = "AI_APICallError";
-var marker2 = `vercel.ai.error.${name}`;
-var symbol2 = Symbol.for(marker2);
-var _a22;
-var _b2;
-var APICallError = class extends (_b2 = AISDKError, _a22 = symbol2, _b2) {
-  constructor({
-    message: message2,
-    url: url2,
-    requestBodyValues,
-    statusCode,
-    responseHeaders,
-    responseBody,
-    cause,
-    isRetryable = statusCode != null && (statusCode === 408 || // request timeout
-    statusCode === 409 || // conflict
-    statusCode === 429 || // too many requests
-    statusCode >= 500),
-    // server error
-    data
-  }) {
-    super({ name, message: message2, cause });
-    this[_a22] = true;
-    this.url = url2;
-    this.requestBodyValues = requestBodyValues;
-    this.statusCode = statusCode;
-    this.responseHeaders = responseHeaders;
-    this.responseBody = responseBody;
-    this.isRetryable = isRetryable;
-    this.data = data;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker2);
-  }
-};
-var name2 = "AI_EmptyResponseBodyError";
-var marker3 = `vercel.ai.error.${name2}`;
-var symbol3 = Symbol.for(marker3);
-var _a32;
-var _b3;
-var EmptyResponseBodyError = class extends (_b3 = AISDKError, _a32 = symbol3, _b3) {
-  // used in isInstance
-  constructor({ message: message2 = "Empty response body" } = {}) {
-    super({ name: name2, message: message2 });
-    this[_a32] = true;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker3);
-  }
-};
-var name3 = "AI_EvaluationUnsupportedQuestionTypeError";
-var marker4 = `vercel.ai.error.${name3}`;
-var symbol4 = Symbol.for(marker4);
-var _a4;
-var _b4;
-var EvaluationUnsupportedQuestionTypeError = class extends (_b4 = AISDKError, _a4 = symbol4, _b4) {
-  constructor({
-    questionId,
-    questionType,
-    provider,
-    modelId,
-    message: message2 = `Question "${questionId}" has type "${questionType}", which is not supported by provider "${provider}" and model "${modelId}".`
-  }) {
-    super({ name: name3, message: message2 });
-    this[_a4] = true;
-    this.questionId = questionId;
-    this.questionType = questionType;
-    this.provider = provider;
-    this.modelId = modelId;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker4);
-  }
-};
-function getErrorMessage(error62) {
-  if (error62 == null) {
-    return "unknown error";
-  }
-  if (typeof error62 === "string") {
-    return error62;
-  }
-  if (error62 instanceof Error) {
-    return error62.toString();
-  }
-  return JSON.stringify(error62);
-}
-var name4 = "AI_InvalidArgumentError";
-var marker5 = `vercel.ai.error.${name4}`;
-var symbol5 = Symbol.for(marker5);
-var _a5;
-var _b5;
-var InvalidArgumentError = class extends (_b5 = AISDKError, _a5 = symbol5, _b5) {
-  constructor({
-    message: message2,
-    cause,
-    argument
-  }) {
-    super({ name: name4, message: message2, cause });
-    this[_a5] = true;
-    this.argument = argument;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker5);
-  }
-};
-var name5 = "AI_InvalidPromptError";
-var marker6 = `vercel.ai.error.${name5}`;
-var symbol6 = Symbol.for(marker6);
-var _a6;
-var _b6;
-var InvalidPromptError = class extends (_b6 = AISDKError, _a6 = symbol6, _b6) {
-  constructor({
-    prompt,
-    message: message2,
-    cause
-  }) {
-    super({ name: name5, message: `Invalid prompt: ${message2}`, cause });
-    this[_a6] = true;
-    this.prompt = prompt;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker6);
-  }
-};
-var name6 = "AI_InvalidResponseDataError";
-var marker7 = `vercel.ai.error.${name6}`;
-var symbol7 = Symbol.for(marker7);
-var _a7;
-var _b7;
-var InvalidResponseDataError = class extends (_b7 = AISDKError, _a7 = symbol7, _b7) {
-  constructor({
-    data,
-    message: message2 = `Invalid response data: ${JSON.stringify(data)}.`
-  }) {
-    super({ name: name6, message: message2 });
-    this[_a7] = true;
-    this.data = data;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker7);
-  }
-};
-var name7 = "AI_JSONParseError";
-var marker8 = `vercel.ai.error.${name7}`;
-var symbol8 = Symbol.for(marker8);
-var _a8;
-var _b8;
-var JSONParseError = class extends (_b8 = AISDKError, _a8 = symbol8, _b8) {
-  constructor({ text: text2, cause }) {
-    super({
-      name: name7,
-      message: `JSON parsing failed: Text: ${text2}.
-Error message: ${getErrorMessage(cause)}`,
-      cause
-    });
-    this[_a8] = true;
-    this.text = text2;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker8);
-  }
-};
-var name8 = "AI_LoadAPIKeyError";
-var marker9 = `vercel.ai.error.${name8}`;
-var symbol9 = Symbol.for(marker9);
-var _a9;
-var _b9;
-var LoadAPIKeyError = class extends (_b9 = AISDKError, _a9 = symbol9, _b9) {
-  // used in isInstance
-  constructor({ message: message2 }) {
-    super({ name: name8, message: message2 });
-    this[_a9] = true;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker9);
-  }
-};
-var name9 = "AI_LoadSettingError";
-var marker10 = `vercel.ai.error.${name9}`;
-var symbol10 = Symbol.for(marker10);
-var _a10;
-var _b10;
-var LoadSettingError = class extends (_b10 = AISDKError, _a10 = symbol10, _b10) {
-  // used in isInstance
-  constructor({ message: message2 }) {
-    super({ name: name9, message: message2 });
-    this[_a10] = true;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker10);
-  }
-};
-var name10 = "AI_NoContentGeneratedError";
-var marker11 = `vercel.ai.error.${name10}`;
-var symbol11 = Symbol.for(marker11);
-var _a11;
-var _b11;
-var NoContentGeneratedError = class extends (_b11 = AISDKError, _a11 = symbol11, _b11) {
-  // used in isInstance
-  constructor({
-    message: message2 = "No content generated."
-  } = {}) {
-    super({ name: name10, message: message2 });
-    this[_a11] = true;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker11);
-  }
-};
-var name11 = "AI_NoSuchModelError";
-var marker12 = `vercel.ai.error.${name11}`;
-var symbol12 = Symbol.for(marker12);
-var _a12;
-var _b12;
-var NoSuchModelError = class extends (_b12 = AISDKError, _a12 = symbol12, _b12) {
-  constructor({
-    errorName = name11,
-    modelId,
-    modelType,
-    message: message2 = `No such ${modelType}: ${modelId}`
-  }) {
-    super({ name: errorName, message: message2 });
-    this[_a12] = true;
-    this.modelId = modelId;
-    this.modelType = modelType;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker12);
-  }
-};
-var name12 = "AI_NoSuchProviderReferenceError";
-var marker13 = `vercel.ai.error.${name12}`;
-var symbol13 = Symbol.for(marker13);
-var _a13;
-var _b13;
-var NoSuchProviderReferenceError = class extends (_b13 = AISDKError, _a13 = symbol13, _b13) {
-  constructor({
-    provider,
-    reference,
-    message: message2 = `No provider reference found for provider '${provider}'. Available providers: ${Object.keys(reference).join(", ")}`
-  }) {
-    super({ name: name12, message: message2 });
-    this[_a13] = true;
-    this.provider = provider;
-    this.reference = reference;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker13);
-  }
-};
-var name13 = "AI_TooManyEmbeddingValuesForCallError";
-var marker14 = `vercel.ai.error.${name13}`;
-var symbol14 = Symbol.for(marker14);
-var _a14;
-var _b14;
-var TooManyEmbeddingValuesForCallError = class extends (_b14 = AISDKError, _a14 = symbol14, _b14) {
-  constructor(options) {
-    super({
-      name: name13,
-      message: `Too many values for a single embedding call. The ${options.provider} model "${options.modelId}" can only embed up to ${options.maxEmbeddingsPerCall} values per call, but ${options.values.length} values were provided.`
-    });
-    this[_a14] = true;
-    this.provider = options.provider;
-    this.modelId = options.modelId;
-    this.maxEmbeddingsPerCall = options.maxEmbeddingsPerCall;
-    this.values = options.values;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker14);
-  }
-};
-var name14 = "AI_TypeValidationError";
-var marker15 = `vercel.ai.error.${name14}`;
-var symbol15 = Symbol.for(marker15);
-var _a15;
-var _b15;
-var TypeValidationError = class _TypeValidationError extends (_b15 = AISDKError, _a15 = symbol15, _b15) {
-  constructor({
-    value,
-    cause,
-    context
-  }) {
-    let contextPrefix = "Type validation failed";
-    if (context == null ? void 0 : context.field) {
-      contextPrefix += ` for ${context.field}`;
-    }
-    if ((context == null ? void 0 : context.entityName) || (context == null ? void 0 : context.entityId)) {
-      contextPrefix += " (";
-      const parts = [];
-      if (context.entityName) {
-        parts.push(context.entityName);
-      }
-      if (context.entityId) {
-        parts.push(`id: "${context.entityId}"`);
-      }
-      contextPrefix += parts.join(", ");
-      contextPrefix += ")";
-    }
-    super({
-      name: name14,
-      message: `${contextPrefix}: Value: ${JSON.stringify(value)}.
-Error message: ${getErrorMessage(cause)}`,
-      cause
-    });
-    this[_a15] = true;
-    this.value = value;
-    this.context = context;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker15);
-  }
-  /**
-   * Wraps an error into a TypeValidationError.
-   * If the cause is already a TypeValidationError with the same value and context, it returns the cause.
-   * Otherwise, it creates a new TypeValidationError.
-   *
-   * @param {Object} params - The parameters for wrapping the error.
-   * @param {unknown} params.value - The value that failed validation.
-   * @param {unknown} params.cause - The original error or cause of the validation failure.
-   * @param {TypeValidationContext} params.context - Optional context about what is being validated.
-   * @returns {TypeValidationError} A TypeValidationError instance.
-   */
-  static wrap({
-    value,
-    cause,
-    context
-  }) {
-    var _a173, _b173, _c;
-    if (_TypeValidationError.isInstance(cause) && cause.value === value && ((_a173 = cause.context) == null ? void 0 : _a173.field) === (context == null ? void 0 : context.field) && ((_b173 = cause.context) == null ? void 0 : _b173.entityName) === (context == null ? void 0 : context.entityName) && ((_c = cause.context) == null ? void 0 : _c.entityId) === (context == null ? void 0 : context.entityId)) {
-      return cause;
-    }
-    return new _TypeValidationError({ value, cause, context });
-  }
-};
-var name15 = "AI_UnsupportedFunctionalityError";
-var marker16 = `vercel.ai.error.${name15}`;
-var symbol16 = Symbol.for(marker16);
-var _a16;
-var _b16;
-var UnsupportedFunctionalityError = class extends (_b16 = AISDKError, _a16 = symbol16, _b16) {
-  constructor({
-    functionality,
-    message: message2 = `'${functionality}' functionality not supported.`
-  }) {
-    super({ name: name15, message: message2 });
-    this[_a16] = true;
-    this.functionality = functionality;
-  }
-  static isInstance(error62) {
-    return AISDKError.hasMarker(error62, marker16);
-  }
-};
-function isJSONValue(value) {
-  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return true;
-  }
-  if (Array.isArray(value)) {
-    return value.every(isJSONValue);
-  }
-  if (typeof value === "object") {
-    return Object.entries(value).every(
-      ([key, val]) => typeof key === "string" && (val === void 0 || isJSONValue(val))
-    );
-  }
-  return false;
-}
-function isJSONObject(value) {
-  return value != null && typeof value === "object" && Object.entries(value).every(
-    ([key, val]) => typeof key === "string" && (val === void 0 || isJSONValue(val))
-  );
-}
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -17495,7 +9344,7 @@ __export(external_exports, {
   stringbool: () => stringbool,
   success: () => success,
   superRefine: () => superRefine,
-  symbol: () => symbol17,
+  symbol: () => symbol,
   templateLiteral: () => templateLiteral,
   toJSONSchema: () => toJSONSchema,
   toLowerCase: () => _toLowerCase,
@@ -18097,14 +9946,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str18 = "";
+  let str19 = "";
   for (let i2 = 0; i2 < length; i2++) {
-    str18 += chars[Math.floor(Math.random() * chars.length)];
+    str19 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str18;
+  return str19;
 }
-function esc(str18) {
-  return JSON.stringify(str18);
+function esc(str19) {
+  return JSON.stringify(str19);
 }
 function slugify(input2) {
   return input2.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -18218,8 +10067,8 @@ var primitiveTypes = /* @__PURE__ */ new Set([
   "symbol",
   "undefined"
 ]);
-function escapeRegex(str18) {
-  return str18.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str19) {
+  return str19.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -18473,13 +10322,13 @@ function getSizableOrigin(input2) {
   return "unknown";
 }
 var highSurrogate = /[\uD800-\uDBFF]/;
-function codePointLength(str18) {
-  const units = str18.length;
-  if (!highSurrogate.test(str18))
+function codePointLength(str19) {
+  const units = str19.length;
+  if (!highSurrogate.test(str19))
     return units;
   let count = units;
   for (let i2 = 0; i2 < units - 1; i2++) {
-    if ((str18.charCodeAt(i2) & 64512) === 55296 && (str18.charCodeAt(i2 + 1) & 64512) === 56320) {
+    if ((str19.charCodeAt(i2) & 64512) === 55296 && (str19.charCodeAt(i2 + 1) & 64512) === 56320) {
       count--;
       i2++;
     }
@@ -18687,7 +10536,7 @@ function constantCatch(value) {
 }
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/core/core.js
-var _a17;
+var _a3;
 var NEVER = /* @__PURE__ */ Object.freeze({
   status: "aborted"
 });
@@ -18800,7 +10649,7 @@ var $ZodEncodeError = class extends Error {
     this.name = "ZodEncodeError";
   }
 };
-(_a17 = globalThis).__zod_globalConfig ?? (_a17.__zod_globalConfig = {});
+(_a3 = globalThis).__zod_globalConfig ?? (_a3.__zod_globalConfig = {});
 var globalConfig = globalThis.__zod_globalConfig;
 function config(newConfig) {
   if (newConfig)
@@ -30115,7 +21964,7 @@ function yo_default() {
 }
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/core/registries.js
-var _a18;
+var _a4;
 var $output = /* @__PURE__ */ Symbol("ZodOutput");
 var $input = /* @__PURE__ */ Symbol("ZodInput");
 var $ZodRegistry = class {
@@ -30161,7 +22010,7 @@ var $ZodRegistry = class {
 function registry() {
   return new $ZodRegistry();
 }
-(_a18 = globalThis).__zod_globalRegistry ?? (_a18.__zod_globalRegistry = registry());
+(_a4 = globalThis).__zod_globalRegistry ?? (_a4.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/core/compile.js
@@ -34345,7 +26194,7 @@ __export(schemas_exports2, {
   stringbool: () => stringbool,
   success: () => success,
   superRefine: () => superRefine,
-  symbol: () => symbol17,
+  symbol: () => symbol,
   templateLiteral: () => templateLiteral,
   transform: () => transform,
   tuple: () => tuple,
@@ -35168,7 +27017,7 @@ var ZodSymbol = /* @__PURE__ */ $constructor("ZodSymbol", (inst, def) => {
   ZodType.init(inst, def);
   inst._zod.processJSONSchema = (ctx, json3, params) => symbolProcessor(inst, ctx, json3, params);
 });
-function symbol17(params) {
+function symbol(params) {
   return _symbol(ZodSymbol, params);
 }
 var ZodUndefined = /* @__PURE__ */ $constructor("ZodUndefined", (inst, def) => {
@@ -36931,6 +28780,8825 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 
+// src/agentmail-api.ts
+var AgentMailError = class extends Error {
+  constructor(code, httpStatus = 0) {
+    super(code);
+    this.code = code;
+    this.httpStatus = httpStatus;
+  }
+};
+var INBOX_PERMISSIONS = Object.fromEntries(
+  [
+    "inbox_read",
+    "message_read",
+    "message_send",
+    "message_update",
+    "draft_read",
+    "draft_create",
+    "draft_update",
+    "draft_delete",
+    "draft_send"
+  ].map((permission) => [permission, true])
+);
+var AgentMailApi = class {
+  constructor(fetchImpl = fetch, base = "https://api.agentmail.to/v0") {
+    this.fetchImpl = fetchImpl;
+    this.base = base;
+  }
+  async request(method, path, key, body) {
+    let res;
+    try {
+      res = await this.fetchImpl(`${this.base}${path}`, {
+        method,
+        redirect: "error",
+        signal: AbortSignal.timeout(3e4),
+        headers: {
+          "content-type": "application/json",
+          ...key ? { Authorization: `Bearer ${key}` } : {}
+        },
+        ...body === void 0 ? {} : { body: JSON.stringify(body) }
+      });
+    } catch {
+      throw new AgentMailError("request_uncertain");
+    }
+    if (!res.ok) {
+      const raw = await res.text();
+      const code = /user.already.exists/i.test(raw) ? "user_exists" : /username.*(taken|exists|unavailable)|inbox.already.exists/i.test(raw) ? "username_taken" : res.status === 401 ? "invalid_key" : res.status === 403 ? "permission_denied" : res.status === 429 ? "rate_limited" : "upstream_error";
+      throw new AgentMailError(code, res.status);
+    }
+    if (res.status === 204) return {};
+    const text2 = await res.text();
+    try {
+      return text2 ? JSON.parse(text2) : {};
+    } catch {
+      throw new AgentMailError("invalid_response");
+    }
+  }
+  organization(key) {
+    return this.request("GET", "/organizations", key);
+  }
+  async inboxes(key) {
+    const all = [];
+    let token2;
+    do {
+      const page = await this.request(
+        "GET",
+        `/inboxes${token2 ? `?page_token=${encodeURIComponent(token2)}` : ""}`,
+        key
+      );
+      all.push(...page.inboxes);
+      token2 = page.next_page_token;
+      if (all.length > 1e3) throw new AgentMailError("too_many_inboxes");
+    } while (token2);
+    return all;
+  }
+  async scope(key) {
+    const matches = [];
+    let token2;
+    do {
+      const page = await this.request(
+        "GET",
+        `/api-keys${token2 ? `?page_token=${encodeURIComponent(token2)}` : ""}`,
+        key
+      );
+      matches.push(
+        ...page.api_keys.filter(
+          (row) => typeof row.prefix === "string" && row.prefix.length >= 8 && key.startsWith(row.prefix)
+        )
+      );
+      token2 = page.next_page_token;
+    } while (token2);
+    if (matches.length !== 1) throw new AgentMailError("scope_unverified");
+    return matches[0];
+  }
+  mint(key, inboxId) {
+    return this.request(
+      "POST",
+      `/inboxes/${encodeURIComponent(inboxId)}/api-keys`,
+      key,
+      { name: "ControlClaw agent", permissions: INBOX_PERMISSIONS }
+    );
+  }
+  async revoke(key, inboxId, keyId) {
+    try {
+      await this.request(
+        "DELETE",
+        `/inboxes/${encodeURIComponent(inboxId)}/api-keys/${encodeURIComponent(keyId)}`,
+        key
+      );
+    } catch (error62) {
+      if (!(error62 instanceof AgentMailError) || error62.httpStatus !== 404)
+        throw error62;
+    }
+  }
+};
+
+// src/agentmail-store.ts
+function loadAgentMailStore(path, key, ids2) {
+  const stored = loadStoreOrEmpty(
+    "agentmail",
+    path,
+    key,
+    `${ids2.orgId}:${ids2.boxId}:agentmail`
+  );
+  if (stored && stored.version !== 1)
+    throw new Error("Unsupported AgentMail store");
+  return stored ?? {
+    version: 1,
+    orgId: null,
+    orgKey: null,
+    humanEmail: null,
+    authType: null,
+    limits: {},
+    signupStarted: false,
+    inboxes: {},
+    completed: []
+  };
+}
+function saveAgentMailStore(path, store, key, ids2) {
+  saveStore(
+    "agentmail",
+    path,
+    store,
+    key,
+    `${ids2.orgId}:${ids2.boxId}:agentmail`
+  );
+}
+
+// src/agentmail.ts
+var supportedInbox = (id) => typeof id === "string" && /^[a-zA-Z0-9._+-]+@agentmail\.to$/.test(id);
+var str4 = (v2) => typeof v2 === "string" && v2.length ? v2 : null;
+function senders(value, fallback) {
+  if (value === void 0) return fallback ? [fallback] : [];
+  const parsed = external_exports.array(external_exports.email().max(254)).max(50).safeParse(value);
+  if (!parsed.success) throw new AgentMailError("invalid_input");
+  return [...new Set(parsed.data)];
+}
+var AgentMailFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.store = loadAgentMailStore(opts.storePath, opts.boxKey, opts.ids);
+    this.api = opts.api ?? new AgentMailApi();
+  }
+  store;
+  api;
+  serial = Promise.resolve();
+  reconciling = null;
+  reconcile() {
+    if (this.reconciling) return this.reconciling;
+    const run = this.serial.then(async () => {
+      for (const i2 of Object.values(this.store.inboxes)) {
+        if (i2.status !== "pending" || !i2.vmId || !i2.hostname) continue;
+        try {
+          const result = await this.opts.agent.get(
+            { vmId: i2.vmId, hostname: i2.hostname },
+            "/agentmail/status"
+          );
+          const apply = result.apply;
+          if (apply?.inboxId === i2.inboxId && apply.placeholder === i2.placeholder && JSON.stringify(
+            apply.allowedSenders ?? (this.store.humanEmail ? [this.store.humanEmail] : [])
+          ) === JSON.stringify(
+            senders(i2.allowedSenders, this.store.humanEmail)
+          ) && (apply.status === "active" || apply.status === "failed")) {
+            i2.status = apply.status === "active" ? "active" : "setup_failed";
+            this.save();
+          }
+        } catch {
+        }
+      }
+    });
+    this.serial = run.catch(() => {
+    });
+    this.reconciling = run.finally(() => {
+      this.reconciling = null;
+    });
+    return this.reconciling;
+  }
+  save() {
+    saveAgentMailStore(
+      this.opts.storePath,
+      this.store,
+      this.opts.boxKey,
+      this.opts.ids
+    );
+  }
+  summary() {
+    return {
+      orgId: this.store.orgId,
+      humanEmail: this.store.humanEmail,
+      authType: this.store.authType,
+      status: this.store.orgId ? this.claimed() ? "active" : "awaiting_claim" : this.store.signupStarted ? "signup_uncertain" : "disconnected",
+      limits: this.store.limits,
+      canCreate: !!this.store.orgKey && this.claimed(),
+      inboxes: Object.values(this.store.inboxes).map((i2) => ({
+        inboxId: i2.inboxId,
+        vmId: i2.vmId,
+        status: i2.status,
+        allowedSenders: senders(i2.allowedSenders, this.store.humanEmail)
+      }))
+    };
+  }
+  credentials() {
+    if (!this.claimed()) return [];
+    return Object.values(this.store.inboxes).filter(
+      (i2) => i2.vmId && i2.key && i2.placeholder && (i2.status === "active" || i2.status === "pending")
+    ).flatMap(
+      (i2) => ["api.agentmail.to", "ws.agentmail.to"].map((domain2) => ({
+        vm_id: i2.vmId,
+        placeholder: i2.placeholder,
+        secret: i2.key,
+        match_domain: domain2,
+        locations: ["header:authorization", "query"]
+      }))
+    );
+  }
+  handlers() {
+    return Object.fromEntries(
+      [
+        "signup",
+        "claim",
+        "check",
+        "create",
+        "import",
+        "attach",
+        "forget",
+        "delete",
+        "push",
+        "read",
+        "senders"
+      ].map((action) => [
+        `agentmail.${action}`,
+        (payload) => {
+          const run = this.serial.then(() => this.run(action, payload));
+          this.serial = run.catch(() => {
+          });
+          return run;
+        }
+      ])
+    );
+  }
+  claimed() {
+    return this.store.authType === "agent_verified" || this.store.authType === "clerk";
+  }
+  updateOrg(info) {
+    if (!info.organization_id || this.store.orgId && info.organization_id !== this.store.orgId)
+      throw new AgentMailError("organization_mismatch");
+    this.store.orgId = info.organization_id;
+    this.store.authType = info.auth_type ?? (info.authentication_type === "agent" ? info.agent_verified === true ? "agent_verified" : "agent_unverified" : info.authentication_type ?? null);
+    this.store.limits = Object.fromEntries(
+      [
+        "inbox_limit",
+        "inbox_count",
+        "daily_send_limit",
+        "monthly_send_limit",
+        "send_limit"
+      ].flatMap((k2) => typeof info[k2] === "number" ? [[k2, info[k2]]] : [])
+    );
+    this.save();
+  }
+  orgKey() {
+    if (!this.store.orgKey) throw new AgentMailError("org_key_required");
+    return this.store.orgKey;
+  }
+  target(p2) {
+    const vmId = str4(p2.vmId), hostname3 = str4(p2.hostname);
+    if (!vmId || !hostname3 || !/^[a-z0-9.-]+$/i.test(hostname3))
+      throw new AgentMailError("invalid_agent");
+    if (Object.values(this.store.inboxes).some(
+      (i2) => i2.vmId === vmId && i2.inboxId !== p2.inboxId
+    ))
+      throw new AgentMailError("agent_has_inbox");
+    return { vmId, hostname: hostname3 };
+  }
+  inbox(id) {
+    const i2 = this.store.inboxes[String(id)];
+    if (!i2) throw new AgentMailError("inbox_not_found");
+    return i2;
+  }
+  async deliver(i2) {
+    if (!i2.vmId || !i2.hostname) return;
+    if (!this.claimed()) throw new AgentMailError("claim_required");
+    i2.status = "pending";
+    this.save();
+    if (!i2.key) {
+      let minted;
+      try {
+        minted = await this.api.mint(this.orgKey(), i2.inboxId);
+      } catch (error62) {
+        if (error62 instanceof AgentMailError && error62.httpStatus === 403 && this.store.authType === "agent_verified")
+          throw new AgentMailError("claim_permissions_pending");
+        throw error62;
+      }
+      if (!minted.api_key || !minted.api_key_id)
+        throw new AgentMailError("invalid_response");
+      i2.key = minted.api_key;
+      i2.keyId = minted.api_key_id;
+    }
+    i2.placeholder ??= `CC-AMAIL-${randomBytes5(16).toString("hex")}`;
+    i2.status = "pending";
+    this.save();
+    await this.opts.onCredentialsChanged();
+    try {
+      const result = await this.opts.agent.post(
+        { vmId: i2.vmId, hostname: i2.hostname },
+        "/agentmail/apply",
+        {
+          placeholder: i2.placeholder,
+          inboxId: i2.inboxId,
+          humanEmail: this.store.humanEmail,
+          allowedSenders: senders(i2.allowedSenders, this.store.humanEmail)
+        }
+      );
+      if (result.status === "pending") return;
+    } catch {
+      throw new AgentMailError("apply_failed");
+    }
+    i2.status = "active";
+    this.save();
+  }
+  async unassign(i2) {
+    const previous = { vmId: i2.vmId, hostname: i2.hostname };
+    i2.status = "unassigned";
+    i2.placeholder = null;
+    i2.vmId = null;
+    i2.hostname = null;
+    i2.revokePending = !!i2.key;
+    this.save();
+    await this.opts.onCredentialsChanged();
+    if (i2.key && i2.keyId) {
+      await this.api.revoke(this.store.orgKey ?? i2.key, i2.inboxId, i2.keyId);
+      i2.key = null;
+      i2.keyId = null;
+    }
+    i2.revokePending = false;
+    i2.status = i2.imported && !this.store.orgKey ? "needs_key" : "unassigned";
+    this.save();
+    if (previous.vmId && previous.hostname) {
+      try {
+        await this.opts.agent.post(
+          { vmId: previous.vmId, hostname: previous.hostname },
+          "/agentmail/apply",
+          { placeholder: null, inboxId: null, humanEmail: null }
+        );
+      } catch {
+      }
+    }
+  }
+  async run(action, p2) {
+    try {
+      const changeId = str4(p2.changeId);
+      if (changeId && this.store.completed.includes(changeId))
+        return { ok: true, status: "applied", data: this.summary() };
+      if (["signup", "create", "import"].includes(action) && p2.allowedSenders !== void 0)
+        senders(p2.allowedSenders, null);
+      switch (action) {
+        case "read": {
+          const key = this.store.orgKey ?? Object.values(this.store.inboxes).find((i2) => i2.key)?.key;
+          if (key) this.updateOrg(await this.api.organization(key));
+          break;
+        }
+        case "signup": {
+          const target = this.target(p2), humanEmail = str4(p2.humanEmail), username = str4(p2.username);
+          if (!humanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(humanEmail) || !username || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(username))
+            throw new AgentMailError("invalid_input");
+          if (this.store.orgId) throw new AgentMailError("already_connected");
+          if (this.store.signupStarted)
+            throw new AgentMailError("signup_uncertain");
+          this.store.signupStarted = true;
+          this.store.humanEmail = humanEmail;
+          this.save();
+          let result;
+          try {
+            result = await this.api.request(
+              "POST",
+              "/agent/sign-up",
+              void 0,
+              {
+                human_email: humanEmail,
+                username,
+                source: "controlclaw",
+                referrer: "controlclaw"
+              }
+            );
+          } catch (error62) {
+            if (error62 instanceof AgentMailError && ["user_exists", "username_taken", "rate_limited"].includes(
+              error62.code
+            )) {
+              this.store.signupStarted = false;
+              this.save();
+            }
+            throw error62;
+          }
+          if (!result.organization_id || !supportedInbox(result.inbox_id) || !result.api_key)
+            throw new AgentMailError("signup_uncertain");
+          this.store.orgId = result.organization_id;
+          this.store.orgKey = result.api_key;
+          this.store.authType = "agent_unverified";
+          this.store.inboxes[result.inbox_id] = {
+            inboxId: result.inbox_id,
+            ...target,
+            key: null,
+            keyId: null,
+            placeholder: null,
+            imported: false,
+            status: "awaiting_claim",
+            allowedSenders: senders(p2.allowedSenders, humanEmail)
+          };
+          this.save();
+          break;
+        }
+        case "claim":
+        case "check": {
+          if (action === "claim") {
+            if (!str4(p2.otpCode) || !/^\d{4,10}$/.test(String(p2.otpCode)))
+              throw new AgentMailError("invalid_code");
+            await this.api.request("POST", "/agent/verify", this.orgKey(), {
+              otp_code: p2.otpCode
+            });
+          }
+          this.updateOrg(await this.api.organization(this.orgKey()));
+          if (this.claimed()) {
+            for (const i2 of Object.values(this.store.inboxes))
+              if (i2.vmId) await this.deliver(i2);
+          }
+          break;
+        }
+        case "create": {
+          if (!this.claimed()) throw new AgentMailError("claim_required");
+          const target = this.target(p2), username = str4(p2.username);
+          if (!username || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(username) || !changeId)
+            throw new AgentMailError("invalid_input");
+          const creates = this.store.creates ??= {};
+          const pending = creates[target.vmId];
+          if (pending && pending.username !== username)
+            throw new AgentMailError("request_uncertain");
+          const clientId = pending?.clientId ?? changeId;
+          creates[target.vmId] = { username, clientId };
+          this.save();
+          let result;
+          try {
+            result = await this.api.request("POST", "/inboxes", this.orgKey(), {
+              username,
+              display_name: str4(p2.name) ?? username,
+              client_id: clientId
+            });
+          } catch (error62) {
+            if (error62 instanceof AgentMailError && ["username_taken", "permission_denied", "rate_limited"].includes(
+              error62.code
+            )) {
+              delete creates[target.vmId];
+              this.save();
+            }
+            throw error62;
+          }
+          if (!supportedInbox(result.inbox_id))
+            throw new AgentMailError("invalid_response");
+          const i2 = {
+            inboxId: result.inbox_id,
+            ...target,
+            key: null,
+            keyId: null,
+            placeholder: null,
+            imported: false,
+            status: "pending",
+            allowedSenders: senders(p2.allowedSenders, this.store.humanEmail)
+          };
+          this.store.inboxes[i2.inboxId] = i2;
+          delete creates[target.vmId];
+          this.save();
+          await this.deliver(i2);
+          break;
+        }
+        case "import": {
+          const key = str4(p2.apiKey), email3 = str4(p2.humanEmail);
+          if (!key || !key.startsWith("am_") || !email3 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email3))
+            throw new AgentMailError("invalid_input");
+          const org = await this.api.organization(key);
+          if (this.store.orgId && this.store.orgId !== org.organization_id)
+            throw new AgentMailError("organization_mismatch");
+          const scope = await this.api.scope(key), inboxes = await this.api.inboxes(key);
+          if (scope.inbox_id && !supportedInbox(scope.inbox_id))
+            throw new AgentMailError("unsupported_inbox");
+          this.updateOrg(org);
+          this.store.humanEmail ??= email3;
+          if (!scope.inbox_id) this.store.orgKey = key;
+          for (const box of inboxes) {
+            if (!supportedInbox(box.inbox_id)) continue;
+            if (scope.inbox_id && box.inbox_id !== scope.inbox_id)
+              throw new AgentMailError("scope_unverified");
+            const existing = this.store.inboxes[box.inbox_id];
+            if (existing?.vmId) {
+              if (scope.inbox_id) {
+                existing.key = key;
+                existing.keyId = scope.api_key_id;
+                existing.imported = true;
+                existing.placeholder = null;
+                existing.revokePending = false;
+                this.save();
+                await this.deliver(existing);
+              }
+              continue;
+            }
+            if (existing?.revokePending) await this.unassign(existing);
+            this.store.inboxes[box.inbox_id] = {
+              inboxId: box.inbox_id,
+              vmId: null,
+              hostname: null,
+              key: scope.inbox_id ? key : null,
+              keyId: scope.inbox_id ? scope.api_key_id : null,
+              placeholder: null,
+              imported: !!scope.inbox_id,
+              status: "unassigned",
+              allowedSenders: existing ? senders(existing.allowedSenders, this.store.humanEmail) : senders(p2.allowedSenders, this.store.humanEmail)
+            };
+          }
+          this.save();
+          break;
+        }
+        case "attach": {
+          const i2 = this.inbox(p2.inboxId), target = this.target(p2);
+          if (i2.vmId) {
+            if (i2.vmId !== target.vmId)
+              throw new AgentMailError("inbox_assigned");
+            await this.deliver(i2);
+            break;
+          }
+          if (i2.status === "needs_key" && !this.store.orgKey)
+            throw new AgentMailError("org_key_required");
+          if (i2.revokePending) await this.unassign(i2);
+          Object.assign(i2, target);
+          this.save();
+          await this.deliver(i2);
+          break;
+        }
+        case "senders": {
+          const i2 = this.inbox(p2.inboxId);
+          if (p2.allowedSenders === void 0)
+            throw new AgentMailError("invalid_input");
+          i2.allowedSenders = senders(p2.allowedSenders, this.store.humanEmail);
+          this.save();
+          if (i2.vmId && this.claimed()) await this.deliver(i2);
+          break;
+        }
+        case "forget": {
+          for (const i2 of Object.values(this.store.inboxes))
+            if (i2.vmId === p2.vmId) await this.unassign(i2);
+          break;
+        }
+        case "delete": {
+          const i2 = this.inbox(p2.inboxId);
+          if (p2.confirmAddress !== i2.inboxId)
+            throw new AgentMailError("confirm_required");
+          if (i2.vmId || i2.key) await this.unassign(i2);
+          await this.api.request(
+            "DELETE",
+            `/inboxes/${encodeURIComponent(i2.inboxId)}`,
+            this.orgKey()
+          );
+          delete this.store.inboxes[i2.inboxId];
+          this.save();
+          break;
+        }
+        case "push": {
+          const i2 = Object.values(this.store.inboxes).find(
+            (i3) => i3.vmId === p2.vmId
+          );
+          if (i2) await this.deliver(i2);
+          break;
+        }
+      }
+      if (changeId) {
+        this.store.completed = [...this.store.completed.slice(-99), changeId];
+        this.save();
+      }
+      return {
+        ok: true,
+        status: this.summary().status === "awaiting_claim" ? "awaiting_claim" : "applied",
+        data: this.summary()
+      };
+    } catch (error62) {
+      const code = error62 instanceof AgentMailError ? error62.code : "internal_error";
+      return {
+        ok: false,
+        status: "failed",
+        message: code,
+        data: { ...this.summary(), errorCode: code }
+      };
+    }
+  }
+};
+
+// src/google.ts
+import { randomBytes as randomBytes6 } from "crypto";
+
+// src/google-store.ts
+function isGoogleAudience(v2) {
+  return v2 === "internal" || v2 === "external_production" || v2 === "external_testing";
+}
+var GOOGLE_MATCH_DOMAIN = "*.googleapis.com";
+var PENDING_AUTH_TTL_MS = 15 * 6e4;
+function aad4(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:google`;
+}
+function emptyGoogleStore() {
+  return { version: 1, accounts: {}, agents: {}, pending: null };
+}
+function loadGoogleStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("google", path, boxKeyB64, aad4(ids2));
+  if (!parsed || parsed.version !== 1 || !parsed.accounts || !parsed.agents) return emptyGoogleStore();
+  return { ...parsed, pending: parsed.pending ?? null };
+}
+function saveGoogleStore(path, store, boxKeyB64, ids2) {
+  saveStore("google", path, store, boxKeyB64, aad4(ids2));
+}
+var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+function isValidProjectId(id) {
+  return PROJECT_ID_RE.test(id);
+}
+var CLIENT_ID_RE = /^[0-9]+(-[A-Za-z0-9_]+)?\.apps\.googleusercontent\.com$/;
+function isValidClientId(id) {
+  return CLIENT_ID_RE.test(id);
+}
+
+// src/google.ts
+var GOOGLE_REFRESH_AHEAD_MS = 15 * 6e4;
+var SCOPE3 = "org";
+var ACCOUNT_ID = "account";
+function isKind3(v2) {
+  return v2 === "connect_account" || v2 === "replace_account" || v2 === "forget_account" || v2 === "grant_agent" || v2 === "revoke_agent" || v2 === "set_services";
+}
+function serviceList(services) {
+  const names = {
+    gmail: "Gmail",
+    calendar: "Calendar",
+    drive: "Drive",
+    contacts: "Contacts",
+    sheets: "Sheets",
+    docs: "Docs"
+  };
+  return services.map((s2) => names[s2]).join(", ");
+}
+function agentList2(agents) {
+  const names = agents.map((a2) => a2.name).filter(Boolean);
+  if (names.length === 0) return "no agent yet";
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+function summarize3(p2, accountLabel) {
+  switch (p2.kind) {
+    case "connect_account":
+      return `Connect the Google account ${accountLabel ?? ""} (${serviceList(p2.services)})`.replace(/\s+/g, " ");
+    case "replace_account":
+      return `Reconnect the Google account ${accountLabel ?? ""} (${serviceList(p2.services)})`.replace(/\s+/g, " ");
+    case "forget_account":
+      return "Disconnect the Google account and take it off every agent";
+    case "grant_agent":
+      return `Give ${agentList2(p2.agents)} the Google account`;
+    case "revoke_agent":
+      return `Take the Google account away from ${agentList2(p2.agents)}`;
+    case "set_services":
+      return `Change what the Google account covers to ${serviceList(p2.services)}`;
+  }
+}
+function parseClient(raw, clientSecret) {
+  if (!raw) return null;
+  const clientId = str2(raw.clientId);
+  const redirectUri = str2(raw.redirectUri);
+  if (!clientId || !clientSecret || !redirectUri) return null;
+  return { clientId, clientSecret, redirectUri, tokenEndpoint: str2(raw.tokenEndpoint) ?? GOOGLE_TOKEN_ENDPOINT };
+}
+function parseAgents2(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((a2) => a2).filter((a2) => str2(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str2(a2.name) ?? "", hostname: str2(a2.hostname) }));
+}
+function parseProposal3(payload) {
+  const changeId = str2(payload.changeId);
+  const kind = payload.kind;
+  if (!changeId || !isKind3(kind)) throw new Error("malformed google.propose payload");
+  const services = Array.isArray(payload.services) ? payload.services.filter(isGoogleService) : [];
+  return {
+    changeId,
+    kind,
+    client: parseClient(payload.client, str2(payload.clientSecret)),
+    services,
+    gmailScope: isGmailScope(payload.gmailScope) ? payload.gmailScope : "read-send",
+    driveScope: isDriveScopeChoice(payload.driveScope) ? payload.driveScope : "readonly",
+    audience: isGoogleAudience(payload.audience) ? payload.audience : "external_testing",
+    projectId: str2(payload.projectId),
+    agents: parseAgents2(payload.agents)
+  };
+}
+var GoogleFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadGoogleStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  fetchImpl;
+  reports = [];
+  minting = false;
+  /**
+   * Which agents a pending connect should grant. Held beside the store rather than in it: it is
+   * only meaningful while one authorization is open, and a firewall restart drops the
+   * authorization anyway (the person gets a dead link and starts again, which is the honest
+   * outcome — the verifier is gone).
+   */
+  pendingAgents = [];
+  /**
+   * An exchanged account waiting for its confirmation code. In memory only, and dropped by a
+   * restart along with the pending code itself — the console then asks for a new connection, which
+   * is the right answer: there is no way to re-derive the account without a new authorization.
+   */
+  awaitingCode = null;
+  handlers() {
+    return {
+      "google.propose": (p2) => this.propose(p2),
+      "google.callback": (p2) => this.callback(p2),
+      "google.confirm": (p2) => this.confirm(p2),
+      "google.cancel": (p2) => this.cancel(p2),
+      "google.push": (p2) => this.push(p2),
+      "google.forget": (p2) => this.forget(p2),
+      "google.read": async () => ({ ok: true, status: "read", data: this.summary() })
+    };
+  }
+  /**
+   * Proxy credential entries: one per **granted** agent, scoped to that agent's own traffic.
+   *
+   * `*.googleapis.com` rather than Drive's `www.googleapis.com` because `gog` reaches
+   * `gmail.googleapis.com`, `people.googleapis.com`, `sheets.googleapis.com`, `docs.googleapis.com`,
+   * `calendar-json.googleapis.com`, `www.googleapis.com` and the `*.mtls.` variants of all of them
+   * (verified in gogcli v0.41.0, `internal/googleapi/read_only.go`). Still domain-scoped: the
+   * placeholder is refused everywhere else, so it cannot be exfiltrated to an attacker's host and
+   * spent there.
+   *
+   * A Drive placeholder and a `gog` placeholder can both match `www.googleapis.com` for the same
+   * box. That is fine: `credentials_for()` keys by placeholder and `apply_swaps()` only replaces a
+   * placeholder actually present in the header.
+   */
+  credentials() {
+    return this.grantedAgents().map(({ vmId, agent, account }) => ({
+      placeholder: agent.placeholder,
+      match_domain: GOOGLE_MATCH_DOMAIN,
+      secret: account.access.token,
+      locations: ["header:authorization"],
+      vm_id: vmId
+    }));
+  }
+  /**
+   * What the Drive folders module needs to borrow this account's Drive access (T-78).
+   *
+   * This is the ONE place the token crosses between the two modules, and it stays a read: nothing
+   * is copied into `drive.enc`, so there is one refresh loop, one copy of the refresh token and no
+   * second thing to expire. `drive.credentials()` calls this on every proxy sync, which is already
+   * triggered by this module's own refresh through `onCredentialsChanged`.
+   *
+   * `driveScope` is read out of the scopes **consent actually granted**, not out of `driveScope` or
+   * `services`, because those two record what was asked for. Google is the authority on what the
+   * token can do, and the widest scope present is what it can do. Returns null for an account with
+   * no Drive scope at all, which is the case the console has to explain rather than work around.
+   */
+  driveAccess() {
+    const entry = this.theAccount();
+    if (!entry) return null;
+    const a2 = entry.account;
+    const scopes = new Set(a2.scopes);
+    const driveScope = scopes.has("https://www.googleapis.com/auth/drive") ? "full" : scopes.has("https://www.googleapis.com/auth/drive.readonly") ? "readonly" : scopes.has("https://www.googleapis.com/auth/drive.file") ? "file" : null;
+    return {
+      accountLabel: a2.accountLabel,
+      token: a2.access && !a2.failed ? a2.access.token : null,
+      driveScope,
+      failed: a2.failed
+    };
+  }
+  /** What the console may see: no secret, no access token, no client secret. */
+  summary() {
+    const entry = this.theAccount();
+    return {
+      account: entry ? {
+        accountLabel: entry.account.accountLabel,
+        services: [...entry.account.services],
+        scopes: [...entry.account.scopes],
+        gmailScope: entry.account.gmailScope,
+        driveScope: entry.account.driveScope,
+        audience: entry.account.audience,
+        projectId: entry.account.projectId,
+        // Not a secret: it is public in every authorization URL, and the console shows it so
+        // the customer can find the client again in their Cloud console.
+        clientId: entry.account.oauth.clientId,
+        connected: !!entry.account.access && !entry.account.failed,
+        failed: entry.account.failed,
+        updatedAt: entry.account.updatedAt
+      } : null,
+      agents: Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, granted: a2.granted }))
+    };
+  }
+  /** Reports made outside a command (mint failures), drained by the heartbeat. */
+  drainReports() {
+    const r2 = this.reports;
+    this.reports = [];
+    return r2;
+  }
+  // ---- store helpers ----
+  save() {
+    saveGoogleStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  agentOf(ref) {
+    let a2 = this.store.agents[ref.vmId];
+    if (!a2) {
+      a2 = { name: ref.name, hostname: ref.hostname, placeholder: `CC-GOOG-${randomBytes6(12).toString("hex")}`, granted: false };
+      this.store.agents[ref.vmId] = a2;
+    }
+    if (ref.name) a2.name = ref.name;
+    if (ref.hostname) a2.hostname = ref.hostname;
+    return a2;
+  }
+  target(vmId) {
+    const host = this.store.agents[vmId]?.hostname ?? null;
+    if (!host) throw new Error("This agent has no hostname yet.");
+    return { vmId, hostname: host };
+  }
+  /** v1 holds one account; this is what "the organization's Google account" means. */
+  theAccount() {
+    const entry = Object.entries(this.store.accounts)[0];
+    return entry ? { id: entry[0], account: entry[1] } : null;
+  }
+  /** A live account, or null. "Live" is what makes a placeholder worth swapping. */
+  liveAccount() {
+    const entry = this.theAccount();
+    return entry && entry.account.access && !entry.account.failed ? entry.account : null;
+  }
+  grantedAgents() {
+    const account = this.liveAccount();
+    if (!account) return [];
+    return Object.entries(this.store.agents).filter(([, a2]) => a2.granted).map(([vmId, agent]) => ({ vmId, agent, account }));
+  }
+  /** Every agent this firewall has ever pushed to. Revoked ones included: they need clearing. */
+  knownAgents() {
+    return Object.keys(this.store.agents);
+  }
+  // ---- commands ----
+  async propose(payload) {
+    const p2 = parseProposal3(payload);
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data: { changeId: p2.changeId }
+      };
+    }
+    this.validate(p2);
+    if (p2.kind === "connect_account" || p2.kind === "replace_account") {
+      return this.startAuthorization(p2);
+    }
+    const summary = summarize3(p2, this.theAccount()?.account.accountLabel);
+    const data = { changeId: p2.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE3);
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE3, p2, "your organization's Google account", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[google] code sent for ${p2.kind} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  /**
+   * Store the customer's client and a fresh PKCE pair, and answer with the URL to send them to.
+   *
+   * The agents named here are remembered on the pending authorization and granted when the change
+   * is confirmed, so "connect the account and give it to this agent" is one change and one code
+   * rather than two of each.
+   */
+  async startAuthorization(p2) {
+    const client = p2.client;
+    const { verifier, challenge } = makePkce();
+    const state = makeState();
+    const scopes = scopesFor({ services: p2.services, gmailScope: p2.gmailScope, driveScope: p2.driveScope });
+    const pending = {
+      changeId: p2.changeId,
+      state,
+      verifier,
+      services: [...p2.services],
+      gmailScope: p2.gmailScope,
+      driveScope: p2.driveScope,
+      audience: p2.audience,
+      projectId: p2.projectId,
+      oauth: client,
+      expires: this.now() + PENDING_AUTH_TTL_MS
+    };
+    this.store.pending = pending;
+    this.pendingAgents = p2.agents;
+    this.save();
+    const url2 = authorizeUrl({
+      clientId: client.clientId,
+      redirectUri: client.redirectUri,
+      scopes,
+      state,
+      challenge,
+      loginHint: this.theAccount()?.account.accountLabel ?? null
+    });
+    this.log(`[google] authorization started for ${p2.kind} (${scopes.length} scope(s))`);
+    return {
+      ok: true,
+      status: "awaiting_authorization",
+      data: { changeId: p2.changeId, summary: summarize3(p2), authorizeUrl: url2, scopes, expiresAt: new Date(pending.expires).toISOString() }
+    };
+  }
+  /**
+   * The relayed consent result. Where the code becomes a refresh token.
+   *
+   * This is the only place that holds the verifier and the client secret together. It exchanges,
+   * checks the grant against the APIs the organization asked for, stores the account **not yet
+   * spendable**, and then asks a person to confirm — because a credential that reaches a mailbox
+   * should not start working because somebody clicked a link.
+   */
+  async callback(payload) {
+    const state = str2(payload.state);
+    const code = str2(payload.code);
+    const error62 = str2(payload.error);
+    const pending = this.store.pending;
+    if (!state || !pending || pending.state !== state) {
+      return { ok: false, status: "failed", message: "This sign-in does not match an authorization your firewall started. Start the connection again." };
+    }
+    const data = { changeId: pending.changeId };
+    if (pending.expires < this.now()) {
+      this.store.pending = null;
+      this.save();
+      return { ok: false, status: "expired", message: "That sign-in link had expired. Start the connection again.", data };
+    }
+    if (error62 || !code) {
+      this.store.pending = null;
+      this.save();
+      const message2 = error62 === "access_denied" ? "The Google sign-in was cancelled." : `Google refused the sign-in: ${error62 ?? "no code was returned"}.`;
+      return { ok: false, status: "failed", message: message2, data };
+    }
+    const exchanged = await exchangeCode(
+      {
+        code,
+        verifier: pending.verifier,
+        clientId: pending.oauth.clientId,
+        clientSecret: pending.oauth.clientSecret,
+        redirectUri: pending.oauth.redirectUri,
+        tokenEndpoint: pending.oauth.tokenEndpoint
+      },
+      this.now(),
+      this.fetchImpl
+    );
+    this.store.pending = null;
+    if (!exchanged.ok) {
+      this.save();
+      return { ok: false, status: "failed", message: `Google refused this connection: ${exchanged.reason}`, data };
+    }
+    const refusals = await probeServices(exchanged.access, pending.services, pending.gmailScope, this.fetchImpl);
+    const fatal = refusals.filter((r2) => r2.permanent);
+    if (fatal.length > 0) {
+      this.save();
+      const named2 = fatal.map((r2) => `${serviceList([r2.service])}: ${r2.reason}`).join(" ");
+      return { ok: false, status: "failed", message: `This Google account cannot use everything you asked for. ${named2}`, data };
+    }
+    if (refusals.length > 0) {
+      this.log(`[google] ${refusals.length} service probe(s) inconclusive: ${refusals.map((r2) => r2.reason).join("; ")}`);
+    }
+    const account = {
+      accountLabel: exchanged.accountLabel,
+      services: [...pending.services],
+      scopes: exchanged.grantedScopes,
+      gmailScope: pending.gmailScope,
+      driveScope: pending.driveScope,
+      audience: pending.audience,
+      projectId: pending.projectId,
+      oauth: pending.oauth,
+      refresh: exchanged.refresh,
+      access: { token: exchanged.access, expires: exchanged.expires },
+      failed: null,
+      updatedAt: new Date(this.now()).toISOString()
+    };
+    const proposal = {
+      changeId: pending.changeId,
+      kind: this.theAccount() ? "replace_account" : "connect_account",
+      client: pending.oauth,
+      services: [...pending.services],
+      gmailScope: pending.gmailScope,
+      driveScope: pending.driveScope,
+      audience: pending.audience,
+      projectId: pending.projectId,
+      agents: this.pendingAgents
+    };
+    const summary = summarize3(proposal, account.accountLabel);
+    data.summary = summary;
+    data.accountLabel = account.accountLabel;
+    data.scopes = account.scopes;
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE3);
+      this.save();
+      const applied = await this.applyAccount(account, proposal);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    this.awaitingCode = { account, proposal };
+    this.save();
+    const sent = await this.codes.send(SCOPE3, proposal, "your organization's Google account", summary, routes);
+    if (!sent.ok) {
+      this.awaitingCode = null;
+      return { ok: false, status: "failed", message: sent.message, data };
+    }
+    this.log(`[google] exchanged a code for ${account.accountLabel ?? "an account"}; confirmation sent via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str2(payload.changeId);
+    const code = str2(payload.code) ?? "";
+    if (!changeId) throw new Error("malformed google.confirm payload");
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE3, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const held = this.awaitingCode;
+    if (held && held.proposal.changeId === changeId) {
+      this.awaitingCode = null;
+      const applied2 = await this.applyAccount(held.account, held.proposal);
+      return {
+        ok: true,
+        status: "applied",
+        data: { ...data, ...applied2, summary: summarize3(held.proposal, held.account.accountLabel), sentVia: v2.sentVia, tofu: false }
+      };
+    }
+    if (v2.proposal.kind === "connect_account" || v2.proposal.kind === "replace_account") {
+      return { ok: false, status: "failed", message: "Your firewall restarted before this connection was confirmed. Start the connection again.", data };
+    }
+    const applied = await this.apply(v2.proposal);
+    return {
+      ok: true,
+      status: "applied",
+      data: { ...data, ...applied, summary: summarize3(v2.proposal, this.theAccount()?.account.accountLabel), sentVia: v2.sentVia, tofu: false }
+    };
+  }
+  async cancel(payload) {
+    const changeId = str2(payload.changeId);
+    this.codes.cancel(SCOPE3, changeId);
+    if (this.awaitingCode?.proposal.changeId === changeId) this.awaitingCode = null;
+    if (this.store.pending && (!changeId || this.store.pending.changeId === changeId)) {
+      this.store.pending = null;
+      this.save();
+    }
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  async push(payload) {
+    const vmId = str2(payload.vmId);
+    if (!vmId) throw new Error("malformed google.push payload");
+    const agent = this.store.agents[vmId];
+    if (!agent) return { ok: true, status: "applied", data: { vmId, granted: false, failed: [] } };
+    if (str2(payload.hostname)) agent.hostname = String(payload.hostname);
+    if (str2(payload.name)) agent.name = String(payload.name);
+    this.save();
+    const failed = await this.pushAgents([vmId]);
+    this.log(`[google] re-applied on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
+    return {
+      ok: failed.length === 0,
+      status: failed.length ? "failed" : "applied",
+      message: failed.map((f2) => f2.error).join("; "),
+      data: { vmId, granted: agent.granted, failed }
+    };
+  }
+  /**
+   * An agent was deleted. Drop it from the store so the proxy stops carrying a credential for a box
+   * that does not exist, and so later changes do not report a push to it as failed for ever.
+   *
+   * No code: it takes nothing away from anybody. Same reasoning as `search.forget`.
+   */
+  async forget(payload) {
+    const vmId = str2(payload.vmId);
+    if (!vmId) throw new Error("malformed google.forget payload");
+    if (!this.store.agents[vmId]) return { ok: true, status: "applied", data: { vmId } };
+    delete this.store.agents[vmId];
+    this.save();
+    await this.opts.onCredentialsChanged?.();
+    this.log(`[google] forgot agent ${vmId}`);
+    return { ok: true, status: "applied", data: { vmId } };
+  }
+  // ---- validation ----
+  /** Refuse a proposal the control plane should not have sent. */
+  validate(p2) {
+    if (p2.kind === "connect_account" || p2.kind === "replace_account") {
+      if (!p2.client) throw new Error("a Google connection needs its client id, client secret and redirect URI");
+      if (!isValidClientId(p2.client.clientId)) {
+        throw new Error("That does not look like a Google OAuth client id. It ends in .apps.googleusercontent.com.");
+      }
+      if (p2.services.length === 0) throw new Error("Pick at least one Google service for the agents to use.");
+      if (p2.projectId !== null && !isValidProjectId(p2.projectId)) {
+        throw new Error("That does not look like a Google Cloud project id (lowercase letters, digits and hyphens).");
+      }
+      let redirect2;
+      try {
+        redirect2 = new URL(p2.client.redirectUri);
+      } catch {
+        throw new Error("The redirect URI is not a URL.");
+      }
+      if (redirect2.protocol !== "https:" && redirect2.hostname !== "localhost" && redirect2.hostname !== "127.0.0.1") {
+        throw new Error("The redirect URI has to be https (or localhost for a local dev run).");
+      }
+      return;
+    }
+    if (p2.kind === "set_services") {
+      if (p2.services.length === 0) throw new Error("Pick at least one Google service for the agents to use.");
+      const existing = this.theAccount();
+      if (!existing) throw new Error("Connect a Google account first.");
+      const added = p2.services.filter((s2) => !existing.account.services.includes(s2));
+      if (added.length > 0) {
+        throw new Error(`Google has to be asked again before the agents can use ${serviceList(added)}. Reconnect the account with those services ticked.`);
+      }
+      return;
+    }
+    if (p2.kind === "grant_agent" || p2.kind === "revoke_agent") {
+      if (p2.agents.length === 0) throw new Error("the proposal names no agent");
+      if (p2.kind === "grant_agent" && !this.theAccount()) throw new Error("Connect a Google account before giving it to an agent.");
+    }
+  }
+  // ---- applying ----
+  /**
+   * The whole desired state of one agent box.
+   *
+   * `placeholder: null` is how a revoked grant travels: the box clears its `gog.env` and `gog` stops
+   * having anything to send. `connected: false` means the organization has no working account, and
+   * the box says "not configured" rather than collecting 401s.
+   */
+  applyBody(vmId) {
+    const agent = this.store.agents[vmId];
+    const entry = this.theAccount();
+    const account = entry?.account ?? null;
+    const live = !!account?.access && !account.failed;
+    const granted = !!agent?.granted && live;
+    return {
+      placeholder: granted ? agent.placeholder : null,
+      connected: live,
+      projectId: account?.projectId ?? null,
+      services: granted ? [...account.services] : [],
+      accountLabel: account?.accountLabel ?? null
+    };
+  }
+  async pushAgents(vmIds) {
+    const failed = [];
+    for (const vmId of vmIds) {
+      try {
+        await this.opts.agent.post(this.target(vmId), "/google/apply", this.applyBody(vmId));
+      } catch (err) {
+        failed.push({ vmId, error: err.message });
+      }
+    }
+    return failed;
+  }
+  /**
+   * Save, re-sync the proxy, and push to everyone the change touched.
+   *
+   * `applied` is "boxes this push reached" and `granted` is "agents that may spend the account".
+   * They are **not** the same list and must not be conflated: a revoked agent is pushed too, with
+   * `placeholder: null`, precisely so its box clears the string. The control plane used to read
+   * `applied` as the grant list, which meant a reconnect re-granted every agent the firewall had
+   * ever pushed to — the console showing an agent as able to use the account while the firewall
+   * would refuse it. `granted` is read straight off this store, which is the only authority on it.
+   */
+  async finish(targets) {
+    this.save();
+    await this.opts.onCredentialsChanged?.();
+    const failed = await this.pushAgents(targets);
+    return {
+      applied: targets.filter((v2) => !failed.some((f2) => f2.vmId === v2)),
+      failed,
+      granted: Object.entries(this.store.agents).filter(([, a2]) => a2.granted).map(([vmId]) => vmId)
+    };
+  }
+  /**
+   * Store an exchanged account and make it spendable.
+   *
+   * v1 holds one identity, so this replaces whatever was there. Agents keep their grants across a
+   * reconnect — the organization already decided who may use its Google account, and making them
+   * re-tick every box after a token rotation would be busywork — and any agent named in the
+   * proposal is granted as well.
+   */
+  async applyAccount(account, p2) {
+    const before = this.knownAgents();
+    this.store.accounts = { [ACCOUNT_ID]: account };
+    for (const ref of p2.agents) this.agentOf(ref).granted = true;
+    const targets = [.../* @__PURE__ */ new Set([...before, ...p2.agents.map((a2) => a2.vmId)])];
+    this.log(`[google] connected ${account.accountLabel ?? "an account"} (${account.services.join(", ")})`);
+    return { accountId: ACCOUNT_ID, accountLabel: account.accountLabel, services: account.services, scopes: account.scopes, ...await this.finish(targets) };
+  }
+  async apply(p2) {
+    switch (p2.kind) {
+      case "connect_account":
+      case "replace_account":
+        throw new Error("a Google connection is applied by its callback, not by this path");
+      case "forget_account": {
+        const before = this.knownAgents();
+        this.store.accounts = {};
+        for (const a2 of Object.values(this.store.agents)) a2.granted = false;
+        this.log("[google] disconnected the Google account and cleared every grant");
+        return this.finish(before);
+      }
+      case "grant_agent": {
+        for (const ref of p2.agents) this.agentOf(ref).granted = true;
+        this.log(`[google] granted the Google account to ${agentList2(p2.agents)}`);
+        return this.finish(p2.agents.map((a2) => a2.vmId));
+      }
+      case "revoke_agent": {
+        for (const ref of p2.agents) {
+          const a2 = this.store.agents[ref.vmId];
+          if (a2) a2.granted = false;
+        }
+        this.log(`[google] revoked the Google account from ${agentList2(p2.agents)}`);
+        return this.finish(p2.agents.map((a2) => a2.vmId));
+      }
+      case "set_services": {
+        const entry = this.theAccount();
+        if (!entry) throw new Error("Connect a Google account first.");
+        entry.account.services = [...p2.services];
+        entry.account.updatedAt = new Date(this.now()).toISOString();
+        this.log(`[google] the account now covers ${serviceList(p2.services)}`);
+        return this.finish(this.knownAgents());
+      }
+    }
+  }
+  // ---- token minting ----
+  /**
+   * Keep the account's access token live. Called on a timer and once at start.
+   *
+   * A 4xx from Google is permanent (revoked, deleted, or seven days old on an External app still in
+   * Testing), so the account is marked failed and the console asks for a new connection; anything
+   * else is retried on the next tick with the old token still in place.
+   */
+  async refreshDue() {
+    if (this.minting) return;
+    this.minting = true;
+    try {
+      let changed = false;
+      for (const [id, account] of Object.entries(this.store.accounts)) {
+        if (account.failed) continue;
+        if (account.access && account.access.expires - this.now() > GOOGLE_REFRESH_AHEAD_MS) continue;
+        const minted = await this.mint(account);
+        if (this.store.accounts[id] !== account) {
+          this.log(`[google] token answer for ${id} arrived after the account was replaced; dropped`);
+          continue;
+        }
+        if (this.record(id, account, minted)) changed = true;
+      }
+      if (changed) {
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+      }
+    } finally {
+      this.minting = false;
+    }
+  }
+  /** Spend the refresh token. Google requires the client secret here, which is why it is stored. */
+  async mint(account) {
+    let answer;
+    try {
+      answer = await postForm(this.fetchImpl, account.oauth.tokenEndpoint, {
+        grant_type: "refresh_token",
+        refresh_token: account.refresh,
+        client_id: account.oauth.clientId,
+        client_secret: account.oauth.clientSecret
+      });
+    } catch (err) {
+      return { ok: false, permanent: false, reason: err.message };
+    }
+    const token2 = str2(answer.body.access_token);
+    if (answer.status !== 200 || !token2) {
+      return { ok: false, permanent: isPermanentRefusal(answer.status, answer.body), reason: reasonOf(answer.body, answer.status) };
+    }
+    const expiresIn = typeof answer.body.expires_in === "number" ? answer.body.expires_in : 3600;
+    const rotated = str2(answer.body.refresh_token);
+    return {
+      ok: true,
+      token: token2,
+      expires: this.now() + expiresIn * 1e3,
+      ...rotated && rotated !== account.refresh ? { refresh: rotated } : {}
+    };
+  }
+  /** Apply a mint answer to an account still in the store. Returns whether anything changed. */
+  record(id, account, minted) {
+    if (!minted.ok) {
+      if (!minted.permanent) {
+        this.log(`[google] token for ${account.accountLabel ?? id} failed (${minted.reason}); will retry`);
+        return false;
+      }
+      const because = account.audience === "external_testing" ? " An app still in Testing expires its refresh token after seven days; publishing the app removes that." : "";
+      account.failed = `Google refused the connection: ${minted.reason}.${because} Connect the account again.`;
+      account.access = null;
+      this.reports.push({ command_id: `google.token:${id}`, ok: false, status: "failed", message: account.failed, data: { accountId: id } });
+      this.log(`[google] token for ${account.accountLabel ?? id} refused: ${minted.reason}`);
+      return true;
+    }
+    account.access = { token: minted.token, expires: minted.expires };
+    if (minted.refresh) account.refresh = minted.refresh;
+    account.updatedAt = new Date(this.now()).toISOString();
+    this.log(`[google] minted a token for ${account.accountLabel ?? id} (expires in ${Math.round((minted.expires - this.now()) / 6e4)} min)`);
+    return true;
+  }
+};
+
+// src/webhooks.ts
+import { randomBytes as randomBytes7 } from "crypto";
+
+// src/ingress.ts
+import { createHmac, timingSafeEqual as timingSafeEqual2 } from "crypto";
+import { appendFileSync } from "fs";
+var INGRESS_PATH_PREFIX = "/hook/";
+var INGRESS_DEFAULT_BODY_BYTES = 256 * 1024;
+var INGRESS_MAX_BODY_BYTES = 1024 * 1024;
+var INGRESS_DEFAULT_PER_MINUTE = 60;
+var INGRESS_MAX_PER_MINUTE = 180;
+var INGRESS_ORG_PER_MINUTE = 180;
+var INGRESS_IN_FLIGHT_PER_VM = 4;
+var INGRESS_IN_FLIGHT_ORG = 16;
+var INGRESS_FORWARD_TIMEOUT_MS = 8e3;
+var INGRESS_UNVERIFIED_PER_MINUTE = 20;
+var INGRESS_UNVERIFIED_LOCKOUT_MS = 15 * 6e4;
+var OIDC_DISCOVERY_TIMEOUT_MS = 5e3;
+var FORWARD_HEADER_ALLOWLIST = ["content-type", "authorization"];
+var FORWARD_HEADER_PREFIXES = ["x-goog-", "x-hub-signature", "x-github-", "x-slack-"];
+var INGRESS_TARGET_PORT_MIN = 8700;
+var INGRESS_TARGET_PORT_MAX = 8799;
+function clamp(value, low, high) {
+  return Math.min(Math.max(value, low), high);
+}
+function targetPortAllowed(port) {
+  return Number.isInteger(port) && port >= INGRESS_TARGET_PORT_MIN && port <= INGRESS_TARGET_PORT_MAX;
+}
+function ownsIngressPath(path) {
+  return path.startsWith(INGRESS_PATH_PREFIX);
+}
+function sameSecret(a2, b2) {
+  const left = Buffer.from(a2);
+  const right = Buffer.from(b2);
+  if (left.length !== right.length) {
+    timingSafeEqual2(left, left);
+    return false;
+  }
+  return timingSafeEqual2(left, right);
+}
+function headerValue(req, name25) {
+  const raw = req.headers[name25.toLowerCase()];
+  if (Array.isArray(raw)) return raw[0] ?? "";
+  return typeof raw === "string" ? raw : "";
+}
+var IngressRoutes = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? console.log;
+  }
+  now;
+  log;
+  /** Per registration: the deliveries that passed their checks. */
+  delivered = /* @__PURE__ */ new Map();
+  /** Org-wide, across registrations. */
+  orgDelivered = [];
+  /** Unverified attempts, counted apart from the above. */
+  unverified = [];
+  unverifiedLockedUntil = 0;
+  inFlightOrg = 0;
+  inFlightByVm = /* @__PURE__ */ new Map();
+  jwksCache = /* @__PURE__ */ new Map();
+  /**
+   * One delivery.
+   *
+   * The order is the part most likely to be got wrong later, and it was got wrong once already.
+   *
+   * An HMAC is computed over the whole body, so the body must be read before the delivery can be
+   * verified. That looks like it forces a choice between buffering a megabyte for any stranger who
+   * learns a URL, and letting a stranger's junk spend the real sender's rate limit. It does not:
+   * what bounds memory is the **in-flight cap**, taken before the read, and what the rate limiter
+   * sees is the **verdict**, because it runs after the checks.
+   *
+   * So: slot, read, verify, then charge. A refusal charges the unverified budget and a pass
+   * charges the delivered one, and the unverified lockout is consulted only on the refusal path.
+   * That is what makes "a verified delivery is never rate-limited by somebody else's noise" true
+   * rather than merely intended. `recovery.ts` is shaped the same way for the same reason, and
+   * `ingress.test.ts` fails if any of it is reordered.
+   */
+  async handle(req, res, path) {
+    const started = this.now();
+    const deliveryId = `wh_${started.toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const refuse = (status, verdict, reason, reg2, bytes = 0, close = false) => {
+      if (!res.headersSent) {
+        res.writeHead(status, close ? { "content-length": "0", connection: "close" } : { "content-length": "0" });
+        res.end(close ? () => req.socket?.destroy() : void 0);
+      }
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg2?.id ?? "",
+        hook_name: reg2?.name ?? "",
+        verdict,
+        reason,
+        target_vm_id: reg2?.target.vmId,
+        bytes,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    };
+    if (req.method !== "POST") {
+      res.writeHead(405, { "content-length": "0" });
+      res.end();
+      return;
+    }
+    const id = path.slice(INGRESS_PATH_PREFIX.length);
+    const reg = this.opts.registrations().find((r2) => r2.id === id && r2.enabled);
+    if (!reg) {
+      this.countUnverified();
+      return refuse(404, "unknown_hook", "no registration with that id", void 0);
+    }
+    if (reg.verify.length === 0) {
+      return refuse(503, "needs_setup", "this webhook has no checks on this firewall yet", reg);
+    }
+    if (!this.takeSlot(reg.target.vmId)) {
+      return refuse(503, "agent_unreachable", "too many deliveries in flight for that agent", reg);
+    }
+    try {
+      const cap = Math.min(reg.maxBodyBytes || INGRESS_DEFAULT_BODY_BYTES, INGRESS_MAX_BODY_BYTES);
+      let body;
+      try {
+        body = await readBody(req, cap);
+      } catch (error62) {
+        if (error62.tooLarge) {
+          this.countUnverified();
+          return refuse(413, "too_large", "body over the cap", reg, 0, true);
+        }
+        return refuse(400, "refused", "the sender stopped before the body arrived", reg);
+      }
+      for (const rule of reg.verify) {
+        const verdict = await this.check(rule, req, body);
+        if (verdict.ok) continue;
+        this.countUnverified();
+        if (this.unverifiedLockedUntil > this.now()) {
+          return refuse(429, "rate_limited", "too many refused deliveries", reg, body.byteLength);
+        }
+        return refuse(401, "refused", verdict.reason, reg, body.byteLength);
+      }
+      this.clearUnverified();
+      if (!this.chargeDelivered(reg)) {
+        return refuse(429, "rate_limited", "over this webhook's rate", reg, body.byteLength);
+      }
+      return await this.forward(reg, req, res, body, deliveryId, started);
+    } finally {
+      this.releaseSlot(reg.target.vmId);
+    }
+  }
+  async forward(reg, req, res, body, deliveryId, started) {
+    const refuse = (status, verdict, reason) => {
+      if (!res.headersSent) {
+        res.writeHead(status, { "content-length": "0" });
+        res.end();
+      }
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg.id,
+        hook_name: reg.name,
+        verdict,
+        reason,
+        target_vm_id: reg.target.vmId,
+        bytes: body.byteLength,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    };
+    try {
+      const { status } = await this.opts.deliver(reg, {
+        method: "POST",
+        headers: forwardHeaders(req),
+        bodyB64: body.toString("base64")
+      });
+      const out = status >= 200 && status < 300 ? 204 : status >= 500 ? 503 : status;
+      res.writeHead(out, { "content-length": "0" });
+      res.end();
+      const ok = status >= 200 && status < 300;
+      const verdict = ok ? "delivered" : status >= 500 ? "agent_unreachable" : "listener_refused";
+      this.record({
+        source: "webhook",
+        delivery_id: deliveryId,
+        ts: Math.floor(started / 1e3),
+        hook_id: reg.id,
+        hook_name: reg.name,
+        verdict,
+        ...ok ? {} : { reason: `the listener on the agent answered ${status}` },
+        target_vm_id: reg.target.vmId,
+        forward_status: status,
+        bytes: body.byteLength,
+        duration_ms: this.now() - started,
+        arrived: "via proxy"
+      });
+    } catch (error62) {
+      refuse(503, "agent_unreachable", error62.message);
+    }
+  }
+  // ---- checks ----
+  async check(rule, req, body) {
+    if (rule.kind === "hmac") {
+      const sent = headerValue(req, rule.header);
+      if (!sent) return { ok: false, reason: `no ${rule.header} header` };
+      let signed = body;
+      if (rule.timestampHeader) {
+        const raw = headerValue(req, rule.timestampHeader);
+        const ts = Number(raw);
+        if (!raw || !Number.isFinite(ts)) return { ok: false, reason: `no ${rule.timestampHeader} header` };
+        const ageS = Math.abs(this.now() / 1e3 - ts);
+        if (ageS > (rule.maxAgeS ?? 300)) return { ok: false, reason: "the delivery was too old to accept" };
+        const format = rule.signedFormat ?? "{ts}.{body}";
+        signed = Buffer.from(format.replace("{ts}", String(raw)).replace("{body}", body.toString("utf8")), "utf8");
+      }
+      const mac3 = createHmac(rule.algo, rule.secret).update(signed).digest(rule.encoding);
+      const want = `${rule.prefix ?? ""}${mac3}`;
+      return sameSecret(sent, want) ? { ok: true } : { ok: false, reason: "the signature did not match" };
+    }
+    const auth = headerValue(req, "authorization");
+    if (!auth.startsWith("Bearer ")) return { ok: false, reason: "no bearer token" };
+    try {
+      const jwks = this.opts.jwks?.(rule.issuer) ?? await this.jwksFor(rule.issuer);
+      const { payload } = await jwtVerify(auth.slice(7), jwks, {
+        issuer: rule.issuer,
+        // Exact, and required. Left to be rebuilt from forwarded headers it would be one proxy
+        // hop away from silently accepting a token minted for somebody else.
+        audience: rule.audience
+      });
+      if (rule.subjectEmail) {
+        const email3 = typeof payload.email === "string" ? payload.email : "";
+        if (email3 !== rule.subjectEmail) return { ok: false, reason: "the token came from a different service account" };
+      }
+      return { ok: true };
+    } catch (error62) {
+      const claim2 = error62.claim;
+      if (claim2 === "aud") return { ok: false, reason: "the token was for a different audience" };
+      if (claim2 === "iss") return { ok: false, reason: "the token came from a different issuer" };
+      if (error62.code === "ERR_JWT_EXPIRED") return { ok: false, reason: "the token had expired" };
+      return { ok: false, reason: "the token did not verify" };
+    }
+  }
+  /**
+   * The issuer's signing keys, found the way OIDC says to find them: fetch
+   * `/.well-known/openid-configuration` and use the `jwks_uri` it names.
+   *
+   * An earlier version guessed at `<issuer>/.well-known/openid-configuration/jwks` instead. That
+   * is not a path anybody serves. For `https://accounts.google.com` the discovery document points
+   * at `https://www.googleapis.com/oauth2/v3/certs`, on a different host entirely, so every OIDC
+   * delivery would have failed with "the token did not verify" and the first consumer of this
+   * feature is Gmail push. Discovery is one request, cached for the life of the process, and it is
+   * the only thing that makes this generic across issuers rather than Google-shaped.
+   */
+  async jwksFor(issuer) {
+    const hit = this.jwksCache.get(issuer);
+    if (hit) return hit;
+    const discovery = `${issuer.replace(/\/$/, "")}/.well-known/openid-configuration`;
+    const res = await fetch(discovery, { signal: AbortSignal.timeout(OIDC_DISCOVERY_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`discovery for ${issuer} answered ${res.status}`);
+    const doc = await res.json();
+    if (typeof doc.jwks_uri !== "string" || !doc.jwks_uri) throw new Error(`discovery for ${issuer} names no jwks_uri`);
+    if (typeof doc.issuer === "string" && doc.issuer.replace(/\/$/, "") !== issuer.replace(/\/$/, "")) {
+      throw new Error(`discovery for ${issuer} claims to be ${doc.issuer}`);
+    }
+    const made = createRemoteJWKSet(new URL(doc.jwks_uri));
+    this.jwksCache.set(issuer, made);
+    return made;
+  }
+  // ---- budgets ----
+  /**
+   * One delivery that did not verify. Called only on the refusal path, so nothing a real sender
+   * does ever touches this counter.
+   */
+  countUnverified() {
+    const cutoff = this.now() - 6e4;
+    this.unverified = this.unverified.filter((t2) => t2 > cutoff);
+    this.unverified.push(this.now());
+    if (this.unverified.length < INGRESS_UNVERIFIED_PER_MINUTE) return;
+    this.unverifiedLockedUntil = this.now() + INGRESS_UNVERIFIED_LOCKOUT_MS;
+    this.unverified = [];
+    this.log(`[ingress] ${INGRESS_UNVERIFIED_PER_MINUTE} refused deliveries in a minute; refusing unverified callers for ${INGRESS_UNVERIFIED_LOCKOUT_MS / 6e4} minutes`);
+  }
+  /**
+   * A delivery passed its checks, so whoever sent it holds the secret: the run of bad attempts is
+   * forgotten and the lockout lifts. This is the half that makes the two budgets worth having.
+   */
+  clearUnverified() {
+    this.unverified = [];
+    this.unverifiedLockedUntil = 0;
+  }
+  chargeDelivered(reg) {
+    const cutoff = this.now() - 6e4;
+    const per = Math.min(reg.perMinute || INGRESS_DEFAULT_PER_MINUTE, INGRESS_MAX_PER_MINUTE);
+    const mine = (this.delivered.get(reg.id) ?? []).filter((t2) => t2 > cutoff);
+    this.orgDelivered = this.orgDelivered.filter((t2) => t2 > cutoff);
+    if (mine.length >= per || this.orgDelivered.length >= INGRESS_ORG_PER_MINUTE) {
+      this.delivered.set(reg.id, mine);
+      return false;
+    }
+    mine.push(this.now());
+    this.orgDelivered.push(this.now());
+    this.delivered.set(reg.id, mine);
+    return true;
+  }
+  takeSlot(vmId) {
+    const mine = this.inFlightByVm.get(vmId) ?? 0;
+    if (mine >= INGRESS_IN_FLIGHT_PER_VM || this.inFlightOrg >= INGRESS_IN_FLIGHT_ORG) return false;
+    this.inFlightByVm.set(vmId, mine + 1);
+    this.inFlightOrg++;
+    return true;
+  }
+  releaseSlot(vmId) {
+    this.inFlightByVm.set(vmId, Math.max(0, (this.inFlightByVm.get(vmId) ?? 1) - 1));
+    this.inFlightOrg = Math.max(0, this.inFlightOrg - 1);
+  }
+  // ---- Activity ----
+  /**
+   * Metadata only. Never the body, never a header value, never the token. A webhook body is
+   * exactly the kind of thing that must not end up in our database: someone's email, someone's
+   * ticket. The same rule the egress log and the AI review already follow.
+   */
+  record(rec) {
+    this.log(`[ingress] ${rec.verdict} ${rec.hook_name || rec.hook_id || "(unknown)"}${rec.reason ? `: ${rec.reason}` : ""}`);
+    if (!this.opts.logPath) return;
+    try {
+      appendFileSync(this.opts.logPath, `${JSON.stringify(rec)}
+`);
+    } catch (error62) {
+      this.log(`[ingress] could not record that delivery: ${error62.message}`);
+    }
+  }
+};
+var BodyTooLarge = class extends Error {
+  tooLarge = true;
+  constructor() {
+    super("body over the cap");
+    this.name = "BodyTooLarge";
+  }
+};
+function readBody(req, cap) {
+  return new Promise((resolve2, reject) => {
+    const declared = Number(req.headers["content-length"] ?? NaN);
+    if (Number.isFinite(declared) && declared > cap) {
+      req.pause();
+      reject(new BodyTooLarge());
+      return;
+    }
+    const chunks = [];
+    let total = 0;
+    let stopped = false;
+    req.on("data", (chunk) => {
+      if (stopped) return;
+      total += chunk.length;
+      if (total > cap) {
+        stopped = true;
+        req.pause();
+        reject(new BodyTooLarge());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!stopped) resolve2(Buffer.concat(chunks));
+    });
+    req.on("error", (error62) => {
+      if (!stopped) reject(error62);
+    });
+  });
+}
+function forwardHeaders(req) {
+  const out = {};
+  for (const [name25, raw] of Object.entries(req.headers)) {
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value !== "string") continue;
+    const lower = name25.toLowerCase();
+    if (FORWARD_HEADER_ALLOWLIST.includes(lower) || FORWARD_HEADER_PREFIXES.some((p2) => lower.startsWith(p2))) {
+      out[lower] = value;
+    }
+  }
+  return out;
+}
+function parseRegistrations(json3) {
+  if (!Array.isArray(json3)) return [];
+  const out = [];
+  for (const raw of json3) {
+    const r2 = raw;
+    const target = r2.target ?? {};
+    const port = Number(target.port);
+    if (typeof r2.id !== "string" || !r2.id) continue;
+    if (typeof target.vmId !== "string" || typeof target.hostname !== "string") continue;
+    if (!targetPortAllowed(port)) continue;
+    out.push({
+      id: r2.id,
+      name: typeof r2.name === "string" ? r2.name : r2.id,
+      target: {
+        vmId: target.vmId,
+        hostname: target.hostname,
+        port,
+        path: typeof target.path === "string" && target.path.startsWith("/") ? target.path : "/"
+      },
+      verify: parseVerify(r2.verify),
+      // Clamped at both ends. Without a lower bound a negative value passes straight through
+      // `Math.min` and every delivery, including a zero-byte one, is refused 413 forever.
+      maxBodyBytes: clamp(Number(r2.maxBodyBytes) || INGRESS_DEFAULT_BODY_BYTES, 1, INGRESS_MAX_BODY_BYTES),
+      perMinute: clamp(Number(r2.perMinute) || INGRESS_DEFAULT_PER_MINUTE, 1, INGRESS_MAX_PER_MINUTE),
+      enabled: r2.enabled !== false
+    });
+  }
+  return out;
+}
+function parseVerify(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const entry of raw) {
+    const v2 = entry;
+    if (v2.kind === "hmac" && typeof v2.secret === "string" && typeof v2.header === "string") {
+      out.push({
+        kind: "hmac",
+        header: v2.header,
+        algo: v2.algo === "sha1" ? "sha1" : "sha256",
+        encoding: v2.encoding === "base64" ? "base64" : "hex",
+        prefix: typeof v2.prefix === "string" ? v2.prefix : void 0,
+        secret: v2.secret,
+        timestampHeader: typeof v2.timestampHeader === "string" ? v2.timestampHeader : void 0,
+        signedFormat: typeof v2.signedFormat === "string" ? v2.signedFormat : void 0,
+        maxAgeS: Number.isFinite(Number(v2.maxAgeS)) && Number(v2.maxAgeS) > 0 ? Number(v2.maxAgeS) : void 0
+      });
+    } else if (v2.kind === "oidc" && typeof v2.issuer === "string" && typeof v2.audience === "string" && v2.audience) {
+      out.push({
+        kind: "oidc",
+        issuer: v2.issuer,
+        audience: v2.audience,
+        subjectEmail: typeof v2.subjectEmail === "string" ? v2.subjectEmail : void 0
+      });
+    }
+  }
+  return out;
+}
+
+// src/webhook-store.ts
+function aad5(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:webhooks`;
+}
+function emptyWebhookStore() {
+  return { version: 1, hooks: {}, pending: {} };
+}
+function loadWebhookStore(path, boxKeyB64, ids2, log = console.error) {
+  const parsed = loadStoreOrEmpty("webhooks", path, boxKeyB64, aad5(ids2), log);
+  if (!parsed || parsed.version !== 1 || !parsed.hooks) return emptyWebhookStore();
+  return { ...parsed, pending: parsed.pending ?? {} };
+}
+function saveWebhookStore(path, store, boxKeyB64, ids2) {
+  saveStore("webhooks", path, store, boxKeyB64, aad5(ids2));
+}
+function applySync(store, entries, now2 = Date.now) {
+  const listed = new Set(entries.map((e) => e.id));
+  const unknown2 = [];
+  const dropped = [];
+  let changed = false;
+  for (const entry of entries) {
+    const held = store.hooks[entry.id];
+    if (!held) {
+      unknown2.push(entry.id);
+      const label = entry.name || entry.id;
+      if (store.pending[entry.id] !== label) {
+        store.pending[entry.id] = label;
+        changed = true;
+      }
+      continue;
+    }
+    delete store.pending[entry.id];
+    const before = JSON.stringify(held);
+    if (typeof entry.name === "string" && entry.name) held.name = entry.name;
+    if (typeof entry.enabled === "boolean") held.enabled = entry.enabled;
+    if (Number.isFinite(entry.maxBodyBytes)) held.maxBodyBytes = Number(entry.maxBodyBytes);
+    if (Number.isFinite(entry.perMinute)) held.perMinute = Number(entry.perMinute);
+    if (JSON.stringify(held) !== before) {
+      held.updatedAt = new Date(now2()).toISOString();
+      changed = true;
+    }
+  }
+  for (const id of Object.keys(store.hooks)) {
+    if (listed.has(id)) continue;
+    delete store.hooks[id];
+    dropped.push(id);
+    changed = true;
+  }
+  for (const id of Object.keys(store.pending)) {
+    if (listed.has(id)) continue;
+    delete store.pending[id];
+    changed = true;
+  }
+  return { unknown: unknown2, dropped, changed };
+}
+function registrationsFor(store) {
+  const pending = Object.entries(store.pending).map(([id, name25]) => ({
+    id,
+    name: name25,
+    // Inert on purpose. The ingress refuses a registration with no checks before it reads the
+    // target, so these values are never used for anything.
+    target: { vmId: "", hostname: "", port: 0, path: "/" },
+    verify: [],
+    maxBodyBytes: 0,
+    perMinute: 0,
+    enabled: true
+  }));
+  return pending.concat(Object.values(store.hooks).map((h2) => ({
+    id: h2.id,
+    name: h2.name,
+    target: { ...h2.target },
+    verify: h2.verify,
+    maxBodyBytes: h2.maxBodyBytes,
+    perMinute: h2.perMinute,
+    enabled: h2.enabled
+  })));
+}
+function inventoryFor(store) {
+  return [
+    ...Object.keys(store.pending).map((id) => ({ id, ready: false })),
+    ...Object.values(store.hooks).map((h2) => ({ id: h2.id, ready: h2.verify.length > 0 }))
+  ];
+}
+
+// src/webhooks.ts
+var SCOPE4 = "webhooks";
+function clamp2(value, low, high, fallback) {
+  const n2 = Number(value);
+  if (!Number.isFinite(n2) || n2 <= 0) return fallback;
+  return Math.min(Math.max(n2, low), high);
+}
+function parseVerifyRules(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const entry of raw) {
+    const v2 = entry ?? {};
+    if (v2.kind === "hmac" && typeof v2.secret === "string" && v2.secret && typeof v2.header === "string" && v2.header) {
+      out.push({
+        kind: "hmac",
+        header: v2.header,
+        algo: v2.algo === "sha1" ? "sha1" : "sha256",
+        encoding: v2.encoding === "base64" ? "base64" : "hex",
+        prefix: typeof v2.prefix === "string" ? v2.prefix : void 0,
+        secret: v2.secret,
+        timestampHeader: typeof v2.timestampHeader === "string" ? v2.timestampHeader : void 0,
+        signedFormat: typeof v2.signedFormat === "string" ? v2.signedFormat : void 0,
+        maxAgeS: Number.isFinite(Number(v2.maxAgeS)) && Number(v2.maxAgeS) > 0 ? Number(v2.maxAgeS) : void 0
+      });
+    } else if (v2.kind === "oidc" && typeof v2.issuer === "string" && v2.issuer && typeof v2.audience === "string" && v2.audience) {
+      out.push({
+        kind: "oidc",
+        issuer: v2.issuer,
+        audience: v2.audience,
+        subjectEmail: typeof v2.subjectEmail === "string" ? v2.subjectEmail : void 0
+      });
+    }
+  }
+  return out;
+}
+function summarize4(p2) {
+  switch (p2.kind) {
+    case "register":
+      return `Let "${p2.name}" deliver to port ${p2.target?.port} on ${p2.target?.hostname ?? "an agent"}`;
+    case "retarget":
+      return `Point "${p2.name}" at port ${p2.target?.port} on ${p2.target?.hostname ?? "an agent"}`;
+    case "reverify":
+      return `Change how "${p2.name}" checks that a delivery is genuine`;
+    case "forget":
+      return `Remove the webhook "${p2.name}"`;
+  }
+}
+var WebhookFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadWebhookStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  handlers() {
+    return {
+      "webhook.propose": (p2) => this.propose(p2),
+      "webhook.confirm": (p2) => this.confirm(p2),
+      "webhook.cancel": (p2) => this.cancel(p2),
+      "webhook.sync": (p2) => this.sync(p2),
+      // Revoking is not a coded change (§5.3), so it arrives as its own command rather than a
+      // proposal. Without this the control plane's revoke was an unknown action and the hook
+      // stayed served until the next sync dropped it.
+      "webhook.forget": (p2) => this.forget(p2),
+      "webhook.read": async () => ({ ok: true, status: "read", data: { hooks: this.summary() } })
+    };
+  }
+  /** The live set, for the ingress. Called per delivery, so a revoke lands on the next one. */
+  registrations() {
+    return registrationsFor(this.store);
+  }
+  /** For the beat: which registrations this firewall can actually serve (§5.2b). */
+  inventory() {
+    return inventoryFor(this.store);
+  }
+  /** What the console may see. Never a secret, and never the HMAC's bytes. */
+  summary() {
+    return Object.values(this.store.hooks).map((h2) => ({
+      id: h2.id,
+      name: h2.name,
+      target: { vmId: h2.target.vmId, hostname: h2.target.hostname, port: h2.target.port, path: h2.target.path },
+      // The kinds only, never the material. A console that could read the secret back would make
+      // the control plane a holder of it, which is exactly what this store exists to prevent.
+      checks: h2.verify.map((v2) => v2.kind === "hmac" ? { kind: "hmac", header: v2.header, algo: v2.algo, replayProtected: Boolean(v2.timestampHeader) } : { kind: "oidc", issuer: v2.issuer, audience: v2.audience, subjectEmail: v2.subjectEmail ?? null }),
+      ready: h2.verify.length > 0,
+      maxBodyBytes: h2.maxBodyBytes,
+      perMinute: h2.perMinute,
+      enabled: h2.enabled,
+      createdAt: h2.createdAt,
+      updatedAt: h2.updatedAt
+    }));
+  }
+  save() {
+    saveWebhookStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+    this.opts.onChange?.();
+  }
+  // ---- the family ----
+  async propose(payload) {
+    const p2 = this.parseProposal(payload);
+    if (typeof p2 === "string") return { ok: false, status: "refused", message: p2 };
+    if (p2.kind !== "register" && !this.store.hooks[p2.hookId]) {
+      return { ok: false, status: "refused", message: "This firewall does not hold that webhook." };
+    }
+    if (p2.kind === "register" && this.store.hooks[p2.hookId]) {
+      return { ok: false, status: "refused", message: "This firewall already holds a webhook with that id." };
+    }
+    const routes = await this.opts.codeRoutes();
+    const summary = summarize4(p2);
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "no_channels",
+        message: "This firewall cannot read its channel list, so it cannot ask anyone to confirm this. Nothing was changed."
+      };
+    }
+    if (routes.length === 0) {
+      this.log(`[webhooks] no approved sender on any channel; applying "${summary}" without a code (first use)`);
+      if (!this.apply(p2)) return { ok: false, status: "gone", message: "That webhook is no longer on this firewall." };
+      return { ok: true, status: "applied", message: `${summary}. Nobody is approved on a channel yet, so this applied without a code.` };
+    }
+    const sent = await this.codes.send(SCOPE4, p2, p2.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message };
+    return { ok: true, status: "code_sent", message: summary, data: { sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = String(payload.changeId ?? "");
+    const code = String(payload.code ?? "");
+    const verdict = this.codes.verify(SCOPE4, changeId, code);
+    if (verdict.kind === "expired") return { ok: false, status: "expired", message: "That change is no longer waiting for a code." };
+    if (verdict.kind === "invalid") {
+      return { ok: false, status: "invalid_code", message: `That code is not right. ${verdict.attemptsLeft} attempt(s) left.`, data: { attemptsLeft: verdict.attemptsLeft } };
+    }
+    if (!this.apply(verdict.proposal)) {
+      return { ok: false, status: "gone", message: "That webhook was removed while this change was waiting." };
+    }
+    return { ok: true, status: "applied", message: summarize4(verdict.proposal) };
+  }
+  /** Drop a registration now. The sync would drop it too; this makes it immediate. */
+  async forget(payload) {
+    const hookId = String(payload.hookId ?? "");
+    const going = this.store.hooks[hookId];
+    if (!going) return { ok: true, status: "already_gone" };
+    delete this.store.hooks[hookId];
+    delete this.store.pending[hookId];
+    this.save();
+    void this.stopGmail(going);
+    return { ok: true, status: "forgotten" };
+  }
+  async cancel(payload) {
+    const changeId = payload.changeId ? String(payload.changeId) : null;
+    const dropped = this.codes.cancel(SCOPE4, changeId);
+    return { ok: true, status: dropped ? "cancelled" : "nothing_waiting" };
+  }
+  /**
+   * The control plane's half (§5.2). Carries ids, `enabled`, the name and the limits, and cannot
+   * create a registration or touch a target or a check: `applySync` enforces that, not this.
+   */
+  async sync(payload) {
+    const raw = Array.isArray(payload.hooks) ? payload.hooks : [];
+    const entries = raw.map((e) => e ?? {}).filter((e) => typeof e.id === "string" && e.id).map((e) => ({
+      id: String(e.id),
+      name: typeof e.name === "string" ? e.name : void 0,
+      enabled: typeof e.enabled === "boolean" ? e.enabled : void 0,
+      maxBodyBytes: Number.isFinite(Number(e.maxBodyBytes)) ? Number(e.maxBodyBytes) : void 0,
+      perMinute: Number.isFinite(Number(e.perMinute)) ? Number(e.perMinute) : void 0
+    }));
+    const outcome = applySync(this.store, entries, this.now);
+    if (outcome.changed) this.save();
+    if (outcome.unknown.length) {
+      this.log(`[webhooks] the sync listed ${outcome.unknown.length} registration(s) this firewall does not hold; ignored`);
+    }
+    if (outcome.dropped.length) this.log(`[webhooks] dropped ${outcome.dropped.length} revoked registration(s)`);
+    return { ok: true, status: "synced", data: { unknown: outcome.unknown, dropped: outcome.dropped, held: Object.keys(this.store.hooks).length } };
+  }
+  /**
+   * Tell the agent box to start (or stop) its Gmail watcher.
+   *
+   * Provider-specific knowledge stops here, at one `if`: the firewall knows a registration whose
+   * only check is an OIDC token from Google, and hands the agent the audience and the path. What
+   * Gmail is, and what to do with a push, lives on the agent box.
+   *
+   * Best effort on purpose. A registration is real the moment the firewall holds it; an agent that
+   * is down must not make a confirmed change fail, and the next apply picks it up.
+   */
+  async pushGmail(hook) {
+    const oidc = hook.verify.find((v2) => v2.kind === "oidc");
+    if (!oidc || oidc.kind !== "oidc" || !oidc.issuer.includes("accounts.google.com")) return;
+    try {
+      await this.opts.agent.post({ vmId: hook.target.vmId, hostname: hook.target.hostname }, "/hooks/gmail", {
+        audience: oidc.audience,
+        path: hook.target.path,
+        port: hook.target.port,
+        subjectEmail: oidc.subjectEmail ?? null,
+        // Both are needed for the renewal timer. Without them the watch dies after seven days
+        // and nothing says so.
+        account: this.opts.gmailAccount?.() ?? null,
+        topic: hook.gmailTopic ?? null
+      });
+      this.log(`[webhooks] gmail watcher configured on ${hook.target.hostname}`);
+    } catch (error62) {
+      this.log(`[webhooks] could not configure the gmail watcher on ${hook.target.hostname}: ${error62.message}`);
+    }
+  }
+  async stopGmail(hook) {
+    const oidc = hook.verify.find((v2) => v2.kind === "oidc");
+    if (!oidc || oidc.kind !== "oidc" || !oidc.issuer.includes("accounts.google.com")) return;
+    await this.opts.agent.post({ vmId: hook.target.vmId, hostname: hook.target.hostname }, "/hooks/gmail", { stop: true }).catch((error62) => this.log(`[webhooks] could not stop the gmail watcher: ${error62.message}`));
+  }
+  apply(p2) {
+    if (p2.kind === "forget") {
+      const going = this.store.hooks[p2.hookId];
+      delete this.store.hooks[p2.hookId];
+      this.save();
+      if (going) void this.stopGmail(going);
+      return true;
+    }
+    const iso = new Date(this.now()).toISOString();
+    const held = this.store.hooks[p2.hookId];
+    if (p2.kind !== "register" && !held) return false;
+    if (p2.kind === "register") {
+      this.store.hooks[p2.hookId] = {
+        id: p2.hookId,
+        name: p2.name,
+        target: p2.target,
+        verify: p2.verify,
+        maxBodyBytes: clamp2(p2.maxBodyBytes, 1, INGRESS_MAX_BODY_BYTES, INGRESS_DEFAULT_BODY_BYTES),
+        perMinute: clamp2(p2.perMinute, 1, INGRESS_MAX_PER_MINUTE, INGRESS_DEFAULT_PER_MINUTE),
+        enabled: true,
+        gmailTopic: p2.gmailTopic ?? null,
+        createdAt: iso,
+        updatedAt: iso
+      };
+    } else if (p2.kind === "retarget") {
+      held.target = p2.target;
+      held.updatedAt = iso;
+    } else {
+      held.verify = p2.verify;
+      held.updatedAt = iso;
+    }
+    delete this.store.pending[p2.hookId];
+    this.save();
+    void this.pushGmail(this.store.hooks[p2.hookId]);
+    return true;
+  }
+  parseProposal(payload) {
+    const changeId = String(payload.changeId ?? "");
+    const kind = String(payload.kind ?? "");
+    const hookId = String(payload.hookId ?? "");
+    const name25 = String(payload.name ?? "").slice(0, 120);
+    if (!changeId) return "This change carries no id.";
+    if (!["register", "retarget", "reverify", "forget"].includes(kind)) return "That is not a change this firewall knows how to make.";
+    if (!/^hk_[0-9a-f]{32}$/.test(hookId)) return "That is not a webhook id.";
+    if (!name25 && kind !== "forget") return "A webhook needs a name.";
+    const p2 = { changeId, kind, hookId, name: name25 || hookId };
+    if (kind === "register" || kind === "retarget") {
+      const t2 = payload.target ?? {};
+      const port = Number(t2.port);
+      if (typeof t2.vmId !== "string" || !t2.vmId) return "A webhook has to name the agent it delivers to.";
+      if (typeof t2.hostname !== "string" || !t2.hostname) return "A webhook has to name the agent's hostname.";
+      if (!targetPortAllowed(port)) return `A webhook may only deliver to a port between 8700 and 8799 (got ${t2.port}).`;
+      const path = typeof t2.path === "string" && t2.path.startsWith("/") ? t2.path : "/";
+      p2.target = { vmId: t2.vmId, hostname: t2.hostname, port, path };
+    }
+    if (kind === "register" || kind === "reverify") {
+      const verify = parseVerifyRules(payload.verify);
+      if (verify.length === 0) return "A webhook needs at least one way to check that a delivery is genuine.";
+      p2.verify = verify;
+    }
+    if (kind === "register") {
+      p2.maxBodyBytes = Number(payload.maxBodyBytes);
+      p2.perMinute = Number(payload.perMinute);
+      const topic = typeof payload.gmailTopic === "string" ? payload.gmailTopic : "";
+      if (topic && !/^projects\/[a-z0-9-]{4,30}\/topics\/[A-Za-z0-9._~%+-]{3,255}$/.test(topic)) {
+        return "That is not a Pub/Sub topic name.";
+      }
+      p2.gmailTopic = topic || null;
+    }
+    return p2;
+  }
+};
+
+// src/llm-store.ts
+function aad6(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:llm`;
+}
+function emptyLlmStore() {
+  return { version: 1, credentials: {}, agents: {} };
+}
+function withRoles(store) {
+  for (const agent of Object.values(store.agents)) {
+    const legacy = agent.bindings;
+    if (legacy.every((b2) => b2.role === "primary" || b2.role === "secondary")) continue;
+    const ordered = [...legacy].sort((a2, b2) => Number(b2.isPrimary ?? false) - Number(a2.isPrimary ?? false));
+    agent.bindings = ordered.slice(0, 2).map(({ credentialId, model }, i2) => ({ credentialId, model, role: i2 === 0 ? "primary" : "secondary" }));
+  }
+  return store;
+}
+function loadLlmStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("llm", path, boxKeyB64, aad6(ids2));
+  return parsed && parsed.version === 1 && parsed.credentials && parsed.agents ? withRoles(parsed) : emptyLlmStore();
+}
+function saveLlmStore(path, store, boxKeyB64, ids2) {
+  saveStore("llm", path, store, boxKeyB64, aad6(ids2));
+}
+
+// src/llm.ts
+var REFRESH_AHEAD_MS = 15 * 6e4;
+var REFRESH_TIMEOUT_MS = 3e4;
+var SCOPE5 = "org";
+function parseEmbeddingsRef(raw) {
+  if (raw === void 0) return void 0;
+  const r2 = raw;
+  if (!r2) return null;
+  const credentialId = str5(r2.credentialId);
+  const memory = parseMemorySearch(r2.memory);
+  if (!credentialId || !memory) return null;
+  return { credentialId, memory, allowedModels: parseModelList(r2.allowedModels) };
+}
+function str5(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function isKind4(v2) {
+  return v2 === "add" || v2 === "replace" || v2 === "remove" || v2 === "bind" || v2 === "unbind" || v2 === "set_model";
+}
+function roleLabel(role) {
+  return role === "primary" ? "main model" : "fallback";
+}
+function modelShort(model) {
+  const at2 = model.lastIndexOf("@");
+  const bare2 = at2 > 0 && model.slice(at2 + 1).includes(":") ? model.slice(0, at2) : model;
+  return bare2.includes("/") ? bare2.slice(bare2.indexOf("/") + 1) : bare2;
+}
+function modelFamily(model) {
+  const at2 = model.lastIndexOf("@");
+  const pinned = at2 > 0 && model.slice(at2 + 1).includes(":");
+  const bare2 = pinned ? model.slice(0, at2) : model;
+  return `${bare2.includes("/") ? bare2.slice(0, bare2.indexOf("/")) : ""}@${pinned ? model.slice(at2 + 1) : ""}`;
+}
+function summarize5(p2) {
+  const a2 = p2.agents[0];
+  const replaced = p2.replaces ? `, replacing ${p2.replaces}` : "";
+  switch (p2.kind) {
+    case "add":
+      return p2.credKind === "oauth" ? `Connect ${p2.providerName} (${p2.label ?? p2.hint ?? "account"})` : `Add ${p2.providerName} key (${p2.hint ?? "key"})`;
+    case "replace":
+      return p2.credKind === "oauth" ? `Reconnect ${p2.providerName} (${p2.label ?? p2.hint ?? "account"})` : `Replace the ${p2.providerName} key (${p2.hint ?? "new key"})`;
+    case "remove":
+      return `Remove ${p2.providerName} from the organization`;
+    case "bind":
+      return `Use ${p2.providerName} ${a2 ? modelShort(a2.model) : ""} on ${a2?.name ?? "the agent"} as the ${roleLabel(a2?.role ?? "primary")}${replaced}`.replace(/\s+/g, " ");
+    case "set_model":
+      return `Switch ${a2?.name ?? "the agent"}'s ${roleLabel(a2?.role ?? "primary")} to ${p2.providerName} ${a2 ? modelShort(a2.model) : ""}${replaced}`.replace(/\s+([,.])/g, "$1").trim();
+    case "unbind":
+      return `Stop using ${p2.providerName} on ${a2?.name ?? "the agent"}`;
+  }
+}
+function parseSecret2(secret) {
+  if (!secret) return void 0;
+  if (str5(secret.apiKey)) return { apiKey: String(secret.apiKey) };
+  if (str5(secret.token)) return { token: String(secret.token) };
+  const o2 = secret.oauth;
+  if (o2 && str5(o2.access) && str5(o2.refresh)) {
+    return {
+      access: String(o2.access),
+      refresh: String(o2.refresh),
+      expires: typeof o2.expires === "number" ? o2.expires : 0,
+      accountId: str5(o2.accountId),
+      email: str5(o2.email)
+    };
+  }
+  return void 0;
+}
+function parseProviderBlock(raw) {
+  const b2 = raw;
+  if (!b2 || !str5(b2.baseUrl) || !str5(b2.api) || !Array.isArray(b2.models)) return null;
+  const models = b2.models.filter((m2) => str5(m2?.id)).map((m2) => ({ id: String(m2.id), name: str5(m2.name) ?? String(m2.id) }));
+  return models.length ? { baseUrl: String(b2.baseUrl), api: String(b2.api), models } : null;
+}
+function parseMemorySearch(raw) {
+  const m2 = raw;
+  if (!m2 || !str5(m2.provider) || !str5(m2.model) || !str5(m2.baseUrl)) return null;
+  return { provider: String(m2.provider), model: String(m2.model), baseUrl: String(m2.baseUrl), dreaming: m2.dreaming === true };
+}
+function parseModelList(raw) {
+  if (!Array.isArray(raw)) return null;
+  const list = raw.filter((m2) => typeof m2 === "string" && m2.length > 0);
+  return list.length ? list : null;
+}
+function parseProposal4(payload) {
+  const changeId = str5(payload.changeId);
+  const credentialId = str5(payload.credentialId);
+  const provider = str5(payload.provider);
+  if (!changeId || !credentialId || !provider || !isKind4(payload.kind)) throw new Error("malformed llm.propose payload");
+  const swap = payload.swap;
+  const oauth = payload.oauth;
+  const agents = Array.isArray(payload.agents) ? payload.agents : [];
+  const credKind = payload.credKind;
+  return {
+    changeId,
+    kind: payload.kind,
+    credentialId,
+    provider,
+    providerName: str5(payload.providerName) ?? provider,
+    credKind: credKind === "api_key" || credKind === "token" || credKind === "oauth" ? credKind : null,
+    placeholder: str5(payload.placeholder),
+    hint: str5(payload.hint),
+    label: str5(payload.label),
+    profileId: str5(payload.profileId),
+    swap: swap && str5(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
+    oauth: oauth && str5(oauth.tokenEndpoint) && str5(oauth.clientId) ? { tokenEndpoint: String(oauth.tokenEndpoint), clientId: String(oauth.clientId), ...str5(oauth.clientSecret) ? { clientSecret: String(oauth.clientSecret) } : {} } : null,
+    providerBlock: parseProviderBlock(payload.providerBlock),
+    allowedModels: parseModelList(payload.allowedModels),
+    memory: parseMemorySearch(payload.memory),
+    replaces: str5(payload.replaces),
+    agents: agents.filter((a2) => str5(a2.vmId) && str5(a2.model)).map((a2) => ({
+      vmId: String(a2.vmId),
+      name: str5(a2.name) ?? String(a2.vmId),
+      hostname: str5(a2.hostname),
+      model: String(a2.model),
+      role: a2.role === "secondary" ? "secondary" : "primary",
+      // Spread, so "the field was not there" stays different from "the field was null".
+      ..."embeddings" in a2 ? { embeddings: parseEmbeddingsRef(a2.embeddings) } : {}
+    })),
+    secret: parseSecret2(payload.secret)
+  };
+}
+function removeEntry(c2) {
+  return { provider: c2.provider, profileId: c2.profileId, kind: c2.kind, ...c2.providerBlock ? { providerBlock: true } : {} };
+}
+function secretValue(s2) {
+  if ("apiKey" in s2) return s2.apiKey;
+  if ("token" in s2) return s2.token;
+  return s2.access;
+}
+var LlmFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadLlmStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  fetchImpl;
+  reports = [];
+  refreshing = false;
+  handlers() {
+    return {
+      "llm.propose": (p2) => this.propose(p2),
+      "llm.confirm": (p2) => this.confirm(p2),
+      "llm.cancel": (p2) => this.cancel(p2),
+      "llm.push": (p2) => this.push(p2)
+    };
+  }
+  /**
+   * Proxy credential entries: one per agent binding, swapped only on that agent's traffic.
+   *
+   * An agent whose embeddings somebody else pays for gets a second entry for that credential, on
+   * the same `vm_id`. Without it the embedding request would leave the box carrying a placeholder
+   * the proxy does not know, and the gateway would refuse it — the box holds no real key, and the
+   * embeddings credential is deliberately not one of the agent's bindings, so nothing else in
+   * this list covers it. The entry carries the key's `allowed_models`, so the proxy still lets it
+   * be spent on nothing but the embedding model, and `vm_id` is what attributes the request to
+   * this agent on the Activity page.
+   */
+  credentials() {
+    const out = [];
+    const entry = (vmId, c2) => ({
+      placeholder: c2.placeholder,
+      match_domain: c2.swap.matchDomain,
+      secret: secretValue(c2.secret),
+      locations: c2.swap.locations,
+      vm_id: vmId,
+      ...c2.allowedModels ? { allowed_models: c2.allowedModels, included: true } : {}
+    });
+    for (const [vmId, agent] of Object.entries(this.store.agents)) {
+      const seen = /* @__PURE__ */ new Set();
+      for (const b2 of agent.bindings) {
+        const c2 = this.store.credentials[b2.credentialId];
+        if (!c2) continue;
+        if (this.plainOnBox(c2)) continue;
+        seen.add(b2.credentialId);
+        out.push(entry(vmId, c2));
+      }
+      const paid = agent.embeddings;
+      if (!paid || seen.has(paid.credentialId)) continue;
+      const payer = this.store.credentials[paid.credentialId];
+      if (!payer || this.plainOnBox(payer)) continue;
+      out.push({ ...entry(vmId, payer), allowed_models: paid.allowedModels, included: true });
+    }
+    return out;
+  }
+  /**
+   * The current secret of one credential (API key or OAuth access token), for the firewall's own
+   * model calls (the AI review). Null when unknown or its last refresh failed.
+   */
+  tokenFor(credentialId) {
+    const c2 = this.store.credentials[credentialId];
+    if (!c2 || c2.failed) return null;
+    return secretValue(c2.secret);
+  }
+  /**
+   * Plain mode puts real API keys on the boxes. Never an OAuth token (the firewall refreshes it)
+   * and never the included AI key: it is ours, and its model allow-list is enforced at the proxy.
+   */
+  plainOnBox(c2) {
+    return !!this.opts.plainKeys && c2.kind !== "oauth" && !c2.allowedModels;
+  }
+  /** The included-AI credential this firewall holds, if any (reported on the heartbeat). */
+  includedCredentialId() {
+    return Object.entries(this.store.credentials).find(([, c2]) => c2.allowedModels)?.[0] ?? null;
+  }
+  /** What the console may see: no secrets. */
+  summary() {
+    return {
+      credentials: Object.entries(this.store.credentials).map(([id, c2]) => ({ id, provider: c2.provider, kind: c2.kind, hint: c2.hint, failed: c2.failed })),
+      agents: Object.keys(this.store.agents).length
+    };
+  }
+  /** Reports made outside a command (refresh failures), drained by the heartbeat. */
+  drainReports() {
+    const r2 = this.reports;
+    this.reports = [];
+    return r2;
+  }
+  save() {
+    saveLlmStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  agentOf(ref) {
+    let a2 = this.store.agents[ref.vmId];
+    if (!a2) {
+      a2 = { name: ref.name, hostname: ref.hostname, bindings: [] };
+      this.store.agents[ref.vmId] = a2;
+    }
+    if (ref.name) a2.name = ref.name;
+    if (ref.hostname) a2.hostname = ref.hostname;
+    return a2;
+  }
+  target(vmId) {
+    const host = this.store.agents[vmId]?.hostname ?? null;
+    if (!host) throw new Error("This agent has no hostname yet.");
+    return { vmId, hostname: host };
+  }
+  // ---- commands ----
+  async propose(payload) {
+    const p2 = parseProposal4(payload);
+    const summary = summarize5(p2);
+    const data = { changeId: p2.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE5);
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const why = this.newAgentBind(p2);
+    if (why === null) {
+      this.log(`[llm] ${p2.provider} on new agent ${p2.agents[0].name}: applied with the agent's creation, no code`);
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: false, newAgent: true } };
+    }
+    if (p2.kind === "bind") this.log(`[llm] bind of ${p2.provider} on ${p2.agents[0]?.name ?? "?"} needs a code: ${why}`);
+    const sent = await this.codes.send(SCOPE5, p2, "your organization's model providers", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[llm] code sent for ${p2.kind} ${p2.provider} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  /**
+   * Null when this change is a new agent's first model on a credential the organisation already
+   * approved, which applies without a code; otherwise the reason it is not. Everything here is
+   * checked against what THIS firewall holds and has seen, never against what the proposal says
+   * about itself, because the exemption has to survive a control plane that lies
+   * (docs/security-design.md, "A new agent's first model").
+   *
+   * - `bind`, one agent, the main slot, nothing pushed out. Never `add` or `replace` (a new secret),
+   *   never `set_model` (the agent already has this credential), never a fallback.
+   * - The credential is on this firewall, has not failed, and is already bound to another agent
+   *   that is still in the identity map.
+   *   That binding is the approval being reused: it was confirmed with a code, or taken on first
+   *   use when nobody could be asked.
+   * - Same provider and same auth profile as that binding (`modelFamily`); only the model name may
+   *   differ, so a new agent can start on the provider's default.
+   * - The agent holds no model here and no channel connection, so nobody talks to it yet and
+   *   nothing it already answers with is changed.
+   * - This firewall saw the agent appear in its identity map less than `NEW_AGENT_WINDOW_MS` ago.
+   */
+  newAgentBind(p2) {
+    if (p2.kind !== "bind") return "not a bind";
+    const a2 = p2.agents[0];
+    if (!a2 || p2.agents.length !== 1) return "not exactly one agent";
+    if (a2.role !== "primary") return "not the main model";
+    if (p2.replaces) return "pushes another provider out";
+    const cred = this.store.credentials[p2.credentialId];
+    if (!cred) return "credential not on this firewall";
+    if (cred.failed) return "credential failed";
+    if (cred.provider !== p2.provider) return "provider does not match the stored credential";
+    const others = Object.entries(this.store.agents).filter(([vmId]) => vmId !== a2.vmId && (this.opts.isLiveAgent?.(vmId) ?? false)).flatMap(([, agent]) => agent.bindings.filter((b2) => b2.credentialId === p2.credentialId));
+    if (others.length === 0) return "no other live agent uses this credential";
+    if (!others.some((b2) => modelFamily(b2.model) === modelFamily(a2.model))) return "model is not on the provider and profile already in use";
+    if ((this.store.agents[a2.vmId]?.bindings.length ?? 0) > 0) return "agent already has a model";
+    if (this.opts.agentHasChannels?.(a2.vmId) ?? true) return "agent has a channel";
+    if (!(this.opts.isNewAgent?.(a2.vmId) ?? false)) return "agent is not new to this firewall";
+    return null;
+  }
+  async confirm(payload) {
+    const changeId = str5(payload.changeId);
+    const code = str5(payload.code) ?? "";
+    if (!changeId) throw new Error("malformed llm.confirm payload");
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE5, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize5(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str5(payload.changeId);
+    this.codes.cancel(SCOPE5, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  async push(payload) {
+    const vmId = str5(payload.vmId);
+    if (!vmId) throw new Error("malformed llm.push payload");
+    const name25 = str5(payload.name);
+    const embeddings = parseEmbeddingsRef(payload.embeddings);
+    const known = this.store.agents[vmId];
+    const fresh = !known && embeddings && this.store.credentials[embeddings.credentialId] ? this.agentOf({ vmId, name: name25 ?? vmId, hostname: str5(payload.hostname) }) : void 0;
+    const agent = known ?? fresh;
+    if (!agent) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    if (str5(payload.hostname)) agent.hostname = String(payload.hostname);
+    if (name25) agent.name = name25;
+    const refreshed = this.refreshCredential(payload.refresh);
+    const movedEmbeddings = this.applyEmbeddings(vmId, embeddings);
+    if (agent.bindings.length === 0 && !agent.embeddings && !agent.memory) {
+      if (fresh) delete this.store.agents[vmId];
+      if (known) this.save();
+      return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    }
+    this.save();
+    if (refreshed || movedEmbeddings) await this.opts.onCredentialsChanged?.();
+    const failed = await this.pushAgents([vmId], [], { timeoutMs: LLM_PUSH_TIMEOUT_MS });
+    this.log(`[llm] re-applied ${agent.bindings.length} provider(s)${agent.embeddings ? " + embeddings" : ""} on ${agent.name}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
+    return {
+      ok: failed.length === 0,
+      status: failed.length ? "failed" : "applied",
+      message: failed.map((f2) => f2.error).join("; "),
+      data: { vmId, applied: failed.length ? [] : agent.bindings.map((b2) => b2.credentialId), failed }
+    };
+  }
+  // ---- applying ----
+  /**
+   * Put the catalog data a push carries onto the credential it names. Returns whether anything
+   * changed, because the model allow-list is also what the proxy enforces.
+   *
+   * The allow-list is the reason this exists at all: the memory descriptor is useless without an
+   * allow-list that covers its embedding model, since the proxy would answer every embedding
+   * request itself and OpenClaw would report memory search as unavailable rather than falling
+   * back to keyword ranking.
+   */
+  refreshCredential(raw) {
+    const r2 = raw;
+    const credentialId = r2 ? str5(r2.credentialId) : null;
+    if (!credentialId) return false;
+    const cred = this.store.credentials[credentialId];
+    if (!cred) return false;
+    const before = JSON.stringify([cred.memory ?? null, cred.allowedModels ?? null]);
+    const allowed = parseModelList(r2.allowedModels);
+    if (allowed && cred.allowedModels) cred.allowedModels = allowed;
+    const memory = parseMemorySearch(r2.memory);
+    if (memory && cred.allowedModels && !cred.allowedModels.includes(memory.model)) {
+      this.log(`[llm] ignoring a memory descriptor for ${cred.provider}: ${memory.model} is not on this key's allow-list`);
+      delete cred.memory;
+    } else if (memory) cred.memory = memory;
+    else delete cred.memory;
+    return before !== JSON.stringify([cred.memory ?? null, cred.allowedModels ?? null]);
+  }
+  /**
+   * Memory search for one agent box: the credential that pays for its embeddings, with that
+   * credential's placeholder as the key (`memory.search.remote.apiKey` on the box, which OpenClaw
+   * keeps separate from the credential the agent answers with).
+   *
+   * A bound credential that pays out of its own endpoint comes first — an agent answering on the
+   * included tokens uses those, and nothing else is needed. Otherwise the agent's `embeddings`
+   * credential, which the control plane named on a push: that is the ChatGPT / Claude / OpenRouter
+   * case, and the case of an agent with no model at all.
+   *
+   * Three answers, not two. A descriptor writes it. `null` takes ours back off, and is sent only
+   * when this firewall has a record of writing one — otherwise the box's own `memory.search`,
+   * which somebody may have set by hand, is none of our business and the key is left out
+   * entirely. What was pushed is remembered on the agent so the next push knows which it is.
+   */
+  memoryFor(vmId, bindings) {
+    for (const b2 of bindings) {
+      const c2 = this.store.credentials[b2.credentialId];
+      if (c2?.memory) return { memory: { ...c2.memory, apiKey: c2.placeholder } };
+    }
+    const agent = this.store.agents[vmId];
+    const paid = agent?.embeddings;
+    const payer = paid ? this.store.credentials[paid.credentialId] : void 0;
+    if (paid && payer) return { memory: { ...paid.memory, apiKey: payer.placeholder } };
+    return agent?.memory ? { memory: null } : {};
+  }
+  /**
+   * Record who pays for this agent's embeddings, and put the catalog data that credential needs on
+   * it. Returns whether the proxy has to be told, because the allow-list it enforces may have
+   * moved and a new swap entry may now be owed.
+   *
+   * `undefined` means the payload said nothing (an older control plane, or a change that takes a
+   * credential away and leaves the remaining bindings to decide): the agent keeps what it has.
+   */
+  applyEmbeddings(vmId, ref) {
+    const agent = this.store.agents[vmId];
+    if (!agent || ref === void 0) return false;
+    const before = JSON.stringify(agent.embeddings ?? null);
+    const moved = () => before !== JSON.stringify(agent.embeddings ?? null);
+    if (!ref) {
+      delete agent.embeddings;
+      return moved();
+    }
+    const cred = this.store.credentials[ref.credentialId];
+    if (!cred || !ref.allowedModels?.includes(ref.memory.model)) {
+      if (cred) this.log(`[llm] ignoring an embeddings payer for ${agent.name}: ${ref.memory.model} is not on the allow-list it came with`);
+      delete agent.embeddings;
+      return moved();
+    }
+    agent.embeddings = { credentialId: ref.credentialId, memory: ref.memory, allowedModels: ref.allowedModels };
+    return moved();
+  }
+  /**
+   * Record what a box actually took, once the POST has come back. Recording it while building the
+   * body would mean a push that never landed still counted: the clear would be forgotten and the
+   * box would keep a `memory.search` block nothing was going to take off it again.
+   */
+  rememberPushed(vmId, body) {
+    const agent = this.store.agents[vmId];
+    if (!agent || !("memory" in body)) return;
+    const memory = parseMemorySearch(body.memory);
+    if (memory) agent.memory = memory;
+    else delete agent.memory;
+  }
+  /** The whole desired state of one agent box. */
+  applyBody(vmId, remove) {
+    const agent = this.store.agents[vmId];
+    const bindings = agent?.bindings ?? [];
+    const credentials = bindings.map((b2) => ({ b: b2, c: this.store.credentials[b2.credentialId] })).filter((x2) => !!x2.c).map(({ b: b2, c: c2 }) => ({
+      provider: c2.provider,
+      kind: c2.kind,
+      profileId: c2.profileId,
+      value: this.plainOnBox(c2) ? secretValue(c2.secret) : c2.placeholder,
+      model: b2.model,
+      ..."accountId" in c2.secret && c2.secret.accountId ? { codex: { accountId: c2.secret.accountId } } : {},
+      ...c2.providerBlock ? { providerBlock: c2.providerBlock } : {}
+    }));
+    const primary = bindings.find((b2) => b2.role === "primary") ?? bindings[0];
+    const fallback = bindings.find((b2) => b2 !== primary && b2.role === "secondary");
+    return { model: { primary: primary?.model ?? null, fallbacks: fallback ? [fallback.model] : [] }, credentials, remove, ...this.memoryFor(vmId, bindings) };
+  }
+  async pushAgents(vmIds, remove, call) {
+    const failed = [];
+    for (const vmId of vmIds) {
+      const body = this.applyBody(vmId, remove);
+      try {
+        await this.opts.agent.post(this.target(vmId), "/llm/apply", body, call);
+        this.rememberPushed(vmId, body);
+      } catch (err) {
+        failed.push({ vmId, error: err.message, ...isAgentTimeout(err) ? { timedOut: true } : {} });
+      }
+    }
+    this.save();
+    return failed;
+  }
+  /**
+   * Put a credential in a slot, moving whoever held it: to the slot this credential vacates (a
+   * swap) or to the free one, and dropping it when there is none — the control plane refuses the
+   * case where the main model has nowhere to go, so only a replaced fallback ever falls out.
+   */
+  setBinding(ref, credentialId) {
+    const agent = this.agentOf(ref);
+    const other = ref.role === "primary" ? "secondary" : "primary";
+    const rest = agent.bindings.filter((b2) => b2.credentialId !== credentialId);
+    const holder = rest.find((b2) => b2.role === ref.role);
+    const kept = rest.filter((b2) => b2 !== holder && b2.role === other);
+    const moved = holder && kept.length === 0 ? [{ ...holder, role: other }] : [];
+    agent.bindings = [{ credentialId, model: ref.model, role: ref.role }, ...kept, ...moved];
+  }
+  /** Take a credential off an agent. A fallback left alone moves up: it is what the agent answers with. */
+  dropBinding(vmId, credentialId) {
+    const agent = this.store.agents[vmId];
+    if (!agent) return;
+    agent.bindings = agent.bindings.filter((b2) => b2.credentialId !== credentialId);
+    if (agent.bindings.length && !agent.bindings.some((b2) => b2.role === "primary")) agent.bindings[0].role = "primary";
+  }
+  boundAgents(credentialId) {
+    return Object.entries(this.store.agents).filter(([, a2]) => a2.bindings.some((b2) => b2.credentialId === credentialId)).map(([vmId]) => vmId);
+  }
+  /** Agents this credential pays the embeddings for without being one of their models. */
+  embeddingsAgents(credentialId) {
+    return Object.entries(this.store.agents).filter(([, a2]) => a2.embeddings?.credentialId === credentialId).map(([vmId]) => vmId);
+  }
+  async apply(p2) {
+    const mode = this.opts.plainKeys && p2.credKind !== "oauth" && !p2.allowedModels ? "plain" : "placeholder";
+    const existing = this.store.credentials[p2.credentialId];
+    switch (p2.kind) {
+      case "add":
+      case "replace": {
+        if (!p2.secret) throw new Error("no secret in the proposal");
+        if (!p2.placeholder || !p2.profileId || !p2.swap || !p2.credKind) throw new Error("the proposal is missing the placeholder, profile id or swap location");
+        if (p2.credKind === "oauth" && !p2.oauth) throw new Error("an OAuth credential needs its token endpoint");
+        this.store.credentials[p2.credentialId] = {
+          provider: p2.provider,
+          kind: p2.credKind,
+          placeholder: p2.placeholder,
+          hint: p2.hint,
+          label: p2.label,
+          profileId: p2.profileId,
+          swap: p2.swap,
+          ...p2.oauth ? { oauth: p2.oauth } : {},
+          ...p2.providerBlock ? { providerBlock: p2.providerBlock } : {},
+          ...p2.allowedModels ? { allowedModels: p2.allowedModels } : {},
+          ...p2.memory ? { memory: p2.memory } : {},
+          secret: p2.secret,
+          failed: null,
+          updatedAt: new Date(this.now()).toISOString()
+        };
+        for (const a2 of p2.agents) this.setBinding(a2, p2.credentialId);
+        const targets = /* @__PURE__ */ new Set([...this.boundAgents(p2.credentialId), ...p2.agents.map((a2) => a2.vmId)]);
+        for (const a2 of p2.agents) this.applyEmbeddings(a2.vmId, a2.embeddings);
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const failed = await this.pushAgents([...targets], []);
+        return { mode, applied: [...targets].filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
+      }
+      case "remove": {
+        const bound = this.boundAgents(p2.credentialId);
+        const payees = this.embeddingsAgents(p2.credentialId);
+        const remove = existing ? [removeEntry(existing)] : [];
+        for (const vmId of bound) this.dropBinding(vmId, p2.credentialId);
+        for (const vmId of payees) delete this.store.agents[vmId]?.embeddings;
+        delete this.store.credentials[p2.credentialId];
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const targets = [.../* @__PURE__ */ new Set([...bound, ...payees])];
+        const failed = await this.pushAgents(targets, remove);
+        return { applied: targets.filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
+      }
+      case "bind":
+      case "set_model": {
+        if (!existing) throw new Error("This provider is not set up on the firewall. Add it again.");
+        const a2 = p2.agents[0];
+        if (!a2) throw new Error("no agent in the proposal");
+        this.setBinding(a2, p2.credentialId);
+        this.applyEmbeddings(a2.vmId, a2.embeddings);
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const failed = await this.pushAgents([a2.vmId], []);
+        return { mode, applied: failed.length ? [] : [a2.vmId], failed };
+      }
+      case "unbind": {
+        const a2 = p2.agents[0];
+        if (!a2) throw new Error("no agent in the proposal");
+        this.dropBinding(a2.vmId, p2.credentialId);
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+        const remove = existing ? [removeEntry(existing)] : [];
+        const failed = await this.pushAgents([a2.vmId], remove);
+        return { applied: failed.length ? [] : [a2.vmId], failed };
+      }
+    }
+  }
+  // ---- OAuth refresh ----
+  /** Refresh every OAuth credential that expires within REFRESH_AHEAD_MS. Called on a timer. */
+  async refreshDue() {
+    if (this.refreshing) return;
+    this.refreshing = true;
+    try {
+      let changed = false;
+      for (const [id, c2] of Object.entries(this.store.credentials)) {
+        if (c2.kind !== "oauth" || !c2.oauth || !("refresh" in c2.secret) || c2.failed) continue;
+        if (c2.secret.expires - this.now() > REFRESH_AHEAD_MS) continue;
+        const r2 = await this.refreshOne(id, c2);
+        if (r2) changed = true;
+      }
+      if (changed) {
+        this.save();
+        await this.opts.onCredentialsChanged?.();
+      }
+    } finally {
+      this.refreshing = false;
+    }
+  }
+  async refreshOne(id, c2) {
+    if (!c2.oauth || !("refresh" in c2.secret)) return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
+    try {
+      const res = await this.fetchImpl(c2.oauth.tokenEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+        // `client_secret` only when the provider needs one: a PKCE client refuses a refresh that
+        // carries one, and Google refuses one that does not.
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: c2.secret.refresh,
+          client_id: c2.oauth.clientId,
+          ...c2.oauth.clientSecret ? { client_secret: c2.oauth.clientSecret } : {}
+        }).toString(),
+        signal: controller.signal
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || typeof body.access_token !== "string") {
+        const reason = str5(body.error_description) ?? str5(body.error) ?? `HTTP ${res.status}`;
+        if (res.status >= 400 && res.status < 500) {
+          c2.failed = `Token refresh refused: ${reason}. Connect the account again.`;
+          this.reports.push({ command_id: `llm.refresh:${id}`, ok: false, status: "failed", message: c2.failed, data: { credentialId: id } });
+          this.log(`[llm] refresh of ${c2.provider} refused: ${reason}`);
+          return true;
+        }
+        this.log(`[llm] refresh of ${c2.provider} failed (${reason}); will retry`);
+        return false;
+      }
+      const expiresIn = typeof body.expires_in === "number" ? body.expires_in : 3600;
+      c2.secret = {
+        ...c2.secret,
+        access: body.access_token,
+        refresh: typeof body.refresh_token === "string" && body.refresh_token ? body.refresh_token : c2.secret.refresh,
+        expires: this.now() + expiresIn * 1e3
+      };
+      c2.updatedAt = new Date(this.now()).toISOString();
+      this.log(`[llm] refreshed ${c2.provider} token (expires in ${Math.round(expiresIn / 60)} min)`);
+      return true;
+    } catch (err) {
+      this.log(`[llm] refresh of ${c2.provider} errored (${err.message}); will retry`);
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+};
+
+// src/search-store.ts
+function aad7(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:search`;
+}
+function emptySearchStore() {
+  return { version: 1, credentialId: null, credential: null, agents: {} };
+}
+function loadSearchStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("search", path, boxKeyB64, aad7(ids2));
+  return parsed && parsed.version === 1 && parsed.agents ? parsed : emptySearchStore();
+}
+function saveSearchStore(path, store, boxKeyB64, ids2) {
+  saveStore("search", path, store, boxKeyB64, aad7(ids2));
+}
+
+// src/search.ts
+var SCOPE6 = "org";
+function str6(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function isKind5(v2) {
+  return v2 === "add" || v2 === "replace" || v2 === "remove";
+}
+function summarize6(p2) {
+  switch (p2.kind) {
+    case "add":
+      return `Use ${p2.providerName} for web search (key ${p2.hint ?? "key"})`;
+    case "replace":
+      return p2.replaces ? `Switch web search from ${p2.replaces} to ${p2.providerName} (key ${p2.hint ?? "new key"})` : `Replace the ${p2.providerName} web search key (${p2.hint ?? "new key"})`;
+    case "remove":
+      return `Stop using ${p2.providerName} for web search`;
+  }
+}
+function parseConfig(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const out = {};
+  for (const [k2, v2] of Object.entries(raw)) if (typeof v2 === "string") out[k2] = v2;
+  return Object.keys(out).length ? out : null;
+}
+function parseProposal5(payload) {
+  const changeId = str6(payload.changeId);
+  const credentialId = str6(payload.credentialId);
+  const provider = str6(payload.provider);
+  if (!changeId || !credentialId || !provider || !isKind5(payload.kind)) throw new Error("malformed search.propose payload");
+  const swap = payload.swap;
+  const plugin = payload.plugin;
+  const agents = Array.isArray(payload.agents) ? payload.agents : [];
+  const remove = Array.isArray(payload.remove) ? payload.remove : [];
+  const secret = payload.secret;
+  return {
+    changeId,
+    kind: payload.kind,
+    credentialId,
+    provider,
+    providerName: str6(payload.providerName) ?? provider,
+    placeholder: str6(payload.placeholder),
+    hint: str6(payload.hint),
+    plugin: plugin && str6(plugin.id) && str6(plugin.package) ? { id: String(plugin.id), package: String(plugin.package) } : null,
+    baseUrl: str6(payload.baseUrl),
+    config: parseConfig(payload.config),
+    swap: swap && str6(swap.matchDomain) && Array.isArray(swap.locations) ? { matchDomain: String(swap.matchDomain), locations: swap.locations.map(String) } : null,
+    defaultProvider: str6(payload.defaultProvider),
+    replaces: str6(payload.replaces),
+    remove: remove.filter((r2) => str6(r2.id)).map((r2) => ({ id: String(r2.id) })),
+    agents: agents.filter((a2) => str6(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str6(a2.name) ?? String(a2.vmId), hostname: str6(a2.hostname) })),
+    ...secret && str6(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {}
+  };
+}
+var SearchFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadSearchStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  handlers() {
+    return {
+      "search.propose": (p2) => this.propose(p2),
+      "search.confirm": (p2) => this.confirm(p2),
+      "search.cancel": (p2) => this.cancel(p2),
+      "search.push": (p2) => this.push(p2),
+      "search.forget": (p2) => this.forget(p2)
+    };
+  }
+  /**
+   * The proxy credential entry for the search key: one entry, org-wide, scoped to the provider's
+   * own host, so a leaked placeholder cannot carry the key anywhere else.
+   */
+  credentials() {
+    const c2 = this.store.credential;
+    if (!c2 || this.opts.plainKeys) return [];
+    return [{ placeholder: c2.placeholder, match_domain: c2.swap.matchDomain, secret: c2.apiKey, locations: c2.swap.locations }];
+  }
+  /** What the console may see: no key. */
+  summary() {
+    return {
+      provider: this.store.credential?.provider ?? null,
+      credentialId: this.store.credentialId,
+      hint: this.store.credential?.hint ?? null,
+      agents: Object.keys(this.store.agents).length
+    };
+  }
+  save() {
+    saveSearchStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  remember(ref) {
+    const a2 = this.store.agents[ref.vmId] ?? { name: ref.name, hostname: ref.hostname };
+    if (ref.name) a2.name = ref.name;
+    if (ref.hostname) a2.hostname = ref.hostname;
+    this.store.agents[ref.vmId] = a2;
+  }
+  target(vmId) {
+    const host = this.store.agents[vmId]?.hostname ?? null;
+    if (!host) throw new Error("This agent has no hostname yet.");
+    return { vmId, hostname: host };
+  }
+  // ---- commands ----
+  async propose(payload) {
+    const p2 = parseProposal5(payload);
+    const summary = summarize6(p2);
+    const data = { changeId: p2.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE6);
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE6, p2, "your organization's web search", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[search] code sent for ${p2.kind} ${p2.provider} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str6(payload.changeId);
+    const code = str6(payload.code) ?? "";
+    if (!changeId) throw new Error("malformed search.confirm payload");
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE6, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize6(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str6(payload.changeId);
+    this.codes.cancel(SCOPE6, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  async push(payload) {
+    const vmId = str6(payload.vmId);
+    if (!vmId) throw new Error("malformed search.push payload");
+    if (!this.store.credential) return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
+    this.remember({ vmId, name: str6(payload.name) ?? vmId, hostname: str6(payload.hostname) });
+    this.save();
+    const failed = await this.pushAgents([vmId], [], this.store.credential.defaultProvider);
+    this.log(`[search] re-applied ${this.store.credential.provider} on ${this.store.agents[vmId]?.name ?? vmId}${failed.length ? ` (failed: ${failed[0].error})` : ""}`);
+    return {
+      ok: failed.length === 0,
+      status: failed.length ? "failed" : "applied",
+      message: failed.map((f2) => f2.error).join("; "),
+      data: { vmId, provider: this.store.credential.provider, applied: failed.length ? [] : [vmId], failed }
+    };
+  }
+  /**
+   * An agent was deleted. Without this the box stays in the store for good, every later change
+   * pushes to a hostname that no longer answers, and the console shows it as "not applied" for a
+   * machine that does not exist. Takes nothing away from anyone, so no code is asked for.
+   */
+  async forget(payload) {
+    const vmId = str6(payload.vmId);
+    if (!vmId) throw new Error("malformed search.forget payload");
+    const had = !!this.store.agents[vmId];
+    if (had) {
+      delete this.store.agents[vmId];
+      this.save();
+    }
+    this.log(`[search] ${had ? "forgot" : "did not hold"} ${vmId}`);
+    return { ok: true, status: "applied", data: { vmId, forgotten: had } };
+  }
+  // ---- applying ----
+  /**
+   * The whole desired state of one agent box. `remove` names plugin entries the box should clear
+   * (the provider being switched away from); `defaultProvider` is what it goes back to when
+   * `search` is null. Both travel explicitly because the credential that held them may be gone.
+   */
+  applyBody(remove, defaultProvider) {
+    const c2 = this.store.credential;
+    return {
+      search: c2 ? {
+        provider: c2.provider,
+        plugin: c2.plugin,
+        baseUrl: c2.baseUrl,
+        ...c2.config ? { config: c2.config } : {},
+        apiKey: this.opts.plainKeys ? c2.apiKey : c2.placeholder
+      } : null,
+      defaultProvider,
+      remove
+    };
+  }
+  async pushAgents(vmIds, remove, defaultProvider) {
+    const failed = [];
+    const body = this.applyBody(remove, defaultProvider);
+    for (const vmId of vmIds) {
+      try {
+        await this.opts.agent.post(this.target(vmId), "/search/apply", body);
+      } catch (err) {
+        failed.push({ vmId, error: err.message });
+      }
+    }
+    return failed;
+  }
+  async apply(p2) {
+    for (const a2 of p2.agents) this.remember(a2);
+    if (p2.kind === "remove") {
+      const previous = this.store.credential;
+      const remove = previous ? [{ id: previous.plugin.id }] : p2.remove;
+      const defaultProvider = previous?.defaultProvider ?? p2.defaultProvider;
+      this.store.credential = null;
+      this.store.credentialId = null;
+      this.save();
+      await this.opts.onCredentialsChanged?.();
+      const vmIds2 = Object.keys(this.store.agents);
+      const failed2 = await this.pushAgents(vmIds2, remove, defaultProvider);
+      return { provider: previous?.provider ?? p2.provider, applied: vmIds2.filter((v2) => !failed2.some((f2) => f2.vmId === v2)), failed: failed2 };
+    }
+    if (!p2.apiKey) throw new Error("no key in the proposal");
+    if (!p2.placeholder || !p2.plugin || !p2.baseUrl || !p2.swap) throw new Error("the proposal is missing the placeholder, plugin, base URL or swap location");
+    const previousPlugin = this.store.credential && this.store.credential.plugin.id !== p2.plugin.id ? [{ id: this.store.credential.plugin.id }] : [];
+    const credential = {
+      provider: p2.provider,
+      hint: p2.hint,
+      placeholder: p2.placeholder,
+      plugin: p2.plugin,
+      baseUrl: p2.baseUrl,
+      config: p2.config,
+      swap: p2.swap,
+      defaultProvider: p2.defaultProvider,
+      apiKey: p2.apiKey,
+      updatedAt: new Date(this.now()).toISOString()
+    };
+    this.store.credential = credential;
+    this.store.credentialId = p2.credentialId;
+    this.save();
+    await this.opts.onCredentialsChanged?.();
+    const vmIds = Object.keys(this.store.agents);
+    const failed = await this.pushAgents(vmIds, [...previousPlugin, ...p2.remove], p2.defaultProvider);
+    return { mode: this.opts.plainKeys ? "plain" : "placeholder", provider: p2.provider, applied: vmIds.filter((v2) => !failed.some((f2) => f2.vmId === v2)), failed };
+  }
+};
+
+// src/tailscale-store.ts
+function aad8(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:tailscale`;
+}
+function emptyTailscaleStore() {
+  return { version: 1, agents: {} };
+}
+function loadTailscaleStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("tailscale", path, boxKeyB64, aad8(ids2));
+  return parsed && parsed.version === 1 && parsed.agents ? parsed : emptyTailscaleStore();
+}
+function saveTailscaleStore(path, store, boxKeyB64, ids2) {
+  saveStore("tailscale", path, store, boxKeyB64, aad8(ids2));
+}
+
+// src/tailscale.ts
+var SCOPE_PREFIX = "tailscale:";
+function str7(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function summarize7(p2) {
+  return p2.kind === "join" ? `Put ${p2.agent.name} on your Tailscale network${p2.ssh ? ", with Tailscale SSH" : ""}` : `Take ${p2.agent.name} off your Tailscale network`;
+}
+function parseProposal6(payload) {
+  const changeId = str7(payload.changeId);
+  const kind = payload.kind === "leave" ? "leave" : payload.kind === "join" ? "join" : null;
+  const agent = payload.agent ?? {};
+  const vmId = str7(agent.vmId);
+  const hostname3 = str7(agent.hostname);
+  if (!changeId || !kind || !vmId || !hostname3) throw new Error("malformed tailscale.propose payload");
+  const authKey = str7(payload.authKey);
+  if (kind === "join" && !authKey) throw new Error("a join needs an auth key");
+  return {
+    changeId,
+    kind,
+    ssh: payload.ssh === true,
+    agent: { vmId, name: str7(agent.name) ?? vmId, hostname: hostname3, tailnetHostname: str7(agent.tailnetHostname) ?? str7(agent.name) ?? vmId },
+    ...authKey ? { authKey } : {}
+  };
+}
+var TailscaleFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
+    this.store = loadTailscaleStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  handlers() {
+    return {
+      "tailscale.propose": (p2) => this.propose(p2),
+      "tailscale.confirm": (p2) => this.confirm(p2),
+      "tailscale.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /**
+   * The agent boxes allowed to reach Tailscale's control plane and its relays through the proxy.
+   * Decided HERE and not by the control plane: it is the firewall that took the person's
+   * confirmation, so it is the firewall that says which box the hole is for.
+   */
+  enabledVmIds() {
+    return Object.keys(this.store.agents);
+  }
+  /** What the console may see: no key, because there is none. */
+  summary() {
+    return Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, ssh: a2.ssh, node: a2.node }));
+  }
+  save() {
+    saveTailscaleStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  /** One pending change per box, not per org: two agents can join at once. */
+  scope(vmId) {
+    return `${SCOPE_PREFIX}${vmId}`;
+  }
+  target(p2) {
+    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
+  }
+  async apply(p2) {
+    if (p2.kind === "leave") {
+      await this.opts.agent.post(this.target(p2), "/tailscale/logout", {});
+      delete this.store.agents[p2.agent.vmId];
+      this.save();
+      await this.opts.onEnabledChanged?.();
+      this.log(`[tailscale] ${p2.agent.name} left the tailnet`);
+      return { vmId: p2.agent.vmId, ssh: false, node: null };
+    }
+    const entry = {
+      name: p2.agent.name,
+      hostname: p2.agent.hostname,
+      ssh: p2.ssh,
+      node: null,
+      joinedAt: new Date(this.opts.now?.() ?? Date.now()).toISOString()
+    };
+    this.store.agents[p2.agent.vmId] = entry;
+    this.save();
+    await this.opts.onEnabledChanged?.();
+    let r2;
+    try {
+      r2 = await this.opts.agent.post(this.target(p2), "/tailscale/apply", {
+        authKey: p2.authKey,
+        ssh: p2.ssh,
+        hostname: p2.agent.tailnetHostname
+      });
+    } catch (err) {
+      await this.opts.agent.post(this.target(p2), "/tailscale/logout", {}).catch(() => void 0);
+      delete this.store.agents[p2.agent.vmId];
+      this.save();
+      await this.opts.onEnabledChanged?.();
+      throw err;
+    }
+    const node2 = r2.node ?? {};
+    entry.node = { name: str7(node2.name), ip: str7(node2.ip) };
+    entry.ssh = r2.ssh === true;
+    this.save();
+    this.log(`[tailscale] ${p2.agent.name} joined as ${entry.node.name ?? entry.node.ip ?? "an unnamed node"} (ssh ${entry.ssh ? "on" : "off"})`);
+    return { vmId: p2.agent.vmId, ssh: entry.ssh, node: entry.node };
+  }
+  async propose(payload) {
+    const p2 = parseProposal6(payload);
+    const summary = summarize7(p2);
+    const data = { changeId: p2.changeId, summary };
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(this.scope(p2.agent.vmId));
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(this.scope(p2.agent.vmId), p2, p2.agent.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[tailscale] code sent for ${p2.kind} on ${p2.agent.name} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str7(payload.changeId);
+    const vmId = str7(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed tailscale.confirm payload");
+    const code = str7(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(this.scope(vmId), changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize7(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str7(payload.changeId);
+    const vmId = str7(payload.vmId);
+    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/mac-devices.ts
+var SCOPE_PREFIX2 = "devices:";
+function str8(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function summarize8(p2) {
+  const what = p2.targetLabel ?? "an unnamed device";
+  switch (p2.kind) {
+    case "approve":
+      return `Let ${what} control ${p2.agent.name}`;
+    case "reject":
+      return `Refuse ${what} access to ${p2.agent.name}`;
+    case "remove":
+      return `Cut ${what} off from ${p2.agent.name}`;
+  }
+}
+function parseProposal7(payload) {
+  const changeId = str8(payload.changeId);
+  const kind = payload.kind === "approve" || payload.kind === "reject" || payload.kind === "remove" ? payload.kind : null;
+  const targetId = str8(payload.targetId);
+  const agent = payload.agent ?? {};
+  const vmId = str8(agent.vmId);
+  const hostname3 = str8(agent.hostname);
+  if (!changeId || !kind || !targetId || !vmId || !hostname3) throw new Error("malformed devices.propose payload");
+  return {
+    changeId,
+    kind,
+    targetId,
+    targetLabel: str8(payload.targetLabel),
+    agent: { vmId, name: str8(agent.name) ?? vmId, hostname: hostname3 }
+  };
+}
+var DevicesFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
+  }
+  codes;
+  log;
+  handlers() {
+    return {
+      "devices.propose": (p2) => this.propose(p2),
+      "devices.confirm": (p2) => this.confirm(p2),
+      "devices.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /** One pending change per box, not per org: two agents can be dealt with at once. */
+  scope(vmId) {
+    return `${SCOPE_PREFIX2}${vmId}`;
+  }
+  target(p2) {
+    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
+  }
+  async apply(p2) {
+    const path = p2.kind === "approve" ? "/devices/approve" : p2.kind === "reject" ? "/devices/reject" : "/devices/remove";
+    const body = p2.kind === "remove" ? { deviceId: p2.targetId } : { requestId: p2.targetId };
+    const r2 = await this.opts.agent.post(this.target(p2), path, body, { timeoutMs: DEVICE_APPROVE_MS });
+    this.log(`[devices] ${p2.kind} ${p2.targetId} on ${p2.agent.name}`);
+    return { vmId: p2.agent.vmId, targetId: p2.targetId, deviceId: str8(r2.deviceId) };
+  }
+  async propose(payload) {
+    const p2 = parseProposal7(payload);
+    const summary = summarize8(p2);
+    const data = { changeId: p2.changeId, summary };
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(this.scope(p2.agent.vmId));
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(this.scope(p2.agent.vmId), p2, p2.agent.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[devices] code sent for ${p2.kind} on ${p2.agent.name} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str8(payload.changeId);
+    const vmId = str8(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed devices.confirm payload");
+    const code = str8(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(this.scope(vmId), changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize8(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str8(payload.changeId);
+    const vmId = str8(payload.vmId);
+    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/kill-store.ts
+function aad9(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:kill`;
+}
+function emptyKillStore() {
+  return { version: 1, org: null, agents: {}, codeWindow: null };
+}
+function loadKillStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("kill", path, boxKeyB64, aad9(ids2));
+  if (!parsed || parsed.version !== 1 || !parsed.agents) return emptyKillStore();
+  return { version: 1, org: parsed.org ?? null, agents: parsed.agents, codeWindow: parsed.codeWindow ?? null };
+}
+function saveKillStore(path, store, boxKeyB64, ids2) {
+  saveStore("kill", path, store, boxKeyB64, aad9(ids2));
+}
+
+// src/kill.ts
+var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var SCOPE_ORG = "kill:org";
+var SCOPE_PREFIX3 = "kill:agent:";
+var KILL_RECONCILE_MS = 6e4;
+function str9(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function parseAgents3(payload) {
+  const raw = Array.isArray(payload.agents) ? payload.agents : [];
+  const out = [];
+  for (const a2 of raw) {
+    const vmId = str9(a2.vmId);
+    const hostname3 = str9(a2.hostname);
+    if (!vmId || !hostname3) continue;
+    out.push({ vmId, name: str9(a2.name) ?? vmId, hostname: hostname3 });
+  }
+  return out;
+}
+function summarize9(p2) {
+  const name25 = p2.scope === "agent" ? p2.agents.find((a2) => a2.vmId === p2.vmId)?.name ?? "this agent" : null;
+  if (p2.kind === "engage") {
+    return name25 ? `Emergency stop on ${name25}` : "Emergency stop on every agent";
+  }
+  return name25 ? `Lift the emergency stop on ${name25}` : "Lift the emergency stop on every agent";
+}
+function parseProposal8(payload, kind) {
+  const changeId = str9(payload.changeId);
+  const scope = payload.scope === "agent" ? "agent" : payload.scope === "org" ? "org" : "org";
+  const vmId = str9(payload.vmId);
+  if (!changeId) throw new Error(`malformed kill.${kind} payload`);
+  if (payload.scope !== "org" && payload.scope !== "agent") throw new Error(`malformed kill.${kind} payload`);
+  if (scope === "agent" && !vmId) throw new Error("an agent-scoped emergency stop has to name the agent");
+  return { changeId, kind, scope, vmId: scope === "agent" ? vmId : null, agents: parseAgents3(payload) };
+}
+var KillFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
+    this.store = loadKillStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  /** The last `agents` a command carried, so the reconcile has hostnames to call. */
+  known = /* @__PURE__ */ new Map();
+  handlers() {
+    return {
+      "kill.engage": (p2) => this.engage(p2),
+      "kill.release": (p2) => this.release(p2),
+      "kill.confirm": (p2) => this.confirm(p2),
+      "kill.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /** True while the whole organisation is stopped. */
+  orgStopped() {
+    return this.store.org !== null;
+  }
+  /**
+   * Which of the boxes in the identity map are cut off. Computed against the map rather than
+   * against a stored list, so an agent provisioned during an org-wide stop is locked the moment
+   * the firewall learns about it — which is the point of keeping `org` as a flag.
+   */
+  lockedVmIds(identityVmIds) {
+    if (this.store.org) return [.../* @__PURE__ */ new Set([...identityVmIds, ...Object.keys(this.store.agents)])];
+    return Object.keys(this.store.agents);
+  }
+  /**
+   * The open code window, as `{ vmId: untilEpochSeconds }` for the identity map. Empty when there
+   * is none, and empty again the moment it lapses — the proxy checks the deadline itself, but a
+   * config that still carries a dead window is a config that says something untrue.
+   */
+  codeWindows() {
+    const w2 = this.store.codeWindow;
+    if (!w2) return {};
+    if (w2.until * 1e3 <= (this.opts.now?.() ?? Date.now())) return {};
+    return { [w2.vmId]: w2.until };
+  }
+  /** What the console may see: who is stopped, since when, and how. */
+  summary() {
+    return {
+      org: this.store.org ? { at: this.store.org.at } : null,
+      agents: Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, source: a2.source, at: a2.at }))
+    };
+  }
+  /**
+   * Re-apply the stop to every locked box we know a hostname for. Runs on a timer, so a box that
+   * rebooted and started OpenClaw again is stopped within the minute — without the control plane
+   * being involved, reachable or correct.
+   *
+   * Only stops what is running: `GET /kill/status` first, so a settled emergency costs one small
+   * request per locked box per minute and writes nothing to the box's journal.
+   */
+  async reconcile(identityVmIds) {
+    const locked = new Set(this.lockedVmIds(identityVmIds));
+    if (locked.size === 0) return;
+    const windows = this.codeWindows();
+    for (const vmId of locked) {
+      if (windows[vmId]) continue;
+      const ref = this.known.get(vmId);
+      if (!ref) continue;
+      try {
+        const status = await this.opts.agent.get({ vmId, hostname: ref.hostname }, "/kill/status");
+        if (status.active !== true) continue;
+        this.log(`[kill] ${ref.name} came back running under an emergency stop; stopping it again`);
+        await this.opts.agent.post({ vmId, hostname: ref.hostname }, "/kill/apply", { locked: true });
+      } catch (err) {
+        this.log(`[kill] could not re-check ${ref.name}: ${err.message}`);
+      }
+    }
+  }
+  note(agents) {
+    for (const a2 of agents) this.known.set(a2.vmId, a2);
+  }
+  save() {
+    saveKillStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  scopeKey(p2) {
+    return p2.scope === "org" ? SCOPE_ORG : `${SCOPE_PREFIX3}${p2.vmId}`;
+  }
+  /** The boxes a proposal is about: one, or every one the control plane named. */
+  targets(p2) {
+    if (p2.scope === "agent") {
+      const known = this.known.get(p2.vmId);
+      return p2.agents.filter((a2) => a2.vmId === p2.vmId).concat(known && !p2.agents.some((a2) => a2.vmId === p2.vmId) ? [known] : []);
+    }
+    return p2.agents;
+  }
+  /** Ask a box whether OpenClaw is running. Unknown counts as running: a release then starts it. */
+  async wasRunning(ref) {
+    try {
+      const status = await this.opts.agent.get({ vmId: ref.vmId, hostname: ref.hostname }, "/kill/status");
+      return status.active === true;
+    } catch {
+      return true;
+    }
+  }
+  /**
+   * Let ONE agent carry a code out of a locked organisation: the proxy opens its channel hosts for
+   * the life of the code, and OpenClaw is started so there is something to send it. See
+   * `KillCodeWindow` for why this exists at all.
+   */
+  async openCodeWindow(ref) {
+    const until = Math.ceil(((this.opts.now?.() ?? Date.now()) + CODE_TTL_MS) / 1e3);
+    this.store.codeWindow = { vmId: ref.vmId, until };
+    this.save();
+    await this.opts.onLockedChanged();
+    await this.setOpenClaw(ref, false);
+    this.log(`[kill] ${ref.name} may reach its channel for ten minutes, to carry the code`);
+  }
+  /** Shut it again, and stop OpenClaw if that agent is still under the stop. */
+  async closeCodeWindow() {
+    const w2 = this.store.codeWindow;
+    if (!w2) return;
+    this.store.codeWindow = null;
+    this.save();
+    const stillLocked = this.store.org !== null || this.store.agents[w2.vmId] !== void 0;
+    const ref = this.known.get(w2.vmId);
+    if (stillLocked && ref) await this.setOpenClaw(ref, true);
+    await this.opts.onLockedChanged();
+    this.log("[kill] the code window is closed");
+  }
+  async setOpenClaw(ref, locked) {
+    try {
+      const r2 = await this.opts.agent.post({ vmId: ref.vmId, hostname: ref.hostname }, "/kill/apply", { locked });
+      const active = r2.active === true;
+      return { vmId: ref.vmId, name: ref.name, stopped: !active, error: r2.ok === true ? null : str9(r2.message) ?? "the box could not change the service" };
+    } catch (err) {
+      return { vmId: ref.vmId, name: ref.name, stopped: false, error: err.message.slice(0, 200) };
+    }
+  }
+  /**
+   * Cut the agents off, then stop OpenClaw on them.
+   *
+   * The order is the whole safety argument. The store is written and the proxy config rebuilt
+   * FIRST, so egress is dead before anything that can fail is attempted; a crash between the two
+   * halves leaves an organisation locked out of the internet with its agents still running, which
+   * is the safe side of that line. Doing it the other way round would leave a window where a box
+   * had been told to stop and could still reach anything it liked on the way down.
+   */
+  async applyEngage(p2) {
+    const targets = this.targets(p2);
+    this.note(p2.agents);
+    const at2 = new Date(this.opts.now?.() ?? Date.now()).toISOString();
+    const running = /* @__PURE__ */ new Map();
+    for (const ref of targets) running.set(ref.vmId, await this.wasRunning(ref));
+    if (p2.scope === "org") {
+      this.store.org = { at: at2, wasRunning: Object.fromEntries(running) };
+    } else {
+      const ref = targets[0];
+      this.store.agents[p2.vmId] = { name: ref?.name ?? p2.vmId, source: "agent", wasRunning: running.get(p2.vmId) ?? true, at: at2 };
+    }
+    this.save();
+    await this.opts.onLockedChanged();
+    this.log(`[kill] ${summarize9(p2)} \u2014 egress is cut off`);
+    const outcomes = [];
+    for (const ref of targets) outcomes.push(await this.setOpenClaw(ref, true));
+    const failed = outcomes.filter((o2) => o2.error);
+    if (failed.length) this.log(`[kill] ${failed.length} box(es) did not confirm OpenClaw stopped: ${failed.map((f2) => `${f2.name} (${f2.error})`).join(", ")}`);
+    return { scope: p2.scope, vmId: p2.vmId, at: at2, agents: outcomes };
+  }
+  /**
+   * Put it back: OpenClaw first for the boxes that were running, then the lockdown comes off.
+   *
+   * The mirror of `applyEngage`, and for the mirror reason — a crash part-way leaves the agents
+   * still cut off rather than out on the internet before anybody meant them to be.
+   */
+  async applyRelease(p2) {
+    const targets = this.targets(p2);
+    this.note(p2.agents);
+    const wasRunning = (vmId) => p2.scope === "org" ? this.store.org?.wasRunning[vmId] ?? true : this.store.agents[vmId]?.wasRunning ?? true;
+    const stillLocked = p2.scope === "agent" && this.store.org !== null;
+    const outcomes = [];
+    for (const ref of targets) {
+      if (p2.scope === "org" && this.store.agents[ref.vmId]) continue;
+      if (stillLocked || !wasRunning(ref.vmId)) {
+        outcomes.push({ vmId: ref.vmId, name: ref.name, stopped: true, error: null });
+        continue;
+      }
+      outcomes.push(await this.setOpenClaw(ref, false));
+    }
+    if (p2.scope === "org") this.store.org = null;
+    else delete this.store.agents[p2.vmId];
+    this.save();
+    await this.opts.onLockedChanged();
+    this.log(stillLocked ? `[kill] ${summarize9(p2)}, but the whole organisation is still stopped, so it stays cut off` : `[kill] ${summarize9(p2)} \u2014 the agents are back`);
+    return { scope: p2.scope, vmId: p2.vmId, stillLocked, agents: outcomes };
+  }
+  /** Engaging restricts and nothing else, so it applies at once. No code, ever. */
+  async engage(payload) {
+    const p2 = parseProposal8(payload, "engage");
+    this.codes.drop(this.scopeKey(p2));
+    await this.closeCodeWindow();
+    const applied = await this.applyEngage(p2);
+    return { ok: true, status: "applied", data: { changeId: p2.changeId, summary: summarize9(p2), ...applied } };
+  }
+  async release(payload) {
+    const p2 = parseProposal8(payload, "release");
+    const summary = summarize9(p2);
+    const data = { changeId: p2.changeId, summary, scope: p2.scope, vmId: p2.vmId };
+    this.note(p2.agents);
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(this.scopeKey(p2));
+      const applied = await this.applyRelease(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const agentName = p2.scope === "agent" ? this.targets(p2)[0]?.name ?? "your agent" : "your agents";
+    const key = this.scopeKey(p2);
+    const locked = new Set(this.lockedVmIds(p2.agents.map((a2) => a2.vmId)));
+    const ordered = [...routes].sort((a2, b2) => Number(locked.has(a2.target.vmId)) - Number(locked.has(b2.target.vmId)));
+    let sent = { ok: false, message: "No approved channel could be reached." };
+    const now2 = () => this.opts.now?.() ?? Date.now();
+    const waitUntil = now2() + KILL_WINDOW_SEND_MS;
+    for (const route of ordered) {
+      const dev = route.senders.some((x2) => x2 === DEV_SENDER);
+      const needsWindow = !dev && locked.has(route.target.vmId);
+      if (needsWindow) {
+        const ref = this.known.get(route.target.vmId) ?? p2.agents.find((a2) => a2.vmId === route.target.vmId);
+        if (!ref) continue;
+        await this.openCodeWindow(ref);
+      }
+      sent = await this.codes.send(key, p2, agentName, summary, [route]);
+      while (needsWindow && !sent.ok && /not running/i.test(sent.message) && now2() + KILL_WINDOW_RETRY_MS <= waitUntil) {
+        await (this.opts.sleep ?? sleep2)(KILL_WINDOW_RETRY_MS);
+        sent = await this.codes.send(key, p2, agentName, summary, [route]);
+      }
+      if (sent.ok) break;
+      if (needsWindow) await this.closeCodeWindow();
+    }
+    if (!sent.ok) {
+      return {
+        ok: false,
+        status: "failed",
+        message: sent.message,
+        data
+      };
+    }
+    this.log(`[kill] code sent to lift the emergency stop via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str9(payload.changeId);
+    if (!changeId) throw new Error("malformed kill.confirm payload");
+    const scope = payload.scope === "agent" ? "agent" : "org";
+    const vmId = str9(payload.vmId);
+    if (scope === "agent" && !vmId) throw new Error("malformed kill.confirm payload");
+    const key = this.scopeKey({ scope, vmId });
+    const data = { changeId, scope, vmId };
+    const v2 = this.codes.verify(key, changeId, str9(payload.code) ?? "");
+    if (v2.kind === "expired") {
+      await this.closeCodeWindow();
+      return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    }
+    if (v2.kind === "invalid") {
+      if (v2.attemptsLeft <= 0) await this.closeCodeWindow();
+      return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    }
+    this.store.codeWindow = null;
+    this.save();
+    const applied = await this.applyRelease(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize9(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str9(payload.changeId);
+    const scope = payload.scope === "agent" ? "agent" : "org";
+    const vmId = str9(payload.vmId);
+    const dropped = this.codes.cancel(this.scopeKey({ scope, vmId }), changeId);
+    if (dropped) await this.closeCodeWindow();
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/access.ts
+import { createHash as createHash3, randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual3 } from "crypto";
+
+// src/access-store.ts
+function aad10(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:access`;
+}
+function emptyAccessStore() {
+  return { version: 1, devices: {}, pins: {} };
+}
+function loadAccessStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("access", path, boxKeyB64, aad10(ids2));
+  if (!parsed || parsed.version !== 1) return emptyAccessStore();
+  const devices = parsed.devices ?? {};
+  for (const d2 of Object.values(devices)) if (d2.via === "migration") d2.via = "tofu";
+  return { version: 1, devices, pins: parsed.pins ?? {} };
+}
+function saveAccessStore(path, store, boxKeyB64, ids2) {
+  saveStore("access", path, store, boxKeyB64, aad10(ids2));
+}
+
+// src/access.ts
+var OPEN_PATH = "/__cc/open";
+var CONFIRM_PATH = "/__cc/enroll/confirm";
+function ownsAccessPath(path) {
+  return path === OPEN_PATH || path === CONFIRM_PATH;
+}
+var INTENT_MAX_LIFETIME_S = 120;
+var TICKET_TTL_S = 60;
+var DEVICE_TTL_MS = 90 * 24 * 60 * 6e4;
+var PENDING_PER_HOUR = 5;
+var OPEN_PER_MINUTE = 30;
+var CONFIRM_PER_MINUTE = 30;
+var ACCESS_BODY_BYTES = 8 * 1024;
+var MAX_DEVICES = 500;
+var BEAT_DEVICES = 200;
+var CONFIG_RETRY_FIRST_MS = 15e3;
+var CONFIG_RETRY_MS = 10 * 6e4;
+var DEV_COOKIE = "__Host-cc_dev";
+var DEVICES_PER_BROWSER = 5;
+var PEND_COOKIE = "__Host-cc_pend";
+var SCOPE7 = "access";
+var NEXT = {
+  chat: { purpose: "browser-login", path: "/__cc/login" },
+  screen: { purpose: "browser-view", path: "/__cc/browser" },
+  files: { purpose: "browser-login", path: "/__cc/login", next: "files" },
+  // The agent's log on the box (browser-enrollment.md §7): the same shape as Files.
+  logs: { purpose: "browser-login", path: "/__cc/login", next: "logs" },
+  // The WhatsApp link QR on the box (§7): shown there only to a session that may change the agent.
+  whatsapp: { purpose: "browser-login", path: "/__cc/login", next: "whatsapp" }
+};
+function sha2562(s2) {
+  return createHash3("sha256").update(s2).digest("hex");
+}
+function token(bytes) {
+  return randomBytes8(bytes).toString("base64url");
+}
+function sameHash(a2, b2) {
+  const left = Buffer.from(a2);
+  const right = Buffer.from(b2);
+  return left.length === right.length && timingSafeEqual3(left, right);
+}
+function cookieValue(req, name25) {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(";")) {
+    const i2 = part.indexOf("=");
+    if (i2 < 0) continue;
+    if (part.slice(0, i2).trim() === name25) return part.slice(i2 + 1).trim() || null;
+  }
+  return null;
+}
+function setCookie(name25, value, maxAgeS) {
+  return `${name25}=${value}; Path=/; Secure; HttpOnly; SameSite=None; Max-Age=${maxAgeS}`;
+}
+function deviceLabel(ua2) {
+  const browser = /Edg\//.test(ua2) ? "Edge" : /OPR\//.test(ua2) ? "Opera" : /Firefox\//.test(ua2) ? "Firefox" : /Chrome\//.test(ua2) || /CriOS\//.test(ua2) ? "Chrome" : /Safari\//.test(ua2) ? "Safari" : "A browser";
+  const os = /iPhone/.test(ua2) ? "iPhone" : /iPad/.test(ua2) ? "iPad" : /Android/.test(ua2) ? "Android" : /CrOS/.test(ua2) ? "ChromeOS" : /Mac OS X|Macintosh/.test(ua2) ? "Mac" : /Windows/.test(ua2) ? "Windows" : /Linux/.test(ua2) ? "Linux" : null;
+  return os ? `${browser} on ${os}` : browser;
+}
+function plausibleHostname(h2) {
+  return typeof h2 === "string" && h2.length <= 253 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(h2);
+}
+function plausibleBinding(c2) {
+  return typeof c2 === "string" && /^[A-Za-z0-9_-]{43}$/.test(c2);
+}
+var Window = class {
+  constructor(max, ms) {
+    this.max = max;
+    this.ms = ms;
+  }
+  hits = [];
+  /** Counts the hit when there is room; false when the window is full. */
+  take(now2) {
+    this.hits = this.hits.filter((t2) => t2 > now2 - this.ms);
+    if (this.hits.length >= this.max) return false;
+    this.hits.push(now2);
+    return true;
+  }
+};
+function openCodeMessage(agentName, label, email3, agentHostname, code) {
+  const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
+  const who2 = email3 ? ` ControlClaw says this is ${email3}.` : "";
+  return `ControlClaw: a new browser wants to open ${agentName}: ${label}.${who2}
+Code: ${pretty}
+Type it only on the page that asked for it, at ${agentHostname}. It expires in 10 minutes. If you did not just press Open, ignore this.`;
+}
+function silentListMessage(devices, max = 20) {
+  const day = (iso) => iso.slice(0, 10);
+  const lines = devices.slice(0, max).map((d2) => `- ${d2.label}${d2.email ? `, ${d2.email}` : ""}: first ${day(d2.createdAt)}, last ${day(d2.lastUsedAt)}`);
+  const more = devices.length > max ? `
+...and ${devices.length - max} more.` : "";
+  return `ControlClaw: ${devices.length === 1 ? "this browser was" : "these browsers were"} signed in to your agents without a code, before anyone could receive one:
+${lines.join("\n")}${more}
+Remove any you don't recognise on the Devices page of your ControlClaw console.`;
+}
+var AccessFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadAccessStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  pending = null;
+  now;
+  log;
+  usedJti = /* @__PURE__ */ new Map();
+  opens = new Window(OPEN_PER_MINUTE, 6e4);
+  confirms = new Window(CONFIRM_PER_MINUTE, 6e4);
+  pendings = new Window(PENDING_PER_HOUR, 60 * 6e4);
+  signing = null;
+  verifying = null;
+  /** vmId -> the firewall origin that agent last took, so `/access/config` is pushed once. */
+  configured = /* @__PURE__ */ new Map();
+  configTried = /* @__PURE__ */ new Map();
+  listing = false;
+  // ---- state ----
+  /** `https://<this firewall's hostname>`, or null when it has none (a firewall built before webhook ingress). */
+  origin() {
+    const h2 = this.opts.hostname();
+    return plausibleHostname(h2) ? `https://${h2.toLowerCase()}` : null;
+  }
+  /** Whether this firewall can take Opens: `open_v1` on the heartbeat. */
+  ready() {
+    return this.origin() !== null && this.opts.saasPublicKey() !== null;
+  }
+  /** Real people a code can go to. The dev route is not a person, so it never closes the free window. */
+  realRoutes() {
+    return this.opts.codeRoutes().map((r2) => ({ target: r2.target, senders: r2.senders.filter((s2) => s2 !== DEV_SENDER) })).filter((r2) => r2.senders.length > 0);
+  }
+  /** Nobody approved on any channel: the same trust-on-first-use test every other change uses. */
+  freeWindow() {
+    return this.opts.channelsReady() && this.realRoutes().length === 0;
+  }
+  /**
+   * Pin every agent in the identity map the first time it appears, and never move a pin. Called
+   * after each sync. A hostname that differs from the pin is logged and ignored.
+   */
+  notePins() {
+    let changed = false;
+    for (const i2 of this.opts.identities()) {
+      const vmId = String(i2.vm_id ?? "");
+      const offered = i2.hostname;
+      if (!vmId || !plausibleHostname(offered)) continue;
+      const hostname3 = offered.toLowerCase();
+      const alias = i2.access_hostname?.toLowerCase();
+      const accessHostname = plausibleHostname(alias) && alias !== hostname3 && alias.split(".").slice(1).join(".") === hostname3.split(".").slice(1).join(".") ? alias.toLowerCase() : void 0;
+      const pin = this.store.pins[vmId];
+      if (!pin) {
+        this.store.pins[vmId] = { hostname: hostname3, ...accessHostname ? { accessHostname } : {}, at: new Date(this.now()).toISOString() };
+        changed = true;
+        this.log(`[access] pinned ${vmId} to ${hostname3}`);
+      } else if (pin.hostname === hostname3 && !pin.accessHostname && accessHostname) {
+        pin.accessHostname = accessHostname;
+        changed = true;
+      } else if (pin.hostname !== hostname3 || pin.accessHostname !== accessHostname) {
+        this.log(`[access] the identity map says ${vmId} is at ${hostname3}; it stays pinned to ${pin.hostname}`);
+      }
+    }
+    if (changed) this.save();
+  }
+  /**
+   * Only agents still in the identity map answer for an origin. A hostname is derived from the
+   * agent's name, so an agent deleted and made again under the same name is a new vmId on the old
+   * hostname, and the dead agent's pin must not shadow it. Hiding a live agent from the map gains
+   * nothing: a ticket names one vmId, and a real box refuses a ticket for any other.
+   */
+  pinnedByOrigin(origin) {
+    const want = origin.toLowerCase();
+    const live = new Set(this.opts.identities().map((i2) => String(i2.vm_id)));
+    for (const [vmId, pin] of Object.entries(this.store.pins)) {
+      if (!live.has(vmId)) continue;
+      for (const hostname3 of [pin.hostname, pin.accessHostname]) {
+        if (hostname3 && `https://${hostname3}` === want) return { vmId, hostname: hostname3 };
+      }
+    }
+    return null;
+  }
+  agentName(vmId) {
+    const i2 = this.opts.identities().find((x2) => String(x2.vm_id) === vmId);
+    return i2?.name || this.store.pins[vmId]?.hostname || vmId;
+  }
+  save() {
+    saveAccessStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  // ---- the two routes ----
+  async handle(req, res, path) {
+    if (req.method !== "POST") return bare(res, 405);
+    if (path === OPEN_PATH) return this.open(req, res);
+    return this.confirm(req, res);
+  }
+  /**
+   * The order matters. The Origin decides where a redirect may go at all, so it is checked first
+   * and a request from anywhere else gets a bare 403 with nothing to follow. Everything after it
+   * redirects to that agent's own pages, which is the only place a browser can be sent.
+   */
+  async open(req, res) {
+    const agent = this.agentFor(req);
+    if (!agent) return bare(res, 403);
+    const fail2 = (e) => redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=${e}`);
+    const form = await readForm(req);
+    if (!form) return bare(res, 400);
+    const intent = await this.verifyIntent(form.get("intent") ?? "");
+    const c2 = form.get("c");
+    if (!intent || intent.vmId !== agent.vmId || !plausibleBinding(c2)) return fail2("invalid");
+    if (!this.opens.take(this.now())) return fail2("busy");
+    if (!this.consumeJti(intent.jti, intent.exp)) return fail2("used");
+    if (this.opts.stopped(intent.vmId)) return fail2("stopped");
+    const label = deviceLabel(String(req.headers["user-agent"] ?? ""));
+    const device = this.enrolled(req, intent.userId);
+    if (device) {
+      device.record.lastUsedAt = new Date(this.now()).toISOString();
+      this.save();
+      this.log(`[access] open ${intent.next} on ${agent.hostname}: enrolled browser ${device.id}`);
+      return this.issue(res, agent.hostname, intent, c2, device.id, [this.deviceCookie(req)]);
+    }
+    const free = this.freeWindow();
+    if (free) {
+      const via = "tofu";
+      const enrolled = this.enroll(intent, label, via);
+      this.log(`[access] open ${intent.next} on ${agent.hostname}: browser ${enrolled.id} enrolled without a code (${via})`);
+      void this.maybeList();
+      return this.issue(res, agent.hostname, intent, c2, enrolled.id, [this.deviceCookie(req, enrolled.cookie)]);
+    }
+    if (!this.opts.channelsReady()) return fail2("unreachable");
+    if (!this.pendings.take(this.now())) return fail2("busy");
+    const pendCookie = token(32);
+    const pending = {
+      changeId: `acc_${token(16)}`,
+      vmId: intent.vmId,
+      intent,
+      c: c2,
+      pendHash: sha2562(pendCookie),
+      label,
+      expiresAt: this.now() + CODE_TTL_MS
+    };
+    const sent = await this.codes.send(
+      SCOPE7,
+      pending,
+      this.agentName(intent.vmId),
+      label,
+      this.opts.codeRoutes(),
+      (code) => openCodeMessage(this.agentName(intent.vmId), label, intent.email, agent.hostname, code)
+    );
+    if (!sent.ok) {
+      this.log(`[access] could not send a code for a new browser on ${agent.hostname}: ${sent.message}`);
+      return fail2("unreachable");
+    }
+    this.pending = pending;
+    const channel = sent.sentVia.split(":")[0];
+    if (channel === DEV_SENDER.type) this.log(`[access] dev build: the code for ${pending.changeId} is ${sent.sentVia.slice(channel.length + 1)}`);
+    else this.log(`[access] open ${intent.next} on ${agent.hostname}: new browser, code sent via ${channel}`);
+    return redirect(res, `https://${agent.hostname}/__cc/enroll#p=${pending.changeId}&via=${encodeURIComponent(channel)}`, [
+      setCookie(PEND_COOKIE, pendCookie, CODE_TTL_MS / 1e3)
+    ]);
+  }
+  async confirm(req, res) {
+    const agent = this.agentFor(req);
+    if (!agent) return bare(res, 403);
+    const expired = () => redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=code_expired`);
+    const form = await readForm(req);
+    if (!form) return bare(res, 400);
+    const p2 = form.get("p") ?? "";
+    const code = (form.get("code") ?? "").replace(/\s+/g, "");
+    const pending = this.pending;
+    if (!pending || pending.changeId !== p2 || pending.vmId !== agent.vmId || this.now() > pending.expiresAt) return expired();
+    const pend = cookieValue(req, PEND_COOKIE);
+    if (!pend || !sameHash(sha2562(pend), pending.pendHash)) return expired();
+    if (!this.confirms.take(this.now())) return redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=busy`);
+    if (this.opts.stopped(pending.vmId)) return redirect(res, `https://${agent.hostname}${OPEN_PATH}#e=stopped`);
+    const v2 = this.codes.verify(SCOPE7, p2, code);
+    if (v2.kind === "expired") {
+      this.pending = null;
+      return expired();
+    }
+    if (v2.kind === "invalid") {
+      if (v2.attemptsLeft <= 0) {
+        this.pending = null;
+        this.log(`[access] the code for a new browser on ${agent.hostname} ran out of tries`);
+        return expired();
+      }
+      return redirect(res, `https://${agent.hostname}/__cc/enroll#p=${p2}&e=invalid_code&left=${v2.attemptsLeft}`);
+    }
+    this.pending = null;
+    const enrolled = this.enroll(pending.intent, pending.label, "code");
+    this.log(`[access] browser ${enrolled.id} enrolled with a code (${pending.label}) on ${agent.hostname}`);
+    return this.issue(res, agent.hostname, pending.intent, pending.c, enrolled.id, [this.deviceCookie(req, enrolled.cookie), setCookie(PEND_COOKIE, "", 0)]);
+  }
+  /** The agent this request came from, by its exact Origin against the pins. No Origin is no agent. */
+  agentFor(req) {
+    const origin = req.headers.origin;
+    if (typeof origin !== "string" || !origin) return null;
+    return this.pinnedByOrigin(origin);
+  }
+  async issue(res, hostname3, intent, c2, deviceId, cookies) {
+    const route = NEXT[intent.next];
+    const ticket = await this.signTicket({ vmId: intent.vmId, purpose: route.purpose, c: c2, deviceId, canWrite: intent.canWrite, ...route.next ? { next: route.next } : {} });
+    return redirect(res, `https://${hostname3}${route.path}#t=${ticket}`, cookies);
+  }
+  // ---- intents, tickets, devices ----
+  async verifyIntent(jwt2) {
+    const pem = this.opts.saasPublicKey();
+    if (!pem || !jwt2) return null;
+    try {
+      if (this.verifying?.pem !== pem) this.verifying = { pem, key: await importSPKI(pem, "EdDSA") };
+      const { payload } = await jwtVerify(jwt2, this.verifying.key, { algorithms: ["EdDSA"], currentDate: new Date(this.now()) });
+      const p2 = payload;
+      if (p2.purpose !== "open-intent" || p2.orgId !== this.opts.ids.orgId) return null;
+      if (typeof p2.vmId !== "string" || typeof p2.userId !== "string" || !p2.userId || typeof p2.jti !== "string" || !p2.jti) return null;
+      if (typeof p2.exp !== "number" || p2.exp - this.now() / 1e3 > INTENT_MAX_LIFETIME_S) return null;
+      const next = typeof p2.next === "string" && p2.next in NEXT ? p2.next : null;
+      if (!next) return null;
+      return {
+        orgId: p2.orgId,
+        vmId: p2.vmId,
+        userId: p2.userId,
+        email: typeof p2.email === "string" && p2.email ? p2.email.slice(0, 200) : null,
+        canWrite: p2.canWrite === true,
+        next,
+        jti: p2.jti,
+        exp: p2.exp
+      };
+    } catch {
+      return null;
+    }
+  }
+  consumeJti(jti, exp) {
+    const nowS = this.now() / 1e3;
+    for (const [k2, e] of this.usedJti) if (e < nowS) this.usedJti.delete(k2);
+    if (this.usedJti.has(jti)) return false;
+    this.usedJti.set(jti, exp);
+    return true;
+  }
+  async signTicket(claims) {
+    const pem = this.opts.signingKey();
+    if (this.signing?.pem !== pem) this.signing = { pem, key: await importPKCS8(pem, "EdDSA") };
+    const nowS = Math.floor(this.now() / 1e3);
+    return new SignJWT({ ...claims }).setProtectedHeader({ alg: "EdDSA" }).setIssuer(`fw:${this.opts.ids.boxId}`).setJti(token(16)).setIssuedAt(nowS).setExpirationTime(nowS + TICKET_TTL_S).sign(this.signing.key);
+  }
+  /** The live devices this browser's cookie names, in the order it holds them. */
+  liveDevices(req) {
+    const raw = cookieValue(req, DEV_COOKIE);
+    if (!raw) return [];
+    const out = [];
+    for (const token2 of raw.split(".").slice(-DEVICES_PER_BROWSER)) {
+      if (!/^[A-Za-z0-9_-]{43}$/.test(token2)) continue;
+      const hash2 = sha2562(token2);
+      const hit = Object.entries(this.store.devices).find(([, d2]) => sameHash(d2.hash, hash2));
+      if (!hit || Date.parse(hit[1].lastUsedAt) + DEVICE_TTL_MS < this.now()) continue;
+      out.push({ id: hit[0], record: hit[1], token: token2 });
+    }
+    return out;
+  }
+  /** The browser's device for this user. A second member on the same browser enrolls separately (§5). */
+  enrolled(req, userId) {
+    return this.liveDevices(req).find((d2) => d2.record.userId === userId) ?? null;
+  }
+  /**
+   * The device cookie to send back: every live device this browser already holds, plus `added`.
+   * A revoked or expired token is dropped here, so the cookie only ever names live devices.
+   */
+  deviceCookie(req, added) {
+    const tokens = this.liveDevices(req).map((d2) => d2.token);
+    if (added) tokens.push(added);
+    return setCookie(DEV_COOKIE, tokens.slice(-DEVICES_PER_BROWSER).join("."), DEVICE_TTL_MS / 1e3);
+  }
+  enroll(intent, label, via) {
+    const cookie = token(32);
+    const id = `dev_${token(12)}`;
+    const at2 = new Date(this.now()).toISOString();
+    this.store.devices[id] = { hash: sha2562(cookie), userId: intent.userId, email: intent.email, label, via, createdAt: at2, lastUsedAt: at2, listedAt: null };
+    this.prune();
+    this.save();
+    return { id, cookie };
+  }
+  prune() {
+    for (const [id, d2] of Object.entries(this.store.devices)) {
+      if (Date.parse(d2.lastUsedAt) + DEVICE_TTL_MS < this.now()) delete this.store.devices[id];
+    }
+    const all = Object.entries(this.store.devices);
+    if (all.length <= MAX_DEVICES) return;
+    all.sort((a2, b2) => Date.parse(a2[1].lastUsedAt) - Date.parse(b2[1].lastUsedAt));
+    for (const [id] of all.slice(0, all.length - MAX_DEVICES)) delete this.store.devices[id];
+  }
+  // ---- the owner's list, config, revocation ----
+  /**
+   * Send the owner the browsers enrolled without a code, once there is an owner to send them to:
+   * at the organization's first approved sender (§6). The list comes from here, so a compromised
+   * console cannot hide an entry from the channel message. Retried from `tick` until it lands.
+   */
+  async maybeList() {
+    if (this.listing || !this.opts.channelsReady()) return;
+    const routes = this.realRoutes();
+    if (routes.length === 0) return;
+    const unlisted = Object.entries(this.store.devices).filter(([, d2]) => d2.via !== "code" && !d2.listedAt);
+    if (unlisted.length === 0) return;
+    this.listing = true;
+    try {
+      const text2 = silentListMessage(unlisted.map(([, d2]) => d2));
+      for (const route of routes) {
+        for (const sender of route.senders) {
+          try {
+            await this.opts.agent.post(route.target, "/channels/send", { type: sender.type, to: sender.id, text: text2 });
+            const at2 = new Date(this.now()).toISOString();
+            for (const [id] of unlisted) if (this.store.devices[id]) this.store.devices[id].listedAt = at2;
+            this.save();
+            this.log(`[access] listed ${unlisted.length} browser(s) enrolled without a code to the owner via ${sender.type}`);
+            return;
+          } catch (err) {
+            this.log(`[access] could not send the browser list via ${sender.type} on ${route.target.hostname}: ${err.message}`);
+          }
+        }
+      }
+    } finally {
+      this.listing = false;
+    }
+  }
+  /**
+   * Tell each agent where its firewall is (`POST /access/config`, purpose `access`). The agent
+   * refuses an Open flow until it has this, and takes it only with this box's signature. Agents
+   * older than PR 2 answer 404. A failed push is tried again with a backoff (`CONFIG_RETRY_FIRST_MS`
+   * doubling to `CONFIG_RETRY_MS`).
+   */
+  async pushConfig() {
+    const origin = this.origin();
+    if (!origin) return;
+    for (const [vmId, pin] of Object.entries(this.store.pins)) {
+      if (!this.opts.identities().some((i2) => String(i2.vm_id) === vmId)) continue;
+      if (this.configured.get(vmId) === origin) continue;
+      const tried = this.configTried.get(vmId);
+      if (tried !== void 0 && this.now() - tried.at < tried.wait) continue;
+      this.configTried.set(vmId, { at: this.now(), wait: tried ? Math.min(tried.wait * 2, CONFIG_RETRY_MS) : CONFIG_RETRY_FIRST_MS });
+      try {
+        await this.opts.agent.post({ vmId, hostname: pin.hostname }, "/access/config", { firewallOrigin: origin });
+        this.configured.set(vmId, origin);
+        this.log(`[access] ${pin.hostname} knows this firewall is at ${origin}`);
+      } catch (err) {
+        if (tried === void 0) this.log(`[access] could not tell ${pin.hostname} where this firewall is (${err.message}); trying again later`);
+      }
+    }
+  }
+  async tick() {
+    this.notePins();
+    await this.pushConfig();
+    await this.maybeList();
+  }
+  handlers() {
+    return {
+      "access.revoke": (p2) => this.revoke(p2),
+      "access.revoke_all": () => this.revokeAll()
+    };
+  }
+  async revoke(payload) {
+    const ids2 = Array.isArray(payload.deviceIds) ? payload.deviceIds.filter((x2) => typeof x2 === "string") : [];
+    if (ids2.length === 0) throw new Error("malformed access.revoke payload");
+    const revoked = ids2.filter((id) => this.store.devices[id]);
+    for (const id of revoked) delete this.store.devices[id];
+    if (revoked.length) this.save();
+    this.log(`[access] removed ${revoked.length} browser(s)`);
+    const pushed = await this.pushRevoke({ deviceIds: ids2 });
+    return { ok: true, status: "applied", data: { revoked, unknown: ids2.filter((id) => !revoked.includes(id)), ...pushed } };
+  }
+  async revokeAll() {
+    const count = Object.keys(this.store.devices).length;
+    this.store.devices = {};
+    this.save();
+    if (this.pending) {
+      this.codes.drop(SCOPE7);
+      this.pending = null;
+    }
+    this.log(`[access] signed out every browser (${count})`);
+    const pushed = await this.pushRevoke({ all: true });
+    return { ok: true, status: "applied", data: { revoked: count, ...pushed } };
+  }
+  /**
+   * Best effort: the firewall has already stopped issuing tickets to those browsers, which is the
+   * part that matters. What an agent could not be told is reported, not retried, and the session it
+   * still honours ends within its 12 hours.
+   */
+  async pushRevoke(body) {
+    const pushed = [];
+    const failed = [];
+    for (const [vmId, pin] of Object.entries(this.store.pins)) {
+      if (!this.opts.identities().some((i2) => String(i2.vm_id) === vmId)) continue;
+      const target = { vmId, hostname: pin.hostname };
+      try {
+        await this.opts.agent.post(target, "/access/revoke", body);
+        pushed.push(vmId);
+      } catch (err) {
+        failed.push({ vmId, error: err.message.slice(0, 200) });
+      }
+    }
+    return { pushed, failed };
+  }
+  /** The heartbeat's `access` section. Ids, labels and dates; never a cookie or a hash. */
+  status() {
+    const devices = Object.entries(this.store.devices).sort((a2, b2) => Date.parse(b2[1].lastUsedAt) - Date.parse(a2[1].lastUsedAt)).slice(0, BEAT_DEVICES).map(([deviceId, d2]) => ({
+      deviceId,
+      userId: d2.userId,
+      email: d2.email,
+      label: d2.label,
+      via: d2.via,
+      createdAt: d2.createdAt,
+      lastUsedAt: d2.lastUsedAt,
+      listed: Boolean(d2.listedAt)
+    }));
+    return {
+      origin: this.origin(),
+      freeWindow: this.freeWindow(),
+      pending: this.pending && this.now() <= this.pending.expiresAt ? { vmId: this.pending.vmId, expiresAt: new Date(this.pending.expiresAt).toISOString() } : null,
+      devices,
+      deviceCount: Object.keys(this.store.devices).length
+    };
+  }
+};
+async function readForm(req) {
+  const type = String(req.headers["content-type"] ?? "").toLowerCase();
+  if (!type.startsWith("application/x-www-form-urlencoded")) return null;
+  try {
+    return new URLSearchParams((await readBody(req, ACCESS_BODY_BYTES)).toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+var NO_CACHE = { "cache-control": "no-store", "referrer-policy": "no-referrer", "content-length": "0" };
+function bare(res, status) {
+  res.writeHead(status, NO_CACHE);
+  res.end();
+}
+function redirect(res, location, cookies = []) {
+  res.writeHead(303, { ...NO_CACHE, location, ...cookies.length ? { "set-cookie": cookies } : {} });
+  res.end();
+}
+
+// src/gbrain.ts
+var SCOPE_PREFIX4 = "gbrain:";
+var GBRAIN_GATE_PORT = 3131;
+var GBRAIN_RECONCILE_MS = 5 * 6e4;
+function str10(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function scopeOf(v2) {
+  return v2 === "read" || v2 === "read_write" ? v2 : null;
+}
+function summarize10(p2) {
+  if (p2.kind === "rescope") {
+    return p2.scope === "read_write" ? `Let ${p2.agent.name} write to your organization's brain as well as read it` : `Make ${p2.agent.name} read-only on your organization's brain`;
+  }
+  return p2.scope === "read_write" ? `Connect ${p2.agent.name} to your organization's brain (read and write). It will see what your other agents saved` : `Let ${p2.agent.name} read your organization's brain. It will see what your other agents saved`;
+}
+function brainUrl(brainIp) {
+  return `http://${brainIp}:${GBRAIN_GATE_PORT}/mcp`;
+}
+function aad11(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:gbrain`;
+}
+function emptyBrainStore() {
+  return { version: 1, brain: null, connections: {} };
+}
+var BrainFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: opts.now, makeCode: opts.makeCode });
+    const loaded2 = loadStoreOrEmpty("gbrain", opts.storePath, opts.boxKey, aad11(opts.ids));
+    this.store = loaded2 && loaded2.version === 1 && loaded2.connections ? { version: 1, brain: loaded2.brain ?? null, connections: loaded2.connections } : emptyBrainStore();
+  }
+  codes;
+  log;
+  store;
+  reconciling = false;
+  /** What the brain last accepted, as `<brainVmId>|<lock>`; null until one push has worked. */
+  pushedLock = null;
+  /** One push at a time, so two overlapping calls cannot record a lock the brain does not hold. */
+  lockChain = Promise.resolve();
+  handlers() {
+    return {
+      "gbrain.propose": (p2) => this.propose(p2),
+      "gbrain.confirm": (p2) => this.confirm(p2),
+      "gbrain.cancel": (p2) => this.cancel(p2),
+      "gbrain.disconnect": (p2) => this.disconnect(p2)
+    };
+  }
+  summary() {
+    return { brain: this.store.brain?.vmId ?? null, connections: Object.keys(this.store.connections).length };
+  }
+  save() {
+    saveStore("gbrain", this.opts.storePath, this.store, this.opts.boxKey, aad11(this.opts.ids));
+  }
+  /** One pending change per agent. */
+  scope(agentVmId) {
+    return `${SCOPE_PREFIX4}${agentVmId}`;
+  }
+  box(vmId, role) {
+    const row = this.opts.boxes().find((b2) => b2.vm_id === vmId);
+    const what = role === "gbrain" ? "The brain" : "That agent";
+    if (!row || (row.role ?? "openclaw") !== role) throw new Error(`${what} is not known to your firewall yet. Try again in a minute.`);
+    const ip = str10(row.private_ip);
+    const hostname3 = str10(row.hostname);
+    if (!ip || !hostname3) throw new Error(`${what} has no private address yet. Try again once it is running.`);
+    return { vmId, ip, hostname: hostname3, name: str10(row.name) ?? vmId };
+  }
+  target(b2) {
+    return { vmId: b2.vmId, hostname: b2.hostname };
+  }
+  async apply(p2) {
+    if (this.store.brain && this.store.brain.vmId !== p2.brain.vmId) this.store = emptyBrainStore();
+    const had = this.store.connections[p2.agent.vmId];
+    await this.opts.agent.post(this.target(p2.brain), "/gbrain/connect", { vmId: p2.agent.vmId, ip: p2.agent.ip, scope: p2.scope }, { timeoutMs: GBRAIN_CONNECT_MS });
+    const sameBrain = this.store.brain?.vmId === p2.brain.vmId && this.store.brain.ip === p2.brain.ip;
+    if (!had || !sameBrain) {
+      await this.opts.agent.post(this.target(p2.agent), "/gbrain/apply", { url: brainUrl(p2.brain.ip) }, { timeoutMs: GBRAIN_APPLY_MS });
+    }
+    if (!this.store.brain) this.store.brain = { vmId: p2.brain.vmId, ip: p2.brain.ip };
+    this.store.connections[p2.agent.vmId] = { scope: p2.scope, ip: p2.agent.ip, name: p2.agent.name, at: new Date(this.opts.now?.() ?? Date.now()).toISOString() };
+    this.save();
+    this.log(`[gbrain] ${p2.agent.name} connected to the brain (${p2.scope})`);
+    return { agentVmId: p2.agent.vmId, brainVmId: p2.brain.vmId, scope: p2.scope, agentPrivateIp: p2.agent.ip };
+  }
+  async propose(payload) {
+    const changeId = str10(payload.changeId);
+    const agentVmId = str10(payload.agentVmId);
+    const brainVmId = str10(payload.brainVmId);
+    const scope = scopeOf(payload.scope);
+    if (!changeId || !agentVmId || !brainVmId || !scope) throw new Error("malformed gbrain.propose payload");
+    const data = { changeId };
+    let agent;
+    let brain2;
+    try {
+      agent = this.box(agentVmId, "openclaw");
+      brain2 = this.box(brainVmId, "gbrain");
+    } catch (err) {
+      return { ok: false, status: "failed", message: err.message, data };
+    }
+    const current = this.store.brain?.vmId === brainVmId ? this.store.connections[agentVmId] : void 0;
+    const p2 = { changeId, kind: current ? "rescope" : "connect", scope, agent, brain: brain2 };
+    const summary = summarize10(p2);
+    data.summary = summary;
+    if (current && (current.scope === scope || scope === "read")) {
+      this.codes.drop(this.scope(agentVmId));
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: false } };
+    }
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(this.scope(agentVmId));
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(this.scope(agentVmId), p2, agent.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[gbrain] code sent to connect ${agent.name} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str10(payload.changeId);
+    const agentVmId = str10(payload.agentVmId);
+    if (!changeId || !agentVmId) throw new Error("malformed gbrain.confirm payload");
+    const data = { changeId };
+    const v2 = this.codes.verify(this.scope(agentVmId), changeId, str10(payload.code) ?? "");
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize10(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str10(payload.changeId);
+    const agentVmId = str10(payload.agentVmId);
+    if (agentVmId) this.codes.cancel(this.scope(agentVmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  /**
+   * No code: it only takes access away. Out of the store first, so whatever part of it fails here
+   * is finished by `reconcile`: the brain's gate entry is removed on the next tick, and an agent that
+   * kept its MCP entry has a URL that answers 403.
+   */
+  async disconnect(payload) {
+    const agentVmId = str10(payload.agentVmId);
+    if (!agentVmId) throw new Error("malformed gbrain.disconnect payload");
+    this.codes.drop(this.scope(agentVmId));
+    const had = this.store.connections[agentVmId];
+    delete this.store.connections[agentVmId];
+    this.save();
+    const brainVmId = this.store.brain?.vmId;
+    const errors = [];
+    if (brainVmId) {
+      try {
+        const brain2 = this.box(brainVmId, "gbrain");
+        await this.opts.agent.post(this.target(brain2), "/gbrain/disconnect", { vmId: agentVmId }, { timeoutMs: GBRAIN_CONNECT_MS });
+      } catch (err) {
+        errors.push(`brain: ${err.message}`);
+      }
+    }
+    const agentRow = this.opts.boxes().find((b2) => b2.vm_id === agentVmId);
+    if (agentRow && str10(agentRow.hostname)) {
+      try {
+        await this.opts.agent.post({ vmId: agentVmId, hostname: String(agentRow.hostname) }, "/gbrain/apply", { remove: true }, { timeoutMs: GBRAIN_APPLY_MS });
+      } catch (err) {
+        errors.push(`agent: ${err.message}`);
+      }
+    }
+    this.log(`[gbrain] ${had?.name ?? agentVmId} disconnected from the brain${errors.length ? ` (to finish on the next reconcile: ${errors.join("; ")})` : ""}`);
+    return { ok: true, status: "applied", data: { agentVmId, removed: !!had, pending: errors.length > 0 } };
+  }
+  /**
+   * Push the emergency stop to the brain's gate when it differs from what the brain last accepted.
+   * Called on every kill-switch change and every minute, so a brain that was down when the stop
+   * was engaged is locked once it answers.
+   */
+  syncLock() {
+    const run = this.lockChain.then(() => this.syncLockOnce());
+    this.lockChain = run.catch(() => void 0);
+    return run;
+  }
+  async syncLockOnce() {
+    const brainVmId = this.brainVmId();
+    if (!brainVmId) return;
+    const want = this.desiredLock();
+    const key = `${brainVmId}|${JSON.stringify(want)}`;
+    if (key === this.pushedLock) return;
+    const brain2 = this.box(brainVmId, "gbrain");
+    await this.opts.agent.post(this.target(brain2), "/gbrain/lock", want, { timeoutMs: GBRAIN_CONNECT_MS });
+    this.pushedLock = key;
+    this.log(`[gbrain] brain gate lock: ${want.all ? "every agent" : want.vmIds.length ? want.vmIds.join(", ") : "none"}`);
+  }
+  desiredLock() {
+    const l2 = this.opts.lock?.() ?? { all: false, vmIds: [] };
+    return { all: l2.all, vmIds: [...new Set(l2.vmIds)].sort() };
+  }
+  /** The brain on record, or the one in the identity map when nothing is connected yet. */
+  brainVmId() {
+    if (this.store.brain) return this.store.brain.vmId;
+    return this.opts.boxes().find((b2) => (b2.role ?? "") === "gbrain")?.vm_id ?? null;
+  }
+  /**
+   * Make the brain's gate match the store (see the header). Only removes access or re-points
+   * access the owner already confirmed; never adds any.
+   */
+  async reconcile() {
+    if (this.reconciling) return;
+    this.reconciling = true;
+    try {
+      await this.reconcileOnce();
+    } finally {
+      this.reconciling = false;
+    }
+  }
+  async reconcileOnce() {
+    const boxes = this.opts.boxes();
+    if (boxes.length === 0) return;
+    const stored = this.store.brain;
+    const brainRow = boxes.find((b2) => (b2.role ?? "") === "gbrain");
+    let changed = false;
+    if (stored && (!brainRow || brainRow.vm_id !== stored.vmId)) {
+      for (const [vmId, c2] of Object.entries(this.store.connections)) {
+        await this.removeFromAgent(vmId).catch((e) => this.log(`[gbrain] could not take the brain off ${c2.name}: ${e.message}`));
+      }
+      this.log(`[gbrain] the brain ${stored.vmId} is gone; dropped ${Object.keys(this.store.connections).length} connection(s)`);
+      this.store = emptyBrainStore();
+      this.save();
+      this.pushedLock = null;
+      return;
+    }
+    if (!stored || !brainRow) return;
+    const brain2 = this.box(stored.vmId, "gbrain");
+    for (const vmId of Object.keys(this.store.connections)) {
+      if (!boxes.some((b2) => b2.vm_id === vmId && (b2.role ?? "openclaw") === "openclaw")) {
+        this.log(`[gbrain] ${this.store.connections[vmId].name} is gone; disconnecting it`);
+        delete this.store.connections[vmId];
+        changed = true;
+      }
+    }
+    if (brain2.ip !== stored.ip) {
+      let all = true;
+      for (const vmId of Object.keys(this.store.connections)) {
+        try {
+          const agent = this.box(vmId, "openclaw");
+          await this.opts.agent.post(this.target(agent), "/gbrain/apply", { url: brainUrl(brain2.ip) }, { timeoutMs: GBRAIN_APPLY_MS });
+        } catch (err) {
+          all = false;
+          this.log(`[gbrain] could not re-point ${this.store.connections[vmId].name} at the brain's new address: ${err.message}`);
+        }
+      }
+      if (all) {
+        this.store.brain = { vmId: brain2.vmId, ip: brain2.ip };
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+    const r2 = await this.opts.agent.get(this.target(brain2), "/gbrain/connections", { timeoutMs: GBRAIN_CONNECT_MS });
+    const entries = Array.isArray(r2.connections) ? r2.connections : [];
+    const reported = r2.lock;
+    if (reported && JSON.stringify({ all: reported.all === true, vmIds: Array.isArray(reported.vmIds) ? [...reported.vmIds].sort() : [] }) !== JSON.stringify(this.desiredLock())) {
+      this.pushedLock = null;
+    }
+    const onGate = new Map(entries.map((e) => [String(e.vmId), e]));
+    for (const [vmId] of onGate) {
+      if (!this.store.connections[vmId]) {
+        await this.opts.agent.post(this.target(brain2), "/gbrain/disconnect", { vmId }, { timeoutMs: GBRAIN_CONNECT_MS });
+        this.log(`[gbrain] removed ${vmId} from the brain's gate: it is not connected`);
+      }
+    }
+    for (const [vmId, c2] of Object.entries(this.store.connections)) {
+      let agent;
+      try {
+        agent = this.box(vmId, "openclaw");
+      } catch {
+        continue;
+      }
+      const e = onGate.get(vmId);
+      if (e && e.ip === agent.ip && e.scope === c2.scope) continue;
+      await this.opts.agent.post(this.target(brain2), "/gbrain/connect", { vmId, ip: agent.ip, scope: c2.scope }, { timeoutMs: GBRAIN_CONNECT_MS });
+      if (c2.ip !== agent.ip) {
+        this.store.connections[vmId] = { ...c2, ip: agent.ip };
+        this.save();
+      }
+      this.log(`[gbrain] re-applied ${c2.name}'s connection on the brain's gate`);
+    }
+  }
+  async removeFromAgent(vmId) {
+    const row = this.opts.boxes().find((b2) => b2.vm_id === vmId);
+    if (!row || !str10(row.hostname)) return;
+    await this.opts.agent.post({ vmId, hostname: String(row.hostname) }, "/gbrain/apply", { remove: true }, { timeoutMs: GBRAIN_APPLY_MS });
+  }
+};
+
+// src/exit.ts
+import { createHmac as createHmac2, randomBytes as randomBytes9 } from "crypto";
+
+// src/exit-check.ts
+import { connect as tcpConnect } from "net";
+import { connect as tlsConnect } from "tls";
+var CHECK_SESSION = "__check";
+var DEFAULT_URL = "https://ipinfo.io/json";
+var TIMEOUT_MS2 = 15e3;
+function fail(socket, message2) {
+  socket?.destroy();
+  return { ok: false, exitIp: null, exitCountry: null, latencyMs: 0, error: message2.slice(0, 200) };
+}
+function readUntil(socket, done, timeoutMs, endsOk = false) {
+  return new Promise((resolve2, reject) => {
+    let buf = Buffer.alloc(0);
+    const timer = setTimeout(() => cleanup(new Error("timed out")), timeoutMs);
+    const onData = (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (done(buf)) cleanup(null);
+    };
+    const onEnd = () => cleanup(endsOk ? null : new Error("the connection closed early"));
+    function cleanup(err) {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("end", onEnd);
+      socket.off("error", onErr);
+      if (err) reject(err);
+      else resolve2(buf);
+    }
+    const onErr = (err) => cleanup(err);
+    socket.on("data", onData);
+    socket.on("end", onEnd);
+    socket.on("error", onErr);
+  });
+}
+function dial(host, port, timeoutMs) {
+  return new Promise((resolve2, reject) => {
+    const socket = tcpConnect({ host, port });
+    socket.setTimeout(timeoutMs, () => socket.destroy(new Error("timed out connecting to the exit")));
+    socket.once("connect", () => resolve2(socket));
+    socket.once("error", reject);
+  });
+}
+function startTls(socket, servername, timeoutMs) {
+  return new Promise((resolve2, reject) => {
+    const tls = tlsConnect({ socket, servername });
+    const timer = setTimeout(() => tls.destroy(new Error("timed out negotiating TLS with the exit")), timeoutMs);
+    tls.once("secureConnect", () => {
+      clearTimeout(timer);
+      resolve2(tls);
+    });
+    tls.once("error", (err) => {
+      clearTimeout(timer);
+      tls.destroy();
+      reject(err);
+    });
+  });
+}
+async function httpConnect(socket, target, user, password) {
+  const auth = Buffer.from(`${user}:${password}`).toString("base64");
+  socket.write(
+    `CONNECT ${target} HTTP/1.1\r
+Host: ${target}\r
+Proxy-Authorization: Basic ${auth}\r
+Proxy-Connection: keep-alive\r
+\r
+`
+  );
+  const head = await readUntil(socket, (b2) => b2.includes("\r\n\r\n"), TIMEOUT_MS2);
+  const status = head.subarray(0, head.indexOf("\r\n")).toString();
+  if (!/^HTTP\/1\.[01] 2\d\d/.test(status)) throw new Error(`the exit refused the tunnel: ${status}`);
+}
+async function socks5Connect(socket, host, port, user, password) {
+  socket.write(Buffer.from([5, 1, 2]));
+  const greeting = await readUntil(socket, (b2) => b2.length >= 2, TIMEOUT_MS2);
+  if (greeting[0] !== 5 || greeting[1] !== 2) throw new Error("the exit refused username/password auth");
+  const u2 = Buffer.from(user, "utf8");
+  const p2 = Buffer.from(password, "utf8");
+  socket.write(Buffer.concat([Buffer.from([1, u2.length]), u2, Buffer.from([p2.length]), p2]));
+  const authReply = await readUntil(socket, (b2) => b2.length >= 2, TIMEOUT_MS2);
+  if (authReply[1] !== 0) throw new Error("the exit rejected the credential");
+  const name25 = Buffer.from(host, "utf8");
+  socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, name25.length]), name25, portBytes(port)]));
+  const reply = await readUntil(socket, socks5ReplyComplete, TIMEOUT_MS2);
+  if (reply[1] !== 0) throw new Error(`the exit refused the connection (reply ${reply[1]})`);
+}
+function socks5ReplyComplete(b2) {
+  if (b2.length < 5) return false;
+  const atyp = b2[3];
+  if (atyp === 1) return b2.length >= 10;
+  if (atyp === 4) return b2.length >= 22;
+  if (atyp === 3) return b2.length >= 7 + b2[4];
+  return true;
+}
+function responseComplete(b2) {
+  const end = b2.indexOf("\r\n\r\n");
+  if (end < 0) return false;
+  const head = b2.subarray(0, end).toString("latin1");
+  const length = /content-length:\s*(\d+)/i.exec(head);
+  if (!length) return false;
+  return b2.length >= end + 4 + Number(length[1]);
+}
+function portBytes(port) {
+  const b2 = Buffer.alloc(2);
+  b2.writeUInt16BE(port);
+  return b2;
+}
+function parseEcho(body) {
+  const ip = /"ip"\s*:\s*"([0-9a-fA-F.:]{7,45})"/.exec(body)?.[1] ?? body.split("\n").map((l2) => l2.trim()).find((l2) => /^[0-9a-fA-F.:]{7,45}$/.test(l2)) ?? null;
+  const country = /"country"\s*:\s*"([A-Za-z]{2})"/.exec(body)?.[1]?.toUpperCase() ?? null;
+  return { ip, country };
+}
+async function checkExit(upstream, render, opts = {}) {
+  const started = Date.now();
+  const url2 = new URL(opts.url || process.env.MITM_EXIT_CHECK_URL || DEFAULT_URL);
+  const host = url2.hostname;
+  const port = Number(url2.port || 443);
+  const session = opts.session === void 0 ? CHECK_SESSION : opts.session;
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS2;
+  const country = opts.country ?? null;
+  const user = render(upstream.usernameTemplate, { username: upstream.username, session, country });
+  const password = render(upstream.passwordTemplate, { password: upstream.password, session, country });
+  let socket = null;
+  try {
+    socket = await dial(upstream.host, upstream.port, timeoutMs);
+    if (upstream.scheme === "https") socket = await startTls(socket, upstream.host, timeoutMs);
+    if (upstream.scheme === "socks5") await socks5Connect(socket, host, port, user, password);
+    else await httpConnect(socket, `${host}:${port}`, user, password);
+    const tls = tlsConnect({ socket, servername: host });
+    await new Promise((resolve2, reject) => {
+      tls.once("secureConnect", () => resolve2());
+      tls.once("error", reject);
+    });
+    tls.write(`GET ${url2.pathname}${url2.search} HTTP/1.1\r
+Host: ${host}\r
+User-Agent: controlclaw-firewall\r
+Connection: close\r
+\r
+`);
+    const raw = await readUntil(tls, responseComplete, timeoutMs, true);
+    tls.destroy();
+    const head = raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("latin1");
+    const echoStatus = Number(/^HTTP\/1\.[01]\s+(\d{3})/.exec(head)?.[1]);
+    if (!Number.isFinite(echoStatus) || echoStatus < 200 || echoStatus > 299) {
+      return {
+        ok: true,
+        exitIp: null,
+        exitCountry: null,
+        latencyMs: Date.now() - started,
+        // Recorded, not blamed on the credential. The card shows it next to "Reachable" so the
+        // missing address is explained rather than just absent.
+        error: `the tunnel opened, but ${host} answered ${Number.isFinite(echoStatus) ? echoStatus : "nothing readable"}, so the address could not be read`
+      };
+    }
+    const body = raw.subarray(raw.indexOf("\r\n\r\n") + 4).toString("utf8").trim();
+    const { ip, country: country2 } = parseEcho(body);
+    return { ok: true, exitIp: ip, exitCountry: country2, latencyMs: Date.now() - started, error: null };
+  } catch (err) {
+    return fail(socket, err.message || "the exit could not be reached");
+  } finally {
+    socket?.destroy();
+  }
+}
+
+// src/exit-store.ts
+function aad12(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:exit`;
+}
+function monthKey(now2) {
+  return new Date(now2).toISOString().slice(0, 7);
+}
+function emptyExitStore(now2 = Date.now()) {
+  return {
+    version: 1,
+    upstream: null,
+    sticky: false,
+    stickySalt: "",
+    capBytes: null,
+    country: null,
+    usage: { month: monthKey(now2), bytesIn: 0, bytesOut: 0 },
+    lastCheck: null,
+    updatedAt: new Date(now2).toISOString()
+  };
+}
+function loadExitStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("exit", path, boxKeyB64, aad12(ids2));
+  return parsed && parsed.version === 1 ? { ...emptyExitStore(), ...parsed } : emptyExitStore();
+}
+function saveExitStore(path, store, boxKeyB64, ids2) {
+  saveStore("exit", path, store, boxKeyB64, aad12(ids2));
+}
+
+// src/exit.ts
+var SCOPE8 = "org";
+var CHECK_INTERVAL_MS = 15 * 6e4;
+var DEFAULT_CAP_BYTES = 5 * 1024 ** 3;
+var COUNTED_IDS_KEPT = 2e4;
+function str11(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function num(v2) {
+  return typeof v2 === "number" && Number.isFinite(v2) ? v2 : null;
+}
+function isKind6(v2) {
+  return v2 === "add" || v2 === "replace" || v2 === "remove" || v2 === "settings";
+}
+function isScheme(v2) {
+  return v2 === "http" || v2 === "https" || v2 === "socks5";
+}
+function templatesOf(v2) {
+  if (!v2 || typeof v2 !== "object") return null;
+  const t2 = v2;
+  const u2 = str11(t2.usernameTemplate);
+  const p2 = str11(t2.passwordTemplate);
+  return u2 && p2 ? { usernameTemplate: u2, passwordTemplate: p2 } : null;
+}
+function normalizeCountry(v2) {
+  const clean = typeof v2 === "string" ? v2.trim().toUpperCase() : "";
+  return /^[A-Z]{2}$/.test(clean) ? clean : null;
+}
+var PLACEHOLDERS = /\{(username|password|session|country|country_lc)\}/g;
+function placeholderValue(name25, v2) {
+  switch (name25) {
+    case "username":
+      return v2.username || "";
+    case "password":
+      return v2.password || "";
+    case "session":
+      return v2.session || "";
+    case "country":
+      return (v2.country || "").toUpperCase();
+    case "country_lc":
+      return (v2.country || "").toLowerCase();
+    default:
+      return "";
+  }
+}
+function renderTemplate(template, values) {
+  const out = (template || "").replace(/\[([^[\]]*)\]/g, (_m, inner) => {
+    const names = [...inner.matchAll(PLACEHOLDERS)].map((m2) => m2[1]);
+    if (names.length === 0) return values.session ? inner : "";
+    return names.every((n2) => placeholderValue(n2, values) !== "") ? inner : "";
+  });
+  return out.replace(PLACEHOLDERS, (_m, name25) => placeholderValue(name25, values));
+}
+function summarize11(p2, current) {
+  const who2 = p2.usernameHint ? ` (${p2.usernameHint})` : "";
+  switch (p2.kind) {
+    case "add":
+      return `Send some sites out through ${p2.providerName}${who2} instead of your firewall`;
+    case "replace":
+      return `Replace the ${p2.providerName} credential${who2}`;
+    case "remove":
+      return "Stop sending any traffic out through a residential exit";
+    case "settings":
+      if (p2.country !== void 0 && (p2.country ?? null) !== (current?.country ?? null)) {
+        return p2.country ? `Have your residential traffic come out in ${p2.country}` : "Stop asking for a particular country on your residential traffic";
+      }
+      return p2.sticky ? "Give each agent its own residential IP" : "Stop giving each agent its own residential IP";
+  }
+}
+function parseProposal9(payload) {
+  const changeId = str11(payload.changeId);
+  if (!changeId || !isKind6(payload.kind)) throw new Error("malformed exit.propose payload");
+  const kind = payload.kind;
+  const port = num(payload.port);
+  const provider = str11(payload.provider) ?? "custom";
+  if (kind === "add" || kind === "replace") {
+    if (!str11(payload.host) || !port || !isScheme(payload.scheme)) throw new Error("malformed exit.propose payload");
+  }
+  return {
+    changeId,
+    kind,
+    provider,
+    providerName: str11(payload.providerName) ?? provider,
+    scheme: isScheme(payload.scheme) ? payload.scheme : "http",
+    host: str11(payload.host) ?? "",
+    port: port ?? 0,
+    usernameTemplate: str11(payload.usernameTemplate) ?? "{username}",
+    passwordTemplate: str11(payload.passwordTemplate) ?? "{password}",
+    usernameHint: str11(payload.usernameHint),
+    sticky: payload.sticky === true,
+    // An absent key and an explicit `undefined` mean the same thing — say nothing about the cap.
+    // Only `null` removes it. (Over the wire only the absent form can occur, but the two must not
+    // diverge: the difference between "leave it" and "remove it" is a customer's invoice.)
+    capBytes: payload.capBytes === void 0 ? void 0 : num(payload.capBytes),
+    // Same tri-state as the cap. A malformed code is read as "any country" rather than passed on:
+    // a provider given junk here refuses the whole credential, which would take the credential's
+    // own traffic down with a typo in a setting.
+    country: payload.country === void 0 ? void 0 : normalizeCountry(payload.country),
+    // Nested under its own key, never read off the top-level `usernameTemplate` an add/replace
+    // already carries: a settings change must move the credential's shape only when it is ABOUT
+    // that, not because the two happen to share a field name.
+    ...templatesOf(payload.templates) ? { templates: templatesOf(payload.templates) } : {},
+    ...str11(payload.username) ? { username: String(payload.username) } : {},
+    ...str11(payload.password) ? { password: String(payload.password) } : {}
+  };
+}
+var ExitFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.check = opts.checkImpl ?? checkExit;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadExitStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  check;
+  reports = [];
+  checking = false;
+  lastCheckStartedAt = 0;
+  /**
+   * Flow ids already added to this month's total. Shipping is at-least-once — a POST that
+   * succeeded but whose cursor write did not lands the same batch again — and the control plane
+   * dedupes on `flow_id` but this counter had nothing to dedupe on, so a retry pushed the org
+   * towards its cap on bytes it had already been charged for. Bounded and in memory: a restart
+   * loses it, which leaves one batch's worth of a window, and the cap is a courtesy, not a ledger.
+   */
+  counted = /* @__PURE__ */ new Set();
+  handlers() {
+    return {
+      "exit.propose": (p2) => this.propose(p2),
+      "exit.confirm": (p2) => this.confirm(p2),
+      "exit.cancel": (p2) => this.cancel(p2),
+      "exit.check": () => this.runCheckCommand()
+    };
+  }
+  /**
+   * What the proxy reads (`exit.json`). The password is in it: the proxy is the one process that
+   * has to present it, and the file is written to a tmpfs the agent owns. Same bargain as the
+   * credential swap.
+   */
+  exitConfig() {
+    const u2 = this.store.upstream;
+    if (!u2) return { enabled: false };
+    return {
+      enabled: true,
+      upstream: {
+        scheme: u2.scheme,
+        host: u2.host,
+        port: u2.port,
+        username: u2.username,
+        password: u2.password,
+        username_template: u2.usernameTemplate,
+        password_template: u2.passwordTemplate
+      },
+      sticky: this.store.sticky,
+      sticky_salt: this.store.stickySalt,
+      cap_bytes: this.store.capBytes,
+      used_bytes: this.usedThisMonth(),
+      // The org default. A rule's own `exit_country` wins over it; the proxy resolves that.
+      country: this.store.country
+    };
+  }
+  /** What rides the heartbeat. No secret, and no field the control plane could mistake for policy. */
+  status() {
+    const u2 = this.store.upstream;
+    this.rollMonth();
+    return {
+      configured: !!u2,
+      provider: u2?.provider ?? null,
+      sticky: this.store.sticky,
+      hint: u2?.usernameHint ?? null,
+      cap_bytes: this.store.capBytes,
+      country: this.store.country,
+      last_check: this.store.lastCheck ? {
+        at: Math.round(this.store.lastCheck.at / 1e3),
+        ok: this.store.lastCheck.ok,
+        exit_ip: this.store.lastCheck.exitIp,
+        exit_country: this.store.lastCheck.exitCountry,
+        error: this.store.lastCheck.error
+      } : null,
+      usage: { month: this.store.usage.month, bytes_in: this.store.usage.bytesIn, bytes_out: this.store.usage.bytesOut }
+    };
+  }
+  /** Reports made without a command behind them (a check that ran on its own), drained per beat. */
+  drainReports() {
+    const r2 = this.reports;
+    this.reports = [];
+    return r2;
+  }
+  usedThisMonth() {
+    this.rollMonth();
+    return this.store.usage.bytesIn + this.store.usage.bytesOut;
+  }
+  rollMonth() {
+    const month = monthKey(this.now());
+    if (this.store.usage.month !== month) {
+      this.store.usage = { month, bytesIn: 0, bytesOut: 0 };
+      this.save();
+    }
+  }
+  /**
+   * Add up what the relayed flows moved. Fed from the traffic log by the activity shipper, which
+   * is already reading every record on its way to the control plane, so this needs no second
+   * reader and no IPC. One consequence worth knowing: while the control plane is unreachable the
+   * shipper does not advance, so the cap under-counts for the length of the outage.
+   */
+  noteTraffic(records) {
+    if (!this.store.upstream) return;
+    let bytesIn = 0;
+    let bytesOut = 0;
+    for (const raw of records) {
+      const r2 = raw;
+      if (r2?.effect !== "residential") continue;
+      const id = typeof r2.flow_id === "string" ? r2.flow_id : null;
+      if (id) {
+        if (this.counted.has(id)) continue;
+        this.counted.add(id);
+        if (this.counted.size > COUNTED_IDS_KEPT) {
+          for (const old of [...this.counted].slice(0, this.counted.size - COUNTED_IDS_KEPT)) this.counted.delete(old);
+        }
+      }
+      if (typeof r2.bytes_in === "number") bytesIn += Math.max(0, r2.bytes_in);
+      if (typeof r2.bytes_out === "number") bytesOut += Math.max(0, r2.bytes_out);
+    }
+    if (!bytesIn && !bytesOut) return;
+    this.rollMonth();
+    this.store.usage.bytesIn += bytesIn;
+    this.store.usage.bytesOut += bytesOut;
+    this.save();
+  }
+  /** Called on a timer. Runs the reachability check when it is due and the org has an exit. */
+  async tick() {
+    if (!this.store.upstream || this.checking) return;
+    if (this.now() - this.lastCheckStartedAt < CHECK_INTERVAL_MS) return;
+    await this.runCheck();
+  }
+  /** Run the reachability check now, whatever the schedule says. */
+  async forceCheck() {
+    this.lastCheckStartedAt = 0;
+    return this.runCheck();
+  }
+  async runCheck() {
+    const upstream = this.store.upstream;
+    if (!upstream || this.checking) return null;
+    this.checking = true;
+    this.lastCheckStartedAt = this.now();
+    try {
+      const result = await this.check(upstream, renderTemplate, {
+        session: this.store.sticky ? CHECK_SESSION : null,
+        // The org default, so what the card reports as the exit IP is the country most rules get.
+        country: this.store.country
+      });
+      const before = this.store.lastCheck;
+      this.store.lastCheck = { at: this.now(), ok: result.ok, exitIp: result.exitIp, exitCountry: result.exitCountry, error: result.error };
+      this.save();
+      if (!before || before.ok !== result.ok || before.exitIp !== result.exitIp || before.exitCountry !== result.exitCountry) {
+        const where = `${result.exitIp ?? "an unknown address"}${result.exitCountry ? ` in ${result.exitCountry}` : ""}`;
+        this.log(`[exit] ${result.ok ? `reachable, exiting from ${where}` : `unreachable: ${result.error}`}`);
+      }
+      return result;
+    } catch (err) {
+      this.store.lastCheck = { at: this.now(), ok: false, exitIp: null, exitCountry: null, error: err.message.slice(0, 200) };
+      this.save();
+      return null;
+    } finally {
+      this.checking = false;
+    }
+  }
+  save() {
+    this.store.updatedAt = new Date(this.now()).toISOString();
+    saveExitStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  // ---- commands ----
+  async runCheckCommand() {
+    if (!this.store.upstream) return { ok: false, status: "failed", message: "No residential exit is set up." };
+    const result = await this.forceCheck();
+    if (!result) return { ok: false, status: "failed", message: "The check could not run." };
+    return {
+      ok: result.ok,
+      status: result.ok ? "applied" : "failed",
+      message: result.error ?? "",
+      data: { exitIp: result.exitIp, exitCountry: result.exitCountry, latencyMs: result.latencyMs }
+    };
+  }
+  async apply(p2) {
+    if (p2.kind === "remove") {
+      this.store.upstream = null;
+      this.store.stickySalt = "";
+      this.store.lastCheck = null;
+      this.save();
+      await this.opts.onExitChanged?.();
+      this.log("[exit] residential exit removed");
+      return { configured: false };
+    }
+    if (p2.kind === "settings") {
+      this.store.sticky = p2.sticky;
+      if (p2.capBytes !== void 0) this.store.capBytes = p2.capBytes;
+      const countryMoved = p2.country !== void 0 && p2.country !== this.store.country;
+      if (p2.country !== void 0) this.store.country = p2.country;
+      const templatesMoved = !!p2.templates && !!this.store.upstream && (this.store.upstream.usernameTemplate !== p2.templates.usernameTemplate || this.store.upstream.passwordTemplate !== p2.templates.passwordTemplate);
+      if (templatesMoved && this.store.upstream && p2.templates) {
+        this.store.upstream.usernameTemplate = p2.templates.usernameTemplate;
+        this.store.upstream.passwordTemplate = p2.templates.passwordTemplate;
+      }
+      this.save();
+      await this.opts.onExitChanged?.();
+      this.log(`[exit] sticky ${p2.sticky ? "on" : "off"}, cap ${p2.capBytes ?? "none"}, country ${this.store.country ?? "any"}${templatesMoved ? ", credential shape updated" : ""}`);
+      const result2 = countryMoved || templatesMoved ? await this.forceCheck() : null;
+      return {
+        configured: !!this.store.upstream,
+        sticky: p2.sticky,
+        country: this.store.country,
+        ...result2 ? { reachable: result2.ok, exitIp: result2.exitIp, exitCountry: result2.exitCountry, ...result2.ok ? {} : { checkError: result2.error } } : {}
+      };
+    }
+    const previous = this.store.upstream;
+    const username = p2.username ?? previous?.username ?? "";
+    const password = p2.password ?? previous?.password ?? "";
+    if (!password) throw new Error("This change carries no credential.");
+    const upstream = {
+      provider: p2.provider,
+      scheme: p2.scheme,
+      host: p2.host,
+      port: p2.port,
+      username,
+      password,
+      usernameTemplate: p2.usernameTemplate,
+      passwordTemplate: p2.passwordTemplate,
+      usernameHint: p2.usernameHint ?? previous?.usernameHint ?? null
+    };
+    this.store.upstream = upstream;
+    this.store.sticky = p2.sticky;
+    if (p2.country !== void 0) this.store.country = p2.country;
+    if (p2.capBytes !== void 0) this.store.capBytes = p2.capBytes;
+    else if (!previous) this.store.capBytes = DEFAULT_CAP_BYTES;
+    this.store.stickySalt = randomBytes9(32).toString("hex");
+    this.store.lastCheck = null;
+    this.save();
+    await this.opts.onExitChanged?.();
+    this.log(`[exit] ${p2.kind === "add" ? "connected" : "replaced"} ${p2.providerName} (${p2.scheme}://${p2.host}:${p2.port}, sticky ${p2.sticky ? "on" : "off"}, country ${this.store.country ?? "any"})`);
+    const result = await this.runCheck();
+    return {
+      configured: true,
+      sticky: p2.sticky,
+      country: this.store.country,
+      reachable: result?.ok ?? false,
+      exitIp: result?.exitIp ?? null,
+      exitCountry: result?.exitCountry ?? null,
+      ...result && !result.ok ? { checkError: result.error } : {}
+    };
+  }
+  async propose(payload) {
+    const p2 = parseProposal9(payload);
+    const summary = summarize11(p2, { country: this.store.country });
+    const data = { changeId: p2.changeId, summary };
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", data, message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly." };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE8);
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE8, p2, "your organization's exit", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[exit] code sent for ${p2.kind} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str11(payload.changeId);
+    if (!changeId) throw new Error("malformed exit.confirm payload");
+    const code = str11(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE8, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const summary = summarize11(v2.proposal, { country: this.store.country });
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary, sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str11(payload.changeId);
+    this.codes.cancel(SCOPE8, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/connector-client.ts
+var DEFAULT_TIMEOUT_MS = 4e4;
+var ConnectorRuntimeError = class extends Error {
+  constructor(message2, code, status) {
+    super(message2);
+    this.code = code;
+    this.status = status;
+  }
+};
+var ConnectorRuntime = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.base = opts.baseUrl.replace(/\/$/, "");
+  }
+  fetchImpl;
+  timeoutMs;
+  base;
+  get baseUrl() {
+    return this.base;
+  }
+  async call(method, path, body, auth = true) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let res;
+    try {
+      res = await this.fetchImpl(`${this.base}${path}`, {
+        method,
+        headers: {
+          ...auth ? { Authorization: `Bearer ${this.opts.adminToken}` } : {},
+          ...body !== void 0 ? { "content-type": "application/json" } : {}
+        },
+        body: body !== void 0 ? JSON.stringify(body) : void 0,
+        signal: controller.signal,
+        redirect: "manual"
+      });
+    } catch (err) {
+      if (err.name === "AbortError") throw new ConnectorRuntimeError("The connector runtime did not answer in time.", "timeout", 504);
+      throw new ConnectorRuntimeError("The connector runtime is not reachable on this firewall.", "unreachable", 503);
+    } finally {
+      clearTimeout(timer);
+    }
+    const text2 = await res.text();
+    let parsed = {};
+    try {
+      parsed = text2 ? JSON.parse(text2) : {};
+    } catch {
+      parsed = {};
+    }
+    if (res.status >= 300 && res.status < 400) return {};
+    if (!res.ok || parsed.success === false) {
+      const code = typeof parsed.errorCode === "string" ? parsed.errorCode : null;
+      const message2 = typeof parsed.message === "string" && parsed.message ? parsed.message : `connector runtime ${res.status}`;
+      throw new ConnectorRuntimeError(message2, code, res.status);
+    }
+    return parsed.data !== void 0 ? parsed.data : parsed;
+  }
+  // ---- reads ----
+  async health() {
+    try {
+      await this.call("GET", "/v1/health", void 0, false);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  setup(service) {
+    return this.call("GET", `/v1/providers/${encodeURIComponent(service)}/setup`);
+  }
+  connections() {
+    return this.call("GET", "/v1/connections");
+  }
+  /** Redacted audit records; never a credential, never a request body. */
+  async runs(limit) {
+    const r2 = await this.call("GET", `/api/runs?limit=${limit}`);
+    return Array.isArray(r2) ? r2 : r2.items ?? [];
+  }
+  requestStatus(requestId) {
+    return this.call("GET", `/v1/connection-requests/${encodeURIComponent(requestId)}`);
+  }
+  // ---- connections ----
+  connectApiKey(service, body) {
+    return this.call("POST", `/v1/connections/${encodeURIComponent(service)}/connect/api-key`, body);
+  }
+  connectCustom(service, body) {
+    return this.call("POST", `/v1/connections/${encodeURIComponent(service)}/connect/custom-credential`, body);
+  }
+  replaceApiKey(appId, body) {
+    return this.call("POST", `/v1/connections/by-id/${encodeURIComponent(appId)}/connect/api-key`, body);
+  }
+  replaceCustom(appId, body) {
+    return this.call("POST", `/v1/connections/by-id/${encodeURIComponent(appId)}/connect/custom-credential`, body);
+  }
+  /** There is no `/v1` delete, so this is the console route the runtime documents for it. */
+  deleteConnection(service, alias) {
+    const q2 = alias ? `?connectionName=${encodeURIComponent(alias)}` : "";
+    return this.call("DELETE", `/api/connections/${encodeURIComponent(service)}${q2}`);
+  }
+  // ---- OAuth (the customer's own app) ----
+  putOAuthConfig(service, body) {
+    return this.call("PUT", `/api/oauth/configs/${encodeURIComponent(service)}`, body);
+  }
+  startAuthorization(service, body) {
+    return this.call("POST", `/v1/connections/${encodeURIComponent(service)}/connect`, body);
+  }
+  reauthorize(appId, body) {
+    return this.call("POST", `/v1/connections/by-id/${encodeURIComponent(appId)}/connect`, body);
+  }
+  /**
+   * Replay a callback the provider delivered to the control plane. Unauthenticated on the
+   * runtime's side by design: it is the route a browser is redirected to, and the `code` is
+   * worthless without the PKCE verifier and the client secret, which never leave this box.
+   */
+  completeCallback(query) {
+    return this.call("GET", `/oauth/callback?${query}`, void 0, false);
+  }
+  // ---- runtime tokens ----
+  createToken(body) {
+    return this.call("POST", "/api/runtime-tokens", { ...body, blockedActions: [], allowedProxies: [] });
+  }
+  /** A PUT must always send `allowedConnections`, or it silently drops the restriction. */
+  updateToken(id, body) {
+    return this.call("PUT", `/api/runtime-tokens/${encodeURIComponent(id)}`, { ...body, blockedActions: [], allowedProxies: [] });
+  }
+  revokeToken(id) {
+    return this.call("DELETE", `/api/runtime-tokens/${encodeURIComponent(id)}`);
+  }
+};
+
+// src/connector-store.ts
+function aad13(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:connectors`;
+}
+function emptyConnectorStore() {
+  return { version: 1, connections: {}, agents: {} };
+}
+function loadConnectorStore(path, boxKeyB64, ids2) {
+  const parsed = loadStoreOrEmpty("connectors", path, boxKeyB64, aad13(ids2));
+  return parsed && parsed.version === 1 && parsed.connections && parsed.agents ? parsed : emptyConnectorStore();
+}
+function saveConnectorStore(path, store, boxKeyB64, ids2) {
+  saveStore("connectors", path, store, boxKeyB64, aad13(ids2));
+}
+function servicesFor(store, agent) {
+  const services = /* @__PURE__ */ new Set();
+  for (const id of agent.connections) {
+    const c2 = store.connections[id];
+    if (c2) services.add(c2.service);
+  }
+  return [...services].sort();
+}
+
+// src/connectors.ts
+var SCOPE9 = "org";
+var OAUTH_PENDING_MS = 15 * 6e4;
+function str12(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function strMap(v2, max = 20) {
+  const out = {};
+  if (!v2 || typeof v2 !== "object") return out;
+  for (const [k2, value] of Object.entries(v2)) {
+    if (Object.keys(out).length >= max) break;
+    if (typeof value === "string" && value.length > 0 && /^[A-Za-z0-9_]{1,64}$/.test(k2)) out[k2] = value.slice(0, 4096);
+  }
+  return out;
+}
+function isKind7(v2) {
+  return v2 === "connect" || v2 === "replace" || v2 === "remove" || v2 === "assign" || v2 === "unassign" || v2 === "oauth_connect" || v2 === "oauth_reconnect";
+}
+var SERVICE_RE = /^[a-z0-9][a-z0-9_]{0,60}$/;
+function parseConnectorProposal(payload) {
+  const changeId = str12(payload.changeId);
+  const service = str12(payload.service);
+  if (!changeId || !service || !SERVICE_RE.test(service) || !isKind7(payload.kind)) throw new Error("malformed connectors.propose payload");
+  const agents = Array.isArray(payload.agents) ? payload.agents : [];
+  const secret = payload.secret;
+  return {
+    changeId,
+    kind: payload.kind,
+    service,
+    serviceName: str12(payload.serviceName) ?? service,
+    connectionId: str12(payload.connectionId),
+    label: str12(payload.label),
+    extra: strMap(payload.extra),
+    clientId: str12(payload.clientId),
+    authorizationOptionIds: Array.isArray(payload.authorizationOptionIds) ? payload.authorizationOptionIds.filter((s2) => typeof s2 === "string" && s2.length > 0).slice(0, 40) : [],
+    agents: agents.filter((a2) => str12(a2.vmId)).map((a2) => ({ vmId: String(a2.vmId), name: str12(a2.name) ?? String(a2.vmId), hostname: str12(a2.hostname), privateIp: str12(a2.privateIp) })),
+    ...secret ? {
+      secret: {
+        ...str12(secret.apiKey) ? { apiKey: String(secret.apiKey) } : {},
+        ...secret.values ? { values: strMap(secret.values, 30) } : {},
+        ...str12(secret.clientSecret) ? { clientSecret: String(secret.clientSecret) } : {},
+        ...secret.extraSecret ? { extraSecret: strMap(secret.extraSecret, 20) } : {}
+      }
+    } : {}
+  };
+}
+function summarizeConnector(p2) {
+  const named2 = p2.label ? `${p2.serviceName} (${p2.label})` : p2.serviceName;
+  const one = p2.agents[0];
+  const on = p2.agents.length === 1 ? ` to ${one.name}` : p2.agents.length > 1 ? ` to ${p2.agents.length} agents` : "";
+  switch (p2.kind) {
+    case "connect":
+    case "oauth_connect":
+      return `Connect ${named2}${on}`;
+    case "replace":
+      return `Replace the credentials of ${named2}`;
+    case "oauth_reconnect":
+      return `Sign in to ${named2} again`;
+    case "remove":
+      return `Remove ${named2} from the organization`;
+    case "assign":
+      return `Let ${one?.name ?? "the agent"} use ${named2}`;
+    case "unassign":
+      return `Stop ${one?.name ?? "the agent"} using ${named2}`;
+  }
+}
+var ConnectorsFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
+    this.store = loadConnectorStore(opts.storePath, opts.boxKey, opts.ids);
+  }
+  store;
+  codes;
+  log;
+  now;
+  pendingOauth = /* @__PURE__ */ new Map();
+  handlers() {
+    return {
+      "connectors.read": (p2) => this.read(p2),
+      "connectors.propose": (p2) => this.propose(p2),
+      "connectors.confirm": (p2) => this.confirm(p2),
+      "connectors.cancel": (p2) => this.cancel(p2),
+      "connectors.callback": (p2) => this.callback(p2),
+      "connectors.push": (p2) => this.push(p2),
+      "connectors.forget": (p2) => this.forget(p2)
+    };
+  }
+  /** What the console may see about this firewall's connectors: counts, never a credential. */
+  summary() {
+    return { connections: Object.keys(this.store.connections).length, agents: Object.keys(this.store.agents).length };
+  }
+  /** Token id → vm id, so a run record can be attributed to the agent that made the call. */
+  agentForToken(tokenId) {
+    return Object.entries(this.store.agents).find(([, a2]) => a2.tokenId === tokenId)?.[0] ?? null;
+  }
+  /** Runtime token → vm id and its private IP, for the connector gate's source check. */
+  agentForRuntimeToken(token2) {
+    const hit = Object.entries(this.store.agents).find(([, a2]) => a2.token === token2);
+    return hit ? { vmId: hit[0], privateIp: hit[1].privateIp } : null;
+  }
+  save() {
+    saveConnectorStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  // ---- reads ----
+  async read(payload) {
+    const kind = str12(payload.kind);
+    try {
+      if (kind === "setup") {
+        const service = str12(payload.service);
+        if (!service || !SERVICE_RE.test(service)) throw new Error("connectors.read setup needs a service");
+        const setup = await this.opts.runtime.setup(service);
+        return { ok: true, status: "done", data: { kind, service, auth: setup.auth ?? [], oauthClient: setup.oauthClient ?? null } };
+      }
+      if (kind === "connections") {
+        await this.reconcileConnections();
+        return { ok: true, status: "done", data: { kind, connections: Object.values(this.store.connections), agents: this.agentView() } };
+      }
+      throw new Error(`unknown connectors.read kind ${kind ?? "(none)"}`);
+    } catch (err) {
+      return { ok: false, status: "failed", message: messageOf(err), data: { kind } };
+    }
+  }
+  agentView() {
+    return Object.entries(this.store.agents).map(([vmId, a2]) => ({ vmId, name: a2.name, connections: a2.connections, hasToken: !!a2.token }));
+  }
+  /**
+   * Bring the store's view of the connections in line with the runtime's. The runtime is the
+   * owner: it can change a connection's state on its own (an OAuth credential that expired reads
+   * `reauth_required`), and a connection it no longer has must stop being offered here.
+   */
+  async reconcileConnections() {
+    const live = await this.opts.runtime.connections();
+    const byId = new Map(live.map((c2) => [c2.id, c2]));
+    let changed = false;
+    for (const [id, stored] of Object.entries(this.store.connections)) {
+      const l2 = byId.get(id);
+      if (!l2) {
+        delete this.store.connections[id];
+        for (const a2 of Object.values(this.store.agents)) a2.connections = a2.connections.filter((c2) => c2 !== id);
+        changed = true;
+        continue;
+      }
+      const next = this.mergeConnection(stored, l2);
+      if (JSON.stringify(next) !== JSON.stringify(stored)) {
+        this.store.connections[id] = next;
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+  mergeConnection(stored, live) {
+    return {
+      ...stored,
+      service: live.service,
+      alias: live.alias ?? stored.alias,
+      authType: live.authType ?? stored.authType,
+      accountLabel: live.accountLabel ?? live.displayName ?? stored.accountLabel,
+      state: live.status ?? stored.state,
+      lastError: live.status && live.status !== "active" ? stored.lastError ?? null : null
+    };
+  }
+  // ---- proposing ----
+  async propose(payload) {
+    const p2 = parseConnectorProposal(payload);
+    const summary = summarizeConnector(p2);
+    const data = { changeId: p2.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE9);
+      try {
+        const applied = await this.apply(p2);
+        return { ok: true, status: applied.status, message: applied.message ?? "", data: { ...data, ...applied.data, tofu: true } };
+      } catch (err) {
+        return { ok: false, status: "failed", message: messageOf(err), data };
+      }
+    }
+    const sent = await this.codes.send(SCOPE9, p2, "your organization's app connections", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[connectors] code sent for ${p2.kind} ${p2.service} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str12(payload.changeId);
+    const code = str12(payload.code) ?? "";
+    if (!changeId) throw new Error("malformed connectors.confirm payload");
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE9, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No change is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    try {
+      const applied = await this.apply(v2.proposal);
+      return { ok: true, status: applied.status, message: applied.message ?? "", data: { ...data, ...applied.data, summary: summarizeConnector(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+    } catch (err) {
+      return { ok: false, status: "failed", message: messageOf(err), data: { ...data, summary: summarizeConnector(v2.proposal) } };
+    }
+  }
+  async cancel(payload) {
+    const changeId = str12(payload.changeId);
+    this.codes.cancel(SCOPE9, changeId);
+    for (const [state, pending] of this.pendingOauth) if (pending.proposal.changeId === changeId) this.pendingOauth.delete(state);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  // ---- applying ----
+  async apply(p2) {
+    switch (p2.kind) {
+      case "connect":
+      case "replace":
+        return this.applyCredential(p2);
+      case "remove":
+        return this.applyRemove(p2);
+      case "assign":
+      case "unassign":
+        return this.applyAssignment(p2);
+      case "oauth_connect":
+      case "oauth_reconnect":
+        return this.applyOauthStart(p2);
+    }
+  }
+  /** An API key or a set of custom-credential fields: straight into the runtime, which validates it. */
+  async applyCredential(p2) {
+    const secret = p2.secret;
+    if (!secret || !secret.apiKey && !secret.values) throw new Error("no credential in the proposal");
+    const comment = p2.label ?? void 0;
+    let conn;
+    if (p2.kind === "replace") {
+      if (!p2.connectionId) throw new Error("a replacement needs the connection it replaces");
+      conn = secret.apiKey ? await this.opts.runtime.replaceApiKey(p2.connectionId, { apiKey: secret.apiKey, extra: p2.extra, comment }) : await this.opts.runtime.replaceCustom(p2.connectionId, { values: { ...p2.extra, ...secret.values }, comment });
+    } else {
+      conn = secret.apiKey ? await this.opts.runtime.connectApiKey(p2.service, { apiKey: secret.apiKey, extra: p2.extra, comment }) : await this.opts.runtime.connectCustom(p2.service, { values: { ...p2.extra, ...secret.values }, comment });
+    }
+    return this.recordAndAssign(p2, conn);
+  }
+  /** The connection exists in the runtime: remember it, put it on the named agents, push. */
+  async recordAndAssign(p2, conn) {
+    const iso = new Date(this.now()).toISOString();
+    const existing = this.store.connections[conn.id];
+    this.store.connections[conn.id] = {
+      id: conn.id,
+      service: conn.service,
+      alias: conn.alias ?? "default",
+      authType: conn.authType ?? "api_key",
+      accountLabel: conn.accountLabel ?? conn.displayName ?? null,
+      label: p2.label ?? existing?.label ?? null,
+      state: conn.status ?? "active",
+      lastError: null,
+      createdAt: existing?.createdAt ?? iso,
+      updatedAt: iso
+    };
+    for (const a2 of p2.agents) this.grant(a2, conn.id, true);
+    this.save();
+    const pushed = await this.pushAgents(this.agentsHolding(conn.id));
+    return {
+      status: "applied",
+      data: {
+        connection: this.publicConnection(conn.id),
+        assigned: p2.agents.map((a2) => a2.vmId),
+        applied: pushed.applied,
+        failed: pushed.failed
+      }
+    };
+  }
+  async applyRemove(p2) {
+    if (!p2.connectionId) throw new Error("a removal needs a connection id");
+    const stored = this.store.connections[p2.connectionId];
+    const holders = this.agentsHolding(p2.connectionId);
+    if (stored) {
+      try {
+        await this.opts.runtime.deleteConnection(stored.service, stored.alias);
+      } catch (err) {
+        if (!(err instanceof ConnectorRuntimeError) || err.status !== 404) throw err;
+      }
+    }
+    delete this.store.connections[p2.connectionId];
+    for (const a2 of Object.values(this.store.agents)) a2.connections = a2.connections.filter((c2) => c2 !== p2.connectionId);
+    this.save();
+    const pushed = await this.pushAgents(holders);
+    return { status: "applied", data: { connectionId: p2.connectionId, applied: pushed.applied, failed: pushed.failed } };
+  }
+  async applyAssignment(p2) {
+    if (!p2.connectionId) throw new Error("an assignment needs a connection id");
+    if (!this.store.connections[p2.connectionId]) throw new Error("This app is not connected on the firewall. Connect it again.");
+    const a2 = p2.agents[0];
+    if (!a2) throw new Error("no agent in the proposal");
+    this.grant(a2, p2.connectionId, p2.kind === "assign");
+    this.save();
+    const pushed = await this.pushAgents([a2.vmId]);
+    return { status: "applied", data: { connectionId: p2.connectionId, vmId: a2.vmId, assigned: p2.kind === "assign", applied: pushed.applied, failed: pushed.failed } };
+  }
+  /**
+   * Store the customer's own OAuth client and start an authorization. The `code` the provider
+   * hands back later cannot be spent without the verifier and the client secret, and both stay
+   * in the runtime on this box — which is what makes the control-plane relay safe.
+   */
+  async applyOauthStart(p2) {
+    if (p2.kind === "oauth_connect") {
+      if (!p2.clientId || !p2.secret?.clientSecret) throw new Error("an OAuth app needs its client id and secret");
+      const extra = { ...p2.extra, ...p2.secret.extraSecret ?? {} };
+      await this.opts.runtime.putOAuthConfig(p2.service, {
+        clientId: p2.clientId,
+        clientSecret: p2.secret.clientSecret,
+        ...Object.keys(extra).length ? { extra } : {}
+      });
+    }
+    const auth = p2.kind === "oauth_reconnect" && p2.connectionId ? await this.opts.runtime.reauthorize(p2.connectionId, {}) : await this.opts.runtime.startAuthorization(p2.service, { ...p2.authorizationOptionIds.length ? { authorizationOptionIds: p2.authorizationOptionIds } : {} });
+    this.forgetStaleOauth();
+    this.pendingOauth.set(auth.stateHandle, {
+      state: auth.stateHandle,
+      service: p2.service,
+      requestId: auth.connectionRequestId,
+      appId: p2.connectionId,
+      proposal: p2,
+      startedAt: this.now()
+    });
+    this.log(`[connectors] ${p2.service} authorization started (state ${auth.stateHandle.slice(0, 8)}\u2026)`);
+    return {
+      status: "awaiting_authorization",
+      data: { authorizationUrl: auth.authorizationUrl, state: auth.stateHandle, requestId: auth.connectionRequestId, expiresAt: auth.expiresAt ?? null }
+    };
+  }
+  /**
+   * The relayed callback. The control plane only carries `state` and `code` here; this checks the
+   * state is one WE minted (so the relay cannot complete an authorization nobody asked for),
+   * replays it on loopback, and reads the outcome from the runtime's own request record.
+   */
+  async callback(payload) {
+    const state = str12(payload.state);
+    const code = str12(payload.code);
+    const error62 = str12(payload.error);
+    if (!state) throw new Error("malformed connectors.callback payload");
+    this.forgetStaleOauth();
+    const pending = this.pendingOauth.get(state);
+    if (!pending) {
+      return { ok: false, status: "expired", message: "This sign-in is no longer waiting on your firewall. Start it again.", data: { state } };
+    }
+    this.pendingOauth.delete(state);
+    const data = { changeId: pending.proposal.changeId, state };
+    const query = new URLSearchParams({ state, ...code ? { code } : {}, ...error62 ? { error: error62 } : {} }).toString();
+    try {
+      await this.opts.runtime.completeCallback(query);
+    } catch (err) {
+      this.log(`[connectors] callback for ${pending.service} refused: ${messageOf(err)}`);
+    }
+    let status;
+    try {
+      status = await this.opts.runtime.requestStatus(pending.requestId);
+    } catch (err) {
+      return { ok: false, status: "failed", message: messageOf(err), data };
+    }
+    if (status.status !== "connected" || !status.appId) {
+      const message2 = status.errorMessage || (error62 ? `The provider refused the sign-in (${error62}).` : "The sign-in did not complete.");
+      return { ok: false, status: "failed", message: message2, data };
+    }
+    const live = (await this.opts.runtime.connections()).find((c2) => c2.id === status.appId);
+    if (!live) return { ok: false, status: "failed", message: "The sign-in completed but the connection is gone.", data };
+    const applied = await this.recordAndAssign(pending.proposal, live);
+    return { ok: true, status: "applied", message: "", data: { ...data, ...applied.data, summary: summarizeConnector(pending.proposal), tofu: false } };
+  }
+  forgetStaleOauth() {
+    for (const [state, p2] of this.pendingOauth) if (this.now() - p2.startedAt > OAUTH_PENDING_MS) this.pendingOauth.delete(state);
+  }
+  // ---- agents ----
+  agentOf(ref) {
+    let a2 = this.store.agents[ref.vmId];
+    if (!a2) {
+      a2 = { name: ref.name, hostname: ref.hostname, privateIp: ref.privateIp, tokenId: null, token: null, connections: [] };
+      this.store.agents[ref.vmId] = a2;
+    }
+    if (ref.name) a2.name = ref.name;
+    if (ref.hostname) a2.hostname = ref.hostname;
+    if (ref.privateIp) a2.privateIp = ref.privateIp;
+    return a2;
+  }
+  grant(ref, connectionId, on) {
+    const a2 = this.agentOf(ref);
+    a2.connections = on ? [.../* @__PURE__ */ new Set([...a2.connections, connectionId])] : a2.connections.filter((c2) => c2 !== connectionId);
+  }
+  agentsHolding(connectionId) {
+    return Object.entries(this.store.agents).filter(([, a2]) => a2.connections.includes(connectionId)).map(([vmId]) => vmId);
+  }
+  publicConnection(id) {
+    return this.store.connections[id] ?? null;
+  }
+  target(vmId) {
+    const host = this.store.agents[vmId]?.hostname ?? null;
+    if (!host) throw new Error("This agent has no hostname yet.");
+    return { vmId, hostname: host };
+  }
+  /**
+   * Bring an agent's runtime token in line with its grants and push the MCP entry to its box.
+   * A token is created on the first grant and narrowed on every change after that, so a
+   * connection taken away stops working the moment the firewall applies it — the agent box never
+   * has to be reachable for a revocation to bite.
+   */
+  async syncAgent(vmId) {
+    const a2 = this.store.agents[vmId];
+    if (!a2) return;
+    const services = servicesFor(this.store, a2);
+    const allowedActions = services.map((s2) => `${s2}.*`);
+    if (a2.connections.length === 0) {
+      if (a2.tokenId) {
+        try {
+          await this.opts.runtime.revokeToken(a2.tokenId);
+        } catch (err) {
+          this.log(`[connectors] could not revoke ${a2.name}'s token: ${messageOf(err)}`);
+        }
+      }
+      a2.tokenId = null;
+      a2.token = null;
+      this.save();
+      await this.opts.agent.post(this.target(vmId), "/connectors/apply", { remove: true });
+      return;
+    }
+    if (!a2.tokenId || !a2.token) {
+      const minted = await this.opts.runtime.createToken({ name: `controlclaw-agent-${vmId}`, allowedActions, allowedConnections: a2.connections });
+      a2.tokenId = minted.record.id;
+      a2.token = minted.token;
+    } else {
+      await this.opts.runtime.updateToken(a2.tokenId, { name: `controlclaw-agent-${vmId}`, allowedActions, allowedConnections: a2.connections });
+    }
+    this.save();
+    await this.opts.agent.post(this.target(vmId), "/connectors/apply", {
+      gateway: { url: this.opts.gatewayUrl, token: a2.token },
+      connections: a2.connections.map((id) => this.store.connections[id]).filter((c2) => !!c2).map((c2) => ({ id: c2.id, service: c2.service, alias: c2.alias, label: c2.label, accountLabel: c2.accountLabel }))
+    });
+  }
+  async pushAgents(vmIds) {
+    const applied = [];
+    const failed = [];
+    for (const vmId of vmIds) {
+      try {
+        await this.syncAgent(vmId);
+        applied.push(vmId);
+      } catch (err) {
+        failed.push({ vmId, error: messageOf(err) });
+      }
+    }
+    return { applied, failed };
+  }
+  /**
+   * A box came up: re-push what it should have. Nothing to confirm — it holds this already.
+   *
+   * "This firewall holds nothing for that agent" is reported as `empty`, never as `applied`. The
+   * control plane only asks for a push when its own rows say the agent has apps, so the two
+   * disagreeing means something is gone — most often this box was rebuilt and its store went with
+   * it. Answering `applied` there told the console every agent was fine while no token existed
+   * and no MCP entry had been pushed.
+   */
+  async push(payload) {
+    const vmId = str12(payload.vmId);
+    if (!vmId) throw new Error("malformed connectors.push payload");
+    const a2 = this.store.agents[vmId];
+    if (!a2 || a2.connections.length === 0) {
+      return {
+        ok: true,
+        status: "empty",
+        message: "This firewall has no app connections for that agent. Connect the apps again.",
+        data: { vmId, applied: [], failed: [], held: 0 }
+      };
+    }
+    if (str12(payload.hostname)) a2.hostname = String(payload.hostname);
+    if (str12(payload.name)) a2.name = String(payload.name);
+    if (str12(payload.privateIp)) a2.privateIp = String(payload.privateIp);
+    this.save();
+    const pushed = await this.pushAgents([vmId]);
+    return {
+      ok: pushed.failed.length === 0,
+      status: pushed.failed.length ? "failed" : "applied",
+      message: pushed.failed.map((f2) => f2.error).join("; "),
+      data: { vmId, applied: pushed.applied, failed: pushed.failed, connections: a2.connections }
+    };
+  }
+  /**
+   * An agent was deleted. Its token is revoked and its grants dropped with no code: this only
+   * takes access away, and leaving a live token behind for a box that no longer exists would be
+   * the insecure outcome.
+   */
+  async forget(payload) {
+    const vmId = str12(payload.vmId);
+    if (!vmId) throw new Error("malformed connectors.forget payload");
+    const a2 = this.store.agents[vmId];
+    if (!a2) return { ok: true, status: "applied", data: { vmId, revoked: false } };
+    let revoked = false;
+    if (a2.tokenId) {
+      try {
+        await this.opts.runtime.revokeToken(a2.tokenId);
+        revoked = true;
+      } catch (err) {
+        this.log(`[connectors] could not revoke the token of the deleted agent ${vmId}: ${messageOf(err)}`);
+      }
+    }
+    delete this.store.agents[vmId];
+    this.save();
+    return { ok: true, status: "applied", data: { vmId, revoked } };
+  }
+};
+function messageOf(err) {
+  return (err?.message ?? "the connector runtime failed").slice(0, 500);
+}
+
+// src/connector-runs.ts
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync7, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname3 } from "path";
+var DEFAULT_BATCH = 50;
+function toRunRecord(run, vmId) {
+  if (!run.id || !run.startedAt) return null;
+  const at2 = Date.parse(run.startedAt);
+  if (!Number.isFinite(at2)) return null;
+  return {
+    source: "connector_run",
+    run_id: run.id,
+    ts: at2 / 1e3,
+    vm_id: vmId,
+    service: run.service ?? "",
+    action_id: run.actionId ?? "",
+    caller: run.caller ?? null,
+    ok: run.ok === true,
+    // Rounded: the ingest schema is `z.number().int()`, and one fractional value would fail
+    // validation for the WHOLE batch — a 400, which the shipper treats as permanent and skips
+    // past, silently dropping every run in it.
+    duration_ms: typeof run.durationMs === "number" ? Math.round(run.durationMs) : null,
+    error_code: run.errorCode ?? null
+  };
+}
+var ConnectorRunShipper = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.state = readState(opts.statePath);
+  }
+  state;
+  fetchImpl;
+  log;
+  inFlight = false;
+  backoffMs = 0;
+  nextAttemptAt = 0;
+  async tick() {
+    if (this.inFlight || Date.now() < this.nextAttemptAt) return { shipped: 0 };
+    this.inFlight = true;
+    try {
+      const runs = await this.opts.runtime.runs(this.opts.batchSize ?? DEFAULT_BATCH);
+      const since = this.state.since ? Date.parse(this.state.since) : 0;
+      const fresh = runs.filter((r2) => r2.startedAt && Date.parse(r2.startedAt) > since);
+      if (fresh.length === 0) return { shipped: 0 };
+      const records = fresh.map((r2) => toRunRecord(r2, r2.runtimeTokenId ? this.opts.agentForToken(r2.runtimeTokenId) : null)).filter((r2) => !!r2);
+      if (records.length === 0) return { shipped: 0 };
+      const res = await this.fetchImpl(this.opts.activityUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
+        body: JSON.stringify({ records })
+      });
+      if (res.status === 400 || res.status === 413) {
+        this.log(`[connectors] run batch rejected (HTTP ${res.status}); skipping ${records.length} record(s)`);
+      } else if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const newest = fresh.reduce((max, r2) => Math.max(max, Date.parse(r2.startedAt)), since);
+      this.state = { since: new Date(newest).toISOString() };
+      writeState(this.opts.statePath, this.state);
+      this.backoffMs = 0;
+      return { shipped: records.length };
+    } catch (err) {
+      this.backoffMs = Math.min(this.backoffMs ? this.backoffMs * 2 : 5e3, 6e4);
+      this.nextAttemptAt = Date.now() + this.backoffMs;
+      this.log(`[connectors] run ship failed (${err.message}); retry in ${this.backoffMs / 1e3}s`);
+      return { shipped: 0 };
+    } finally {
+      this.inFlight = false;
+    }
+  }
+};
+function readState(path) {
+  if (!existsSync5(path)) return { since: null };
+  try {
+    const parsed = JSON.parse(readFileSync7(path, "utf8"));
+    return { since: typeof parsed.since === "string" ? parsed.since : null };
+  } catch {
+    return { since: null };
+  }
+}
+function writeState(path, state) {
+  mkdirSync4(dirname3(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync5(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync2(tmp, path);
+}
+
+// src/connector-gate.ts
+import { createServer, request as httpRequest } from "http";
+var ALLOWED = [
+  /^\/mcp$/,
+  /^\/mcp\/tools$/,
+  /^\/v1\/health$/,
+  /^\/v1\/apps(\/|$)/,
+  /^\/v1\/actions(\/|$)/,
+  /^\/v1\/proxy\//
+];
+var GATEWAY_TIMEOUT_MS = 12e4;
+function gateAllows(path) {
+  return ALLOWED.some((re2) => re2.test(path));
+}
+function deny(res, status, message2) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ success: false, message: message2, errorCode: status === 403 ? "source_not_allowed" : "not_found" }));
+}
+function bearer(req) {
+  const header = req.headers.authorization;
+  if (!header || Array.isArray(header)) return null;
+  const m2 = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return m2 ? m2[1].trim() : null;
+}
+function sameAddress(a2, b2) {
+  const norm = (v2) => (v2 ?? "").replace(/^::ffff:/i, "").trim();
+  const left = norm(a2);
+  return left.length > 0 && left === norm(b2);
+}
+function createConnectorGate(opts) {
+  const log = opts.log ?? ((l2) => console.log(l2));
+  return createServer((req, res) => {
+    const path = (req.url ?? "/").split("?")[0];
+    if (!gateAllows(path)) {
+      deny(res, 404, "Not found.");
+      req.resume();
+      return;
+    }
+    const token2 = bearer(req);
+    const agent = token2 ? opts.resolve(token2) : null;
+    if (agent) {
+      if (agent.privateIp && !sameAddress(req.socket.remoteAddress, agent.privateIp)) {
+        log(`[connectors] refused ${agent.vmId}'s token from ${req.socket.remoteAddress} (expected ${agent.privateIp})`);
+        deny(res, 403, "This token belongs to another agent.");
+        req.resume();
+        return;
+      }
+      if (!agent.privateIp) log(`[connectors] ${agent.vmId} has no private IP on file; allowing on the token alone`);
+    }
+    const upstream = httpRequest(
+      { host: opts.target.host, port: opts.target.port, method: req.method, path: req.url, headers: { ...req.headers, host: `${opts.target.host}:${opts.target.port}` } },
+      (up) => {
+        res.writeHead(up.statusCode ?? 502, up.headers);
+        up.pipe(res);
+      }
+    );
+    upstream.setTimeout(GATEWAY_TIMEOUT_MS, () => upstream.destroy(new Error("timeout")));
+    upstream.on("error", (err) => {
+      log(`[connectors] gate upstream failed: ${err.message}`);
+      if (!res.headersSent) deny(res, 502, "The connector runtime is not answering on this firewall.");
+      else res.end();
+    });
+    req.pipe(upstream);
+  });
+}
+
+// src/update.ts
+var SCOPE_PREFIX5 = "update:";
+var UPDATE_WINDOW_MS = 60 * 6e4;
+var UPDATE_POLL_MS = 3e4;
+function str13(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function summarize12(p2) {
+  return `Update the software on ${p2.agent.name}`;
+}
+function parseProposal10(payload) {
+  const changeId = str13(payload.changeId);
+  const agent = payload.agent ?? {};
+  const vmId = str13(agent.vmId);
+  const hostname3 = str13(agent.hostname);
+  if (!changeId || !vmId || !hostname3) throw new Error("malformed update.propose payload");
+  return { changeId, agent: { vmId, name: str13(agent.name) ?? vmId, hostname: hostname3 } };
+}
+var UpdateFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode, recovery: opts.recovery });
+  }
+  codes;
+  log;
+  now;
+  open = /* @__PURE__ */ new Map();
+  timer = null;
+  /**
+   * The boxes updating right now, as vm id → the window's deadline in epoch seconds (the proxy
+   * compares it with `time.time()`). Only this process opens a window, and only once the update was
+   * confirmed, so the control plane cannot open one.
+   */
+  windows() {
+    const out = {};
+    const now2 = this.now();
+    for (const [vmId, w2] of this.open) if (w2.until > now2) out[vmId] = Math.floor(w2.until / 1e3);
+    return out;
+  }
+  async openWindow(target) {
+    const openedAt = this.now();
+    this.open.set(target.vmId, { target, openedAt, until: openedAt + UPDATE_WINDOW_MS, sawRunning: false });
+    try {
+      await this.opts.onWindowsChanged?.();
+    } catch (err) {
+      this.open.delete(target.vmId);
+      throw new Error("Your firewall could not prepare for the update. Try again shortly.", { cause: err });
+    }
+    const pollMs = this.opts.pollMs ?? UPDATE_POLL_MS;
+    if (pollMs > 0 && !this.timer) {
+      this.timer = setInterval(() => void this.pollWindows(), pollMs);
+      this.timer.unref?.();
+    }
+  }
+  async closeWindow(vmId, why) {
+    if (!this.open.delete(vmId)) return;
+    this.log(`[update] window closed for ${vmId} (${why})`);
+    if (this.open.size === 0 && this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    try {
+      await this.opts.onWindowsChanged?.();
+    } catch (err) {
+      this.log(`[update] could not resync after closing the window for ${vmId}: ${err.message}`);
+    }
+  }
+  /**
+   * Ask each updating box how its run is going, and close the window once the run has finished.
+   *
+   * The box answers from a state file, and until cc-reprovision writes its first phase that file
+   * still holds the previous run's `done` or `failed`. So a finished phase only counts once this
+   * window has seen the run in progress, or when it was written after the window opened. A box that
+   * does not answer (it restarts its own agent part way through the run) keeps its window until the
+   * deadline.
+   */
+  async pollWindows() {
+    const now2 = this.now();
+    for (const [vmId, w2] of [...this.open]) {
+      if (w2.until <= now2) {
+        await this.closeWindow(vmId, "deadline");
+        continue;
+      }
+      let status;
+      try {
+        status = await this.opts.agent.get(w2.target, "/update");
+      } catch {
+        continue;
+      }
+      const phase = typeof status?.phase === "string" ? status.phase : "";
+      if (phase === "resolving" || phase === "installing" || phase === "running") {
+        w2.sawRunning = true;
+        continue;
+      }
+      if (phase !== "done" && phase !== "failed") continue;
+      const at2 = typeof status?.at === "string" ? Date.parse(status.at) : NaN;
+      if (w2.sawRunning || Number.isFinite(at2) && at2 > w2.openedAt) await this.closeWindow(vmId, `run ${phase}`);
+    }
+  }
+  handlers() {
+    return {
+      "update.propose": (p2) => this.propose(p2),
+      "update.confirm": (p2) => this.confirm(p2),
+      "update.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /** One pending update per box, not per org: updating two agents at once is legitimate. */
+  scope(vmId) {
+    return `${SCOPE_PREFIX5}${vmId}`;
+  }
+  target(p2) {
+    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
+  }
+  async apply(p2) {
+    await this.openWindow(this.target(p2));
+    let r2;
+    try {
+      r2 = await this.opts.agent.post(this.target(p2), "/update", {});
+    } catch (err) {
+      await this.closeWindow(p2.agent.vmId, "the box did not start the run");
+      throw err;
+    }
+    this.log(`[update] started on ${p2.agent.name}`);
+    return { vmId: p2.agent.vmId, phase: r2?.status?.phase ?? "resolving" };
+  }
+  /**
+   * Start a run on one agent box for a batch whose code was already confirmed (T-100).
+   *
+   * Exposed rather than copied, because everything that matters about starting an agent update is
+   * in `apply`: the update window has to be open before the run's first download, it has to be
+   * closed again if the box refuses to start, and the polling that eventually closes it has to be
+   * running. A second copy of that would be a second way to leave a window open for an hour.
+   *
+   * It performs NO consent check of its own. The caller — `UpdateAllFirewall` — is the only thing
+   * that calls it, and it does so after claiming this box out of a grant that a verified code
+   * wrote. Nothing on the command path reaches this method directly.
+   */
+  async applyToTarget(target, name25) {
+    return this.apply({ changeId: "", agent: { vmId: target.vmId, name: name25, hostname: target.hostname } });
+  }
+  async propose(payload) {
+    const p2 = parseProposal10(payload);
+    const summary = summarize12(p2);
+    const data = { changeId: p2.changeId, summary };
+    const routes = this.opts.codeRoutes();
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    if (routes.length === 0) {
+      this.codes.drop(this.scope(p2.agent.vmId));
+      const applied = await this.apply(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.codes.send(this.scope(p2.agent.vmId), p2, p2.agent.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[update] code sent for ${p2.agent.name} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, ...awaitingCodeData(sent) } };
+  }
+  async confirm(payload) {
+    const changeId = str13(payload.changeId);
+    const vmId = str13(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed update.confirm payload");
+    const code = str13(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(this.scope(vmId), changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.apply(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize12(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str13(payload.changeId);
+    const vmId = str13(payload.vmId);
+    if (vmId) this.codes.cancel(this.scope(vmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/backup-store.ts
+function aad14(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:backup`;
+}
+function emptyBackupStore() {
+  return { version: 1, keypair: null, recovery: null };
+}
+function loadBackupStore(path, boxKey, ids2) {
+  const loaded2 = loadStoreOrEmpty("backup", path, boxKey, aad14(ids2));
+  if (!loaded2) return emptyBackupStore();
+  return { version: 1, keypair: loaded2.keypair ?? null, recovery: loaded2.recovery ? { ...loaded2.recovery, signingPublicKey: loaded2.recovery.signingPublicKey ?? null } : null };
+}
+function saveBackupStore(path, store, boxKey, ids2) {
+  saveStore("backup", path, store, boxKey, aad14(ids2));
+}
+
+// src/self-backup.ts
+import { readFile as readFile2, stat } from "fs/promises";
+var SELF_BACKUP_KIND = "firewall";
+var MAX_SELF_BACKUP_BYTES = 8 * 1024 * 1024;
+var SelfBackup = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+  }
+  fetchImpl;
+  now;
+  log;
+  async run(input2) {
+    const files = [];
+    const entries = [];
+    let plainBytes = 0;
+    for (const path of this.opts.files ?? FIREWALL_BACKUP_FILES) {
+      let st2;
+      try {
+        st2 = await stat(path);
+      } catch {
+        continue;
+      }
+      if (!st2.isFile()) continue;
+      if (plainBytes + st2.size > MAX_SELF_BACKUP_BYTES) throw new Error("This firewall's state is larger than a firewall backup is meant to carry.");
+      const body = await readFile2(path);
+      files.push({ path, mode: st2.mode & 4095, base64: body.toString("base64") });
+      entries.push({ path, bytes: body.length, mode: st2.mode & 4095, kind: "file" });
+      plainBytes += body.length;
+    }
+    if (entries.length === 0) throw new Error("There is nothing on this firewall to back up yet.");
+    const manifest = {
+      version: 1,
+      kind: SELF_BACKUP_KIND,
+      takenAt: new Date(this.now()).toISOString(),
+      root: "/",
+      entries,
+      totalBytes: plainBytes,
+      excluded: []
+    };
+    const hash2 = await manifestHash(manifest);
+    const enc = await makeEncryptor(input2.dataKey, {
+      orgId: this.opts.ids.orgId,
+      vmId: this.opts.ids.boxId,
+      backupId: input2.backupId,
+      kind: SELF_BACKUP_KIND
+    });
+    const plain = Buffer.from(JSON.stringify({ manifest, files }), "utf8");
+    const parts = [];
+    for (let at2 = 0; at2 < plain.length; at2 += CHUNK_BYTES) parts.push(enc.push(plain.subarray(at2, Math.min(at2 + CHUNK_BYTES, plain.length))));
+    parts.push(enc.final());
+    const blob = Buffer.concat(parts);
+    const res = await this.fetchImpl(input2.uploadUrl, {
+      method: "PUT",
+      headers: { "content-length": String(blob.length), "content-type": "application/octet-stream" },
+      body: blob
+    });
+    if (!res.ok) throw new Error(`The backup store refused the upload (HTTP ${res.status}).`);
+    this.log(`[backup] firewall state sealed: ${entries.length} file(s), ${blob.length} bytes`);
+    return {
+      header: enc.header,
+      manifestHash: hash2,
+      plainBytes,
+      cipherBytes: blob.length,
+      entries: entries.length,
+      wrapped: await wrapDataKey(input2.dataKey, input2.recovery.publicKey),
+      recoveryFingerprint: input2.recovery.fingerprint,
+      takenAt: manifest.takenAt
+    };
+  }
+};
+
+// src/backup.ts
+var RUN_REPORT_PREFIX = "backup.done:";
+var RESTORE_REPORT_PREFIX = "backup.restored:";
+var SELF_RESTORE_REPORT_PREFIX = "backup.firewall-restored:";
+var RESTORE_PREFIX = "backup-restore:";
+var RECOVERY_SCOPE = "backup-recovery:org";
+var SELF_RESTORE_SCOPE = "backup-firewall-restore:self";
+var KINDS = /* @__PURE__ */ new Set(["workspace", "state", "gbrain"]);
+function str14(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function isPublicKey(v2) {
+  return v2.length === 44 && /^[A-Za-z0-9+/]{43}=$/.test(v2);
+}
+function httpsUrl(v2) {
+  const s2 = str14(v2);
+  if (!s2 || s2.length > 4096) return null;
+  try {
+    return new URL(s2).protocol === "https:" ? s2 : null;
+  } catch {
+    return null;
+  }
+}
+function summarizeRestore(p2) {
+  const when = p2.takenAt ? ` from ${p2.takenAt.slice(0, 16).replace("T", " ")} UTC` : "";
+  if (p2.kind === "gbrain") return `Replace everything in your organization's brain with a backup${when}`;
+  const what = p2.kind === "workspace" ? "files" : "settings";
+  return `Replace ${p2.agent.name}'s ${what} with a backup${when}`;
+}
+function summarizeRecovery(p2, own2) {
+  return p2.replaces ? `Replace your backup recovery key (new ${p2.fingerprint}, old ${p2.replaces}); this firewall's key is ${own2}` : `Set your backup recovery key to ${p2.fingerprint}; this firewall's key is ${own2}`;
+}
+function summarizeSelfRestore(p2, own2) {
+  const when = p2.takenAt ? ` from ${p2.takenAt.slice(0, 16).replace("T", " ")} UTC` : "";
+  return `Replace this firewall's keys, certificate authority and rules with its backup${when}; the key being replaced is ${own2}`;
+}
+var BackupFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.store = loadBackupStore(opts.storePath, opts.boxKey, opts.ids);
+    const codeOpts = { agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode };
+    this.restoreCodes = new ConsentCodes(codeOpts);
+    this.recoveryCodes = new ConsentCodes(codeOpts);
+    this.selfRestoreCodes = new ConsentCodes(codeOpts);
+    void this.refreshControlFingerprint();
+  }
+  store;
+  /** Outcomes of work that outlived its command, drained onto the next heartbeat. */
+  reports = [];
+  /** In-flight work, so a second ask for the same backup does not start a second archive. */
+  running = /* @__PURE__ */ new Set();
+  restoreCodes;
+  recoveryCodes;
+  selfRestoreCodes;
+  log;
+  now;
+  /**
+   * `recoveryKeyFingerprint` of the pair this firewall holds — the string the owner compares with
+   * what `npx @controlclaw/recover` prints. Cached because it rides every heartbeat and hashing it
+   * is the only async thing `status()` would otherwise need.
+   */
+  controlFingerprint = null;
+  async refreshControlFingerprint() {
+    const r2 = this.store.recovery;
+    this.controlFingerprint = r2?.signingPublicKey ? await recoveryKeyFingerprint({ publicKey: r2.publicKey, signingPublicKey: r2.signingPublicKey }) : null;
+  }
+  /** Drained by `FirewallControl.extraResults` on every beat. */
+  drainReports() {
+    const out = this.reports;
+    this.reports = [];
+    return out;
+  }
+  /**
+   * Run `work` detached and report its outcome later under `commandId`. Nothing here throws: a
+   * failure becomes a report, because the command that started it has already been settled and
+   * there is nobody left to throw to.
+   */
+  later(commandId, label, work) {
+    if (this.running.has(commandId)) return;
+    this.running.add(commandId);
+    void work().then((data) => {
+      this.reports.push({ command_id: commandId, ok: true, status: "done", message: "", data });
+    }).catch((err) => {
+      const message2 = (err.message ?? "the backup failed").slice(0, 500);
+      this.log(`[backup] ${label} failed: ${message2}`);
+      this.reports.push({ command_id: commandId, ok: false, status: "failed", message: message2, data: {} });
+    }).finally(() => this.running.delete(commandId));
+  }
+  handlers() {
+    const frozen = {
+      ok: false,
+      status: "retry",
+      message: "This firewall has been put back from its backup and is restarting onto it. Try again in a minute.",
+      data: {}
+    };
+    const guard = (h2) => (p2) => this.restoring ? Promise.resolve(frozen) : h2(p2);
+    const handlers = {
+      "backup.run": (p2) => this.run(p2),
+      "backup.firewall-run": (p2) => this.runSelf(p2),
+      "backup.restore.propose": (p2) => this.proposeRestore(p2),
+      "backup.restore.confirm": (p2) => this.confirmRestore(p2),
+      "backup.restore.cancel": (p2) => this.cancelRestore(p2),
+      "backup.recovery.propose": (p2) => this.proposeRecovery(p2),
+      "backup.recovery.confirm": (p2) => this.confirmRecovery(p2),
+      "backup.recovery.cancel": (p2) => this.cancelRecovery(p2),
+      "backup.recovery.rebind": (p2) => this.rebindRecovery(p2),
+      "backup.firewall-restore": (p2) => this.proposeSelfRestore(p2),
+      "backup.firewall-restore.confirm": (p2) => this.confirmSelfRestore(p2),
+      "backup.firewall-restore.cancel": (p2) => this.cancelSelfRestore(p2)
+    };
+    return Object.fromEntries(Object.entries(handlers).map(([k2, h2]) => [k2, guard(h2)]));
+  }
+  /**
+   * What the console shows about backups, carried on the heartbeat because nothing can call in here.
+   * Both fingerprints and the public key are safe to publish — the point of a public key — and the
+   * fingerprint is what lets an owner check they are wrapping to the right firewall.
+   */
+  status() {
+    const kp = this.store.keypair;
+    if (!kp) return null;
+    return {
+      publicKey: kp.publicKey,
+      fingerprint: kp.fingerprint,
+      recovery: this.store.recovery ? {
+        fingerprint: this.store.recovery.fingerprint,
+        tofu: this.store.recovery.tofu,
+        setAt: this.store.recovery.setAt,
+        // Set once the console has sent the Ed25519 half. Null means the recovery CLI cannot
+        // talk to this box yet, which is what the console tells the owner.
+        control: this.controlFingerprint
+      } : null
+    };
+  }
+  /**
+   * What `recovery.ts` needs to check a signature: the two public halves of the recovery key this
+   * firewall was given, or null when it has none. Nothing secret crosses this boundary.
+   */
+  recoveryKeys() {
+    const r2 = this.store.recovery;
+    return r2 ? { publicKey: r2.publicKey, signingPublicKey: r2.signingPublicKey ?? null, fingerprint: r2.fingerprint } : null;
+  }
+  /** This box's own backup keypair, so a CLI can seal a data key to it. Null before first use. */
+  ownKeypair() {
+    return this.store.keypair;
+  }
+  /**
+   * Made at start-up (`ensureKeypair`, from index.ts) rather than on first use: a rebuilt firewall
+   * has to report a key on its first beat, or the console keeps showing the torn-down box's key as
+   * this one's and "Put the firewall back" seals to a key that no longer exists.
+   */
+  async ensureKeypair() {
+    await this.keypair();
+  }
+  async keypair() {
+    if (this.store.keypair) return this.store.keypair;
+    if (isStoreUnreadable("backup")) {
+      throw new Error("this firewall cannot read its backup store, so it will not mint a replacement key over it");
+    }
+    const kp = await generateRecipientKeypair();
+    this.store = { ...this.store, keypair: kp };
+    this.save();
+    this.log(`[backup] generated this firewall's backup key (${kp.fingerprint})`);
+    return kp;
+  }
+  /**
+   * Set the moment a self-restore has landed on disk. From then until systemd restarts this
+   * process, everything in memory (the box key above all) describes the box that was just
+   * replaced, and a single `save()` would put it back over the restored store — which is exactly
+   * what a `backup.recovery.rebind` handled in that window did on prod, 2026-09-22.
+   */
+  restoring = false;
+  save() {
+    if (this.restoring) {
+      this.log("[backup] not writing the store: this firewall has been put back from its backup and is restarting onto it");
+      return;
+    }
+    saveBackupStore(this.opts.storePath, this.store, this.opts.boxKey, this.opts.ids);
+  }
+  target(agent) {
+    return { vmId: agent.vmId, hostname: agent.hostname };
+  }
+  parseAgent(payload) {
+    const a2 = payload.agent ?? {};
+    const vmId = str14(a2.vmId);
+    const hostname3 = str14(a2.hostname);
+    if (!vmId || !hostname3) throw new Error("malformed backup payload: the agent is not named");
+    return { vmId, name: str14(a2.name) ?? vmId, hostname: hostname3 };
+  }
+  // ---- taking one ----
+  /**
+   * Seal and upload both archives of one backup. One data key for the backup, wrapped once per
+   * recipient; the archives differ only in the associated data the box binds into each stream, so
+   * one blob can never be served in place of the other.
+   */
+  async run(payload) {
+    const backupId = str14(payload.backupId);
+    if (!backupId) throw new Error("malformed backup.run payload: no backupId");
+    const agent = this.parseAgent(payload);
+    const uploads = payload.uploads ?? {};
+    const kinds = (Array.isArray(payload.kinds) ? payload.kinds : []).filter((k2) => typeof k2 === "string" && KINDS.has(k2));
+    if (kinds.length === 0) throw new Error("malformed backup.run payload: no archives asked for");
+    const urls = [];
+    for (const kind of kinds) {
+      const uploadUrl = httpsUrl(uploads[kind]);
+      if (!uploadUrl) return { ok: false, status: "failed", message: `No upload address for the ${kind} archive.`, data: { backupId } };
+      urls.push({ kind, uploadUrl });
+    }
+    const kp = await this.keypair();
+    const dataKey = await randomDataKey();
+    const wraps = [
+      { recipient: "firewall", fingerprint: kp.fingerprint, wrapped: await wrapDataKey(dataKey, kp.publicKey) }
+    ];
+    if (this.store.recovery) {
+      wraps.push({
+        recipient: "recovery",
+        fingerprint: this.store.recovery.fingerprint,
+        wrapped: await wrapDataKey(dataKey, this.store.recovery.publicKey)
+      });
+    }
+    this.later(`${RUN_REPORT_PREFIX}${backupId}`, `backup of ${agent.name}`, async () => {
+      const archives = [];
+      for (const { kind, uploadUrl } of urls) {
+        const r2 = await this.opts.agent.post(this.target(agent), "/backup/run", {
+          orgId: this.opts.ids.orgId,
+          vmId: agent.vmId,
+          backupId,
+          kind,
+          dataKey,
+          uploadUrl
+        });
+        archives.push({
+          kind,
+          header: r2.header,
+          manifestHash: r2.manifestHash,
+          plainBytes: r2.plainBytes,
+          cipherBytes: r2.cipherBytes,
+          entries: r2.entries,
+          excludedBytes: r2.excludedBytes,
+          takenAt: r2.takenAt
+        });
+      }
+      this.log(`[backup] sealed ${archives.length} archive(s) of ${agent.name} for ${wraps.length} recipient(s)`);
+      return { backupId, archives, wraps, recovery: this.store.recovery !== null };
+    });
+    return { ok: true, status: "running", data: { backupId, wraps, recovery: this.store.recovery !== null } };
+  }
+  /** This box's own state. Wrapped to the recovery key only — its own key is one of the files. */
+  async runSelf(payload) {
+    const backupId = str14(payload.backupId);
+    const uploadUrl = httpsUrl(payload.uploadUrl);
+    if (!backupId || !uploadUrl) throw new Error("malformed backup.firewall-run payload");
+    if (!this.opts.selfBackup) return { ok: false, status: "unavailable", message: "This firewall cannot back itself up.", data: { backupId } };
+    const recovery = this.store.recovery;
+    if (!recovery) {
+      return {
+        ok: false,
+        status: "no_recovery_key",
+        message: "A firewall backup can only be sealed to your recovery key, and this organisation has not set one yet.",
+        data: { backupId }
+      };
+    }
+    const dataKey = await randomDataKey();
+    const selfBackup = this.opts.selfBackup;
+    const own2 = await this.keypair();
+    this.later(`${RUN_REPORT_PREFIX}${backupId}`, "backup of this firewall", async () => {
+      const r2 = await selfBackup.run({ backupId, uploadUrl, dataKey, recovery });
+      return {
+        backupId,
+        archives: [
+          {
+            kind: "firewall",
+            header: r2.header,
+            manifestHash: r2.manifestHash,
+            plainBytes: r2.plainBytes,
+            cipherBytes: r2.cipherBytes,
+            entries: r2.entries,
+            takenAt: r2.takenAt,
+            firewallFingerprint: own2.fingerprint
+          }
+        ],
+        wraps: [{ recipient: "recovery", fingerprint: r2.recoveryFingerprint, wrapped: r2.wrapped }]
+      };
+    });
+    return { ok: true, status: "running", data: { backupId } };
+  }
+  // ---- putting one back ----
+  parseRestore(payload) {
+    const changeId = str14(payload.changeId);
+    const backupId = str14(payload.backupId);
+    const kind = str14(payload.kind);
+    const header = str14(payload.header);
+    const manifestHash2 = str14(payload.manifestHash);
+    const downloadUrl = httpsUrl(payload.downloadUrl);
+    const wrapped = str14(payload.wrapped);
+    if (!changeId || !backupId || !kind || !KINDS.has(kind) || !header || !manifestHash2 || !downloadUrl || !wrapped) {
+      throw new Error("malformed backup.restore.propose payload");
+    }
+    return {
+      changeId,
+      backupId,
+      agent: this.parseAgent(payload),
+      kind,
+      header,
+      manifestHash: manifestHash2,
+      downloadUrl,
+      wrapped,
+      takenAt: str14(payload.takenAt),
+      sourceVmId: (() => {
+        const v2 = str14(payload.sourceVmId);
+        return v2 && /^[A-Za-z0-9_-]{1,64}$/.test(v2) ? v2 : null;
+      })()
+    };
+  }
+  /**
+   * Unwrap the data key and hand it to the box with the download address. This is the only moment a
+   * data key leaves this file, and it goes over the same signed channel as a channel token: HTTPS to
+   * the agent's hostname with a 30 s token this box signed, `purpose: "backup"`, which the agent
+   * accepts only against the pinned mitm key.
+   */
+  async applyRestore(p2) {
+    const kp = this.store.keypair;
+    if (!kp) throw new Error("This firewall has no backup key, so it cannot open a backup.");
+    let dataKey;
+    try {
+      dataKey = await unwrapDataKey(p2.wrapped, kp.secretKey);
+    } catch {
+      throw new Error("This firewall cannot open that backup. It was taken before the firewall was rebuilt, so it needs your recovery key.");
+    }
+    this.later(`${RESTORE_REPORT_PREFIX}${p2.changeId}`, `restore of ${p2.kind} onto ${p2.agent.name}`, async () => {
+      const r2 = await this.opts.agent.post(this.target(p2.agent), "/backup/restore", {
+        orgId: this.opts.ids.orgId,
+        vmId: p2.agent.vmId,
+        backupId: p2.backupId,
+        kind: p2.kind,
+        dataKey,
+        header: p2.header,
+        manifestHash: p2.manifestHash,
+        downloadUrl: p2.downloadUrl,
+        ...p2.sourceVmId && p2.sourceVmId !== p2.agent.vmId ? { sourceVmId: p2.sourceVmId } : {}
+      });
+      this.log(`[backup] restored ${p2.kind} onto ${p2.agent.name}`);
+      return { changeId: p2.changeId, vmId: p2.agent.vmId, kind: p2.kind, entries: r2.entries, restarted: r2.restarted };
+    });
+    return { vmId: p2.agent.vmId, kind: p2.kind, backupId: p2.backupId };
+  }
+  async proposeRestore(payload) {
+    const p2 = this.parseRestore(payload);
+    const summary = summarizeRestore(p2);
+    const data = { changeId: p2.changeId, backupId: p2.backupId, summary };
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.restoreCodes.drop(this.scopeFor(p2.agent.vmId));
+      const applied = await this.applyRestore(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    if (this.store.keypair) {
+      try {
+        await unwrapDataKey(p2.wrapped, this.store.keypair.secretKey);
+      } catch {
+        return {
+          ok: false,
+          status: "needs_recovery_key",
+          message: "This firewall cannot open that backup. It was taken before the firewall was rebuilt, so it needs your recovery key.",
+          data
+        };
+      }
+    }
+    const sent = await this.restoreCodes.send(this.scopeFor(p2.agent.vmId), p2, p2.agent.name, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[backup] restore code sent for ${p2.agent.name} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  /** One pending restore per box, not per org: restoring two agents at once is legitimate. */
+  scopeFor(vmId) {
+    return `${RESTORE_PREFIX}${vmId}`;
+  }
+  async confirmRestore(payload) {
+    const changeId = str14(payload.changeId);
+    const vmId = str14(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed backup.restore.confirm payload");
+    const data = { changeId };
+    const v2 = this.restoreCodes.verify(this.scopeFor(vmId), changeId, str14(payload.code) ?? "");
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No restore is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = await this.applyRestore(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeRestore(v2.proposal), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancelRestore(payload) {
+    const changeId = str14(payload.changeId);
+    const vmId = str14(payload.vmId);
+    if (vmId) this.restoreCodes.cancel(this.scopeFor(vmId), changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  // ---- the recovery key ----
+  async proposeRecovery(payload) {
+    const changeId = str14(payload.changeId);
+    const publicKey = str14(payload.publicKey);
+    if (!changeId || !publicKey) throw new Error("malformed backup.recovery.propose payload");
+    if (!isPublicKey(publicKey)) {
+      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
+    }
+    const signingPublicKey = str14(payload.signingPublicKey);
+    if (signingPublicKey && !isPublicKey(signingPublicKey)) {
+      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: { changeId } };
+    }
+    const own2 = await this.keypair();
+    const p2 = {
+      changeId,
+      publicKey,
+      signingPublicKey,
+      fingerprint: await fingerprint(publicKey),
+      replaces: this.store.recovery?.fingerprint ?? null
+    };
+    const summary = summarizeRecovery(p2, own2.fingerprint);
+    const data = { changeId, summary, fingerprint: p2.fingerprint, firewallFingerprint: own2.fingerprint, firewallPublicKey: own2.publicKey };
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.recoveryCodes.drop(RECOVERY_SCOPE);
+      this.setRecovery(p2, true);
+      return { ok: true, status: "applied", data: { ...data, tofu: true } };
+    }
+    const sent = await this.recoveryCodes.send(RECOVERY_SCOPE, p2, "your organization's backups", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[backup] recovery key code sent via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  setRecovery(p2, tofu) {
+    this.store = {
+      ...this.store,
+      recovery: {
+        publicKey: p2.publicKey,
+        signingPublicKey: p2.signingPublicKey,
+        fingerprint: p2.fingerprint,
+        tofu,
+        setAt: new Date(this.now()).toISOString()
+      }
+    };
+    this.save();
+    void this.announceRecovery();
+    this.log(`[backup] recovery key ${p2.replaces ? "replaced" : "set"}: ${p2.fingerprint}${tofu ? " (first use, no code)" : ""}`);
+  }
+  /**
+   * On the console, deliberately, and the one line the whole offline path rests on. The control
+   * plane relayed this key; if it substituted one of its own, everything else about the restore
+   * would still look right. So the box prints what it was actually given, on the serial console the
+   * provider gives the owner, and `npx @controlclaw/recover` prints the same string from the key
+   * they typed. See `docs/security-design.md` § Backups.
+   */
+  async announceRecovery() {
+    const r2 = this.store.recovery;
+    if (!r2) return;
+    await this.refreshControlFingerprint();
+    this.log(`[mitm-agent] recovery key fingerprint: ${r2.fingerprint}`);
+    this.log(
+      this.controlFingerprint ? `[mitm-agent] recovery command key: ${this.controlFingerprint} \u2014 npx @controlclaw/recover must print this exact line` : "[mitm-agent] recovery command key: none (this key predates the recovery CLI; replace it in Settings \u2192 Backups to use one)"
+    );
+  }
+  /**
+   * A freshly rebuilt firewall holds no recovery key, so it can neither wrap a backup to one nor
+   * check a signature from one. `backup.recovery.rebind` gives it back the pair the organisation
+   * already had, and is accepted ONLY on a firewall that holds none — a box that has one is not in
+   * this situation, and changing it is `backup.recovery.propose`, which asks a person first.
+   *
+   * There is no consent code, for the same reason the first recovery key has none: a box with no
+   * recovery key has no channels either, so there is nobody to ask. That makes this the one thing
+   * the control plane could lie about, which is why the box prints what it was given.
+   */
+  async rebindRecovery(payload) {
+    const publicKey = str14(payload.publicKey);
+    const signingPublicKey = str14(payload.signingPublicKey);
+    if (!publicKey || !signingPublicKey || !isPublicKey(publicKey) || !isPublicKey(signingPublicKey)) {
+      return { ok: false, status: "failed", message: "That is not a recovery key this firewall can use.", data: {} };
+    }
+    if (this.store.recovery) {
+      return {
+        ok: false,
+        status: "already_set",
+        message: `This firewall already holds a recovery key (${this.store.recovery.fingerprint}), so it will not take another without a confirmation.`,
+        data: { fingerprint: this.store.recovery.fingerprint }
+      };
+    }
+    const own2 = await this.keypair();
+    const fingerprint2 = await fingerprint(publicKey);
+    this.setRecovery({ changeId: "", publicKey, signingPublicKey, fingerprint: fingerprint2, replaces: null }, true);
+    return {
+      ok: true,
+      status: "applied",
+      // Computed rather than read off the cache, which `setRecovery` refreshes asynchronously.
+      data: {
+        fingerprint: fingerprint2,
+        control: await recoveryKeyFingerprint({ publicKey, signingPublicKey }),
+        firewallFingerprint: own2.fingerprint,
+        firewallPublicKey: own2.publicKey
+      }
+    };
+  }
+  async confirmRecovery(payload) {
+    const changeId = str14(payload.changeId);
+    if (!changeId) throw new Error("malformed backup.recovery.confirm payload");
+    const data = { changeId };
+    const v2 = this.recoveryCodes.verify(RECOVERY_SCOPE, changeId, str14(payload.code) ?? "");
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No recovery key is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const own2 = await this.keypair();
+    this.setRecovery(v2.proposal, false);
+    return {
+      ok: true,
+      status: "applied",
+      data: {
+        ...data,
+        summary: summarizeRecovery(v2.proposal, own2.fingerprint),
+        fingerprint: v2.proposal.fingerprint,
+        firewallFingerprint: own2.fingerprint,
+        firewallPublicKey: own2.publicKey,
+        sentVia: v2.sentVia,
+        tofu: false
+      }
+    };
+  }
+  async cancelRecovery(payload) {
+    const changeId = str14(payload.changeId);
+    this.recoveryCodes.cancel(RECOVERY_SCOPE, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  // ---- putting this firewall back from its own backup ----
+  parseSelfRestore(payload) {
+    const changeId = str14(payload.changeId);
+    const backupId = str14(payload.backupId);
+    const sourceBoxId = str14(payload.sourceBoxId);
+    const header = str14(payload.header);
+    const manifestHash2 = str14(payload.manifestHash);
+    const downloadUrl = httpsUrl(payload.downloadUrl);
+    const wrapped = str14(payload.wrappedKey);
+    if (!changeId || !backupId || !sourceBoxId || !header || !manifestHash2 || !downloadUrl || !wrapped) {
+      throw new Error("malformed backup.firewall-restore payload");
+    }
+    return { changeId, backupId, sourceBoxId, header, manifestHash: manifestHash2, downloadUrl, wrapped, takenAt: str14(payload.takenAt) };
+  }
+  /**
+   * Unseal the data key and hand the whole job to `self-restore.ts`. The unwrap happens HERE,
+   * before the command is settled, so "that key does not fit" is answered to the person who just
+   * asked rather than arriving minutes later as a report.
+   *
+   * Everything after it takes as long as a download, so it runs detached and reports under
+   * `backup.firewall-restored:<changeId>`. The process then exits — after a delay, so the report
+   * has beats to ride out on (`index.ts`) — and systemd starts it again on the restored state.
+   */
+  async applySelfRestore(p2) {
+    const service = this.opts.selfRestore;
+    if (!service) throw new Error("This firewall cannot put itself back.");
+    const kp = this.store.keypair;
+    if (!kp) throw new Error("This firewall has no backup key, so it cannot open a backup.");
+    let dataKey;
+    try {
+      dataKey = await unwrapDataKey(p2.wrapped, kp.secretKey);
+    } catch {
+      throw new Error("This firewall cannot open that backup. Paste your recovery key and try again.");
+    }
+    this.later(`${SELF_RESTORE_REPORT_PREFIX}${p2.changeId}`, "restore of this firewall", async () => {
+      const r2 = await service.run({
+        backupId: p2.backupId,
+        sourceBoxId: p2.sourceBoxId,
+        downloadUrl: p2.downloadUrl,
+        header: p2.header,
+        manifestHash: p2.manifestHash,
+        dataKey
+      });
+      this.restoring = true;
+      return { changeId: p2.changeId, backupId: p2.backupId, entries: r2.entries, takenAt: r2.takenAt, fingerprint: r2.fingerprint, quarantined: r2.quarantined };
+    });
+    return { backupId: p2.backupId, replaces: kp.fingerprint };
+  }
+  async proposeSelfRestore(payload) {
+    const p2 = this.parseSelfRestore(payload);
+    const own2 = await this.keypair();
+    const summary = summarizeSelfRestore(p2, own2.fingerprint);
+    const data = { changeId: p2.changeId, backupId: p2.backupId, summary, firewallFingerprint: own2.fingerprint };
+    if (!this.opts.selfRestore) {
+      return { ok: false, status: "unavailable", message: "This firewall cannot put itself back.", data };
+    }
+    if (!this.opts.channelsReady()) {
+      return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
+    }
+    try {
+      await unwrapDataKey(p2.wrapped, (await this.keypair()).secretKey);
+    } catch {
+      return { ok: false, status: "needs_recovery_key", message: "This firewall cannot open that backup. Paste your recovery key and try again.", data };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.selfRestoreCodes.drop(SELF_RESTORE_SCOPE);
+      const applied = await this.applySelfRestore(p2);
+      return { ok: true, status: "applied", data: { ...data, ...applied, tofu: true } };
+    }
+    const sent = await this.selfRestoreCodes.send(SELF_RESTORE_SCOPE, p2, "your firewall", summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[backup] firewall restore code sent via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirmSelfRestore(payload) {
+    const changeId = str14(payload.changeId);
+    if (!changeId) throw new Error("malformed backup.firewall-restore.confirm payload");
+    const data = { changeId };
+    const v2 = this.selfRestoreCodes.verify(SELF_RESTORE_SCOPE, changeId, str14(payload.code) ?? "");
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No firewall restore is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const own2 = await this.keypair();
+    const applied = await this.applySelfRestore(v2.proposal);
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarizeSelfRestore(v2.proposal, own2.fingerprint), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancelSelfRestore(payload) {
+    const changeId = str14(payload.changeId);
+    this.selfRestoreCodes.cancel(SELF_RESTORE_SCOPE, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/self-restore.ts
+import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync5, readFileSync as readFileSync8, readdirSync, renameSync as renameSync3, rmSync, statSync, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname4, join } from "path";
+var ENC_PURPOSES = {
+  "channels.enc": "channels",
+  "llm.enc": "llm",
+  "backup.enc": "backup",
+  "connectors.enc": "connectors",
+  "drive.enc": "drive",
+  "google.enc": "google",
+  "agentmail.enc": "agentmail",
+  "access.enc": "access"
+};
+var MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
+function basename(path) {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+function writeAtomic(path, bytes, mode) {
+  mkdirSync5(dirname4(path), { recursive: true });
+  const tmp = `${path}.cc-restoring`;
+  writeFileSync6(tmp, bytes, { mode });
+  chmodSync(tmp, mode);
+  renameSync3(tmp, path);
+}
+var SelfRestore = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+  }
+  fetchImpl;
+  log;
+  allowed() {
+    return this.opts.files ?? [...FIREWALL_BACKUP_FILES];
+  }
+  /**
+   * Download, verify and swap. Throws with a sentence a person can act on; the box is untouched
+   * unless it returns.
+   *
+   * `sourceBoxId` is the box the archive was taken on, and is not taken on trust: it goes into the
+   * envelope's associated data, so a wrong one simply fails to decrypt.
+   */
+  async run(input2) {
+    const stagingDir = join(this.opts.workDir ?? "/opt/controlclaw/state", `cc-restore-${Date.now()}`);
+    try {
+      const { manifest, staged } = await this.stage(input2, stagingDir);
+      const quarantined = this.swap(staged, input2.sourceBoxId);
+      const fingerprint2 = await this.fingerprintAfter(staged);
+      this.log(`[backup] firewall state restored: ${staged.length} file(s) from ${manifest.takenAt}, backup key ${fingerprint2 ?? "unknown"}`);
+      this.opts.restart?.();
+      return { entries: staged.length, takenAt: manifest.takenAt, fingerprint: fingerprint2, quarantined };
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true });
+    }
+  }
+  // ---- before the swap: nothing on this box changes ----
+  async stage(input2, stagingDir) {
+    const blob = input2.archive ? Buffer.from(input2.archive) : await this.download(input2.downloadUrl);
+    if (blob.length > MAX_ARCHIVE_BYTES) throw new Error("That archive is far larger than a firewall backup, so it is not one.");
+    const dec = await makeDecryptor(input2.dataKey, input2.header, {
+      orgId: this.opts.ids.orgId,
+      vmId: input2.sourceBoxId,
+      backupId: input2.backupId,
+      kind: "firewall"
+    });
+    const parts = dec.push(blob);
+    dec.end();
+    const plain = Buffer.concat(parts.map((p2) => Buffer.from(p2)));
+    let doc;
+    try {
+      doc = JSON.parse(plain.toString("utf8"));
+    } catch {
+      throw new Error("That archive opened but is not a firewall backup.");
+    }
+    const manifest = parseManifest(JSON.stringify(doc.manifest ?? null));
+    if (manifest.kind !== "firewall") throw new Error(`That archive is a ${manifest.kind} backup, not a firewall backup.`);
+    if (await manifestHash(manifest) !== input2.manifestHash) {
+      throw new Error("That archive is not the one recorded for this backup. Nothing was changed.");
+    }
+    const allowed = new Set(this.allowed());
+    const files = Array.isArray(doc.files) ? doc.files : [];
+    mkdirSync5(stagingDir, { recursive: true, mode: 448 });
+    const staged = [];
+    for (const [i2, f2] of files.entries()) {
+      const path = typeof f2.path === "string" ? f2.path : "";
+      const b642 = typeof f2.base64 === "string" ? f2.base64 : null;
+      if (!allowed.has(path)) throw new Error(`That archive carries a file this firewall will not restore (${path || "unnamed"}).`);
+      if (b642 === null) throw new Error(`The ${path} entry in that archive has no content.`);
+      const entry = manifest.entries.find((e) => e.path === path);
+      if (!entry) throw new Error(`The ${path} entry is in that archive but not in its manifest.`);
+      const bytes = Buffer.from(b642, "base64");
+      if (bytes.length !== entry.bytes) throw new Error(`The ${path} entry is ${bytes.length} bytes, and its manifest says ${entry.bytes}.`);
+      const stagedPath = join(stagingDir, String(i2));
+      writeFileSync6(stagedPath, bytes, { mode: 384 });
+      staged.push({ path, mode: entry.mode & 4095, staged: stagedPath, bytes: bytes.length });
+    }
+    if (staged.length === 0) throw new Error("That archive holds no files, so there is nothing to put back.");
+    this.deriveCaPair(staged, stagingDir);
+    staged.sort((a2, b2) => this.allowed().indexOf(a2.path) - this.allowed().indexOf(b2.path));
+    return { manifest, staged };
+  }
+  /**
+   * Backups taken before 2026-09-22 carry the proxy's combined `mitmproxy-ca.pem` but not the
+   * `ca-cert.pem` / `ca-key.pem` pair next to it (the file list named files that did not exist).
+   * Restoring only the combined file left the proxy signing with the old CA while the pair the
+   * firewall publishes, and the agents install, stayed the rebuilt box's. The combined file IS the
+   * pair concatenated (see gen-ca.sh), so when an archive has the one and not the other, the pair
+   * is split out of it here and staged like any other entry. Only for paths on the allow-list.
+   */
+  deriveCaPair(staged, stagingDir) {
+    const combined = staged.find((f2) => basename(f2.path) === "mitmproxy-ca.pem");
+    if (!combined) return;
+    const dir = dirname4(combined.path);
+    const certPath = join(dir, "ca-cert.pem");
+    const keyPath = join(dir, "ca-key.pem");
+    const allowed = new Set(this.allowed());
+    if (!allowed.has(certPath) || !allowed.has(keyPath)) return;
+    if (staged.some((f2) => f2.path === certPath) && staged.some((f2) => f2.path === keyPath)) return;
+    const pem = readFileSync8(combined.staged, "utf8");
+    const key = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----\n?/.exec(pem)?.[0];
+    const cert = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----\n?/.exec(pem)?.[0];
+    if (!key || !cert) {
+      this.log("[backup] the archive's mitmproxy-ca.pem holds no key+certificate pair; the published CA is left as it is");
+      return;
+    }
+    const add = (path, body, mode) => {
+      if (staged.some((f2) => f2.path === path)) return;
+      const stagedPath = join(stagingDir, `derived-${basename(path)}`);
+      writeFileSync6(stagedPath, body, { mode: 384 });
+      staged.push({ path, mode, staged: stagedPath, bytes: Buffer.byteLength(body) });
+    };
+    add(certPath, cert, 420);
+    add(keyPath, key, 384);
+    this.log("[backup] the archive carried only the proxy's combined CA file; ca-cert.pem and ca-key.pem were split out of it so the published CA matches the one the proxy signs with");
+  }
+  async download(downloadUrl) {
+    if (!downloadUrl) throw new Error("There is no archive to put back: neither the bytes nor an address for them.");
+    const res = await this.fetchImpl(downloadUrl);
+    if (!res.ok) throw new Error(`The backup store did not serve the archive (HTTP ${res.status}).`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  // ---- the swap ----
+  /**
+   * Replace the live files, keeping a copy of what was there. Anything that throws puts the copy
+   * back before rethrowing, so the box is left running the state it was running a moment ago.
+   */
+  swap(staged, sourceBoxId) {
+    const rollback = staged.map((file2) => {
+      const stat2 = existsSync6(file2.path) ? statSync(file2.path) : null;
+      const isFile = stat2?.isFile() === true;
+      return { path: file2.path, before: isFile ? readFileSync8(file2.path) : null, mode: isFile ? stat2.mode & 4095 : file2.mode };
+    });
+    try {
+      this.opts.stopProxy?.();
+    } catch (error62) {
+      throw new Error("The proxy could not be stopped, so nothing was replaced.", { cause: error62 });
+    }
+    const startProxy = () => {
+      try {
+        this.opts.startProxy?.();
+      } catch (error62) {
+        this.log(`[backup] the proxy did not start again: ${error62.message}. Start it from the Firewall page.`);
+      }
+    };
+    try {
+      for (const file2 of staged) writeAtomic(file2.path, this.rebind(file2, sourceBoxId), file2.mode);
+    } catch (error62) {
+      for (const entry of rollback) {
+        try {
+          if (entry.before) writeAtomic(entry.path, entry.before, entry.mode);
+          else rmSync(entry.path, { force: true });
+        } catch (undoError) {
+          this.log(`[backup] could not undo ${entry.path}: ${undoError.message}`);
+        }
+      }
+      startProxy();
+      throw new Error(`The swap failed and this firewall was put back as it was: ${error62.message}`);
+    }
+    startProxy();
+    try {
+      return this.quarantineStrangers(staged);
+    } catch (error62) {
+      this.log(`[backup] could not move the replaced box's other stores aside: ${error62.message}`);
+      return [];
+    }
+  }
+  /**
+   * An encrypted store, re-sealed under this box's id (see the file header). The box key used is
+   * the RESTORED one: `box_key` is first in `FIREWALL_BACKUP_FILES` and the staged list is sorted
+   * by it, so by the time a store is written the key that opens it is already in place.
+   */
+  rebind(file2, sourceBoxId) {
+    const bytes = readFileSync8(file2.staged);
+    const purpose = ENC_PURPOSES[basename(file2.path)];
+    if (!purpose || sourceBoxId === this.opts.ids.boxId) return bytes;
+    const boxKey = this.restoredBoxKey();
+    const { orgId, boxId } = this.opts.ids;
+    let value;
+    try {
+      value = decryptJson(bytes.toString("utf8"), boxKey, `${orgId}:${sourceBoxId}:${purpose}`);
+    } catch (error62) {
+      throw new Error(`The ${basename(file2.path)} in that archive cannot be opened with the box key that came with it.`, { cause: error62 });
+    }
+    return Buffer.from(encryptJson(value, boxKey, `${orgId}:${boxId}:${purpose}`), "utf8");
+  }
+  restoredBoxKey() {
+    const path = this.allowed().find((p2) => basename(p2) === "box_key");
+    if (!path || !existsSync6(path)) throw new Error("The restored box key is not in place, so the stores cannot be re-sealed.");
+    return readFileSync8(path, "utf8").trim();
+  }
+  /**
+   * The backup-key fingerprint this firewall now has: the old one. Read back from the file that was
+   * written rather than from the archive, so what is reported is the state actually on disk.
+   */
+  async fingerprintAfter(staged) {
+    const store = staged.find((f2) => basename(f2.path) === "backup.enc");
+    if (!store) return null;
+    try {
+      const { orgId, boxId } = this.opts.ids;
+      const loaded2 = decryptJson(readFileSync8(store.path, "utf8"), this.restoredBoxKey(), `${orgId}:${boxId}:backup`);
+      return loaded2.keypair?.publicKey ? await fingerprint(loaded2.keypair.publicKey) : null;
+    } catch (error62) {
+      this.log(`[backup] restored, but this box's own backup key could not be read back: ${error62.message}`);
+      return null;
+    }
+  }
+  /**
+   * Any `*.enc` in the state directory that the archive did NOT bring — `connectors.enc` is the
+   * real one. It is sealed under the box key this box generated when it was rebuilt, which the
+   * restore has just replaced, so it can never be opened again; and an unreadable store is how the
+   * integrations module turns itself off with an alarming line in the log. Move it aside instead.
+   */
+  quarantineStrangers(staged) {
+    const stateDir = staged.map((f2) => dirname4(f2.path)).find((d2) => d2.endsWith("/state"));
+    if (!stateDir || !existsSync6(stateDir)) return [];
+    const brought = new Set(staged.map((f2) => f2.path));
+    const moved = [];
+    for (const name25 of readdirSync(stateDir)) {
+      const path = join(stateDir, name25);
+      if (!name25.endsWith(".enc") || brought.has(path)) continue;
+      const aside = `${path}.cc-previous-${Date.now()}`;
+      renameSync3(path, aside);
+      moved.push(name25);
+      this.log(`[backup] ${name25} was sealed under the replaced box key; moved to ${aside}`);
+    }
+    return moved;
+  }
+};
+
+// src/self-update.ts
+import { readFileSync as readFileSync9 } from "fs";
+import { spawn } from "child_process";
+var IDLE = { phase: "idle", detail: null, ref: null, at: null };
+var STALE_MS = 45 * 6e4;
+var LAUNCH_GRACE_MS = 2 * 6e4;
+var RUNNING = /* @__PURE__ */ new Set(["resolving", "installing", "running"]);
+function detach(file2, args) {
+  try {
+    const child = spawn(file2, args, { detached: true, stdio: "ignore" });
+    child.on("error", (error62) => console.error(`[firewall-update] could not start cc-reprovision: ${error62.message}`));
+    child.unref();
+    return { ok: true };
+  } catch (error62) {
+    return { ok: false, error: error62.message };
+  }
+}
+var SelfUpdateService = class {
+  /**
+   * When this process last launched a run, or null. In memory on purpose: the run restarts this
+   * agent, and an agent that restarted is proof the run did start. What this catches is the
+   * opposite case — a launch that never became a run, whose only other trace is a console line.
+   */
+  launchedAt = null;
+  statePath;
+  confPath;
+  spawnImpl;
+  log;
+  now;
+  constructor(opts = {}) {
+    this.statePath = opts.statePath ?? "/opt/controlclaw/state/update.json";
+    this.confPath = opts.confPath ?? "/etc/controlclaw/update.conf";
+    this.spawnImpl = opts.spawnImpl ?? detach;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  /** Whether this box was provisioned with an update pin at all. */
+  pinned() {
+    return this.conf() !== null;
+  }
+  conf() {
+    let raw;
+    try {
+      raw = readFileSync9(this.confPath, "utf8");
+    } catch {
+      return null;
+    }
+    const out = {};
+    for (const line of raw.split("\n")) {
+      const m2 = /^([A-Z_]+)=(.*)$/.exec(line.trim());
+      if (m2) out[m2[1]] = m2[2];
+    }
+    return out.ANSIBLE_REPO ? out : null;
+  }
+  status() {
+    const status = this.readState();
+    if (this.launchedAt !== null) {
+      const reportedAt = status.at ? Date.parse(status.at) : NaN;
+      const forThisRun = Number.isFinite(reportedAt) && reportedAt >= this.launchedAt;
+      if (!forThisRun) {
+        if (this.now() - this.launchedAt > LAUNCH_GRACE_MS) {
+          return {
+            phase: "failed",
+            detail: "The update never started. Check the firewall's logs.",
+            ref: null,
+            at: new Date(this.launchedAt).toISOString()
+          };
+        }
+        return { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(this.launchedAt).toISOString() };
+      }
+    }
+    if (RUNNING.has(status.phase) && status.at && this.now() - Date.parse(status.at) > STALE_MS) {
+      return { ...status, phase: "failed", detail: "The update stopped reporting. Check the firewall's logs." };
+    }
+    return status;
+  }
+  readState() {
+    let raw;
+    try {
+      raw = readFileSync9(this.statePath, "utf8");
+    } catch {
+      return IDLE;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return IDLE;
+    }
+    return {
+      phase: typeof parsed.phase === "string" ? parsed.phase : "idle",
+      detail: typeof parsed.detail === "string" && parsed.detail.length > 0 ? parsed.detail : null,
+      ref: typeof parsed.ref === "string" && parsed.ref.length > 0 ? parsed.ref : null,
+      at: typeof parsed.at === "string" ? parsed.at : null
+    };
+  }
+  running() {
+    return RUNNING.has(this.status().phase);
+  }
+  /**
+   * Start a run, unless one is already going. Returns as soon as it is launched — the run itself
+   * takes minutes and will restart this process before it finishes.
+   */
+  start() {
+    if (!this.pinned()) {
+      throw new Error("This firewall was created before in-place updates; it has to be rebuilt instead.");
+    }
+    const current = this.status();
+    if (RUNNING.has(current.phase)) return current;
+    const launchedAt = this.now();
+    const r2 = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", "/usr/local/bin/cc-reprovision"]);
+    if (!r2.ok) throw new Error(`The update could not be started: ${r2.error ?? "unknown error"}`);
+    this.launchedAt = launchedAt;
+    this.log("[firewall-update] started cc-reprovision");
+    return { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(launchedAt).toISOString() };
+  }
+};
+
+// src/firewall-update.ts
+var SCOPE_PREFIX6 = "firewall-update:";
+var SCOPE10 = `${SCOPE_PREFIX6}self`;
+function str15(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function summarize13() {
+  return "Update the software on your firewall";
+}
+var FirewallUpdate = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.boxName = opts.boxName ?? "your firewall";
+    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode, recovery: opts.recovery });
+  }
+  codes;
+  log;
+  boxName;
+  handlers() {
+    return {
+      "firewall-update.propose": (p2) => this.propose(p2),
+      "firewall-update.confirm": (p2) => this.confirm(p2),
+      "firewall-update.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /** Whether this box was provisioned with a pin; false means rebuild-only, as for an old agent. */
+  supported() {
+    return this.opts.service.pinned();
+  }
+  /** What the console shows while a run is going; rides the heartbeat, the only path out of here. */
+  status() {
+    return this.opts.service.status();
+  }
+  /** Local, and that is the whole point: nothing is asked of any other box. */
+  apply() {
+    const status = this.opts.service.start();
+    this.log("[firewall-update] started on this box");
+    return { phase: status.phase };
+  }
+  /**
+   * Start this box's own run for a batch whose code was already confirmed (T-100).
+   *
+   * Thin, because `apply` is thin — the self-update is a local spawn. It is here rather than
+   * inlined in `update-all.ts` so that there stays exactly one caller of `SelfUpdateService.start`,
+   * and `supported()` is still the thing that says whether it can be called at all.
+   *
+   * No consent check of its own; see the note on `UpdateFirewall.applyToTarget`.
+   */
+  applyForBatch() {
+    return this.apply();
+  }
+  async propose(payload) {
+    const changeId = str15(payload.changeId);
+    if (!changeId) throw new Error("malformed firewall-update.propose payload");
+    const summary = summarize13();
+    const data = { changeId, summary };
+    if (!this.opts.service.pinned()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "This firewall was created before in-place updates; it has to be rebuilt instead.",
+        data
+      };
+    }
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(SCOPE10);
+      const no = noRecipients(this.opts.agentAllowedCount?.());
+      return {
+        ok: false,
+        status: "failed",
+        message: `${no.message} Your firewall cannot be updated until then.`,
+        data: { ...data, ...no.data }
+      };
+    }
+    const sent = await this.codes.send(SCOPE10, { changeId }, this.boxName, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[firewall-update] code sent via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, ...awaitingCodeData(sent) } };
+  }
+  async confirm(payload) {
+    const changeId = str15(payload.changeId);
+    if (!changeId) throw new Error("malformed firewall-update.confirm payload");
+    const code = str15(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE10, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const applied = this.apply();
+    return { ok: true, status: "applied", data: { ...data, ...applied, summary: summarize13(), sentVia: v2.sentVia, tofu: false } };
+  }
+  async cancel(payload) {
+    const changeId = str15(payload.changeId);
+    this.codes.cancel(SCOPE10, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/update-all.ts
+var SCOPE11 = "update-all:org";
+var BATCH_GRANT_MS = 150 * 6e4;
+function str16(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function summarize14(p2) {
+  const names = p2.boxes.map((b2) => b2.name);
+  if (names.length === 0) return "Update the software on nothing";
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `Update the software on ${list}`;
+}
+function parseProposal11(payload) {
+  const changeId = str16(payload.changeId);
+  const raw = Array.isArray(payload.boxes) ? payload.boxes : [];
+  const boxes = [];
+  for (const entry of raw) {
+    const b2 = entry ?? {};
+    const vmId = str16(b2.vmId);
+    const role = b2.role === "mitm" ? "mitm" : b2.role === "gbrain" ? "gbrain" : "openclaw";
+    const hostname3 = str16(b2.hostname) ?? "";
+    if (!vmId || role !== "mitm" && !hostname3) throw new Error("malformed update-all.propose payload");
+    boxes.push({ vmId, name: str16(b2.name) ?? vmId, hostname: hostname3, role });
+  }
+  if (!changeId || boxes.length === 0) throw new Error("malformed update-all.propose payload");
+  if (new Set(boxes.map((b2) => b2.vmId)).size !== boxes.length) throw new Error("malformed update-all.propose payload");
+  return { changeId, boxes };
+}
+var CLAIM_REFUSALS = {
+  no_grant: "Your firewall no longer has a confirmed batch. Start the update again.",
+  wrong_batch: "That code confirmed a different batch. Start the update again.",
+  not_listed: "That box was not in the batch you confirmed.",
+  already_used: "That box has already been started by this batch."
+};
+var UpdateAllFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.now = opts.now ?? Date.now;
+    this.boxName = opts.boxName ?? "your organization";
+    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode, recovery: opts.recovery });
+  }
+  codes;
+  log;
+  now;
+  boxName;
+  handlers() {
+    return {
+      "update-all.propose": (p2) => this.propose(p2),
+      "update-all.confirm": (p2) => this.confirm(p2),
+      "update-all.apply": (p2) => this.applyOne(p2),
+      "update-all.cancel": (p2) => this.cancel(p2)
+    };
+  }
+  /**
+   * Write the grant, then say the batch is confirmed.
+   *
+   * See `BATCH_GRANT_MS` for why the deadline is not one box's update window.
+   */
+  grantFor(p2) {
+    this.opts.store.put({
+      changeId: p2.changeId,
+      until: this.now() + BATCH_GRANT_MS,
+      pending: p2.boxes.map((b2) => b2.vmId),
+      used: [],
+      at: new Date(this.now()).toISOString()
+    });
+  }
+  async propose(payload) {
+    const p2 = parseProposal11(payload);
+    const summary = summarize14(p2);
+    const includesSelf = p2.boxes.some((b2) => b2.role === "mitm");
+    const data = { changeId: p2.changeId, summary, boxes: p2.boxes.map((b2) => b2.vmId) };
+    if (includesSelf && !this.opts.self.supported()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "This firewall was created before in-place updates; it has to be rebuilt instead. Leave it out of the batch.",
+        data
+      };
+    }
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      if (includesSelf) {
+        const no = noRecipients(this.opts.agentAllowedCount?.());
+        return {
+          ok: false,
+          status: "failed",
+          message: `${no.message} Your firewall cannot be updated until then.`,
+          data: { ...data, ...no.data }
+        };
+      }
+      this.codes.drop(SCOPE11);
+      this.grantFor(p2);
+      this.log(`[update-all] no code recipient: ${p2.boxes.length} agent(s) applied on first use`);
+      return { ok: true, status: "applied", data: { ...data, tofu: true } };
+    }
+    const sent = await this.codes.send(SCOPE11, p2, this.boxName, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[update-all] code sent for ${p2.boxes.length} box(es) via ${sent.sentVia}`);
+    return {
+      ok: true,
+      status: "awaiting_code",
+      data: { ...data, ...awaitingCodeData(sent) }
+    };
+  }
+  /**
+   * Check the one code and write the grant. Starts nothing: the control plane's workflow asks for
+   * each box in turn, because the firewall's own run would kill whatever was sequencing them.
+   */
+  async confirm(payload) {
+    const changeId = str16(payload.changeId);
+    if (!changeId) throw new Error("malformed update-all.confirm payload");
+    const code = str16(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(SCOPE11, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No update is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    this.grantFor(v2.proposal);
+    this.log(`[update-all] confirmed for ${v2.proposal.boxes.length} box(es)`);
+    return {
+      ok: true,
+      status: "applied",
+      data: { ...data, summary: summarize14(v2.proposal), sentVia: v2.sentVia, tofu: false, boxes: v2.proposal.boxes.map((b2) => b2.vmId) }
+    };
+  }
+  /**
+   * Start one box out of a confirmed batch.
+   *
+   * The whole consent check is `store.claim`: this box id has to be in the grant this code wrote,
+   * the grant has to be live, and it has to not have been started already. The payload's name and
+   * hostname are used to REACH the box, never to decide whether it may be reached — a tampered
+   * hostname points the run at a box that then rejects the firewall's token, and a tampered vm id
+   * is refused here.
+   */
+  async applyOne(payload) {
+    const changeId = str16(payload.changeId);
+    const vmId = str16(payload.vmId);
+    if (!changeId || !vmId) throw new Error("malformed update-all.apply payload");
+    const role = payload.role === "mitm" ? "mitm" : payload.role === "gbrain" ? "gbrain" : "openclaw";
+    const data = { changeId, vmId };
+    const claim2 = this.opts.store.claim(changeId, vmId, this.now());
+    if (!claim2.ok) {
+      return { ok: false, status: "failed", message: CLAIM_REFUSALS[claim2.reason] ?? "Your firewall refused that box.", data };
+    }
+    try {
+      if (role === "mitm") {
+        if (!this.opts.self.supported()) throw new Error("This firewall has nothing pinned to update from.");
+        const applied2 = this.opts.self.applyForBatch();
+        this.log("[update-all] started on this box");
+        return { ok: true, status: "applied", data: { ...data, ...applied2 } };
+      }
+      const hostname3 = str16(payload.hostname);
+      if (!hostname3) throw new Error("malformed update-all.apply payload");
+      const target = { vmId, hostname: hostname3 };
+      const applied = await this.opts.agents.applyToTarget(target, str16(payload.name) ?? vmId);
+      return { ok: true, status: "applied", data: { ...data, ...applied } };
+    } catch (err) {
+      this.opts.store.unclaim(changeId, vmId);
+      return { ok: false, status: "failed", message: err.message || "The box did not start the run.", data };
+    }
+  }
+  async cancel(payload) {
+    const changeId = str16(payload.changeId);
+    this.codes.cancel(SCOPE11, changeId);
+    this.opts.store.drop(changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+};
+
+// src/recovery-notices.ts
+var NOTICE_RETRY_MS = 5 * 6e4;
+var NOTICE_TTL_MS = 30 * 24 * 60 * 6e4;
+var MAX_NOTICES = 20;
+function aad15(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:recovery-notices`;
+}
+function noticeText(n2) {
+  const when = new Date(n2.at).toISOString().slice(0, 16).replace("T", " ");
+  return `ControlClaw: a change to ${n2.subject} was confirmed with your recovery key on ${when} UTC, because no channel could reach you.
+${n2.summary}
+If that was not you, somebody else has your recovery key. Make a new one in Settings \u2192 Backups and check your ControlClaw console.`;
+}
+var RecoveryNotices = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    const loaded2 = loadStoreOrEmpty("recovery-notices", opts.storePath, opts.boxKey, aad15(opts.ids), this.log);
+    this.store = loaded2?.version === 1 && Array.isArray(loaded2.notices) ? loaded2 : { version: 1, notices: [] };
+  }
+  store;
+  now;
+  log;
+  /** The run in progress, so a second caller waits for it rather than sending the same notice twice. */
+  running = null;
+  publicKey() {
+    return this.opts.publicKey();
+  }
+  used(note) {
+    this.store.notices = [...this.store.notices, note].slice(-MAX_NOTICES);
+    this.save();
+    this.log(`[recovery-notices] "${note.summary}" was confirmed with the recovery key; the owner is told when a channel answers`);
+    void this.tick();
+  }
+  pending() {
+    return this.store.notices.length;
+  }
+  /** Try to deliver every waiting notice. On the retry timer, and right after a `used`. */
+  tick() {
+    if (this.running) return this.running;
+    if (this.store.notices.length === 0) return Promise.resolve();
+    this.running = this.run().finally(() => {
+      this.running = null;
+    });
+    return this.running;
+  }
+  async run() {
+    const cutoff = this.now() - NOTICE_TTL_MS;
+    const done = /* @__PURE__ */ new Set();
+    for (const n2 of [...this.store.notices]) {
+      if (n2.at < cutoff || await this.deliver(noticeText(n2))) done.add(n2);
+    }
+    if (done.size > 0) {
+      this.store.notices = this.store.notices.filter((n2) => !done.has(n2));
+      this.save();
+    }
+  }
+  /** The first real person an agent box can reach. Never the dev route: it has nobody to read this. */
+  async deliver(text2) {
+    for (const route of this.opts.codeRoutes()) {
+      for (const sender of route.senders) {
+        if (sender.type === DEV_SENDER_TYPE) continue;
+        try {
+          await this.opts.agent.post(route.target, "/channels/send", { type: sender.type, to: sender.id, text: text2 });
+          this.log(`[recovery-notices] told ${sender.type}:${sender.label ?? sender.id} that the recovery key was used`);
+          return true;
+        } catch {
+        }
+      }
+    }
+    return false;
+  }
+  save() {
+    saveStore("recovery-notices", this.opts.storePath, this.store, this.opts.boxKey, aad15(this.opts.ids));
+  }
+};
+
+// src/update-all-store.ts
+var EMPTY = { version: 1, grant: null };
+function aad16(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:update-all`;
+}
+var UpdateAllStoreFile = class {
+  constructor(path, boxKeyB64, ids2, log = console.error) {
+    this.path = path;
+    this.boxKeyB64 = boxKeyB64;
+    this.ids = ids2;
+    this.state = loadStoreOrEmpty("update-all", path, boxKeyB64, aad16(ids2), log) ?? { ...EMPTY };
+    if (this.state.version !== 1) this.state = { ...EMPTY };
+  }
+  state;
+  save() {
+    saveStore("update-all", this.path, this.state, this.boxKeyB64, aad16(this.ids));
+  }
+  /** The live grant, or null when there is none or it has run out. */
+  grant(now2) {
+    const g2 = this.state.grant;
+    if (!g2) return null;
+    if (g2.until <= now2) return null;
+    return g2;
+  }
+  put(grant) {
+    this.state.grant = grant;
+    this.save();
+  }
+  /**
+   * Take one box out of the grant, or say why it cannot be taken.
+   *
+   * The write happens BEFORE the caller starts anything, so a crash between the two leaves the box
+   * unstarted and consumed rather than startable twice. Repeating an update is harmless; a loop
+   * that keeps restarting one is not, and this is the side to fail on.
+   */
+  claim(changeId, vmId, now2) {
+    const g2 = this.grant(now2);
+    if (!g2) return { ok: false, reason: "no_grant" };
+    if (g2.changeId !== changeId) return { ok: false, reason: "wrong_batch" };
+    if (g2.used.includes(vmId)) return { ok: false, reason: "already_used" };
+    if (!g2.pending.includes(vmId)) return { ok: false, reason: "not_listed" };
+    g2.pending = g2.pending.filter((id) => id !== vmId);
+    g2.used.push(vmId);
+    this.save();
+    return { ok: true };
+  }
+  /** Give a claimed box back, for a start that threw before the box did anything. */
+  unclaim(changeId, vmId) {
+    const g2 = this.state.grant;
+    if (!g2 || g2.changeId !== changeId) return;
+    g2.used = g2.used.filter((id) => id !== vmId);
+    if (!g2.pending.includes(vmId)) g2.pending.push(vmId);
+    this.save();
+  }
+  drop(changeId) {
+    if (!this.state.grant) return;
+    if (changeId && this.state.grant.changeId !== changeId) return;
+    this.state.grant = null;
+    this.save();
+  }
+};
+
+// src/ssh.ts
+var SCOPE_PREFIX7 = "ssh:";
+var SELF = "self";
+function str17(v2) {
+  return typeof v2 === "string" && v2.length > 0 ? v2 : null;
+}
+function hours(seconds) {
+  const h2 = Math.round(seconds / 3600);
+  if (h2 >= 24 && h2 % 24 === 0) return `${h2 / 24} day${h2 === 24 ? "" : "s"}`;
+  return `${h2} hour${h2 === 1 ? "" : "s"}`;
+}
+function summarize15(p2, boxName) {
+  return `Let ControlClaw support open a shell on ${p2.agent?.name ?? boxName} for ${hours(p2.seconds)}`;
+}
+function parseProposal12(payload) {
+  const changeId = str17(payload.changeId);
+  const seconds = typeof payload.seconds === "number" ? Math.round(payload.seconds) : 0;
+  if (!changeId || !Number.isFinite(seconds) || seconds <= 0) throw new Error("malformed ssh.propose payload");
+  const raw = payload.agent;
+  if (!raw) return { changeId, seconds, agent: null };
+  const vmId = str17(raw.vmId);
+  const hostname3 = str17(raw.hostname);
+  if (!vmId || !hostname3) throw new Error("malformed ssh.propose payload");
+  return { changeId, seconds, agent: { vmId, name: str17(raw.name) ?? vmId, hostname: hostname3 } };
+}
+var SshFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    this.boxName = opts.boxName ?? "your firewall";
+    this.codes = new ConsentCodes({ agent: opts.agent, log: opts.log, now: opts.now, makeCode: opts.makeCode });
+  }
+  codes;
+  log;
+  boxName;
+  handlers() {
+    return {
+      "ssh.propose": (p2) => this.propose(p2),
+      "ssh.confirm": (p2) => this.confirm(p2),
+      "ssh.cancel": (p2) => this.cancel(p2),
+      "ssh.close": (p2) => this.close(p2)
+    };
+  }
+  /** One pending grant per box: opening one on the firewall and one on an agent is legitimate. */
+  scope(p2) {
+    return `${SCOPE_PREFIX7}${p2.agent?.vmId ?? SELF}`;
+  }
+  target(p2) {
+    return { vmId: p2.agent.vmId, hostname: p2.agent.hostname };
+  }
+  async openOn(p2) {
+    if (!p2.agent) {
+      if (!this.opts.local) throw new Error("This firewall cannot open a shell session on itself.");
+      return { ...await this.opts.local.open({ grantId: p2.changeId, seconds: p2.seconds }) };
+    }
+    const r2 = await this.opts.agent.post(this.target(p2), "/ssh/open", { grantId: p2.changeId, seconds: p2.seconds });
+    if (typeof r2.privateKey !== "string" || typeof r2.fingerprint !== "string") {
+      throw new Error("The box did not hand back a key. Nothing was opened.");
+    }
+    return r2;
+  }
+  async closeOn(p2) {
+    if (!p2.agent) {
+      if (!this.opts.local) return { closed: false };
+      return { ...await this.opts.local.close() };
+    }
+    return this.opts.agent.post({ vmId: p2.agent.vmId, hostname: p2.agent.hostname }, "/ssh/close", {});
+  }
+  async propose(payload) {
+    const p2 = parseProposal12(payload);
+    const summary = summarize15(p2, this.boxName);
+    const data = { changeId: p2.changeId, summary };
+    if (!this.opts.channelsReady()) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.",
+        data
+      };
+    }
+    const routes = this.opts.codeRoutes();
+    if (routes.length === 0) {
+      this.codes.drop(this.scope(p2));
+      const no = noRecipients(this.opts.agentAllowedCount?.());
+      return {
+        ok: false,
+        status: "failed",
+        message: `${no.message} Letting support in has no first-use shortcut.`,
+        data: { ...data, ...no.data }
+      };
+    }
+    const sent = await this.codes.send(this.scope(p2), p2, p2.agent?.name ?? this.boxName, summary, routes);
+    if (!sent.ok) return { ok: false, status: "failed", message: sent.message, data };
+    this.log(`[ssh] code sent for ${p2.agent?.name ?? "this firewall"} via ${sent.sentVia}`);
+    return { ok: true, status: "awaiting_code", data: { ...data, sentVia: sent.sentVia, expiresAt: sent.expiresAt, attemptsLeft: sent.attemptsLeft } };
+  }
+  async confirm(payload) {
+    const changeId = str17(payload.changeId);
+    if (!changeId) throw new Error("malformed ssh.confirm payload");
+    const vmId = str17(payload.vmId);
+    const code = str17(payload.code) ?? "";
+    const data = { changeId };
+    const v2 = this.codes.verify(`${SCOPE_PREFIX7}${vmId ?? SELF}`, changeId, code);
+    if (v2.kind === "expired") return { ok: false, status: "expired", message: "No shell access is waiting for a code, or the code expired.", data };
+    if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
+    const opened = await this.openOn(v2.proposal);
+    return {
+      ok: true,
+      status: "opened",
+      // `privateKey` rides in here and is taken out of the result by the control plane before
+      // anything is written down (`app/(ssh)/lib/ssh-access.server.ts`). It is not logged here.
+      data: { ...data, ...opened, summary: summarize15(v2.proposal, this.boxName), sentVia: v2.sentVia, vmId: v2.proposal.agent?.vmId ?? null }
+    };
+  }
+  async cancel(payload) {
+    const changeId = str17(payload.changeId);
+    const vmId = str17(payload.vmId);
+    this.codes.cancel(`${SCOPE_PREFIX7}${vmId ?? SELF}`, changeId);
+    return { ok: true, status: "cancelled", data: { changeId } };
+  }
+  /**
+   * Take a session away. No code: revoking is never the dangerous direction, and the console
+   * offers "Close now" while a grant is open as well as when the control plane has lost track of
+   * one. Dropping any pending proposal too, so "Close now" on a grant still waiting for a code
+   * does what it says.
+   */
+  async close(payload) {
+    const changeId = str17(payload.changeId);
+    const raw = payload.agent;
+    const agent = raw && str17(raw.vmId) && str17(raw.hostname) ? { vmId: str17(raw.vmId), hostname: str17(raw.hostname) } : null;
+    this.codes.drop(`${SCOPE_PREFIX7}${agent?.vmId ?? SELF}`);
+    const closed = await this.closeOn({ agent });
+    this.log(`[ssh] closed on ${agent?.vmId ?? "this firewall"}`);
+    return { ok: true, status: "closed", data: { changeId, ...closed, vmId: agent?.vmId ?? null } };
+  }
+};
+
+// src/ssh-local.ts
+import { createHash as createHash4 } from "crypto";
+import { execFile } from "child_process";
+import { mkdirSync as mkdirSync6, mkdtempSync, readFileSync as readFileSync10, rmSync as rmSync2, writeFileSync as writeFileSync7 } from "fs";
+import { tmpdir } from "os";
+import { dirname as dirname5, join as join2 } from "path";
+var MIN_SECONDS = 5 * 60;
+var MAX_SECONDS = 72 * 60 * 60;
+var KEYGEN_TIMEOUT_MS = 2e4;
+var SUDO_TIMEOUT_MS = 3e4;
+var SUPPORT_USER = "ccsupport";
+var MARK = "controlclaw-rescue";
+function fingerprintOf(publicKey) {
+  const blob = publicKey.trim().split(/\s+/)[1] ?? "";
+  return `SHA256:${createHash4("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
+}
+var defaultRun = (file2, args, timeoutMs, stdin) => new Promise((resolve2, reject) => {
+  const child = execFile(file2, args, { timeout: timeoutMs }, (err, stdout) => err ? reject(err) : resolve2(String(stdout ?? "")));
+  child.stdin?.on("error", () => void 0);
+  child.stdin?.end(stdin ?? "");
+});
+var OPEN_OK = "key=installed";
+var SshLocal = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.user = opts.user ?? SUPPORT_USER;
+    this.run = opts.run ?? defaultRun;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  user;
+  run;
+  log;
+  now;
+  status() {
+    const state = this.readState();
+    if (!state) return { open: false, user: this.user, grantId: null, fingerprint: null, endsAt: null };
+    return {
+      open: Date.parse(state.endsAt) > this.now(),
+      user: this.user,
+      grantId: state.grantId,
+      fingerprint: state.fingerprint,
+      endsAt: state.endsAt
+    };
+  }
+  /** Not idempotent, for the reason in `packages/vm-agent/src/ssh.ts`: a repeat replaces the key. */
+  async open(input2) {
+    const seconds = Math.round(input2.seconds);
+    if (!Number.isFinite(seconds) || seconds < MIN_SECONDS || seconds > MAX_SECONDS) {
+      throw new Error(`a shell access window must be between ${MIN_SECONDS} and ${MAX_SECONDS} seconds`);
+    }
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(input2.grantId)) throw new Error("malformed grant id");
+    const dir = mkdtempSync(join2(this.opts.workDir ?? tmpdir(), "cc-ssh-"));
+    const path = join2(dir, "key");
+    let publicKey;
+    let privateKey;
+    try {
+      await this.run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", `${MARK}-${input2.grantId}`, "-f", path], KEYGEN_TIMEOUT_MS);
+      publicKey = readFileSync10(`${path}.pub`, "utf8").trim();
+      privateKey = readFileSync10(path, "utf8");
+    } finally {
+      rmSync2(dir, { recursive: true, force: true });
+    }
+    const endsAt = new Date(this.now() + seconds * 1e3).toISOString();
+    const opened = await this.run("sudo", ["/usr/local/bin/cc-ssh-open", String(seconds)], SUDO_TIMEOUT_MS, `${publicKey}
+`);
+    if (!opened.includes(OPEN_OK)) {
+      await this.run("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS).catch(() => void 0);
+      throw new Error("this firewall is running a cc-ssh-open that predates root support access; re-provision it and try again");
+    }
+    const fingerprint2 = fingerprintOf(publicKey);
+    this.writeState({ grantId: input2.grantId, fingerprint: fingerprint2, endsAt, openedAt: new Date(this.now()).toISOString() });
+    this.log(`[ssh] opened on this firewall for ${this.user} until ${endsAt} (${fingerprint2})`);
+    return { user: this.user, fingerprint: fingerprint2, publicKey, privateKey, endsAt, sudo: true };
+  }
+  /**
+   * Take root away, take the key out, shut the port. `cc-ssh-close` is the only thing that can do
+   * it now — `ccsupport`'s home is not writable by this process — so a failure propagates rather
+   * than being swallowed. The box's own timer, `cc-ssh-close-at-boot` and the provider's port-22
+   * firewall are what stand behind it.
+   */
+  async close() {
+    const was = this.readState();
+    await this.run("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
+    rmSync2(this.opts.statePath, { force: true });
+    if (was) this.log(`[ssh] closed on this firewall (was ${was.fingerprint})`);
+    return { user: this.user, closed: !!was };
+  }
+  readState() {
+    try {
+      const parsed = JSON.parse(readFileSync10(this.opts.statePath, "utf8"));
+      if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
+      return {
+        grantId: parsed.grantId,
+        fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : "",
+        endsAt: parsed.endsAt,
+        openedAt: typeof parsed.openedAt === "string" ? parsed.openedAt : parsed.endsAt
+      };
+    } catch {
+      return null;
+    }
+  }
+  writeState(state) {
+    mkdirSync6(dirname5(this.opts.statePath), { recursive: true });
+    writeFileSync7(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+  }
+};
+
+// src/ssh-logins.ts
+import { createHash as createHash5 } from "crypto";
+import { execFile as execFile2 } from "child_process";
+var POLL_TIMEOUT_MS = 15e3;
+var MAX_PER_TICK = 50;
+var MAX_BUFFERED = 500;
+function parseSshdLine(line) {
+  const m2 = /Accepted publickey for (\S+) from (\S+) port \d+ ssh2:\s+\S+\s+(SHA256:\S+)/.exec(line);
+  if (!m2) return null;
+  const stamp = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z)?)/.exec(line);
+  const at2 = stamp ? Date.parse(stamp[1].replace(/([+-]\d{2})(\d{2})$/, "$1:$2")) : NaN;
+  return { user: m2[1], fromIp: m2[2], fingerprint: m2[3], at: Number.isFinite(at2) ? at2 : null };
+}
+function journal(cursorPath) {
+  return new Promise((resolve2) => {
+    execFile2(
+      "journalctl",
+      ["-u", "ssh", "-u", "sshd", "--no-pager", "-q", "-o", "short-iso", `--cursor-file=${cursorPath}`],
+      { timeout: POLL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err && !stdout) return resolve2([]);
+        resolve2(String(stdout ?? "").split("\n").filter(Boolean));
+      }
+    );
+  });
+}
+var SshLoginWatcher = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.readJournal = opts.readJournal ?? (() => journal(opts.cursorPath));
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.log = opts.log ?? ((line) => console.log(line));
+    this.now = opts.now ?? Date.now;
+  }
+  readJournal;
+  fetchImpl;
+  log;
+  now;
+  /**
+   * Records read but not yet accepted. `journalctl --cursor-file` moves the cursor when it READS,
+   * so a failed POST would otherwise lose those logins for good — a hole in the one audit trail
+   * this feature exists to produce.
+   */
+  pending = [];
+  /** One pass. Returns how many sessions it reported, for the tests. */
+  async tick() {
+    const lines = await this.readJournal();
+    const tickTs = Math.round(this.now() / 1e3);
+    for (const line of lines) {
+      const parsed = parseSshdLine(line);
+      if (!parsed) continue;
+      this.pending.push({
+        source: "ssh_login",
+        // The line itself is the identity of the session: same second, same port, same key means
+        // the same login. The journal cursor already stops the common repeat; this stops the rest.
+        login_id: createHash5("sha256").update(line).digest("hex").slice(0, 32),
+        // The journal's own stamp, so a backlog shipped after a restart does not land as "now"
+        // and sort wrongly against the grant it belongs to.
+        ts: parsed.at !== null ? Math.round(parsed.at / 1e3) : tickTs,
+        user: parsed.user,
+        fingerprint: parsed.fingerprint,
+        from_ip: parsed.fromIp
+      });
+    }
+    if (this.pending.length > MAX_BUFFERED) this.pending = this.pending.slice(-MAX_BUFFERED);
+    if (this.pending.length === 0) return 0;
+    const records = this.pending.slice(0, MAX_PER_TICK);
+    const res = await this.fetchImpl(this.opts.activityUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
+      body: JSON.stringify({ records })
+    });
+    if (!res.ok) {
+      this.log(`[ssh] could not report ${records.length} login(s): HTTP ${res.status}; keeping them for the next pass`);
+      return 0;
+    }
+    this.pending = this.pending.slice(records.length);
+    this.log(`[ssh] reported ${records.length} login(s)`);
+    return records.length;
+  }
+};
+
+// src/sync.ts
+import { writeFileSync as writeFileSync8, mkdirSync as mkdirSync7, renameSync as renameSync4 } from "fs";
+import { join as join3 } from "path";
+function decryptToConfig(record2, boxKey, ids2) {
+  const plaintext = openWithBoxKey(record2, boxKey, ids2);
+  const cfg = JSON.parse(plaintext);
+  return cfg;
+}
+function writeProxyConfig(dir, cfg) {
+  mkdirSync7(dir, { recursive: true });
+  const writeAtomic2 = (name25, data) => {
+    const tmp = join3(dir, `.${name25}.tmp`);
+    const dst = join3(dir, name25);
+    writeFileSync8(tmp, JSON.stringify(data, null, 2), { mode: 384 });
+    renameSync4(tmp, dst);
+  };
+  writeAtomic2("credentials.json", cfg.credentials ?? []);
+  writeAtomic2("rules.json", cfg.rules ?? []);
+  writeAtomic2("identities.json", cfg.identities ?? []);
+  writeAtomic2("exit.json", cfg.exit ?? { enabled: false });
+}
+
+// src/permissions.ts
+import { readFileSync as readFileSync12, existsSync as existsSync8 } from "fs";
+
+// src/grants.ts
+import { existsSync as existsSync7, readFileSync as readFileSync11, renameSync as renameSync5, writeFileSync as writeFileSync9 } from "fs";
+import { basename as basename2, dirname as dirname6, join as join4 } from "path";
+var GrantStore = class {
+  constructor(path) {
+    this.path = path;
+    if (existsSync7(path)) {
+      try {
+        this.grants = JSON.parse(readFileSync11(path, "utf8"));
+      } catch {
+        this.grants = {};
+      }
+    }
+  }
+  grants = {};
+  get(id) {
+    return this.grants[id];
+  }
+  /** Whether `id` has a grant that has not expired at `nowSec`. */
+  active(id, nowSec) {
+    const g2 = this.grants[id];
+    return !!g2 && g2.expires_at > nowSec;
+  }
+  set(id, grant) {
+    this.grants[id] = grant;
+    this.save();
+  }
+  delete(id) {
+    if (!(id in this.grants)) return;
+    delete this.grants[id];
+    this.save();
+  }
+  /** Drop expired grants so the file does not grow forever. */
+  prune(nowSec) {
+    let changed = false;
+    for (const [id, g2] of Object.entries(this.grants)) {
+      if (g2.expires_at <= nowSec) {
+        delete this.grants[id];
+        changed = true;
+      }
+    }
+    if (changed) this.save();
+  }
+  size() {
+    return Object.keys(this.grants).length;
+  }
+  save() {
+    const tmp = join4(dirname6(this.path), `.${basename2(this.path)}.tmp`);
+    writeFileSync9(tmp, JSON.stringify(this.grants, null, 2), { mode: 384 });
+    renameSync5(tmp, this.path);
+  }
+};
+
+// src/permissions.ts
+var PermissionBridge = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.grants = opts.grants ?? new GrantStore(opts.grantsPath);
+  }
+  submitted = /* @__PURE__ */ new Set();
+  meta = /* @__PURE__ */ new Map();
+  grants;
+  async authHeaders(extra = {}) {
+    return { Authorization: `Bearer ${await this.opts.getToken()}`, ...extra };
+  }
+  async tick() {
+    await this.drainPending();
+    await this.pollGrants();
+  }
+  /** Submit any new pending permission requests to ControlClaw (idempotent). */
+  async drainPending() {
+    if (!existsSync8(this.opts.pendingPath)) return;
+    const lines = readFileSync12(this.opts.pendingPath, "utf8").split("\n").filter(Boolean);
+    for (const line of lines) {
+      let rec;
+      try {
+        rec = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!rec.permission_id || this.submitted.has(rec.permission_id)) continue;
+      this.submitted.add(rec.permission_id);
+      this.meta.set(rec.permission_id, rec);
+      try {
+        await fetch(this.opts.permissionUrl, {
+          method: "POST",
+          headers: await this.authHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify({
+            permission_id: rec.permission_id,
+            scope: rec.scope,
+            summary: rec.scope,
+            host: rec.host,
+            method: rec.method,
+            path: rec.path,
+            ...rec.ai_category ? { ai_reason: rec.ai_category } : {}
+          })
+        });
+      } catch (err) {
+        this.submitted.delete(rec.permission_id);
+        console.error(`[perm] submit failed: ${err.message}`);
+      }
+    }
+  }
+  /** Poll outstanding requests; on approval, write a scoped, expiring grant for the proxy. */
+  async pollGrants() {
+    const now2 = Math.floor(Date.now() / 1e3);
+    this.grants.prune(now2);
+    for (const pid of this.submitted) {
+      if (this.grants.active(pid, now2)) continue;
+      try {
+        const res = await fetch(
+          `${this.opts.permissionUrl}?permission_id=${encodeURIComponent(pid)}`,
+          { headers: await this.authHeaders() }
+        );
+        if (!res.ok) continue;
+        const { status } = await res.json();
+        if (status === "approved") {
+          this.grants.set(pid, { expires_at: now2 + this.opts.ttlSeconds, scope: this.meta.get(pid)?.scope ?? "" });
+          console.log(`[perm] granted ${pid}`);
+        } else if (status === "denied" || status === "expired") {
+          this.grants.delete(pid);
+        }
+      } catch {
+      }
+    }
+  }
+};
+
+// src/agentmail-activity.ts
+function sanitizeAgentMailActivity(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  const r2 = raw;
+  if (r2.host !== "api.agentmail.to" && r2.host !== "ws.agentmail.to") return raw;
+  const resources = /* @__PURE__ */ new Set([
+    "v0",
+    "inboxes",
+    "messages",
+    "threads",
+    "drafts",
+    "attachments",
+    "send",
+    "reply",
+    "reply-all",
+    "forward",
+    "raw",
+    "api-keys",
+    "organizations"
+  ]);
+  const path = typeof r2.path === "string" ? r2.path.split("?")[0].split("/").map((p2) => !p2 || resources.has(p2) ? p2 : "{id}").join("/") : void 0;
+  const safe = Object.fromEntries(
+    [
+      "source",
+      "flow_id",
+      "ts",
+      "vm_id",
+      "host",
+      "port",
+      "effect",
+      "status",
+      "duration_ms",
+      "bytes_in",
+      "bytes_out"
+    ].flatMap((k2) => r2[k2] === void 0 ? [] : [[k2, r2[k2]]])
+  );
+  return {
+    ...safe,
+    method: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "HEAD",
+      "OPTIONS"
+    ].includes(String(r2.method)) ? r2.method : null,
+    path,
+    rule: "agentmail",
+    ...r2.error ? { error: "AgentMail request failed" } : {}
+  };
+}
+
+// src/log-tail.ts
+import { closeSync, existsSync as existsSync9, fstatSync, mkdirSync as mkdirSync8, openSync, readSync, readFileSync as readFileSync13, renameSync as renameSync6, statSync as statSync2, writeFileSync as writeFileSync10 } from "fs";
+import { basename as basename3, dirname as dirname7, join as join5 } from "path";
+var MAX_CHUNK = 4 * 1024 * 1024;
+var LogTail = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.batchSize = opts.batchSize ?? 200;
+    this.cursor = this.loadCursor();
+  }
+  cursor;
+  batchSize;
+  loadCursor() {
+    try {
+      const c2 = JSON.parse(readFileSync13(this.opts.cursorPath, "utf8"));
+      if (typeof c2.inode === "number" && typeof c2.offset === "number") return c2;
+    } catch {
+    }
+    return { inode: 0, offset: 0 };
+  }
+  saveCursor() {
+    mkdirSync8(dirname7(this.opts.cursorPath), { recursive: true });
+    const tmp = join5(dirname7(this.opts.cursorPath), `.${basename3(this.opts.cursorPath)}.tmp`);
+    writeFileSync10(tmp, JSON.stringify(this.cursor), { mode: 384 });
+    renameSync6(tmp, this.opts.cursorPath);
+  }
+  /** Start at the end of the live file (a consumer that only cares about new records). */
+  skipToEnd() {
+    if (!existsSync9(this.opts.logPath)) return;
+    const live = statSync2(this.opts.logPath);
+    this.cursor = { inode: Number(live.ino), offset: live.size };
+    this.saveCursor();
+  }
+  hasCursor() {
+    return this.cursor.inode !== 0;
+  }
+  /** One pass: hand every unread batch to `onBatch` until caught up or a batch is refused. */
+  async drain(onBatch) {
+    const total = { read: 0, skipped: 0 };
+    if (!existsSync9(this.opts.logPath)) return total;
+    const live = statSync2(this.opts.logPath);
+    const liveInode = Number(live.ino);
+    if (this.cursor.inode && this.cursor.inode !== liveInode) {
+      const rotated = this.opts.logPath + ".1";
+      if (existsSync9(rotated) && Number(statSync2(rotated).ino) === this.cursor.inode) {
+        const done = await this.drainFrom(rotated, onBatch, total);
+        if (!done) return total;
+      }
+      this.cursor = { inode: liveInode, offset: 0 };
+      this.saveCursor();
+    } else if (!this.cursor.inode) {
+      this.cursor = { inode: liveInode, offset: 0 };
+    } else if (live.size < this.cursor.offset) {
+      this.cursor.offset = 0;
+    }
+    await this.drainFrom(this.opts.logPath, onBatch, total);
+    return total;
+  }
+  /** True when `path` is fully read, false when a batch was refused. */
+  async drainFrom(path, onBatch, total) {
+    for (; ; ) {
+      const { records, consumed, skipped } = this.readBatch(path);
+      total.skipped += skipped;
+      if (records.length === 0) {
+        if (consumed > 0) {
+          this.cursor.offset += consumed;
+          this.saveCursor();
+          continue;
+        }
+        return true;
+      }
+      if (!await onBatch(records)) return false;
+      total.read += records.length;
+      this.cursor.offset += consumed;
+      this.saveCursor();
+      if (records.length < this.batchSize) return true;
+    }
+  }
+  readBatch(path) {
+    const fd = openSync(path, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const want = Math.min(MAX_CHUNK, Math.max(0, size - this.cursor.offset));
+      if (want === 0) return { records: [], consumed: 0, skipped: 0 };
+      const buf = Buffer.alloc(want);
+      const n2 = readSync(fd, buf, 0, want, this.cursor.offset);
+      const text2 = buf.subarray(0, n2).toString("utf8");
+      const records = [];
+      let consumed = 0;
+      let skipped = 0;
+      let from = 0;
+      while (records.length < this.batchSize) {
+        const nl = text2.indexOf("\n", from);
+        if (nl === -1) break;
+        const line = text2.slice(from, nl);
+        from = nl + 1;
+        consumed = Buffer.byteLength(text2.slice(0, from), "utf8");
+        if (!line.trim()) continue;
+        try {
+          records.push(JSON.parse(line));
+        } catch {
+          skipped += 1;
+        }
+      }
+      return { records, consumed, skipped };
+    } finally {
+      closeSync(fd);
+    }
+  }
+};
+function readAllRecords(logPath) {
+  const out = [];
+  for (const path of [logPath + ".1", logPath]) {
+    if (!existsSync9(path)) continue;
+    for (const line of readFileSync13(path, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        out.push(JSON.parse(line));
+      } catch {
+      }
+    }
+  }
+  return out;
+}
+
+// src/activity.ts
+var ActivityShipper = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.tail = new LogTail({ logPath: opts.logPath, cursorPath: opts.cursorPath, batchSize: opts.batchSize });
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+  tail;
+  backoffMs = 0;
+  nextAttemptAt = 0;
+  fetchImpl;
+  /** A slow POST must not overlap the next interval: two passes would ship the batch twice. */
+  inFlight = false;
+  /** One pass: ship everything unshipped, one batch at a time, until caught up or an error. */
+  async tick() {
+    const total = { read: 0, accepted: 0, duplicates: 0, skipped: 0 };
+    if (this.inFlight) return total;
+    if (Date.now() < this.nextAttemptAt) return total;
+    this.inFlight = true;
+    try {
+      const r2 = await this.tail.drain(async (records) => {
+        const ok = await this.post(records);
+        if (!ok) return false;
+        total.accepted += ok.accepted;
+        total.duplicates += ok.duplicates;
+        try {
+          if (ok.delivered) this.opts.onShipped?.(records);
+        } catch (err) {
+          console.error(`[activity] onShipped failed: ${err.message}`);
+        }
+        return true;
+      });
+      total.read = r2.read;
+      total.skipped = r2.skipped;
+      return total;
+    } finally {
+      this.inFlight = false;
+    }
+  }
+  async post(records) {
+    try {
+      const res = await this.fetchImpl(this.opts.activityUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${await this.opts.getToken()}`, "content-type": "application/json" },
+        body: JSON.stringify({ records: records.map(sanitizeAgentMailActivity) })
+      });
+      if (res.status === 400 || res.status === 413) {
+        console.error(`[activity] batch rejected (HTTP ${res.status}); dropping ${records.length} records`);
+        this.backoffMs = 0;
+        return { accepted: 0, duplicates: 0, delivered: false };
+      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      this.backoffMs = 0;
+      return { accepted: body.accepted ?? 0, duplicates: body.duplicates ?? 0, delivered: true };
+    } catch (err) {
+      this.backoffMs = Math.min(this.backoffMs ? this.backoffMs * 2 : 5e3, 6e4);
+      this.nextAttemptAt = Date.now() + this.backoffMs;
+      console.error(`[activity] ship failed (${err.message}); retry in ${this.backoffMs / 1e3}s`);
+      return null;
+    }
+  }
+};
+
+// src/included-credit.ts
+var REPORT_INTERVAL_MS = 5 * 6e4;
+var IncludedCreditWatch = class {
+  seen = 0;
+  firstAt = null;
+  lastAt = null;
+  reportedAt = 0;
+  /** A refusal report went out and has not been followed by a recovery one. */
+  outstanding = false;
+  /** A call got through after that report: say so on the next beat. */
+  recovered = false;
+  now;
+  log;
+  constructor(opts = {}) {
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+  }
+  /**
+   * Walk one shipped batch in the order the proxy wrote it, counting refusals and watching for a
+   * call that got through. A success wipes the refusals still waiting to be reported: they are
+   * already out of date, and reporting them would pause a console that should not be paused.
+   */
+  note(records) {
+    for (const r2 of records) {
+      if (typeof r2 !== "object" || r2 === null) continue;
+      const mark = r2.included;
+      if (mark === "no_credit") {
+        this.recovered = false;
+        const ts = r2.ts;
+        const at2 = typeof ts === "number" && Number.isFinite(ts) ? ts * 1e3 : this.now();
+        if (this.firstAt === null || at2 < this.firstAt) this.firstAt = at2;
+        if (this.lastAt === null || at2 > this.lastAt) this.lastAt = at2;
+        this.seen++;
+        if (this.seen === 1) this.log("[included] the AI gateway refused a call for lack of credit on our account");
+        continue;
+      }
+      if (mark !== "ok") continue;
+      this.seen = 0;
+      this.firstAt = null;
+      this.lastAt = null;
+      if (this.outstanding && !this.recovered) {
+        this.recovered = true;
+        this.log("[included] the AI gateway is answering again");
+      }
+    }
+  }
+  /**
+   * The line for this beat, or nothing. Rate-limited rather than drained: a firewall whose agents
+   * keep retrying must not turn one outage into a report every five seconds, and the count is
+   * what says how bad it is, so it is only cleared once a report actually goes out.
+   */
+  drainReports() {
+    const now2 = this.now();
+    if (this.recovered) {
+      this.recovered = false;
+      this.outstanding = false;
+      this.reportedAt = now2;
+      return [
+        {
+          command_id: `included.recovered:${Math.floor(now2 / 1e3)}`,
+          ok: true,
+          status: "gateway_recovered",
+          message: "The AI Gateway is answering included-tokens calls again.",
+          data: {}
+        }
+      ];
+    }
+    if (this.seen === 0 || now2 - this.reportedAt < REPORT_INTERVAL_MS) return [];
+    const seen = this.seen;
+    const firstAt = this.firstAt;
+    const lastAt = this.lastAt;
+    this.reportedAt = now2;
+    this.outstanding = true;
+    this.seen = 0;
+    this.firstAt = null;
+    this.lastAt = null;
+    return [
+      {
+        command_id: `included.no-credit:${Math.floor(now2 / 1e3)}`,
+        ok: false,
+        status: "gateway_no_credit",
+        message: `The AI Gateway refused ${seen} included-tokens call(s) for lack of credit on ControlClaw's account.`,
+        data: {
+          seen,
+          ...firstAt ? { firstAt: new Date(firstAt).toISOString() } : {},
+          ...lastAt ? { lastAt: new Date(lastAt).toISOString() } : {}
+        }
+      }
+    ];
+  }
+};
+
+// src/inventory.ts
+var INVENTORY_CAP = 50;
+var WEBHOOK_INVENTORY_CAP = 100;
+function firewallInventory(channels2, llm2, hooks = null, unreadable2 = isStoreUnreadable) {
+  const out = {};
+  const cs = unreadable2("channels") ? void 0 : channels2?.summary();
+  if (cs && cs.length <= INVENTORY_CAP) out.channels = cs.map((c2) => ({ id: c2.id, type: c2.type, assignedVmId: c2.assignedVmId }));
+  const ls = unreadable2("llm") ? void 0 : llm2?.summary().credentials;
+  if (ls && ls.length <= INVENTORY_CAP) out.credentials = ls.map((c2) => ({ id: c2.id, provider: c2.provider }));
+  const ws = unreadable2("webhooks") ? void 0 : hooks?.inventory();
+  if (ws && ws.length <= WEBHOOK_INVENTORY_CAP) out.webhooks = ws;
+  return out.channels || out.credentials || out.webhooks ? out : null;
+}
+
+// ../../node_modules/.pnpm/@ai-sdk+provider@4.0.18/node_modules/@ai-sdk/provider/dist/index.js
+var marker = "vercel.ai.error";
+var symbol2 = Symbol.for(marker);
+var _a5;
+var _b;
+var AISDKError = class _AISDKError extends (_b = Error, _a5 = symbol2, _b) {
+  /**
+   * Creates an AI SDK Error.
+   *
+   * @param {Object} params - The parameters for creating the error.
+   * @param {string} params.name - The name of the error.
+   * @param {string} params.message - The error message.
+   * @param {unknown} [params.cause] - The underlying cause of the error.
+   */
+  constructor({
+    name: name163,
+    message: message2,
+    cause
+  }) {
+    super(message2);
+    this[_a5] = true;
+    this.name = name163;
+    this.cause = cause;
+  }
+  /**
+   * Checks if the given error is an AI SDK Error.
+   * @param {unknown} error - The error to check.
+   * @returns {boolean} True if the error is an AI SDK Error, false otherwise.
+   */
+  static isInstance(error62) {
+    return _AISDKError.hasMarker(error62, marker);
+  }
+  static hasMarker(error62, marker173) {
+    const markerSymbol = Symbol.for(marker173);
+    return error62 != null && typeof error62 === "object" && markerSymbol in error62 && typeof error62[markerSymbol] === "boolean" && error62[markerSymbol] === true;
+  }
+};
+var name = "AI_APICallError";
+var marker2 = `vercel.ai.error.${name}`;
+var symbol22 = Symbol.for(marker2);
+var _a22;
+var _b2;
+var APICallError = class extends (_b2 = AISDKError, _a22 = symbol22, _b2) {
+  constructor({
+    message: message2,
+    url: url2,
+    requestBodyValues,
+    statusCode,
+    responseHeaders,
+    responseBody,
+    cause,
+    isRetryable = statusCode != null && (statusCode === 408 || // request timeout
+    statusCode === 409 || // conflict
+    statusCode === 429 || // too many requests
+    statusCode >= 500),
+    // server error
+    data
+  }) {
+    super({ name, message: message2, cause });
+    this[_a22] = true;
+    this.url = url2;
+    this.requestBodyValues = requestBodyValues;
+    this.statusCode = statusCode;
+    this.responseHeaders = responseHeaders;
+    this.responseBody = responseBody;
+    this.isRetryable = isRetryable;
+    this.data = data;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker2);
+  }
+};
+var name2 = "AI_EmptyResponseBodyError";
+var marker3 = `vercel.ai.error.${name2}`;
+var symbol3 = Symbol.for(marker3);
+var _a32;
+var _b3;
+var EmptyResponseBodyError = class extends (_b3 = AISDKError, _a32 = symbol3, _b3) {
+  // used in isInstance
+  constructor({ message: message2 = "Empty response body" } = {}) {
+    super({ name: name2, message: message2 });
+    this[_a32] = true;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker3);
+  }
+};
+var name3 = "AI_EvaluationUnsupportedQuestionTypeError";
+var marker4 = `vercel.ai.error.${name3}`;
+var symbol4 = Symbol.for(marker4);
+var _a42;
+var _b4;
+var EvaluationUnsupportedQuestionTypeError = class extends (_b4 = AISDKError, _a42 = symbol4, _b4) {
+  constructor({
+    questionId,
+    questionType,
+    provider,
+    modelId,
+    message: message2 = `Question "${questionId}" has type "${questionType}", which is not supported by provider "${provider}" and model "${modelId}".`
+  }) {
+    super({ name: name3, message: message2 });
+    this[_a42] = true;
+    this.questionId = questionId;
+    this.questionType = questionType;
+    this.provider = provider;
+    this.modelId = modelId;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker4);
+  }
+};
+function getErrorMessage(error62) {
+  if (error62 == null) {
+    return "unknown error";
+  }
+  if (typeof error62 === "string") {
+    return error62;
+  }
+  if (error62 instanceof Error) {
+    return error62.toString();
+  }
+  return JSON.stringify(error62);
+}
+var name4 = "AI_InvalidArgumentError";
+var marker5 = `vercel.ai.error.${name4}`;
+var symbol5 = Symbol.for(marker5);
+var _a52;
+var _b5;
+var InvalidArgumentError = class extends (_b5 = AISDKError, _a52 = symbol5, _b5) {
+  constructor({
+    message: message2,
+    cause,
+    argument
+  }) {
+    super({ name: name4, message: message2, cause });
+    this[_a52] = true;
+    this.argument = argument;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker5);
+  }
+};
+var name5 = "AI_InvalidPromptError";
+var marker6 = `vercel.ai.error.${name5}`;
+var symbol6 = Symbol.for(marker6);
+var _a6;
+var _b6;
+var InvalidPromptError = class extends (_b6 = AISDKError, _a6 = symbol6, _b6) {
+  constructor({
+    prompt,
+    message: message2,
+    cause
+  }) {
+    super({ name: name5, message: `Invalid prompt: ${message2}`, cause });
+    this[_a6] = true;
+    this.prompt = prompt;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker6);
+  }
+};
+var name6 = "AI_InvalidResponseDataError";
+var marker7 = `vercel.ai.error.${name6}`;
+var symbol7 = Symbol.for(marker7);
+var _a7;
+var _b7;
+var InvalidResponseDataError = class extends (_b7 = AISDKError, _a7 = symbol7, _b7) {
+  constructor({
+    data,
+    message: message2 = `Invalid response data: ${JSON.stringify(data)}.`
+  }) {
+    super({ name: name6, message: message2 });
+    this[_a7] = true;
+    this.data = data;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker7);
+  }
+};
+var name7 = "AI_JSONParseError";
+var marker8 = `vercel.ai.error.${name7}`;
+var symbol8 = Symbol.for(marker8);
+var _a8;
+var _b8;
+var JSONParseError = class extends (_b8 = AISDKError, _a8 = symbol8, _b8) {
+  constructor({ text: text2, cause }) {
+    super({
+      name: name7,
+      message: `JSON parsing failed: Text: ${text2}.
+Error message: ${getErrorMessage(cause)}`,
+      cause
+    });
+    this[_a8] = true;
+    this.text = text2;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker8);
+  }
+};
+var name8 = "AI_LoadAPIKeyError";
+var marker9 = `vercel.ai.error.${name8}`;
+var symbol9 = Symbol.for(marker9);
+var _a9;
+var _b9;
+var LoadAPIKeyError = class extends (_b9 = AISDKError, _a9 = symbol9, _b9) {
+  // used in isInstance
+  constructor({ message: message2 }) {
+    super({ name: name8, message: message2 });
+    this[_a9] = true;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker9);
+  }
+};
+var name9 = "AI_LoadSettingError";
+var marker10 = `vercel.ai.error.${name9}`;
+var symbol10 = Symbol.for(marker10);
+var _a10;
+var _b10;
+var LoadSettingError = class extends (_b10 = AISDKError, _a10 = symbol10, _b10) {
+  // used in isInstance
+  constructor({ message: message2 }) {
+    super({ name: name9, message: message2 });
+    this[_a10] = true;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker10);
+  }
+};
+var name10 = "AI_NoContentGeneratedError";
+var marker11 = `vercel.ai.error.${name10}`;
+var symbol11 = Symbol.for(marker11);
+var _a11;
+var _b11;
+var NoContentGeneratedError = class extends (_b11 = AISDKError, _a11 = symbol11, _b11) {
+  // used in isInstance
+  constructor({
+    message: message2 = "No content generated."
+  } = {}) {
+    super({ name: name10, message: message2 });
+    this[_a11] = true;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker11);
+  }
+};
+var name11 = "AI_NoSuchModelError";
+var marker12 = `vercel.ai.error.${name11}`;
+var symbol12 = Symbol.for(marker12);
+var _a12;
+var _b12;
+var NoSuchModelError = class extends (_b12 = AISDKError, _a12 = symbol12, _b12) {
+  constructor({
+    errorName = name11,
+    modelId,
+    modelType,
+    message: message2 = `No such ${modelType}: ${modelId}`
+  }) {
+    super({ name: errorName, message: message2 });
+    this[_a12] = true;
+    this.modelId = modelId;
+    this.modelType = modelType;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker12);
+  }
+};
+var name12 = "AI_NoSuchProviderReferenceError";
+var marker13 = `vercel.ai.error.${name12}`;
+var symbol13 = Symbol.for(marker13);
+var _a13;
+var _b13;
+var NoSuchProviderReferenceError = class extends (_b13 = AISDKError, _a13 = symbol13, _b13) {
+  constructor({
+    provider,
+    reference,
+    message: message2 = `No provider reference found for provider '${provider}'. Available providers: ${Object.keys(reference).join(", ")}`
+  }) {
+    super({ name: name12, message: message2 });
+    this[_a13] = true;
+    this.provider = provider;
+    this.reference = reference;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker13);
+  }
+};
+var name13 = "AI_TooManyEmbeddingValuesForCallError";
+var marker14 = `vercel.ai.error.${name13}`;
+var symbol14 = Symbol.for(marker14);
+var _a14;
+var _b14;
+var TooManyEmbeddingValuesForCallError = class extends (_b14 = AISDKError, _a14 = symbol14, _b14) {
+  constructor(options) {
+    super({
+      name: name13,
+      message: `Too many values for a single embedding call. The ${options.provider} model "${options.modelId}" can only embed up to ${options.maxEmbeddingsPerCall} values per call, but ${options.values.length} values were provided.`
+    });
+    this[_a14] = true;
+    this.provider = options.provider;
+    this.modelId = options.modelId;
+    this.maxEmbeddingsPerCall = options.maxEmbeddingsPerCall;
+    this.values = options.values;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker14);
+  }
+};
+var name14 = "AI_TypeValidationError";
+var marker15 = `vercel.ai.error.${name14}`;
+var symbol15 = Symbol.for(marker15);
+var _a15;
+var _b15;
+var TypeValidationError = class _TypeValidationError extends (_b15 = AISDKError, _a15 = symbol15, _b15) {
+  constructor({
+    value,
+    cause,
+    context
+  }) {
+    let contextPrefix = "Type validation failed";
+    if (context == null ? void 0 : context.field) {
+      contextPrefix += ` for ${context.field}`;
+    }
+    if ((context == null ? void 0 : context.entityName) || (context == null ? void 0 : context.entityId)) {
+      contextPrefix += " (";
+      const parts = [];
+      if (context.entityName) {
+        parts.push(context.entityName);
+      }
+      if (context.entityId) {
+        parts.push(`id: "${context.entityId}"`);
+      }
+      contextPrefix += parts.join(", ");
+      contextPrefix += ")";
+    }
+    super({
+      name: name14,
+      message: `${contextPrefix}: Value: ${JSON.stringify(value)}.
+Error message: ${getErrorMessage(cause)}`,
+      cause
+    });
+    this[_a15] = true;
+    this.value = value;
+    this.context = context;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker15);
+  }
+  /**
+   * Wraps an error into a TypeValidationError.
+   * If the cause is already a TypeValidationError with the same value and context, it returns the cause.
+   * Otherwise, it creates a new TypeValidationError.
+   *
+   * @param {Object} params - The parameters for wrapping the error.
+   * @param {unknown} params.value - The value that failed validation.
+   * @param {unknown} params.cause - The original error or cause of the validation failure.
+   * @param {TypeValidationContext} params.context - Optional context about what is being validated.
+   * @returns {TypeValidationError} A TypeValidationError instance.
+   */
+  static wrap({
+    value,
+    cause,
+    context
+  }) {
+    var _a173, _b173, _c;
+    if (_TypeValidationError.isInstance(cause) && cause.value === value && ((_a173 = cause.context) == null ? void 0 : _a173.field) === (context == null ? void 0 : context.field) && ((_b173 = cause.context) == null ? void 0 : _b173.entityName) === (context == null ? void 0 : context.entityName) && ((_c = cause.context) == null ? void 0 : _c.entityId) === (context == null ? void 0 : context.entityId)) {
+      return cause;
+    }
+    return new _TypeValidationError({ value, cause, context });
+  }
+};
+var name15 = "AI_UnsupportedFunctionalityError";
+var marker16 = `vercel.ai.error.${name15}`;
+var symbol16 = Symbol.for(marker16);
+var _a16;
+var _b16;
+var UnsupportedFunctionalityError = class extends (_b16 = AISDKError, _a16 = symbol16, _b16) {
+  constructor({
+    functionality,
+    message: message2 = `'${functionality}' functionality not supported.`
+  }) {
+    super({ name: name15, message: message2 });
+    this[_a16] = true;
+    this.functionality = functionality;
+  }
+  static isInstance(error62) {
+    return AISDKError.hasMarker(error62, marker16);
+  }
+};
+function isJSONValue(value) {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.every(isJSONValue);
+  }
+  if (typeof value === "object") {
+    return Object.entries(value).every(
+      ([key, val]) => typeof key === "string" && (val === void 0 || isJSONValue(val))
+    );
+  }
+  return false;
+}
+function isJSONObject(value) {
+  return value != null && typeof value === "object" && Object.entries(value).every(
+    ([key, val]) => typeof key === "string" && (val === void 0 || isJSONValue(val))
+  );
+}
+
 // ../../node_modules/.pnpm/eventsource-parser@3.1.1/node_modules/eventsource-parser/dist/index.js
 var ParseError = class extends Error {
   constructor(message2, options) {
@@ -37975,10 +38643,10 @@ async function cancelResponseBody(response) {
 }
 var name16 = "AI_DownloadError";
 var marker22 = `vercel.ai.error.${name16}`;
-var symbol18 = Symbol.for(marker22);
-var _a19;
+var symbol17 = Symbol.for(marker22);
+var _a17;
 var _b17;
-var DownloadError = class extends (_b17 = AISDKError, _a19 = symbol18, _b17) {
+var DownloadError = class extends (_b17 = AISDKError, _a17 = symbol17, _b17) {
   constructor({
     url: url2,
     statusCode,
@@ -37987,7 +38655,7 @@ var DownloadError = class extends (_b17 = AISDKError, _a19 = symbol18, _b17) {
     message: message2 = cause == null ? `Failed to download ${url2}: ${statusCode} ${statusText}` : `Failed to download ${url2}: ${cause}`
   }) {
     super({ name: name16, message: message2, cause });
-    this[_a19] = true;
+    this[_a17] = true;
     this.url = url2;
     this.statusCode = statusCode;
     this.statusText = statusText;
@@ -40908,10 +41576,10 @@ function isJSONSerializable(value) {
 }
 var name22 = "AI_SerializationError";
 var marker32 = `vercel.ai.error.${name22}`;
-var symbol22 = Symbol.for(marker32);
+var symbol23 = Symbol.for(marker32);
 var _a23;
 var _b22;
-var SerializationError = class extends (_b22 = AISDKError, _a23 = symbol22, _b22) {
+var SerializationError = class extends (_b22 = AISDKError, _a23 = symbol23, _b22) {
   // used in isInstance
   constructor({
     message: message2 = "Failed to serialize value.",
@@ -41232,10 +41900,10 @@ var z3 = {
   unknown
 };
 var marker18 = "vercel.ai.gateway.error";
-var symbol19 = Symbol.for(marker18);
-var _a20;
+var symbol18 = Symbol.for(marker18);
+var _a18;
 var _b18;
-var GatewayError = class _GatewayError extends (_b18 = Error, _a20 = symbol19, _b18) {
+var GatewayError = class _GatewayError extends (_b18 = Error, _a18 = symbol18, _b18) {
   constructor({
     message: message2,
     statusCode = 500,
@@ -41248,7 +41916,7 @@ var GatewayError = class _GatewayError extends (_b18 = Error, _a20 = symbol19, _
     // server error
   }) {
     super(generationId ? `${message2} [${generationId}]` : message2);
-    this[_a20] = true;
+    this[_a18] = true;
     this.statusCode = statusCode;
     this.cause = cause;
     this.generationId = generationId;
@@ -41263,15 +41931,15 @@ var GatewayError = class _GatewayError extends (_b18 = Error, _a20 = symbol19, _
     return _GatewayError.hasMarker(error62);
   }
   static hasMarker(error62) {
-    return typeof error62 === "object" && error62 !== null && symbol19 in error62 && error62[symbol19] === true;
+    return typeof error62 === "object" && error62 !== null && symbol18 in error62 && error62[symbol18] === true;
   }
 };
 var name17 = "GatewayAuthenticationError";
 var marker23 = `vercel.ai.gateway.error.${name17}`;
-var symbol23 = Symbol.for(marker23);
+var symbol24 = Symbol.for(marker23);
 var _a24;
 var _b23;
-var GatewayAuthenticationError = class _GatewayAuthenticationError extends (_b23 = GatewayError, _a24 = symbol23, _b23) {
+var GatewayAuthenticationError = class _GatewayAuthenticationError extends (_b23 = GatewayError, _a24 = symbol24, _b23) {
   constructor({
     message: message2 = "Authentication failed",
     statusCode = 401,
@@ -41284,7 +41952,7 @@ var GatewayAuthenticationError = class _GatewayAuthenticationError extends (_b23
     this.type = "authentication_error";
   }
   static isInstance(error62) {
-    return GatewayError.hasMarker(error62) && symbol23 in error62;
+    return GatewayError.hasMarker(error62) && symbol24 in error62;
   }
   /**
    * Creates a contextual error message when authentication fails
@@ -41355,9 +42023,9 @@ var GatewayInvalidRequestError = class extends (_b32 = GatewayError, _a33 = symb
 var name32 = "GatewayRateLimitError";
 var marker42 = `vercel.ai.gateway.error.${name32}`;
 var symbol42 = Symbol.for(marker42);
-var _a42;
+var _a43;
 var _b42;
-var GatewayRateLimitError = class extends (_b42 = GatewayError, _a42 = symbol42, _b42) {
+var GatewayRateLimitError = class extends (_b42 = GatewayError, _a43 = symbol42, _b42) {
   constructor({
     message: message2 = "Rate limit exceeded",
     statusCode = 429,
@@ -41365,7 +42033,7 @@ var GatewayRateLimitError = class extends (_b42 = GatewayError, _a42 = symbol42,
     generationId
   } = {}) {
     super({ message: message2, statusCode, cause, generationId });
-    this[_a42] = true;
+    this[_a43] = true;
     this.name = name32;
     this.type = "rate_limit_exceeded";
   }
@@ -41383,9 +42051,9 @@ var modelNotFoundParamSchema = lazySchema(
     })
   )
 );
-var _a52;
+var _a53;
 var _b52;
-var GatewayModelNotFoundError = class extends (_b52 = GatewayError, _a52 = symbol52, _b52) {
+var GatewayModelNotFoundError = class extends (_b52 = GatewayError, _a53 = symbol52, _b52) {
   constructor({
     message: message2 = "Model not found",
     statusCode = 404,
@@ -41394,7 +42062,7 @@ var GatewayModelNotFoundError = class extends (_b52 = GatewayError, _a52 = symbo
     generationId
   } = {}) {
     super({ message: message2, statusCode, cause, generationId });
-    this[_a52] = true;
+    this[_a53] = true;
     this.name = name42;
     this.type = "model_not_found";
     this.modelId = modelId;
@@ -45017,10 +45685,10 @@ var __export2 = (target, all) => {
 };
 var name18 = "AI_InvalidArgumentError";
 var marker19 = `vercel.ai.error.${name18}`;
-var symbol20 = Symbol.for(marker19);
-var _a21;
+var symbol19 = Symbol.for(marker19);
+var _a19;
 var _b19;
-var InvalidArgumentError2 = class extends (_b19 = AISDKError, _a21 = symbol20, _b19) {
+var InvalidArgumentError2 = class extends (_b19 = AISDKError, _a19 = symbol19, _b19) {
   constructor({
     parameter,
     value,
@@ -45030,7 +45698,7 @@ var InvalidArgumentError2 = class extends (_b19 = AISDKError, _a21 = symbol20, _
       name: name18,
       message: `Invalid argument for parameter ${parameter}: ${message2}`
     });
-    this[_a21] = true;
+    this[_a19] = true;
     this.parameter = parameter;
     this.value = value;
   }
@@ -45040,10 +45708,10 @@ var InvalidArgumentError2 = class extends (_b19 = AISDKError, _a21 = symbol20, _
 };
 var name24 = "AI_InvalidStreamPartError";
 var marker24 = `vercel.ai.error.${name24}`;
-var symbol24 = Symbol.for(marker24);
+var symbol25 = Symbol.for(marker24);
 var _a25;
 var _b24;
-var InvalidStreamPartError = class extends (_b24 = AISDKError, _a25 = symbol24, _b24) {
+var InvalidStreamPartError = class extends (_b24 = AISDKError, _a25 = symbol25, _b24) {
   constructor({
     chunk,
     message: message2
@@ -45077,9 +45745,9 @@ var InvalidToolApprovalError = class extends (_b33 = AISDKError, _a34 = symbol33
 var name43 = "AI_InvalidToolApprovalSignatureError";
 var marker43 = `vercel.ai.error.${name43}`;
 var symbol43 = Symbol.for(marker43);
-var _a43;
+var _a44;
 var _b43;
-var InvalidToolApprovalSignatureError = class extends (_b43 = AISDKError, _a43 = symbol43, _b43) {
+var InvalidToolApprovalSignatureError = class extends (_b43 = AISDKError, _a44 = symbol43, _b43) {
   constructor({
     approvalId,
     toolCallId,
@@ -45089,7 +45757,7 @@ var InvalidToolApprovalSignatureError = class extends (_b43 = AISDKError, _a43 =
       name: name43,
       message: `Tool approval signature verification failed for approval "${approvalId}" (tool call "${toolCallId}"): ${reason}`
     });
-    this[_a43] = true;
+    this[_a44] = true;
     this.approvalId = approvalId;
     this.toolCallId = toolCallId;
   }
@@ -45100,9 +45768,9 @@ var InvalidToolApprovalSignatureError = class extends (_b43 = AISDKError, _a43 =
 var name53 = "AI_InvalidToolInputError";
 var marker53 = `vercel.ai.error.${name53}`;
 var symbol53 = Symbol.for(marker53);
-var _a53;
+var _a54;
 var _b53;
-var InvalidToolInputError = class extends (_b53 = AISDKError, _a53 = symbol53, _b53) {
+var InvalidToolInputError = class extends (_b53 = AISDKError, _a54 = symbol53, _b53) {
   constructor({
     toolInput,
     toolName,
@@ -45110,7 +45778,7 @@ var InvalidToolInputError = class extends (_b53 = AISDKError, _a53 = symbol53, _
     message: message2 = `Invalid input for tool ${toolName}: ${getErrorMessage(cause)}`
   }) {
     super({ name: name53, message: message2, cause });
-    this[_a53] = true;
+    this[_a54] = true;
     this.toolInput = toolInput;
     this.toolName = toolName;
   }
@@ -45443,17 +46111,17 @@ var UIMessageStreamError = class extends (_b192 = AISDKError, _a192 = symbol192,
 };
 var name20 = "AI_InvalidDataContentError";
 var marker20 = `vercel.ai.error.${name20}`;
-var symbol202 = Symbol.for(marker20);
-var _a202;
+var symbol20 = Symbol.for(marker20);
+var _a20;
 var _b20;
-var InvalidDataContentError = class extends (_b20 = AISDKError, _a202 = symbol202, _b20) {
+var InvalidDataContentError = class extends (_b20 = AISDKError, _a20 = symbol20, _b20) {
   constructor({
     content,
     cause,
     message: message2 = `Invalid data content. Expected a base64 string, Uint8Array, ArrayBuffer, or Buffer, but got ${typeof content}.`
   }) {
     super({ name: name20, message: message2, cause });
-    this[_a202] = true;
+    this[_a20] = true;
     this.content = content;
   }
   static isInstance(error62) {
@@ -45463,15 +46131,15 @@ var InvalidDataContentError = class extends (_b20 = AISDKError, _a202 = symbol20
 var name21 = "AI_InvalidMessageRoleError";
 var marker21 = `vercel.ai.error.${name21}`;
 var symbol21 = Symbol.for(marker21);
-var _a212;
+var _a21;
 var _b21;
-var InvalidMessageRoleError = class extends (_b21 = AISDKError, _a212 = symbol21, _b21) {
+var InvalidMessageRoleError = class extends (_b21 = AISDKError, _a21 = symbol21, _b21) {
   constructor({
     role,
     message: message2 = `Invalid message role: '${role}'. Must be one of: "system", "user", "assistant", "tool".`
   }) {
     super({ name: name21, message: message2 });
-    this[_a212] = true;
+    this[_a21] = true;
     this.role = role;
   }
   static isInstance(error62) {
@@ -50185,8 +50853,8 @@ async function hashCanonical(value) {
   return toBase64url(new Uint8Array(digest));
 }
 var encoder22 = new TextEncoder();
-function fromBase64url(str18) {
-  return convertBase64ToUint8Array(str18);
+function fromBase64url(str19) {
+  return convertBase64ToUint8Array(str19);
 }
 async function importKey(secret) {
   const keyData = typeof secret === "string" ? encoder22.encode(secret) : secret;
@@ -83451,7 +84119,7 @@ function parseAiSettings(raw) {
 import { createWriteStream, existsSync as existsSync11, mkdirSync as mkdirSync10, readdirSync as readdirSync2, rmSync as rmSync3, statSync as statSync3 } from "fs";
 import { createReadStream } from "fs";
 import { join as join7 } from "path";
-import { randomBytes as randomBytes9 } from "crypto";
+import { randomBytes as randomBytes10 } from "crypto";
 var RECOVERY_RATE_PER_MINUTE = 10;
 var RECOVERY_BAD_SIGNATURES = 5;
 var RECOVERY_LOCKOUT_MS = 15 * 6e4;
@@ -83459,7 +84127,7 @@ var MAX_FIREWALL_ARCHIVE_BYTES = 32 * 1024 * 1024;
 var MAX_AGENT_ARCHIVE_BYTES = 6 * 1024 * 1024 * 1024;
 var STAGED_TTL_MS = 60 * 6e4;
 var RECOVERY_PATH_PREFIX = "/recovery/";
-function str17(v2) {
+function str18(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 var RecoveryRoutes = class {
@@ -83525,7 +84193,7 @@ var RecoveryRoutes = class {
     };
     if (req.method !== "POST") return reply(405, { error: "Use POST." });
     const keys = this.opts.recoveryKeys();
-    const signature = str17(req.headers["x-cc-recovery-signature"]);
+    const signature = str18(req.headers["x-cc-recovery-signature"]);
     const timestamp = Number(req.headers["x-cc-recovery-timestamp"] ?? NaN);
     const locked = this.lockedUntil - this.now();
     if (!signature || !Number.isFinite(timestamp)) {
@@ -83602,7 +84270,7 @@ var RecoveryRoutes = class {
       } catch {
       }
     }
-    return join7(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes9(6).toString("hex")}`);
+    return join7(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes10(6).toString("hex")}`);
   }
   async read(req, spillPath) {
     const hasher = await createRecoveryBodyHasher();
@@ -83680,14 +84348,14 @@ var RecoveryRoutes = class {
     const service = this.opts.selfRestore;
     if (!service) throw new Error("This firewall cannot put itself back.");
     const head = body.head;
-    const backupId = str17(head.backupId);
-    const sourceBoxId = str17(head.sourceBoxId);
-    const header = str17(head.header);
-    const manifestHash2 = str17(head.manifestHash);
-    const sealed = str17(head.dataKeySealedToFirewall);
+    const backupId = str18(head.backupId);
+    const sourceBoxId = str18(head.sourceBoxId);
+    const header = str18(head.header);
+    const manifestHash2 = str18(head.manifestHash);
+    const sealed = str18(head.dataKeySealedToFirewall);
     if (!backupId || !sourceBoxId || !header || !manifestHash2 || !sealed) throw new Error("This request does not name a backup to put back.");
     const dataKey = await this.openDataKey(sealed);
-    const given = str17(head.archiveUrl);
+    const given = str18(head.archiveUrl);
     const archive = given ? void 0 : this.requireInline(body.tail);
     const r2 = await service.run({
       backupId,
@@ -83707,12 +84375,12 @@ var RecoveryRoutes = class {
    */
   async agentRestore(body) {
     const head = body.head;
-    const backupId = str17(head.backupId);
-    const kind = str17(head.kind);
-    const header = str17(head.header);
-    const manifestHash2 = str17(head.manifestHash);
-    const sealed = str17(head.dataKeySealedToFirewall);
-    const agentName = str17(head.agent);
+    const backupId = str18(head.backupId);
+    const kind = str18(head.kind);
+    const header = str18(head.header);
+    const manifestHash2 = str18(head.manifestHash);
+    const sealed = str18(head.dataKeySealedToFirewall);
+    const agentName = str18(head.agent);
     if (!backupId || !header || !manifestHash2 || !sealed || !agentName) throw new Error("This request does not name a backup to restore.");
     if (kind !== "workspace" && kind !== "state") throw new Error(`A ${kind ?? "missing"} archive is not something an agent can be restored from.`);
     const target = this.resolveAgent(agentName);
@@ -83779,13 +84447,13 @@ var RecoveryRoutes = class {
    * machines involved, and nothing about it depends on the object store being reachable.
    */
   stagedUrl(head, tailPath) {
-    const given = str17(head.archiveUrl);
+    const given = str18(head.archiveUrl);
     if (given) return { url: this.checkedUrl(given), token: null };
     if (!tailPath || !existsSync11(tailPath) || statSync3(tailPath).size === 0) throw new Error("No archive arrived, and no address was given for one.");
     if (!this.opts.staging.baseUrl) {
       throw new Error("This firewall has no private address to serve the archive from, so pass --archive-url with somewhere the agent box can fetch it.");
     }
-    const token2 = randomBytes9(32).toString("hex");
+    const token2 = randomBytes10(32).toString("hex");
     this.staged.set(token2, { path: tailPath, bytes: statSync3(tailPath).size, at: this.now() });
     return { url: `${this.opts.staging.baseUrl}${RECOVERY_PATH_PREFIX}staged/${token2}`, token: token2 };
   }
@@ -83884,8 +84552,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "529e74e" : "unknown",
-  builtAt: true ? "2026-10-02T15:07:26+01:00" : "unknown"
+  commit: true ? "567b474" : "unknown",
+  builtAt: true ? "2026-10-02T17:28:13+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -84083,6 +84751,7 @@ var channels = null;
 var llm = null;
 var drive = null;
 var google2 = null;
+var agentmail = null;
 var webhooks = null;
 var search = null;
 var tailscale = null;
@@ -84140,6 +84809,7 @@ async function runSync(boxKey) {
   if (drive) {
     cfg.credentials = [...cfg.credentials ?? [], ...drive.credentials()];
   }
+  if (agentmail) cfg.credentials = [...cfg.credentials ?? [], ...agentmail.credentials()];
   if (google2) {
     cfg.credentials = [...cfg.credentials ?? [], ...google2.credentials()];
   }
@@ -84338,6 +85008,20 @@ async function main() {
       console.log(`[mitm-agent] webhook store loaded (${webhooks.registrations().length} registration(s))`);
     } catch (err) {
       console.error(`[mitm-agent] webhooks module would not start, webhook commands disabled: ${err.message}`);
+    }
+    try {
+      agentmail = new AgentMailFirewall({
+        storePath: "/opt/controlclaw/state/agentmail.enc",
+        boxKey,
+        ids,
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
+        onCredentialsChanged: () => runSync(boxKey)
+      });
+      setInterval(() => {
+        void agentmail?.reconcile();
+      }, 1e4).unref();
+    } catch {
+      console.error("[agentmail] encrypted store unavailable; commands disabled");
     }
     try {
       google2 = new GoogleFirewall({
@@ -84750,6 +85434,7 @@ async function main() {
           ...llm?.handlers() ?? {},
           ...drive?.handlers() ?? {},
           ...google2?.handlers() ?? {},
+          ...agentmail?.handlers() ?? {},
           ...webhooks?.handlers() ?? {},
           ...search?.handlers() ?? {},
           ...tailscale?.handlers() ?? {},
@@ -84800,6 +85485,7 @@ async function main() {
           if (brain) features.push("gbrain");
           if (drive) features.push("drive_folders");
           if (google2) features.push("google_account");
+          if (agentmail) features.push("agentmail");
           if (connectors) features.push("connectors");
           if (selfUpdates?.supported()) features.push("self_update");
           if (batchUpdates) features.push("update_all");
@@ -84819,6 +85505,7 @@ async function main() {
             ...inventory ? { inventory } : {},
             ...codeRecipients ? { code_recipients: codeRecipients } : {},
             stores,
+            ...agentmail && !stores.some((s2) => s2.store === "agentmail") ? { agentmail: agentmail.summary() } : {},
             ...llm ? { included_ai: llm.includedCredentialId() } : {},
             ...selfUpdates ? { update: selfUpdates.status() } : {},
             ...backupStatus ? { backup: { ...backupStatus, recoveryRoutes } } : {},
