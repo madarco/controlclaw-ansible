@@ -71,6 +71,12 @@
   loop: [openclaw, controlclaw-agent, browser-stream]
   notify: restart openclaw
 
+- name: Meetings | deny microphone and camera capture in the Transcript profile
+  ansible.builtin.copy:
+    dest: /opt/controlclaw/meeting-browser-preferences.json
+    mode: '0644'
+    content: '{"profile":{"default_content_setting_values":{"media_stream_mic":2,"media_stream_camera":2}}}'
+
 - name: Meetings | provision an ephemeral guest browser unit
   ansible.builtin.copy:
     dest: /etc/systemd/user/cc-meeting-browser.service
@@ -87,6 +93,8 @@
       Environment=PULSE_SOURCE=openclaw_meeting_audio
       RuntimeDirectory=cc-meetings
       RuntimeDirectoryMode=0700
+      ExecStartPre=/usr/bin/mkdir -p %t/cc-meetings/profile/Default
+      ExecStartPre=/usr/bin/cp /opt/controlclaw/meeting-browser-preferences.json %t/cc-meetings/profile/Default/Preferences
       ExecStart=/usr/bin/google-chrome-stable --user-data-dir=%t/cc-meetings/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-sync --disable-background-networking --password-store=basic --force-webrtc-ip-handling-policy=disable_non_proxied_udp --autoplay-policy=no-user-gesture-required about:blank
       KillMode=control-group
       TimeoutStopSec=10
@@ -104,19 +112,25 @@
     XDG_RUNTIME_DIR: "/run/user/{{ meeting_user_uid.stdout }}"
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ meeting_user_uid.stdout }}/bus"
 
-- name: Meetings | read whether Meet is already installed at the pin
-  ansible.builtin.command: /usr/bin/openclaw plugins list --json
+- name: Meetings | install the pinned provenance check
+  ansible.builtin.copy:
+    src: meeting-install-check.mjs
+    dest: /opt/controlclaw/meeting-install-check.mjs
+    mode: '0644'
+
+- name: Meetings | check the official package provenance and integrity
+  ansible.builtin.command:
+    argv: [/usr/bin/node, /opt/controlclaw/meeting-install-check.mjs, "{{ openclaw_meet_version }}", "{{ openclaw_meet_sha512 }}"]
+    chdir: "{{ controlclaw_home }}"
   become: true
   become_user: "{{ controlclaw_user }}"
   environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
-  register: meeting_plugins
+  register: meeting_installed
   changed_when: false
 
-- name: Meetings | inspect the installed package list
+- name: Meetings | determine whether the pinned official install is needed
   ansible.builtin.set_fact:
-    meeting_install_needed: >-
-      {{ (meeting_plugins.stdout | from_json).plugins | selectattr('id', 'equalto', 'google-meet')
-         | selectattr('version', 'equalto', openclaw_meet_version) | list | length == 0 }}
+    meeting_install_needed: "{{ not (meeting_installed.stdout | from_json).ok }}"
 
 - name: Meetings | download the verified Meet package
   ansible.builtin.get_url:
@@ -133,12 +147,25 @@
   failed_when: false
 
 - name: Meetings | install the pinned official package
-  ansible.builtin.command: /usr/bin/openclaw plugins install /opt/controlclaw/google-meet.tgz --force --accept-capabilities
+  ansible.builtin.command:
+    argv: [/usr/bin/openclaw, plugins, install, "@openclaw/google-meet@{{ openclaw_meet_version }}", --force, --pin, --no-enable, --accept-capabilities]
+    chdir: "{{ controlclaw_home }}"
   become: true
   become_user: "{{ controlclaw_user }}"
   environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
   when: meeting_install_needed | bool
   notify: restart openclaw
+
+- name: Meetings | verify the installed official package before activation
+  ansible.builtin.command:
+    argv: [/usr/bin/node, /opt/controlclaw/meeting-install-check.mjs, "{{ openclaw_meet_version }}", "{{ openclaw_meet_sha512 }}"]
+    chdir: "{{ controlclaw_home }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: meeting_verified
+  changed_when: false
+  failed_when: not (meeting_verified.stdout | from_json).ok
 
 - name: Meetings | install the browser reservation hook
   ansible.builtin.copy:
@@ -159,7 +186,7 @@
 
 - name: Meetings | bind native capture to the reserved guest browser and private notes
   ansible.builtin.command:
-    argv: [/usr/bin/python3, /opt/controlclaw/meeting-runtime-patch.py, /usr/lib/node_modules/openclaw, "{{ controlclaw_home }}/.openclaw"]
+    argv: [/usr/bin/python3, /opt/controlclaw/meeting-runtime-patch.py, /usr/lib/node_modules/openclaw, "{{ (meeting_verified.stdout | from_json).installPath }}"]
   register: meeting_patched
   changed_when: "'changed' in meeting_patched.stdout"
   notify: restart openclaw

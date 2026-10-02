@@ -2520,8 +2520,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d72d8ce" : "unknown",
-  builtAt: true ? "2026-10-02T19:19:02+00:00" : "unknown"
+  commit: true ? "b68c7dc" : "unknown",
+  builtAt: true ? "2026-10-02T20:31:02+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -5613,7 +5613,7 @@ import {
 import { join as join7, resolve, sep } from "path";
 import { createRequire as createRequire2 } from "module";
 var requireBuiltin2 = createRequire2(import.meta.url);
-var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:your )?microphone is (?:on|off|muted)|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
+var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:(?:your )?(?:microphone|camera) is (?:on|off|muted)[.!]?\s*)+|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
 function cleanCaptions(input2) {
   const out = [];
   for (const row of input2) {
@@ -6064,6 +6064,8 @@ var MeetingService = class {
       if (!this.alive(runtime)) return;
       if (result.found === false) throw new Error("Native meeting session ended");
       const health2 = result.session?.chrome?.health;
+      if (health2?.manualAction?.reason === "meet-admission-denied")
+        throw new Error("Meet refused admission");
       if (health2?.inCall && (health2.micMuted !== true || health2.cameraOff !== true))
         throw new Error("Mute could not be verified");
       if (health2?.inCall) runtime.activeAt ??= Date.now();
@@ -6074,8 +6076,8 @@ var MeetingService = class {
       }
       if (["ended", "failed"].includes(result.session?.state ?? ""))
         await this.finish(runtime, result.session?.state === "failed");
-    } catch {
-      runtime.record.error = "Capture stopped because meeting media or browser access failed.";
+    } catch (error62) {
+      runtime.record.error = error62 instanceof Error && error62.message === "Mute could not be verified" ? "Capture stopped because the microphone and camera could not both be verified off." : error62 instanceof Error && error62.message === "Meet refused admission" ? "Google Meet refused admission. Ask the host for a new invitation or check guest access." : "Capture stopped because meeting media or browser access failed.";
       await this.finish(runtime, true);
     } finally {
       runtime.polling = false;
@@ -6144,7 +6146,7 @@ var MeetingService = class {
     });
     runtime.record.endedAt = (/* @__PURE__ */ new Date()).toISOString();
     runtime.record.state = failed || cleanupFailed || !runtime.record.transcript.length ? "failed" : "complete";
-    if (!runtime.record.transcript.length)
+    if (!runtime.record.transcript.length && !runtime.record.error)
       runtime.record.error = "No captions were captured. This meeting has no transcript.";
     this.opts.archive.save(runtime.record);
     if (cleanupFailed || runtime.starting) return;
@@ -33799,6 +33801,17 @@ server.listen(PORT, BIND, () => {
     gateway: client,
     browser: async (start) => {
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
+      if (!start) return;
+      const deadline = Date.now() + 15e3;
+      while (Date.now() < deadline) {
+        try {
+          const response = await fetch("http://127.0.0.1:9223/json/version", { signal: AbortSignal.timeout(1e3) });
+          if (response.ok && typeof (await response.json()).webSocketDebuggerUrl === "string") return;
+        } catch {
+        }
+        await new Promise((resolve3) => setTimeout(resolve3, 250));
+      }
+      throw new Error("Meeting browser did not become ready");
     },
     reserve: (reserved) => {
       if (reserved) writeFileSync15(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
