@@ -74,6 +74,7 @@ from mitmproxy import connection
 from mitmproxy import http
 from mitmproxy import ctx as _mitm_ctx
 # Enforcement cannot be optional: refuse to load on an incompatible proxy version.
+from mitmproxy.proxy import commands as _media_commands, events as _media_events
 from mitmproxy.proxy.commands import CloseConnection as _CloseConnection
 from mitmproxy.proxy.layer import Layer as _EnforcementLayer
 from mitmproxy.proxy.layers.tcp import TCPLayer as _TCPLayer, TcpStartHook as _TcpStartHook
@@ -1043,7 +1044,9 @@ def redact_path(path: str, host: str = "") -> str:
         # must never reach activity storage or an AI review prompt.
         resources = {"v0", "inboxes", "messages", "threads", "drafts", "attachments", "send", "reply", "reply-all", "forward", "raw", "api-keys", "organizations"}
         return "/".join(part if part in resources or not part else "{id}" for part in path.split("?", 1)[0].split("/"))
-    return _TELEGRAM_TOKEN_RE.sub("/bot<redacted>", path.split("?", 1)[0])
+    clean = _TELEGRAM_TOKEN_RE.sub("/bot<redacted>", path.split("?", 1)[0])
+    # Meeting codes are secrets, including when embedded in a resource path.
+    return re.sub(r"(?<![a-z])[a-z]{3}-[a-z]{4}-[a-z]{3}(?![a-z])", "<meeting>", clean)
 
 
 def _base_record(flow, vm_id: str | None) -> dict[str, Any]:
@@ -1327,6 +1330,132 @@ def _residential_stack(ctx, host: str, port: int, rule: dict[str, Any], vm_id: s
     return stack[0], None
 
 
+# Meet media grants are written only by mitm-agent, never copied from SaaS rules.
+# Reviewed Google network policy, 2026-10-02. No IPv6, UDP or ICE TCP/19305.
+MEETING_MEDIA_PATH = os.environ.get("MITM_MEETING_MEDIA_PATH", os.path.join(os.path.dirname(RULES_PATH), "meeting-media.json"))
+MEETING_MEDIA_RANGES = {
+    "meet.turns.goog": tuple(map(ipaddress.ip_network, ("142.250.82.0/24",))),
+    "workspace.turns.goog": tuple(map(ipaddress.ip_network, ("74.125.250.0/24", "74.125.247.128/32"))),
+}
+MEETING_MAX_BYTES = 512 * 1024 * 1024
+MEETING_MAX_SECONDS = 4 * 60 * 60
+MEETING_MAX_CONNECTIONS = 8
+MEETING_PROXY_STARTED = time.time()
+_media_usage: dict[str, dict[str, Any]] = {}
+
+
+def meeting_leases() -> dict[str, Any]:
+    # Re-read even when mtime is unchanged. Missing, truncated or unreadable revokes all.
+    try:
+        with open(MEETING_MEDIA_PATH, encoding="utf-8") as f:
+            value = json.load(f)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def meeting_lease(vm_id, lease_id=None):
+    if not vm_id or kill_switched(vm_id):
+        return None
+    lease = meeting_leases().get(vm_id)
+    if not isinstance(lease, dict):
+        return None
+    now = time.time()
+    try:
+        start, expiry, deadline = lease["started"], lease["expires"], lease["deadline"]
+        budget = lease["max_bytes"]
+        if not all(type(v) in (int, float) for v in (start, expiry, deadline, budget)):
+            return None
+        if not (MEETING_PROXY_STARTED <= start <= now < expiry <= min(deadline, now + 60)
+                and start < deadline <= start + MEETING_MAX_SECONDS
+                and 0 < budget <= MEETING_MAX_BYTES):
+            return None
+        if not isinstance(lease["id"], str) or not re.fullmatch(r"[a-f0-9]{32}", lease["id"]):
+            return None
+        if lease_id is not None and lease["id"] != lease_id:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+    return lease
+
+
+def meeting_destination(sni, host, port):
+    if port != 443 or sni not in MEETING_MEDIA_RANGES:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # CONNECT-by-name is resolved once and pinned before the connection opens.
+        # The transparent production path already supplies the destination IP.
+        return False
+    return ip.version == 4 and any(ip in net for net in MEETING_MEDIA_RANGES[sni])
+
+
+class _MeetingMedia(_EnforcementLayer):
+    """TLS bytes relayed unchanged; every send and a one-second timer recheck the grant."""
+    def __init__(self, context, vm_id, sni, lease):
+        super().__init__(context)
+        self.relay = _TCPLayer(context, ignore=True)
+        self.vm_id, self.sni, self.lease_id = vm_id, sni, lease["id"]
+        self.started = time.time()
+        self.in_bytes = self.out_bytes = 0
+        self.closed = False
+        self.wakeup = None
+        # Keep exhausted budgets until the absolute deadline, across reconnects and renewals.
+        for key in list(_media_usage):
+            if _media_usage[key]["deadline"] < self.started and not _media_usage[key]["connections"]:
+                del _media_usage[key]
+        self.usage = _media_usage.setdefault(self.lease_id, {"bytes": 0, "connections": 0, "deadline": lease["deadline"]})
+        self.usage["connections"] += 1
+
+    def close(self, reason):
+        if self.closed:
+            return
+        self.closed = True
+        self.usage["connections"] -= 1
+        # Transport closure must happen even when the logger fails.
+        yield _CloseConnection(self.context.client)
+        yield _CloseConnection(self.context.server)
+        try:
+            _log({"flow_id": "meet_" + hashlib.sha256(f"{self.started}{id(self)}".encode()).hexdigest()[:24],
+                  "ts": time.time(), "tenant": TENANT, "vm_id": self.vm_id,
+                  "host": self.sni, "port": 443, "effect": "tunnel", "rule": "meet-media-v1",
+                  "bytes_in": self.in_bytes, "bytes_out": self.out_bytes,
+                  "duration_ms": int((time.time() - self.started) * 1000), "reason": reason})
+        except Exception:
+            log.warning("[mitm] meeting media metadata log unavailable")
+
+    def _handle_event(self, event):
+        if self.closed:
+            return
+        lease = meeting_lease(self.vm_id, self.lease_id)
+        if (not lease or self.usage["connections"] > MEETING_MAX_CONNECTIONS
+                or self.usage["bytes"] >= lease["max_bytes"]):
+            yield from self.close("revoked_or_limit")
+            return
+        if isinstance(event, _media_events.ConnectionClosed):
+            yield from self.close("closed")
+            return
+        if isinstance(event, (_media_events.Start, _media_events.Wakeup)):
+            self.wakeup = _media_commands.RequestWakeup(1)
+            yield self.wakeup
+            if isinstance(event, _media_events.Wakeup):
+                return
+        for command in self.relay.handle_event(event):
+            if isinstance(command, _media_commands.SendData):
+                size = len(command.data)
+                # Shared per-call budget, charged BEFORE forwarding, including TLS handshakes.
+                if self.usage["bytes"] + size > lease["max_bytes"]:
+                    yield from self.close("byte_limit")
+                    return
+                self.usage["bytes"] += size
+                if command.connection is self.context.server:
+                    self.out_bytes += size
+                else:
+                    self.in_bytes += size
+            yield command
+
+
 # ----- hooks ----------------------------------------------------------------
 
 class _DeniedTCP(_EnforcementLayer):
@@ -1364,6 +1493,8 @@ def tls_clienthello(data) -> None:
     try:
         sni = (getattr(getattr(data, "client_hello", None), "sni", None) or "").lower()
         if not sni:
+            return
+        if sni in MEETING_MEDIA_RANGES:
             return
         ctx = getattr(data, "context", None)
         _, port = _server_addr(ctx)
@@ -1442,13 +1573,22 @@ def next_layer(data) -> None:
                 hello = parse_client_hello(peeked)
             except ValueError:
                 hello, readable = None, False  # not a ClientHello we can read; leave it to mitmproxy
-            if hello is None and readable and residential_configured():
+            if hello is None and readable and (residential_configured() or meeting_lease(vm_id)):
                 # Incomplete ClientHello. Clear mitmproxy's choice and wait for the rest; this is
                 # the normal path for Chrome, whose hello spans two segments.
                 data.layer = None
                 return
             if hello is not None:
                 sni = (hello.sni or "").lower()
+            if sni in MEETING_MEDIA_RANGES:
+                lease = meeting_lease(vm_id)
+                usage = _media_usage.get(lease["id"], {}) if lease else {}
+                if (lease and usage.get("connections", 0) < MEETING_MAX_CONNECTIONS
+                        and meeting_destination(sni, host, port) and not ctx.server.connected):
+                    data.layer = _MeetingMedia(ctx, vm_id, sni, lease)
+                else:
+                    data.layer = _DeniedTCP(_TCPLayer(ctx))
+                return
             if sni:
                 rule = residential_rule(sni, port, vm_id)
                 if rule is not None:

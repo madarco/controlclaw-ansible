@@ -950,6 +950,7 @@ var CONTROL_PLANE_ROUTES = {
     "GET /ssh/status",
     "GET /backup/plan",
     "GET /search/status",
+    "GET /meetings/status",
     "GET /connectors/status"
   ]),
   gbrain: /* @__PURE__ */ new Set(["GET /health", "GET /status", "POST /start", "POST /stop", "POST /restart", "POST /mitm-ca/refresh", "GET /logs", "GET /update"])
@@ -1009,7 +1010,7 @@ async function verifyFirewallTicket(token, vmId, purpose) {
       c: p2.c,
       deviceId: p2.deviceId,
       canWrite: p2.canWrite === true,
-      ...p2.next === "files" || p2.next === "logs" || p2.next === "whatsapp" ? { next: p2.next } : {}
+      ...p2.next === "files" || p2.next === "logs" || (p2.next === "whatsapp" || p2.next === "meetings") ? { next: p2.next } : {}
     };
   } catch {
     return null;
@@ -5231,7 +5232,7 @@ var EXCLUDED_SEGMENTS = new Set(
 var IDENTITY_NAMES = ["openclaw_gateway_token", "saas_public_key.pem", "vm_private_key.pem", "vm_public_key.pem", "mitm_pinned_pubkey.pem", "session_secret"];
 var EXCLUDED_NAMES = new Set([...IDENTITY_NAMES, ".DS_Store"].map((s2) => s2.toLowerCase()));
 function keepOnRestore(kind) {
-  return kind === "state" ? ["workspace", ...IDENTITY_NAMES] : [];
+  return kind === "state" ? ["workspace", "extensions/google-meet", ...IDENTITY_NAMES] : [];
 }
 var EXCLUDED_SUFFIXES = [".log", ".log.gz", ".sock", ".pid", ".swp", ".core"];
 var RESTORE_SCRATCH = /\.cc-(restoring|previous-\d+)$/;
@@ -5445,9 +5446,12 @@ var BackupService = class {
         await staged.apply(staging);
         return { kind: input.kind, entries: extracted.entries, plainBytes: extracted.plainBytes, restarted: true };
       }
+      await this.opts.beforeRestore?.();
       const stopped = this.opts.service("stop");
+      if (this.opts.sanitizeRestore && !stopped.ok) throw new Error("Could not stop the archive writer before restore");
       if (!stopped.ok) this.log(`[backup] could not stop OpenClaw cleanly: ${stopped.error ?? "unknown"}; continuing`);
       try {
+        this.opts.sanitizeRestore?.(input.kind, staging);
         await swapDirectory({ target, staged: staging, aside, keep: keepOnRestore(input.kind) });
       } catch (err) {
         this.opts.service("start");
@@ -5459,6 +5463,7 @@ var BackupService = class {
       return { kind: input.kind, entries: extracted.entries, plainBytes: extracted.plainBytes, restarted: started.ok };
     } finally {
       await rm(staging, { recursive: true, force: true }).catch(() => void 0);
+      this.opts.restoreFinished?.();
       this.busy = null;
     }
   }
@@ -6004,8 +6009,8 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "865e1e7" : "unknown",
-  builtAt: true ? "2026-10-02T17:35:08+01:00" : "unknown"
+  commit: true ? "ca5957a" : "unknown",
+  builtAt: true ? "2026-10-02T18:21:49+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -6060,7 +6065,7 @@ function boxSoftware(opts = {}) {
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
-    features: [...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -7127,7 +7132,7 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.view === 'files' || d.view === 'logs' || d.view === 'whatsapp') { $('h').textContent = d.view === 'files' ? 'Opening files' : d.view === 'logs' ? 'Opening logs' : 'Opening WhatsApp'; step(3); location.replace(d.next); return; }
+  if (d.view === 'files' || d.view === 'logs' || d.view === 'whatsapp' || d.view === 'meetings') { $('h').textContent = d.view === 'files' ? 'Opening files' : d.view === 'logs' ? 'Opening logs' : d.view === 'meetings' ? 'Opening meetings' : 'Opening WhatsApp'; step(3); location.replace(d.next); return; }
   if (d.view === 'direct') { step(3); location.replace(d.next); return; }
   if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
@@ -7556,7 +7561,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    if (payload.next === "files" || payload.next === "logs" || payload.next === "whatsapp") {
+    if (payload.next === "files" || payload.next === "logs" || payload.next === "whatsapp" || payload.next === "meetings") {
       const session2 = await issueSession(vmId, claims);
       json(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;

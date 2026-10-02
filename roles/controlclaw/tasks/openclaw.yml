@@ -117,32 +117,15 @@
   ansible.builtin.set_fact:
     controlclaw_node_env: "{{ {'NODE_EXTRA_CA_CERTS': mitm_ca_path} if mitm_ca_installed_now.stat.exists else {} }}"
 
-# --fetch-timeout/--fetch-retries keep this from stalling the whole play when the registry is
-# unreachable: npm's defaults are 5 minutes and 2 retries, and the task already tolerates failure.
-- name: Check the latest published OpenClaw version
-  ansible.builtin.command:
-    cmd: npm view openclaw version --fetch-timeout=30000 --fetch-retries=1
-  when: not cc_skip.openclaw | default(false) | bool
-  register: openclaw_latest_version
-  environment: "{{ controlclaw_node_env }}"
-  changed_when: false
-  failed_when: false
-
-# Install when the versions differ, when either lookup failed (no binary yet, or the registry is
-# unreachable and we would rather try than silently skip), or when the box has no openclaw at all.
-- name: Decide whether OpenClaw needs installing
+# The installed host must match the tested plugin pin even on an older base image.
+- name: Decide whether the pinned OpenClaw needs installing
   ansible.builtin.set_fact:
     openclaw_install_wanted: >-
-      {{ not cc_skip.openclaw | default(false) | bool and
-         (openclaw_installed_version.rc != 0 or
-         openclaw_latest_version.rc != 0 or
-         openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default(''))) }}
-    # An upgrade of an OpenClaw that has already run here, as opposed to a first install.
+      {{ openclaw_installed_version.rc != 0 or
+         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_version }}
     openclaw_upgrading: >-
-      {{ not cc_skip.openclaw | default(false) | bool and
-         openclaw_installed_version.rc == 0 and
-         (openclaw_latest_version.rc != 0 or
-          openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default(''))) }}
+      {{ openclaw_installed_version.rc == 0 and
+         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_version }}
 
 # An upgrade can carry a state migration the new gateway will not run by itself (T-107). OpenClaw
 # 2026.9.7 moved the agent database from schema 23 to 24, and on a v23 database it exits
@@ -164,9 +147,17 @@
   # A base image carries the binary before it has a unit; nothing is running to stop.
   failed_when: false
 
+- name: Download the integrity-pinned OpenClaw host
+  ansible.builtin.get_url:
+    url: "https://registry.npmjs.org/openclaw/-/openclaw-{{ openclaw_version }}.tgz"
+    dest: /opt/controlclaw/openclaw-pinned.tgz
+    checksum: "sha512:{{ openclaw_host_sha512 }}"
+    mode: '0644'
+  when: openclaw_install_wanted | bool
+
 - name: Install OpenClaw globally from npm
   ansible.builtin.command:
-    cmd: npm install -g openclaw@latest
+    cmd: npm install -g /opt/controlclaw/openclaw-pinned.tgz
   register: openclaw_npm_install
   environment: "{{ controlclaw_node_env }}"
   when: openclaw_install_wanted | bool
@@ -613,6 +604,15 @@
 
 - name: Include AgentMail email plugin
   ansible.builtin.include_tasks: openclaw-agentmail.yml
+
+- name: Install meeting config helper
+  ansible.builtin.copy:
+    src: meeting-config.py
+    dest: /opt/controlclaw/meeting-config.py
+    mode: '0755'
+
+- name: Include Google Meet and the shared audio session
+  ansible.builtin.include_tasks: openclaw-meetings.yml
 
 # Node does not read the OS trust store, so on a secured box every outbound TLS call from
 # OpenClaw would fail against the mitm proxy. NODE_EXTRA_CA_CERTS is not set here: the CA only

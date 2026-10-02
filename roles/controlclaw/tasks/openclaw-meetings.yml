@@ -1,0 +1,174 @@
+---
+# Install capabilities at provisioning. Only a firewall-signed vm-agent apply enables Meet.
+- name: Meetings | install the user audio session
+  ansible.builtin.apt:
+    name: [pipewire-audio, pulseaudio-utils, dbus-user-session]
+    state: present
+
+- name: Meetings | create the shared virtual audio configuration directory
+  ansible.builtin.file:
+    path: /etc/pipewire/pipewire-pulse.conf.d
+    state: directory
+    mode: '0755'
+
+- name: Meetings | provide the native plugin's virtual sink and microphone
+  ansible.builtin.copy:
+    dest: /etc/pipewire/pipewire-pulse.conf.d/20-controlclaw-meetings.conf
+    mode: '0644'
+    content: |
+      pulse.cmd = [
+        { cmd = "load-module" args = "module-null-sink sink_name=openclaw_meeting_audio rate=48000 channels=2" }
+        { cmd = "load-module" args = "module-remap-source source_name=openclaw_meeting_audio master=openclaw_meeting_audio.monitor channels=2 remix=no" }
+      ]
+
+- name: Meetings | read the controlclaw uid
+  ansible.builtin.command: "id -u {{ controlclaw_user }}"
+  register: meeting_user_uid
+  changed_when: false
+
+- name: Meetings | keep the user session available to system services
+  ansible.builtin.command: "loginctl enable-linger {{ controlclaw_user }}"
+  args:
+    creates: "/var/lib/systemd/linger/{{ controlclaw_user }}"
+
+- name: Meetings | start the user session
+  ansible.builtin.systemd:
+    name: "user@{{ meeting_user_uid.stdout }}.service"
+    state: started
+
+- name: Meetings | enable PipeWire, Pulse and WirePlumber
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  ansible.builtin.systemd:
+    scope: user
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ meeting_user_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ meeting_user_uid.stdout }}/bus"
+  loop: [pipewire.socket, pipewire-pulse.socket, wireplumber.service]
+
+- name: Meetings | connect system units to the same audio session
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service.d"
+    state: directory
+    mode: '0755'
+  loop: [openclaw, controlclaw-agent, browser-stream]
+
+- name: Meetings | set the shared runtime and Pulse socket
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item }}.service.d/meetings-session.conf"
+    mode: '0644'
+    content: |
+      [Unit]
+      Wants=user@{{ meeting_user_uid.stdout }}.service
+      After=user@{{ meeting_user_uid.stdout }}.service
+      [Service]
+      Environment=XDG_RUNTIME_DIR=/run/user/{{ meeting_user_uid.stdout }}
+      Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ meeting_user_uid.stdout }}/bus
+      Environment=PULSE_SERVER=unix:/run/user/{{ meeting_user_uid.stdout }}/pulse/native
+  loop: [openclaw, controlclaw-agent, browser-stream]
+  notify: restart openclaw
+
+- name: Meetings | provision an ephemeral guest browser unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/user/cc-meeting-browser.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw reserved Google Meet guest browser
+      After=pipewire-pulse.socket
+      [Service]
+      Type=simple
+      Environment=DISPLAY=:1
+      Environment=PULSE_SERVER=unix:%t/pulse/native
+      Environment=PULSE_SINK=openclaw_meeting_audio
+      Environment=PULSE_SOURCE=openclaw_meeting_audio
+      RuntimeDirectory=cc-meetings
+      RuntimeDirectoryMode=0700
+      ExecStart=/usr/bin/google-chrome-stable --user-data-dir=%t/cc-meetings/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-sync --disable-background-networking --password-store=basic --force-webrtc-ip-handling-policy=disable_non_proxied_udp --autoplay-policy=no-user-gesture-required about:blank
+      KillMode=control-group
+      TimeoutStopSec=10
+      MemoryMax=2G
+      OOMScoreAdjust=500
+      # No Install section: vm-agent owns its lifetime. RuntimeDirectory removes every cookie.
+
+- name: Meetings | reload the user units
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  ansible.builtin.systemd:
+    scope: user
+    daemon_reload: true
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ meeting_user_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ meeting_user_uid.stdout }}/bus"
+
+- name: Meetings | read whether Meet is already installed at the pin
+  ansible.builtin.command: /usr/bin/openclaw plugins list --json
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: meeting_plugins
+  changed_when: false
+
+- name: Meetings | inspect the installed package list
+  ansible.builtin.set_fact:
+    meeting_install_needed: >-
+      {{ (meeting_plugins.stdout | from_json).plugins | selectattr('id', 'equalto', 'google-meet')
+         | selectattr('version', 'equalto', openclaw_meet_version) | list | length == 0 }}
+
+- name: Meetings | download the verified Meet package
+  ansible.builtin.get_url:
+    url: "https://registry.npmjs.org/@openclaw/google-meet/-/google-meet-{{ openclaw_meet_version }}.tgz"
+    dest: /opt/controlclaw/google-meet.tgz
+    checksum: "sha512:{{ openclaw_meet_sha512 }}"
+    mode: '0644'
+  when: meeting_install_needed | bool
+
+- name: Meetings | stop the gateway before installing a disabled plugin
+  ansible.builtin.systemd:
+    name: openclaw
+    state: stopped
+  failed_when: false
+
+- name: Meetings | install the pinned official package
+  ansible.builtin.command: /usr/bin/openclaw plugins install /opt/controlclaw/google-meet.tgz --force --accept-capabilities
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  when: meeting_install_needed | bool
+  notify: restart openclaw
+
+- name: Meetings | install the browser reservation hook
+  ansible.builtin.copy:
+    src: meeting-guard/
+    dest: /opt/controlclaw/meeting-guard/
+    owner: root
+    group: root
+    mode: '0755'
+  notify: restart openclaw
+
+- name: Meetings | install the reviewed compatibility patch helper
+  ansible.builtin.copy:
+    src: meeting-runtime-patch.py
+    dest: /opt/controlclaw/meeting-runtime-patch.py
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Meetings | bind native capture to the reserved guest browser and private notes
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /opt/controlclaw/meeting-runtime-patch.py, /usr/lib/node_modules/openclaw, "{{ controlclaw_home }}/.openclaw"]
+  register: meeting_patched
+  changed_when: "'changed' in meeting_patched.stdout"
+  notify: restart openclaw
+
+- name: Meetings | initialize disabled config and reserve the guest profile
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /opt/controlclaw/meeting-config.py, "{{ controlclaw_home }}/.openclaw/openclaw.json"]
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: meeting_configured
+  changed_when: "'changed' in meeting_configured.stdout"
+  notify: restart openclaw
