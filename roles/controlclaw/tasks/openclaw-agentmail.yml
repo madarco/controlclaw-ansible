@@ -30,6 +30,7 @@
       - install
       - "clawhub:@agentmail/agentmail@{{ agentmail_plugin_version }}"
       - --no-enable
+      - --force
   become: true
   become_user: "{{ controlclaw_user }}"
   # Includes NODE_EXTRA_CA_CERTS when secured-box installed the firewall CA.
@@ -99,7 +100,7 @@
     owner: "{{ controlclaw_user }}"
     group: "{{ controlclaw_user }}"
 
-- name: AgentMail | register Linux executable and make skill files independent
+- name: AgentMail | register the Linux executable
   ansible.builtin.shell: |
     python3 - <<'PY'
     import json, os
@@ -115,15 +116,6 @@
         tmp.write_text(json.dumps(data, indent=2) + '\n')
         tmp.replace(metadata)
         changed = True
-    # The OpenClaw installer hardlinks these copies, but its skill reader refuses hardlinks.
-    for folder in (root / 'skills/agentmail', Path({{ (controlclaw_home ~ '/.openclaw/plugin-skills/agentmail') | to_json }})):
-        for path in folder.rglob('*'):
-            if path.is_file() and not path.is_symlink() and path.stat().st_nlink > 1:
-                tmp = path.with_suffix(path.suffix + '.tmp')
-                tmp.write_bytes(path.read_bytes())
-                os.chmod(tmp, path.stat().st_mode & 0o777)
-                tmp.replace(path)
-                changed = True
     print('changed' if changed else 'ready')
     PY
   args:
@@ -132,3 +124,22 @@
   become_user: "{{ controlclaw_user }}"
   register: agentmail_linux
   changed_when: "'changed' in agentmail_linux.stdout"
+
+
+# Gateway startup recreates its own hardlinks. A managed skill copy remains independent.
+- name: AgentMail | create managed skills directory
+  ansible.builtin.file:
+    path: "{{ controlclaw_home }}/.openclaw/skills/agentmail"
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "0755"
+
+- name: AgentMail | copy the official skill without hardlinks
+  ansible.builtin.copy:
+    src: "{{ agentmail_root }}/skills/agentmail/"
+    dest: "{{ controlclaw_home }}/.openclaw/skills/agentmail/"
+    remote_src: true
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: preserve
