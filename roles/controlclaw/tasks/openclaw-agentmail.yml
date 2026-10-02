@@ -11,7 +11,7 @@
 - name: AgentMail | require the plugin's minimum OpenClaw version
   ansible.builtin.assert:
     that:
-      - (agentmail_openclaw_version.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+')) is version('2026.8.1', '>=')
+      - (agentmail_openclaw_version.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?')) is version('2026.8.1-beta.2', '>=', version_type='semver')
     fail_msg: "AgentMail 0.2.2 requires OpenClaw 2026.8.1-beta.2 or newer. Update OpenClaw first."
 
 - name: AgentMail | inspect installed plugins
@@ -66,3 +66,69 @@
   become_user: "{{ controlclaw_user }}"
   register: agentmail_disabled
   changed_when: "'disabled' in agentmail_disabled.stdout"
+
+
+- name: AgentMail | select Linux CLI archive
+  ansible.builtin.set_fact:
+    agentmail_cli_arch: "{{ agentmail_cli_arches[ansible_architecture] }}"
+    agentmail_root: "{{ controlclaw_home }}/.openclaw/extensions/agentmail"
+
+- name: AgentMail | download checksum-pinned Linux CLI
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  ansible.builtin.get_url:
+    url: "https://github.com/agentmail-to/agentmail-cli/releases/download/v{{ agentmail_cli_version }}/agentmail_{{ agentmail_cli_version }}_linux_{{ agentmail_cli_arch.release }}.tar.gz"
+    dest: "/tmp/agentmail-{{ agentmail_cli_version }}-{{ agentmail_cli_arch.release }}.tar.gz"
+    checksum: "sha256:{{ agentmail_cli_arch.sha256 }}"
+    mode: "0644"
+  environment: "{{ controlclaw_node_env | combine({'SSL_CERT_FILE': '/etc/ssl/certs/ca-certificates.crt'}) }}"
+
+- name: AgentMail | create Linux vendor directory
+  ansible.builtin.file:
+    path: "{{ agentmail_root }}/vendor/agentmail/linux-{{ agentmail_cli_arch.node }}"
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "0755"
+
+- name: AgentMail | unpack Linux CLI
+  ansible.builtin.unarchive:
+    src: "/tmp/agentmail-{{ agentmail_cli_version }}-{{ agentmail_cli_arch.release }}.tar.gz"
+    dest: "{{ agentmail_root }}/vendor/agentmail/linux-{{ agentmail_cli_arch.node }}"
+    remote_src: true
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+
+- name: AgentMail | register Linux executable and make skill files independent
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json, os
+    from pathlib import Path
+    root = Path({{ agentmail_root | to_json }})
+    metadata = root / 'dist/cli/agentmail-cli-release.json'
+    data = json.loads(metadata.read_text())
+    target = 'linux-' + {{ agentmail_cli_arch.node | to_json }}
+    changed = False
+    if target not in data['assets']:
+        data['assets'][target] = {'executableName': 'agentmail'}
+        tmp = metadata.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data, indent=2) + '\n')
+        tmp.replace(metadata)
+        changed = True
+    # The OpenClaw installer hardlinks these copies, but its skill reader refuses hardlinks.
+    for folder in (root / 'skills/agentmail', Path({{ (controlclaw_home ~ '/.openclaw/plugin-skills/agentmail') | to_json }})):
+        for path in folder.rglob('*'):
+            if path.is_file() and not path.is_symlink() and path.stat().st_nlink > 1:
+                tmp = path.with_suffix(path.suffix + '.tmp')
+                tmp.write_bytes(path.read_bytes())
+                os.chmod(tmp, path.stat().st_mode & 0o777)
+                tmp.replace(path)
+                changed = True
+    print('changed' if changed else 'ready')
+    PY
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: agentmail_linux
+  changed_when: "'changed' in agentmail_linux.stdout"

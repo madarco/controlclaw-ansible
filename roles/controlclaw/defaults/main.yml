@@ -333,6 +333,8 @@ agent_update_hosts:
   - downloads.rclone.org
   # openclaw.yml, openclaw-search.yml, nodejs.yml (pnpm), vm-agent.yml (pnpm install)
   - registry.npmjs.org
+  # AgentMail plugin registry and tarball
+  - clawhub.ai
 
 # App integrations: the OpenConnector runtime on the firewall (tasks/connector.yml). Version and
 # digest must match apps/saas/app/(integrations)/lib/connector-catalog.ts in the control plane.
@@ -456,3 +458,15 @@ gbrain_container_gb: 24
 
 # Official ClawHub plugin, installed before the gateway starts.
 agentmail_plugin_version: "0.2.2"
+
+# AgentMail 0.2.2 only bundles macOS. Supply the same upstream CLI version on Linux.
+agentmail_cli_version: "0.7.14"
+agentmail_cli_arches:
+  x86_64:
+    node: x64
+    release: amd64
+    sha256: 8b5304be5b29d2457234a7a3655eba87ff2b89e5c57d01a51788fdafe63b2b65
+  aarch64:
+    node: arm64
+    release: arm64
+    sha256: 3aaaa675793c6c182ce5877205e7211ed490ec92fcfef1da8ca555dd402d4a6e
