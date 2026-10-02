@@ -470,3 +470,9 @@ agentmail_cli_arches:
     node: arm64
     release: arm64
     sha256: 3aaaa675793c6c182ce5877205e7211ed490ec92fcfef1da8ca555dd402d4a6e
+
+# Compatible host and official Google Meet plugin, reviewed 2026-10-02.
+openclaw_version: "2026.9.7"
+openclaw_meet_version: "2026.9.7"
+openclaw_host_sha512: "ffc3762e77d31503ef9d98b38bca8a4857e72d068fbd21b709be31a35615edbe09858894738dd9351a57274d5b5a084b2b41339371d57a8fc3187708450c1158"
+openclaw_meet_sha512: "92692214bca4fa925a8170d8b97e3423082dbc4c64048070030303d8e5ca48abf5c4af934481e537522519c5fd8301f73036a0aa4aaaf59a7cb295b0fd6b4918"
