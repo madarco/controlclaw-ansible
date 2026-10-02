@@ -1,0 +1,68 @@
+---
+# AgentMail 0.2.2 declares a higher floor than the original 2026.7.2 integration docs.
+- name: AgentMail | read OpenClaw version
+  ansible.builtin.command: /usr/bin/openclaw --version
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: agentmail_openclaw_version
+  changed_when: false
+
+- name: AgentMail | require the plugin's minimum OpenClaw version
+  ansible.builtin.assert:
+    that:
+      - (agentmail_openclaw_version.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+')) is version('2026.8.1', '>=')
+    fail_msg: "AgentMail 0.2.2 requires OpenClaw 2026.8.1-beta.2 or newer. Update OpenClaw first."
+
+- name: AgentMail | inspect installed plugins
+  ansible.builtin.command: /usr/bin/openclaw plugins list --json
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: agentmail_plugins
+  changed_when: false
+
+- name: AgentMail | install pinned plugin through the org proxy
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openclaw
+      - plugins
+      - install
+      - "clawhub:@agentmail/agentmail@{{ agentmail_plugin_version }}"
+      - --no-enable
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  # Includes NODE_EXTRA_CA_CERTS when secured-box installed the firewall CA.
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  when: >-
+    (agentmail_plugins.stdout[agentmail_plugins.stdout.index('{'):] | from_json).plugins
+    | selectattr('id', 'equalto', 'agentmail')
+    | selectattr('version', 'defined')
+    | selectattr('version', 'equalto', agentmail_plugin_version)
+    | list | length == 0
+
+- name: AgentMail | leave new installations disabled until the firewall assigns an inbox
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json, os
+    from pathlib import Path
+    p = Path({{ (controlclaw_home ~ '/.openclaw/openclaw.json') | to_json }})
+    config = json.loads(p.read_text())
+    if config.get('channels', {}).get('agentmail'):
+        print('already configured')
+    else:
+        entry = config.setdefault('plugins', {}).setdefault('entries', {}).setdefault('agentmail', {})
+        if entry.get('enabled') is not False:
+            entry['enabled'] = False
+            tmp = p.with_suffix('.agentmail.tmp')
+            tmp.write_text(json.dumps(config, indent=2) + '\n')
+            os.chmod(tmp, 0o600)
+            tmp.replace(p)
+            print('disabled')
+    PY
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: agentmail_disabled
+  changed_when: "'disabled' in agentmail_disabled.stdout"

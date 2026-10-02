@@ -453,3 +453,6 @@ gbrain_pg_cluster: gbrain
 gbrain_pg_port: 5432
 # Passed by the control plane per box size; this is the Small figure, for a box built without one.
 gbrain_container_gb: 24
+
+# Official ClawHub plugin, installed before the gateway starts.
+agentmail_plugin_version: "0.2.2"

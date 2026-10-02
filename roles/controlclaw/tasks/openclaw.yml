@@ -611,6 +611,9 @@
 - name: Include the web-search provider setup
   ansible.builtin.include_tasks: openclaw-search.yml
 
+- name: Include AgentMail email plugin
+  ansible.builtin.include_tasks: openclaw-agentmail.yml
+
 # Node does not read the OS trust store, so on a secured box every outbound TLS call from
 # OpenClaw would fail against the mitm proxy. NODE_EXTRA_CA_CERTS is not set here: the CA only
 # exists after the vm-agent verifies and installs it at runtime, and `cc-install-ca`
