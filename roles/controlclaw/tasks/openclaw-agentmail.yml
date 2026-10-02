@@ -22,6 +22,11 @@
   register: agentmail_plugins
   changed_when: false
 
+- name: AgentMail | remember the enabled state before a pinned upgrade
+  ansible.builtin.slurp:
+    src: "{{ controlclaw_home }}/.openclaw/openclaw.json"
+  register: agentmail_previous_config
+
 - name: AgentMail | install pinned plugin through the org proxy
   ansible.builtin.command:
     argv:
@@ -35,6 +40,7 @@
   become_user: "{{ controlclaw_user }}"
   # Includes NODE_EXTRA_CA_CERTS when secured-box installed the firewall CA.
   environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  notify: restart openclaw
   when: >-
     (agentmail_plugins.stdout[agentmail_plugins.stdout.index('{'):] | from_json).plugins
     | selectattr('id', 'equalto', 'agentmail')
@@ -49,24 +55,24 @@
     from pathlib import Path
     p = Path({{ (controlclaw_home ~ '/.openclaw/openclaw.json') | to_json }})
     config = json.loads(p.read_text())
-    if config.get('channels', {}).get('agentmail'):
-        print('already configured')
-    else:
-        entry = config.setdefault('plugins', {}).setdefault('entries', {}).setdefault('agentmail', {})
-        if entry.get('enabled') is not False:
-            entry['enabled'] = False
-            tmp = p.with_suffix('.agentmail.tmp')
-            tmp.write_text(json.dumps(config, indent=2) + '\n')
-            os.chmod(tmp, 0o600)
-            tmp.replace(p)
-            print('disabled')
+    previous = json.loads({{ (agentmail_previous_config.content | b64decode) | to_json }})
+    wanted = previous.get('plugins', {}).get('entries', {}).get('agentmail', {}).get('enabled', False) if previous.get('channels', {}).get('agentmail') else False
+    entry = config.setdefault('plugins', {}).setdefault('entries', {}).setdefault('agentmail', {})
+    if entry.get('enabled') != wanted:
+        entry['enabled'] = wanted
+        tmp = p.with_suffix('.agentmail.tmp')
+        tmp.write_text(json.dumps(config, indent=2) + '\n')
+        os.chmod(tmp, 0o600)
+        tmp.replace(p)
+        print('changed')
     PY
   args:
     executable: /bin/bash
   become: true
   become_user: "{{ controlclaw_user }}"
   register: agentmail_disabled
-  changed_when: "'disabled' in agentmail_disabled.stdout"
+  changed_when: "'changed' in agentmail_disabled.stdout"
+  notify: restart openclaw
 
 
 - name: AgentMail | select Linux CLI archive
@@ -135,14 +141,23 @@
     group: "{{ controlclaw_user }}"
     mode: "0755"
 
-- name: AgentMail | copy the official skill without hardlinks
+- name: AgentMail | read the official skill
+  ansible.builtin.slurp:
+    src: "{{ agentmail_root }}/skills/agentmail/SKILL.md"
+  register: agentmail_skill
+
+- name: AgentMail | install the native CLI skill without hardlinks
   ansible.builtin.copy:
-    src: "{{ agentmail_root }}/skills/agentmail/"
-    dest: "{{ controlclaw_home }}/.openclaw/skills/agentmail/"
-    remote_src: true
+    dest: "{{ controlclaw_home }}/.openclaw/skills/agentmail/SKILL.md"
+    content: >-
+      {{ agentmail_skill.content | b64decode
+         | replace('openclaw agentmail --', 'cc-agentmail')
+         | replace('"bins": ["openclaw"]', '"bins": ["cc-agentmail"]')
+         | replace('Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags.', 'The ControlClaw launcher loads the inbox placeholder from the local environment file.') }}
     owner: "{{ controlclaw_user }}"
     group: "{{ controlclaw_user }}"
-    mode: preserve
+    mode: "0644"
+  notify: restart openclaw
 
 - name: AgentMail | install the Linux CLI launcher
   ansible.builtin.copy:
@@ -161,16 +176,3 @@
       env = dict(os.environ, AGENTMAIL_API_KEY=match.group(1))
       binary = {{ (agentmail_root ~ '/vendor/agentmail/linux-' ~ agentmail_cli_arch.node ~ '/agentmail') | to_json }}
       os.execve(binary, [binary, *sys.argv[1:]], env)
-
-- name: AgentMail | use the native CLI in the managed skill
-  ansible.builtin.replace:
-    path: "{{ controlclaw_home }}/.openclaw/skills/agentmail/SKILL.md"
-    regexp: "{{ item.pattern }}"
-    replace: "{{ item.replacement }}"
-  loop:
-    - pattern: 'openclaw agentmail --'
-      replacement: 'cc-agentmail'
-    - pattern: '"bins": \["openclaw"\]'
-      replacement: '"bins": ["cc-agentmail"]'
-    - pattern: 'Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags\.'
-      replacement: 'The ControlClaw launcher loads the inbox placeholder from the local environment file.'
