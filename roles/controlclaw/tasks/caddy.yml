@@ -42,6 +42,17 @@
 # A firewall box runs Caddy for one reason only (inbound webhooks), so it gets its own
 # template: none of the agent routes — OpenClaw, noVNC, the login shim — exist on that box, and
 # templating them in would widen the one surface this feature is meant to keep narrow.
+- name: Read the claimed pool handle if present
+  ansible.builtin.command: cat /etc/controlclaw/handle-hostname
+  register: pool_handle_file
+  changed_when: false
+  failed_when: false
+
+- name: Keep only a valid same-suffix handle alias
+  ansible.builtin.set_fact:
+    cc_handle_alias: "{{ pool_handle_file.stdout if (pool_handle_file.rc == 0 and pool_handle_file.stdout is match('^[a-z0-9][a-z0-9-]{0,62}\\.' ~ (vm_hostname.split('.', 1)[1] | regex_escape) ~ '$')) else '' }}"
+  when: vm_hostname is defined and vm_hostname | length > 0
+
 - name: Write the Caddyfile
   ansible.builtin.template:
     src: "{{ 'Caddyfile-mitm.j2' if box_role == 'mitm' else ('Caddyfile-gbrain.j2' if box_role == 'gbrain' else 'Caddyfile.j2') }}"

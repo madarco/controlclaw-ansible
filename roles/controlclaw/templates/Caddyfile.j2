@@ -16,7 +16,7 @@
     cert_issuer acme https://acme.zerossl.com/v2/DV90
 }
 
-{{ vm_hostname }} {
+{{ vm_hostname }}{% if cc_handle_alias | default('') and cc_handle_alias != vm_hostname %}, {{ cc_handle_alias }}{% endif %} {
     # Control plane -> vm-agent (bearer JWT checked by the vm-agent itself)
     handle /__cc/agent/* {
         uri strip_prefix /__cc/agent
@@ -110,6 +110,13 @@
             header_up -Connection
             header_up -Upgrade
         }
-        reverse_proxy 127.0.0.1:{{ openclaw_gateway_port }}
+        reverse_proxy 127.0.0.1:{{ openclaw_gateway_port }} {
+            # Pool handle Origin rewrite (installed at claim).
+{% if cc_handle_alias | default('') and cc_handle_alias != vm_hostname %}
+            # forward_auth above checked the browser Origin against this box's two fixed names.
+            # Keep OpenClaw's pre-warmed neutral origin; adding a handle needs no gateway restart.
+            header_up Origin https://{{ vm_hostname }}
+{% endif %}
+        }
     }
 }

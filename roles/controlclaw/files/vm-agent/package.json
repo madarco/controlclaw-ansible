@@ -4,9 +4,6 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
-  "dependencies": {
-    "jose": "^6.2.12"
-  },
   "engines": {
     "node": ">=24.16.0"
   }

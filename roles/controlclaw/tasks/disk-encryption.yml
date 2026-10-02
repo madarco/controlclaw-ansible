@@ -15,7 +15,7 @@
 - name: Disk encryption | assert the control plane asked for this
   ansible.builtin.assert:
     that:
-      - luks_recovery_pubkey | default('') | length > 0
+      - (luks_recovery_pubkey | default('') | length > 0) or (pool_unclaimed | default(false) | bool)
     fail_msg: >-
       disk_encryption is on but no luks_recovery_pubkey was passed. Refusing to make a container that
       nobody could ever open: the sealed passphrase is the only way in when no partner box is up, and
@@ -80,6 +80,7 @@
     owner: root
     group: root
     mode: '0644'
+  when: not pool_unclaimed | default(false) | bool
 
 # There used to be a copy of the SaaS public key here, on the plain root, for a locked box to check
 # that a request was the control plane's. Nothing reads it: cc-secure-daemon's two routes are
@@ -102,7 +103,7 @@
     content: |
       # Managed by ControlClaw (disk-encryption.yml). Not secret: an id and a URL.
       VM_ID={{ vm_id }}
-      CONTROLCLAW_URL={{ (controlclaw_url | default('')) or (ready_api_url | default('') | regex_replace('/api/vm-agent/ready$', '')) }}
+      CONTROLCLAW_URL={{ '' if pool_unclaimed | default(false) | bool else (controlclaw_url | default('')) or (ready_api_url | default('') | regex_replace('/api/vm-agent/ready$', '')) }}
   when: vm_id is defined
 
 - name: Disk encryption | install the scripts

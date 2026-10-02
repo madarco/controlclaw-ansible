@@ -175,6 +175,7 @@
     group: "{{ controlclaw_user }}"
     mode: '0644'
     directory_mode: '0755'
+  when: not cc_skip.mitm_agent | default(false) | bool
   notify: restart controlclaw-mitm-agent
 
 # --- NAT: this box is the only internet egress for the private network ---

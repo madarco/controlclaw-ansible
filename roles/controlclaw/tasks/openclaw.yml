@@ -122,6 +122,7 @@
 - name: Check the latest published OpenClaw version
   ansible.builtin.command:
     cmd: npm view openclaw version --fetch-timeout=30000 --fetch-retries=1
+  when: not cc_skip.openclaw | default(false) | bool
   register: openclaw_latest_version
   environment: "{{ controlclaw_node_env }}"
   changed_when: false
@@ -132,12 +133,14 @@
 - name: Decide whether OpenClaw needs installing
   ansible.builtin.set_fact:
     openclaw_install_wanted: >-
-      {{ openclaw_installed_version.rc != 0 or
+      {{ not cc_skip.openclaw | default(false) | bool and
+         (openclaw_installed_version.rc != 0 or
          openclaw_latest_version.rc != 0 or
-         openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default('')) }}
+         openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default(''))) }}
     # An upgrade of an OpenClaw that has already run here, as opposed to a first install.
     openclaw_upgrading: >-
-      {{ openclaw_installed_version.rc == 0 and
+      {{ not cc_skip.openclaw | default(false) | bool and
+         openclaw_installed_version.rc == 0 and
          (openclaw_latest_version.rc != 0 or
           openclaw_latest_version.stdout | trim not in (openclaw_installed_version.stdout | default(''))) }}
 

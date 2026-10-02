@@ -97,14 +97,16 @@ def build_map(servers: list[dict], suffix: str, allowed: set[str] | None = None)
             print(f"cc-proxy-routes: ignoring {host}: cc-domain {domain!r} is not an allowed suffix")
             continue
         created = server.get("created", "")
-        fqdn = f"{host}.{domain}"
-        previous = routes.get(fqdn)
-        if previous and previous[0] >= created:
-            print(f"cc-proxy-routes: duplicate host {fqdn}: keeping newest ({previous[1]}), ignoring {ip}")
-            continue
-        if previous:
-            print(f"cc-proxy-routes: duplicate host {fqdn}: replacing {previous[1]} with newer {ip}")
-        routes[fqdn] = (created, ip)
+        hosts = [host]
+        alias = labels.get("cc-host-alias", "")
+        if alias and HOST_RE.fullmatch(alias):
+            hosts.append(alias)
+        for name in hosts:
+            fqdn = f"{name}.{domain}"
+            previous = routes.get(fqdn)
+            if previous and previous[0] >= created:
+                continue
+            routes[fqdn] = (created, ip)
     lines = [f"{fqdn} {ip}" for fqdn, (_, ip) in sorted(routes.items())]
     return "\n".join(lines) + ("\n" if lines else "")
 

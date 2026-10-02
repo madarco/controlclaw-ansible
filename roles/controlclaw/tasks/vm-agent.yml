@@ -99,6 +99,7 @@
     group: "{{ controlclaw_user }}"
     mode: '0644'
     directory_mode: '0755'
+  when: not cc_skip.vm_agent | default(false) | bool
   notify: restart controlclaw-agent
 
 - name: Install vm-agent production dependencies
@@ -108,6 +109,10 @@
   become: true
   become_user: "{{ controlclaw_user }}"
   environment: "{{ controlclaw_node_env }}"
+  # Compatibility with an older staged bundle that still has runtime dependencies.
+  when:
+    - not cc_skip.vm_agent | default(false) | bool
+    - (lookup('file', role_path ~ '/files/vm-agent/package.json') | from_json).dependencies | default({}) | length > 0
   register: pnpm_install
   changed_when: "'Already up to date' not in pnpm_install.stdout"
 

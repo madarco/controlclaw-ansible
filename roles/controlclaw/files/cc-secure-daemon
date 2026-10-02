@@ -549,7 +549,7 @@ async function reportLoop(ident) {
     // unreachable control plane, or one too old to say, keeps the ordinary beat.
     const asked = Number(res?.nextReportMs);
     const wait = Number.isFinite(asked) ? Math.min(Math.max(asked, REPORT_MIN_MS), REPORT_MAX_MS) : REPORT_EVERY_MS;
-    await new Promise((r) => setTimeout(r, wait));
+    await new Promise((r) => setTimeout(r, fs.existsSync("/etc/controlclaw/pool-unclaimed") || fs.existsSync("/etc/controlclaw/pool-activating") ? 2000 : wait));
   }
 }
 
@@ -601,7 +601,7 @@ async function main() {
     }
     notify(`STATUS=locked, waiting for a partner (${Math.round((Date.now() - started) / 1000)}s)`);
     const wait = Date.now() - started < RETRY_FAST_FOR_MS ? RETRY_FAST_MS : RETRY_SLOW_MS;
-    await new Promise((r) => setTimeout(r, wait));
+    await new Promise((r) => setTimeout(r, fs.existsSync("/etc/controlclaw/pool-unclaimed") || fs.existsSync("/etc/controlclaw/pool-activating") ? 2000 : wait));
   }
 }
 

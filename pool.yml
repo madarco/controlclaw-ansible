@@ -1,0 +1,12 @@
+---
+- name: Prepare an unowned ready-pool box
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install the fixed preparation and enrollment worker
+      ansible.builtin.include_role:
+        name: controlclaw
+        tasks_from: pool-warm
+      tags: [pool_warm, pool_verify]

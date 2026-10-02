@@ -779,7 +779,7 @@ var require_dist = __commonJS({
 // src/index.ts
 import { createServer as createServer3 } from "http";
 import { execSync as execSync2 } from "child_process";
-import { readFileSync as readFileSync19, writeFileSync as writeFileSync12 } from "fs";
+import { readFileSync as readFileSync19, writeFileSync as writeFileSync12, existsSync as existsSync13 } from "fs";
 
 // ../secret-store/dist/index.js
 import { randomBytes, createCipheriv, createDecipheriv } from "crypto";
@@ -12302,14 +12302,20 @@ var AccessFirewall = class {
     let changed = false;
     for (const i2 of this.opts.identities()) {
       const vmId = String(i2.vm_id ?? "");
-      if (!vmId || !plausibleHostname(i2.hostname)) continue;
-      const hostname3 = i2.hostname.toLowerCase();
+      const offered = i2.hostname;
+      if (!vmId || !plausibleHostname(offered)) continue;
+      const hostname3 = offered.toLowerCase();
+      const alias = i2.access_hostname?.toLowerCase();
+      const accessHostname = plausibleHostname(alias) && alias !== hostname3 && alias.split(".").slice(1).join(".") === hostname3.split(".").slice(1).join(".") ? alias.toLowerCase() : void 0;
       const pin = this.store.pins[vmId];
       if (!pin) {
-        this.store.pins[vmId] = { hostname: hostname3, at: new Date(this.now()).toISOString() };
+        this.store.pins[vmId] = { hostname: hostname3, ...accessHostname ? { accessHostname } : {}, at: new Date(this.now()).toISOString() };
         changed = true;
         this.log(`[access] pinned ${vmId} to ${hostname3}`);
-      } else if (pin.hostname !== hostname3) {
+      } else if (pin.hostname === hostname3 && !pin.accessHostname && accessHostname) {
+        pin.accessHostname = accessHostname;
+        changed = true;
+      } else if (pin.hostname !== hostname3 || pin.accessHostname !== accessHostname) {
         this.log(`[access] the identity map says ${vmId} is at ${hostname3}; it stays pinned to ${pin.hostname}`);
       }
     }
@@ -12325,7 +12331,10 @@ var AccessFirewall = class {
     const want = origin.toLowerCase();
     const live = new Set(this.opts.identities().map((i2) => String(i2.vm_id)));
     for (const [vmId, pin] of Object.entries(this.store.pins)) {
-      if (live.has(vmId) && `https://${pin.hostname}` === want) return { vmId, hostname: pin.hostname };
+      if (!live.has(vmId)) continue;
+      for (const hostname3 of [pin.hostname, pin.accessHostname]) {
+        if (hostname3 && `https://${hostname3}` === want) return { vmId, hostname: hostname3 };
+      }
     }
     return null;
   }
@@ -83875,8 +83884,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "05ef649" : "unknown",
-  builtAt: true ? "2026-10-01T20:03:14+01:00" : "unknown"
+  commit: true ? "c1bb8b8" : "unknown",
+  builtAt: true ? "2026-10-02T12:26:49+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -84216,6 +84225,26 @@ function makeShipper() {
   });
 }
 async function main() {
+  if (existsSync13("/etc/controlclaw/pool-unclaimed")) {
+    ensureVmKeypair(KEYS_DIR2);
+    loadOrCreateBoxKey(BOX_KEY_PATH);
+    loadOrCreateRecoveryTls(KEYS_DIR2, `controlclaw-firewall-${BOX_ID}`);
+    const refresh = () => {
+      let peers = [];
+      try {
+        peers = JSON.parse(readFileSync19("/etc/controlclaw/pool-peer.json", "utf8"));
+      } catch {
+      }
+      writeProxyConfig(PROXY_CONFIG_DIR, { credentials: [], rules: [], identities: peers });
+    };
+    refresh();
+    setInterval(refresh, 2e3);
+    createServer3((req, res) => {
+      res.writeHead(req.method === "GET" && req.url === "/health" ? 200 : 503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ unclaimed: true }));
+    }).listen(PORT, "127.0.0.1");
+    return;
+  }
   if (!ORG_ID || !BOX_ID) die("ORG_ID and BOX_ID are required");
   if (SHIP_ONCE) {
     const shipper = makeShipper();

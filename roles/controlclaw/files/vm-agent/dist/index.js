@@ -9,10 +9,902 @@ var __require = /* @__PURE__ */ ((x2) => typeof require !== "undefined" ? requir
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID3 } from "crypto";
-import { readFileSync as readFileSync19 } from "fs";
+import { readFileSync as readFileSync20, existsSync as existsSync12, writeFileSync as writeFileSync13 } from "fs";
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/buffer_utils.js
+var encoder = new TextEncoder();
+var decoder = new TextDecoder();
+var strictDecoder = new TextDecoder("utf-8", { fatal: true });
+var MAX_INT32 = 2 ** 32;
+function concat(...buffers) {
+  const size = buffers.reduce((acc, { length }) => acc + length, 0), buf = new Uint8Array(size);
+  let i2 = 0;
+  for (const buffer of buffers)
+    buf.set(buffer, i2), i2 += buffer.length;
+  return buf;
+}
+var NON_ASCII = /[^\x00-\x7f]/;
+function encode(string) {
+  if (typeof string == "string" && string.length >= 128) {
+    if (NON_ASCII.test(string))
+      throw new TypeError("non-ASCII string encountered in encode()");
+    return encoder.encode(string);
+  }
+  const bytes = new Uint8Array(string.length);
+  for (let i2 = 0; i2 < string.length; i2++) {
+    const code = string.charCodeAt(i2);
+    if (code > 127)
+      throw new TypeError("non-ASCII string encountered in encode()");
+    bytes[i2] = code;
+  }
+  return bytes;
+}
+function encodeBase64(input, url2 = false) {
+  if (Uint8Array.prototype.toBase64)
+    return input.toBase64({ alphabet: url2 ? "base64url" : "base64", omitPadding: url2 });
+  const CHUNK_SIZE = 32768, arr = [];
+  for (let i2 = 0; i2 < input.length; i2 += CHUNK_SIZE)
+    arr.push(String.fromCharCode.apply(null, input.subarray(i2, i2 + CHUNK_SIZE)));
+  const encoded = btoa(arr.join(""));
+  return url2 ? encoded.replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_") : encoded;
+}
+function decodeBase64(encoded, url2 = false) {
+  if (Uint8Array.fromBase64)
+    return Uint8Array.fromBase64(encoded, { alphabet: url2 ? "base64url" : "base64" });
+  if (url2) {
+    if (encoded.includes("+") || encoded.includes("/"))
+      throw new TypeError("Invalid base64url");
+    encoded = encoded.replace(/-/g, "+").replace(/_/g, "/");
+  }
+  const binary = atob(encoded), bytes = new Uint8Array(binary.length);
+  for (let i2 = 0; i2 < binary.length; i2++)
+    bytes[i2] = binary.charCodeAt(i2);
+  return bytes;
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/util/errors.js
+var JOSEError = class extends Error {
+  static code = "ERR_JOSE_GENERIC";
+  code = "ERR_JOSE_GENERIC";
+  constructor(message2, options) {
+    super(message2, options), this.name = this.constructor.name, Error.captureStackTrace?.(this, this.constructor);
+  }
+};
+var JWTClaimValidationFailed = class extends JOSEError {
+  static code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
+  code = "ERR_JWT_CLAIM_VALIDATION_FAILED";
+  claim;
+  reason;
+  payload;
+  constructor(message2, payload, claim = "unspecified", reason = "unspecified") {
+    super(message2, { cause: { claim, reason, payload } }), this.claim = claim, this.reason = reason, this.payload = payload;
+  }
+};
+var JWTExpired = class extends JOSEError {
+  static code = "ERR_JWT_EXPIRED";
+  code = "ERR_JWT_EXPIRED";
+  claim;
+  reason;
+  payload;
+  constructor(message2, payload, claim = "unspecified", reason = "unspecified") {
+    super(message2, { cause: { claim, reason, payload } }), this.claim = claim, this.reason = reason, this.payload = payload;
+  }
+};
+var JOSEAlgNotAllowed = class extends JOSEError {
+  static code = "ERR_JOSE_ALG_NOT_ALLOWED";
+  code = "ERR_JOSE_ALG_NOT_ALLOWED";
+};
+var JOSENotSupported = class extends JOSEError {
+  static code = "ERR_JOSE_NOT_SUPPORTED";
+  code = "ERR_JOSE_NOT_SUPPORTED";
+};
+var JWSInvalid = class extends JOSEError {
+  static code = "ERR_JWS_INVALID";
+  code = "ERR_JWS_INVALID";
+};
+var JWTInvalid = class extends JOSEError {
+  static code = "ERR_JWT_INVALID";
+  code = "ERR_JWT_INVALID";
+};
+var JWSSignatureVerificationFailed = class extends JOSEError {
+  static code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+  code = "ERR_JWS_SIGNATURE_VERIFICATION_FAILED";
+  constructor(message2 = "signature verification failed", options) {
+    super(message2, options);
+  }
+};
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/util/base64url.js
+var invalid = "The input to be decoded is not correctly encoded.";
+function decode(input) {
+  try {
+    return decodeBase64(typeof input == "string" ? input : decoder.decode(input), true);
+  } catch (cause) {
+    throw new TypeError(invalid, { cause });
+  }
+}
+function encode2(input) {
+  return encodeBase64(typeof input == "string" ? encoder.encode(input) : input, true);
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/validate.js
+function isObject(input) {
+  if (typeof input != "object" || input === null || Object.prototype.toString.call(input) !== "[object Object]")
+    return false;
+  const prototype = Object.getPrototypeOf(input);
+  return prototype === null || Object.getPrototypeOf(prototype) === null;
+}
+function isDisjoint(...headers) {
+  const parameters = /* @__PURE__ */ new Set();
+  for (const header2 of headers)
+    if (header2)
+      for (const parameter of Object.keys(header2)) {
+        if (parameters.has(parameter))
+          return false;
+        parameters.add(parameter);
+      }
+  return true;
+}
+function assertNotSet(value, name) {
+  if (value !== void 0)
+    throw new TypeError(`${name} can only be called once`);
+}
+function decodeBase64url(value, label, ErrorClass) {
+  try {
+    return decode(value);
+  } catch {
+    throw new ErrorClass(`Failed to base64url decode the ${label}`);
+  }
+}
+function encodeBase64url(value, label, ErrorClass) {
+  try {
+    return encode(value);
+  } catch {
+    throw new ErrorClass(`The ${label} is not a valid base64url string`);
+  }
+}
+function parseJoseHeader(b64, ErrorClass, message2) {
+  let parsed;
+  try {
+    parsed = JSON.parse(strictDecoder.decode(decode(b64)));
+  } catch {
+    throw new ErrorClass(message2);
+  }
+  if (!isObject(parsed))
+    throw new ErrorClass(message2);
+  return parsed;
+}
+var JWS_RECOGNIZED = { __proto__: null, b64: true };
+function validateAlgorithms(option, algorithms) {
+  if (algorithms !== void 0 && (!Array.isArray(algorithms) || algorithms.some((s2) => typeof s2 != "string")))
+    throw new TypeError(`"${option}" option must be an array of strings`);
+  return algorithms === void 0 ? void 0 : new Set(algorithms);
+}
+function validateCritDuplicates(Err, protectedHeader) {
+  const { crit } = protectedHeader ?? {};
+  if (Array.isArray(crit) && new Set(crit).size !== crit.length)
+    throw new Err('"crit" (Critical) Header Parameter MUST NOT contain duplicate values');
+}
+function validateCrit(Err, recognizedDefault, recognizedOption, protectedHeader, joseHeader) {
+  if (joseHeader.crit !== void 0 && protectedHeader?.crit === void 0)
+    throw new Err('"crit" (Critical) Header Parameter MUST be integrity protected');
+  if (!protectedHeader || protectedHeader.crit === void 0)
+    return [];
+  if (!Array.isArray(protectedHeader.crit) || protectedHeader.crit.length === 0 || protectedHeader.crit.some((input) => typeof input != "string" || input.length === 0))
+    throw new Err('"crit" (Critical) Header Parameter MUST be an array of non-empty strings when present');
+  const recognized = recognizedOption === void 0 ? recognizedDefault : { __proto__: null, ...recognizedOption, ...recognizedDefault };
+  for (const parameter of protectedHeader.crit) {
+    if (!(parameter in recognized))
+      throw new JOSENotSupported(`Extension Header Parameter "${parameter}" is not recognized`);
+    if (!Object.hasOwn(joseHeader, parameter) || joseHeader[parameter] === void 0)
+      throw new Err(`Extension Header Parameter "${parameter}" is missing`);
+    if (recognized[parameter] && (!Object.hasOwn(protectedHeader, parameter) || protectedHeader[parameter] === void 0))
+      throw new Err(`Extension Header Parameter "${parameter}" MUST be integrity protected`);
+  }
+  return protectedHeader.crit;
+}
+function validateB64(protectedHeader, extensions) {
+  if (extensions.includes("b64")) {
+    const b64 = protectedHeader.b64;
+    if (typeof b64 != "boolean")
+      throw new JWSInvalid('The "b64" (base64url-encode payload) Header Parameter must be a boolean');
+    return b64;
+  }
+  return true;
+}
+function serializeJoseHeader(Err, header2) {
+  let serialized, parsed;
+  try {
+    serialized = JSON.stringify(header2), parsed = JSON.parse(serialized);
+  } catch (cause) {
+    throw new Err("JOSE Header is not valid JSON", { cause });
+  }
+  if (!isObject(parsed))
+    throw new Err("JOSE Header is not a JSON object");
+  return [parsed, serialized];
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/key.js
+var tag = (key) => key[Symbol.toStringTag];
+var jwkMatchesOp = (entry, key, usage) => {
+  const { alg } = entry;
+  if (key.use !== void 0) {
+    const expected = usage === "sign" || usage === "verify" ? "sig" : "enc";
+    if (key.use !== expected)
+      throw new TypeError(`Invalid key for this operation, its "use" must be "${expected}" when present`);
+  }
+  if (key.alg !== void 0 && key.alg !== alg)
+    throw new TypeError(`Invalid key for this operation, its "alg" must be "${alg}" when present`);
+  if (Array.isArray(key.key_ops)) {
+    const expectedKeyOp = usage === "encrypt" || usage === "decrypt" ? entry.ops?.[usage === "encrypt" ? 0 : 1] : usage;
+    if (expectedKeyOp && !key.key_ops.includes(expectedKeyOp))
+      throw new TypeError(`Invalid key for this operation, its "key_ops" must include "${expectedKeyOp}" when present`);
+  }
+};
+async function prepareKey(entry, key, usage) {
+  const { alg, secret: secret2 } = entry, privateKey = usage === "decrypt" || usage === "sign";
+  if (secret2 && key instanceof Uint8Array)
+    return key;
+  let normalized, keyObject;
+  if (isObject(key)) {
+    if (normalized = normalizeJwk(key), typeof normalized.kty != "string")
+      throw invalidKeyType(alg, key, secret2);
+    if (!(secret2 ? normalized.kty === "oct" && typeof normalized.k == "string" : normalized.kty !== "oct" && (privateKey ? normalized.kty === "AKP" && typeof normalized.priv == "string" || typeof normalized.d == "string" : normalized.d === void 0 && normalized.priv === void 0)))
+      throw new TypeError(secret2 ? 'JSON Web Key for symmetric algorithms must have JWK "kty" (Key Type) equal to "oct" and the JWK "k" (Key Value) present' : `JSON Web Key for this operation must be a ${privateKey ? "private" : "public"} JWK`);
+    if (jwkMatchesOp(entry, normalized, usage), normalized.kty === "oct")
+      return decode(normalized.k);
+    if (!Object.isFrozen(key)) {
+      const { key_ops } = key;
+      Array.isArray(key_ops) && Object.freeze(key_ops), Object.freeze(key);
+    }
+  } else {
+    if (!isKeyLike(key))
+      throw invalidKeyType(alg, key, secret2);
+    const expectedType = secret2 ? "secret" : privateKey ? "private" : "public";
+    if (key.type !== expectedType && (secret2 || ["secret", "public", "private"].includes(key.type)))
+      throw new TypeError(`${tag(key)} instances must be of type "${expectedType}" for the ${alg} algorithm`);
+    if (isCryptoKey(key))
+      return key;
+    if (keyObject = key, keyObject.type === "secret")
+      return keyObject.export();
+  }
+  cache ||= /* @__PURE__ */ new WeakMap();
+  const cacheKey = key;
+  let cached = cache.get(cacheKey);
+  if (cached?.[alg])
+    return cached[alg];
+  if (cached || cache.set(cacheKey, cached = {}), keyObject && typeof keyObject.toCryptoKey == "function") {
+    const isPublic = keyObject.type === "public", crv = nist[keyObject.asymmetricKeyDetails?.namedCurve], params = entry.resolve?.({ crv, asymmetricKeyType: keyObject.asymmetricKeyType }) ?? entry.subtle;
+    return cached[alg] = keyObject.toCryptoKey(params, isPublic, entry.usages[isPublic ? 0 : 1]);
+  }
+  return normalized ??= keyObject.export({ format: "jwk" }), normalized.alg = alg, cached[alg] = await jwkToKey(entry, normalized);
+}
+var cache;
+var nist = {
+  __proto__: null,
+  prime256v1: "P-256",
+  secp384r1: "P-384",
+  secp521r1: "P-521"
+};
+var isCryptoKey = (key) => {
+  if (key?.[Symbol.toStringTag] === "CryptoKey")
+    return true;
+  try {
+    return key instanceof CryptoKey;
+  } catch {
+    return false;
+  }
+};
+var isKeyObject = (key) => key?.[Symbol.toStringTag] === "KeyObject";
+var isKeyLike = (key) => isCryptoKey(key) || isKeyObject(key);
+function message(msg, actual, ...types) {
+  if (types.length > 2) {
+    const last = types.pop();
+    msg += `one of type ${types.join(", ")}, or ${last}.`;
+  } else types.length === 2 ? msg += `one of type ${types[0]} or ${types[1]}.` : msg += `of type ${types[0]}.`;
+  return actual == null ? msg += ` Received ${actual}` : typeof actual == "function" && actual.name ? msg += ` Received function ${actual.name}` : typeof actual == "object" && actual != null && actual.constructor?.name && (msg += ` Received an instance of ${actual.constructor.name}`), msg;
+}
+function invalidKeyType(alg, actual, secret2) {
+  const types = ["CryptoKey", "KeyObject", "JSON Web Key"];
+  return secret2 && types.push("Uint8Array"), new TypeError(message(`Key for the ${alg} algorithm must be `, actual, ...types));
+}
+var unusable = (name, prop = "algorithm.name") => new TypeError(`CryptoKey does not support this operation, its ${prop} must be ${name}`);
+function checkUsage(key, usage) {
+  if (usage && !key.usages.includes(usage))
+    throw new TypeError(`CryptoKey does not support this operation, its usages must include ${usage}.`);
+}
+function checkModulusLength(alg, key) {
+  const { modulusLength } = key.algorithm;
+  if (typeof modulusLength != "number" || modulusLength < 2048)
+    throw new TypeError(`${alg} requires key modulusLength to be 2048 bits or larger`);
+}
+function checkCryptoKey(key, expected, usage) {
+  const algorithm = key.algorithm;
+  if (algorithm.name !== expected.name)
+    throw unusable(expected.name);
+  if (expected.hash && algorithm.hash?.name !== expected.hash)
+    throw unusable(expected.hash, "algorithm.hash");
+  if (expected.namedCurve && algorithm.namedCurve !== expected.namedCurve)
+    throw unusable(expected.namedCurve, "algorithm.namedCurve");
+  if (expected.length !== void 0 && algorithm.length !== expected.length)
+    throw unusable(expected.length, "algorithm.length");
+  checkUsage(key, usage);
+}
+function snapshotJwk(jwk) {
+  return { __proto__: null, ...jwk };
+}
+function normalizeJwk(jwk) {
+  const normalized = snapshotJwk(jwk);
+  if (normalized.ext !== void 0 && typeof normalized.ext != "boolean")
+    throw new TypeError('"ext" (Extractable) Parameter must be a boolean');
+  if (normalized.key_ops !== void 0) {
+    const value = normalized.key_ops, keyOps = Array.isArray(value) ? [...value] : void 0;
+    if (!keyOps || keyOps.some((operation) => typeof operation != "string") || new Set(keyOps).size !== keyOps.length)
+      throw new TypeError('"key_ops" (Key Operations) Parameter must be an array of unique strings');
+    normalized.key_ops = keyOps;
+  }
+  return normalized;
+}
+function validateExtractableOption(extractable) {
+  if (extractable !== void 0 && typeof extractable != "boolean")
+    throw new TypeError('"extractable" option must be a boolean');
+  return extractable;
+}
+async function jwkToKey(entry, jwk, extractable) {
+  if (!entry.kty.includes(jwk.kty))
+    throw new JOSENotSupported('Invalid or unsupported JWK "alg" (Algorithm) Parameter value');
+  const algorithm = entry.resolve?.({ kty: jwk.kty, crv: jwk.crv }) ?? entry.subtle, isPrivate = !!(jwk.d || jwk.priv), keyData = { ...jwk, ext: extractable ?? jwk.ext };
+  return keyData.kty !== "AKP" && delete keyData.alg, delete keyData.use, crypto.subtle.importKey("jwk", keyData, algorithm, keyData.ext ?? !isPrivate, jwk.key_ops ?? entry.usages[isPrivate ? 1 : 0]);
+}
+async function rawKey(key, expected, usage, extractable = false) {
+  return key instanceof Uint8Array && (key = await crypto.subtle.importKey("raw", key, expected, extractable, [usage])), checkCryptoKey(key, expected, usage), key;
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/key_descriptor.js
+function table(entries) {
+  const out = { __proto__: null };
+  for (const alg in entries)
+    out[alg] = { ...entries[alg], alg };
+  return out;
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/jwe_algorithms.js
+var wrap = [
+  ["encrypt", "wrapKey"],
+  ["decrypt", "unwrapKey"]
+];
+var derive = [[], ["deriveBits"]];
+var none = [[], []];
+function rsaes(bits) {
+  return {
+    kty: ["RSA"],
+    mode: "key-encryption",
+    subtle: { name: "RSA-OAEP", hash: `SHA-${bits}` },
+    usages: wrap,
+    ops: ["wrapKey", "unwrapKey"]
+  };
+}
+function ecdh(mode) {
+  return {
+    kty: ["EC", "OKP"],
+    mode,
+    subtle: { name: "ECDH" },
+    resolve: ({ kty, crv, asymmetricKeyType }) => {
+      if (crv === "X25519" || asymmetricKeyType === "x25519")
+        return { name: "X25519" };
+      if (kty === "OKP")
+        throw new JOSENotSupported('Invalid or unsupported JWK "alg" (Algorithm) Parameter value');
+      return { name: "ECDH", namedCurve: crv };
+    },
+    usages: derive,
+    ops: [void 0, "deriveBits"]
+  };
+}
+function aeskw(bits, gcm = false) {
+  return {
+    kty: ["oct"],
+    mode: "key-wrapping",
+    secret: true,
+    subtle: { name: gcm ? "AES-GCM" : "AES-KW", length: bits },
+    usages: none,
+    ops: gcm ? ["encrypt", "decrypt"] : ["wrapKey", "unwrapKey"]
+  };
+}
+function pbes2() {
+  return {
+    kty: ["oct"],
+    mode: "key-wrapping",
+    secret: true,
+    subtle: { name: "PBKDF2" },
+    usages: none,
+    ops: ["deriveBits", "deriveBits"]
+  };
+}
+var JWE = table({
+  dir: {
+    kty: ["oct"],
+    mode: "direct-encryption",
+    secret: true,
+    subtle: { name: "AES-GCM" },
+    usages: none,
+    ops: ["encrypt", "decrypt"]
+  },
+  "RSA-OAEP": rsaes(1),
+  "RSA-OAEP-256": rsaes(256),
+  "RSA-OAEP-384": rsaes(384),
+  "RSA-OAEP-512": rsaes(512),
+  "ECDH-ES": ecdh("direct-key-agreement"),
+  "ECDH-ES+A128KW": ecdh("key-agreement-with-key-wrapping"),
+  "ECDH-ES+A192KW": ecdh("key-agreement-with-key-wrapping"),
+  "ECDH-ES+A256KW": ecdh("key-agreement-with-key-wrapping"),
+  A128KW: aeskw(128),
+  A192KW: aeskw(192),
+  A256KW: aeskw(256),
+  A128GCMKW: aeskw(128, true),
+  A192GCMKW: aeskw(192, true),
+  A256GCMKW: aeskw(256, true),
+  "PBES2-HS256+A128KW": pbes2(),
+  "PBES2-HS384+A192KW": pbes2(),
+  "PBES2-HS512+A256KW": pbes2()
+});
+var contentOps = ["encrypt", "decrypt"];
+function contentEncryption(bits, cbc = false) {
+  return {
+    kty: ["oct"],
+    secret: true,
+    subtle: { name: cbc ? "AES-CBC" : "AES-GCM", length: bits },
+    usages: none,
+    ops: contentOps,
+    cekBits: bits,
+    ivBits: cbc ? 128 : 96,
+    cbc
+  };
+}
+var ENC = table({
+  A128GCM: contentEncryption(128),
+  A192GCM: contentEncryption(192),
+  A256GCM: contentEncryption(256),
+  "A128CBC-HS256": contentEncryption(256, true),
+  "A192CBC-HS384": contentEncryption(384, true),
+  "A256CBC-HS512": contentEncryption(512, true)
+});
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/jws_algorithms.js
+var sig = [["verify"], ["sign"]];
+function hmac(bits) {
+  const subtle = { name: "HMAC", hash: `SHA-${bits}` };
+  return { kty: ["oct"], secret: true, subtle, signing: subtle, usages: sig };
+}
+function rsa(bits, saltLength) {
+  const subtle = { name: saltLength ? "RSA-PSS" : "RSASSA-PKCS1-v1_5", hash: `SHA-${bits}` };
+  return {
+    kty: ["RSA"],
+    subtle,
+    signing: saltLength ? { ...subtle, saltLength } : subtle,
+    usages: sig,
+    minRsaBits: 2048
+  };
+}
+function ecdsa(crv, bits) {
+  return {
+    kty: ["EC"],
+    crv,
+    subtle: { name: "ECDSA", namedCurve: crv },
+    signing: { name: "ECDSA", hash: `SHA-${bits}` },
+    usages: sig
+  };
+}
+function eddsa() {
+  const subtle = { name: "Ed25519" };
+  return {
+    kty: ["OKP"],
+    crv: "Ed25519",
+    subtle,
+    signing: subtle,
+    usages: sig
+  };
+}
+function mldsa(bits) {
+  const subtle = { name: `ML-DSA-${bits}` };
+  return {
+    kty: ["AKP"],
+    subtle,
+    signing: subtle,
+    usages: sig
+  };
+}
+var JWS = table({
+  HS256: hmac(256),
+  HS384: hmac(384),
+  HS512: hmac(512),
+  RS256: rsa(256),
+  RS384: rsa(384),
+  RS512: rsa(512),
+  PS256: rsa(256, 32),
+  PS384: rsa(384, 48),
+  PS512: rsa(512, 64),
+  ES256: ecdsa("P-256", 256),
+  ES384: ecdsa("P-384", 384),
+  ES512: ecdsa("P-521", 512),
+  EdDSA: eddsa(),
+  Ed25519: eddsa(),
+  "ML-DSA-44": mldsa(44),
+  "ML-DSA-65": mldsa(65),
+  "ML-DSA-87": mldsa(87)
+});
+function jwsAlgorithm(alg) {
+  const entry = typeof alg == "string" ? JWS[alg] : void 0;
+  if (!entry)
+    throw new JOSENotSupported(`alg ${alg} is not supported either by JOSE or your javascript runtime`);
+  return entry;
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/jws_verify.js
+function prepareVerify(options) {
+  return [options && validateAlgorithms("algorithms", options.algorithms), options?.crit];
+}
+function parseProtectedHeader(encodedProtected) {
+  return encodedProtected === void 0 ? {} : parseJoseHeader(encodedProtected, JWSInvalid, "JWS Protected Header is invalid");
+}
+function encodeCompactUnencodedPayload(payload) {
+  try {
+    return encode(payload);
+  } catch {
+    throw new JWSInvalid("JWS Compact Serialization payload must use only ASCII characters");
+  }
+}
+async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedProtected) {
+  const { protected: encodedProtected, header: header2, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
+  if (!isDisjoint(parsedProt, header2))
+    throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
+  const joseHeader = { ...parsedProt, ...header2 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
+  if (typeof alg != "string" || !alg)
+    throw new JWSInvalid('JWS "alg" (Algorithm) Header Parameter missing or invalid');
+  if (shared[0] && !shared[0].has(alg))
+    throw new JOSEAlgNotAllowed('"alg" (Algorithm) Header Parameter value not allowed');
+  if (b64) {
+    if (typeof inputPayload != "string")
+      throw new JWSInvalid("JWS Payload must be a string");
+  } else if (typeof inputPayload != "string" && !(inputPayload instanceof Uint8Array))
+    throw new JWSInvalid("JWS Payload must be a string or an Uint8Array instance");
+  const signingPayload = b64 || typeof inputPayload != "string" ? inputPayload : encodeUnencodedPayload(inputPayload);
+  let resolvedKey = false;
+  typeof key == "function" && (key = await key(parsedProt, jws), resolvedKey = true);
+  const entry = jwsAlgorithm(alg), data = concat(encodedProtected !== void 0 ? encode(encodedProtected) : new Uint8Array(), encode("."), typeof signingPayload == "string" ? shared[2] ??= encodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload), signature = decodeBase64url(jws.signature, "signature", JWSInvalid), k2 = await prepareKey(entry, key, "verify"), cryptoKey = await rawKey(k2, entry.subtle, "verify");
+  entry.minRsaBits && checkModulusLength(entry.alg, cryptoKey);
+  let verified = false;
+  try {
+    verified = await crypto.subtle.verify(entry.signing, cryptoKey, signature, data);
+  } catch {
+  }
+  if (!verified)
+    throw new JWSSignatureVerificationFailed();
+  const result = { payload: typeof signingPayload == "string" ? decodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload };
+  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header2 !== void 0 && (result.unprotectedHeader = header2), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
+}
+async function verifyCompact(jws, shared, key) {
+  if (jws instanceof Uint8Array && (jws = decoder.decode(jws)), typeof jws != "string")
+    throw new JWSInvalid("Compact JWS must be a string or Uint8Array");
+  const { 0: protectedHeader, 1: payload, 2: signature, length } = jws.split(".");
+  if (length !== 3)
+    throw new JWSInvalid("Invalid Compact JWS");
+  return verifySignature({ payload, protected: protectedHeader, signature }, shared, key, encodeCompactUnencodedPayload);
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/jwt_claims_set.js
+var epoch = (date) => Math.floor(date.getTime() / 1e3);
+var multipliers = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+  w: 604800,
+  y: 31557600
+};
+var REGEX = /^(\+|\-)? ?(\d+|\d+\.\d+) ?(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)(?: (ago|from now))?$/i;
+var checkFailed = "check_failed";
+function invalidDuration() {
+  throw new TypeError("Invalid time period format");
+}
+function secs(str8) {
+  typeof str8 != "string" && invalidDuration();
+  const matched = REGEX.exec(str8);
+  (!matched || matched[4] && matched[1]) && invalidDuration();
+  const value = parseFloat(matched[2]), numericDate2 = Math.round(value * multipliers[matched[3][0].toLowerCase()]);
+  return Number.isFinite(numericDate2) || invalidDuration(), matched[1] === "-" || matched[4] === "ago" ? -numericDate2 : numericDate2;
+}
+function validateInput(label, input) {
+  if (!Number.isFinite(input))
+    throw new TypeError(`Invalid ${label} input`);
+  return input;
+}
+function validateStringClaim(claim, value) {
+  if (typeof value != "string")
+    throw new TypeError(`"${claim}" claim must be a string`);
+}
+function validateAudienceClaim(value) {
+  if (typeof value != "string" && (!Array.isArray(value) || Array.from(value).some((member) => typeof member != "string")))
+    throw new TypeError('"aud" claim must be a string or an array of strings');
+}
+function numericDate(value, label) {
+  return typeof value == "number" ? validateInput(label, value) : value instanceof Date ? validateInput(label, epoch(value)) : epoch(/* @__PURE__ */ new Date()) + secs(value);
+}
+var normalizeTyp = (value) => {
+  const normalized = value.toLowerCase();
+  return value.includes("/") ? normalized : `application/${normalized}`;
+};
+var checkAudiencePresence = (audPayload, audOption) => typeof audPayload == "string" ? audOption.includes(audPayload) : Array.isArray(audPayload) ? audOption.some((aud) => audPayload.includes(aud)) : false;
+function validateNumericDate(payload, claim, required = false) {
+  const value = payload[claim];
+  if (!(value === void 0 && !required)) {
+    if (typeof value != "number")
+      throw new JWTClaimValidationFailed(`"${claim}" claim must be a number`, payload, claim, "invalid");
+    return value;
+  }
+}
+function unexpectedClaim(payload, claim) {
+  throw new JWTClaimValidationFailed(`unexpected "${claim}" claim value`, payload, claim, checkFailed);
+}
+function validateClaimsSet(protectedHeader, encodedPayload, options = {}) {
+  let payload;
+  try {
+    payload = JSON.parse(strictDecoder.decode(encodedPayload));
+  } catch {
+  }
+  if (!isObject(payload))
+    throw new JWTInvalid("JWT Claims Set must be a top-level JSON object");
+  const { typ } = options;
+  if (typ !== void 0 && (typeof protectedHeader.typ != "string" || normalizeTyp(protectedHeader.typ) !== normalizeTyp(typ)))
+    throw new JWTClaimValidationFailed('unexpected "typ" JWT header value', payload, "typ", checkFailed);
+  const { requiredClaims = [], issuer, subject, audience, maxTokenAge } = options, presenceCheck = [...requiredClaims];
+  maxTokenAge !== void 0 && presenceCheck.push("iat"), audience !== void 0 && presenceCheck.push("aud"), subject !== void 0 && presenceCheck.push("sub"), issuer !== void 0 && presenceCheck.push("iss");
+  for (const claim of new Set(presenceCheck.reverse()))
+    if (!Object.hasOwn(payload, claim))
+      throw new JWTClaimValidationFailed(`missing required "${claim}" claim`, payload, claim, "missing");
+  issuer !== void 0 && !(Array.isArray(issuer) ? issuer : [issuer]).includes(payload.iss) && unexpectedClaim(payload, "iss"), subject !== void 0 && payload.sub !== subject && unexpectedClaim(payload, "sub"), audience !== void 0 && !checkAudiencePresence(payload.aud, typeof audience == "string" ? [audience] : audience) && unexpectedClaim(payload, "aud");
+  const { clockTolerance } = options;
+  let tolerance = 0;
+  if (typeof clockTolerance == "string")
+    tolerance = secs(clockTolerance);
+  else if (clockTolerance !== void 0) {
+    if (typeof clockTolerance != "number")
+      throw new TypeError("Invalid clockTolerance option type");
+    tolerance = clockTolerance;
+  }
+  validateInput("clockTolerance option", tolerance);
+  const { currentDate } = options, now = validateInput("currentDate option", epoch(currentDate === void 0 ? /* @__PURE__ */ new Date() : currentDate)), iat = validateNumericDate(payload, "iat", maxTokenAge !== void 0), nbf = validateNumericDate(payload, "nbf");
+  if (nbf !== void 0 && nbf > now + tolerance)
+    throw new JWTClaimValidationFailed('"nbf" claim timestamp check failed', payload, "nbf", checkFailed);
+  const exp = validateNumericDate(payload, "exp");
+  if (exp !== void 0 && exp <= now - tolerance)
+    throw new JWTExpired('"exp" claim timestamp check failed', payload, "exp", checkFailed);
+  if (maxTokenAge !== void 0) {
+    const age = now - iat, max = validateInput("maxTokenAge option", typeof maxTokenAge == "number" ? maxTokenAge : secs(maxTokenAge));
+    if (age - tolerance > max)
+      throw new JWTExpired('"iat" claim timestamp check failed (too far in the past)', payload, "iat", checkFailed);
+    if (age < -tolerance)
+      throw new JWTClaimValidationFailed('"iat" claim timestamp check failed (it should be in the past)', payload, "iat", checkFailed);
+  }
+  return payload;
+}
+var producerPayloads;
+function producerPayload(producer) {
+  return producerPayloads.get(producer);
+}
+function jwtData(producer) {
+  const payload = producerPayload(producer);
+  for (const claim of ["iat", "nbf", "exp"]) {
+    const value = payload[claim];
+    if (typeof value == "number" && !Number.isFinite(value))
+      throw new TypeError(`"${claim}" claim must be a finite number`);
+  }
+  return encoder.encode(JSON.stringify(payload));
+}
+var JWTClaimsBuilder = class {
+  constructor(payload = {}) {
+    if (!isObject(payload))
+      throw new TypeError("JWT Claims Set MUST be an object");
+    (producerPayloads ||= /* @__PURE__ */ new WeakMap()).set(this, structuredClone(payload));
+  }
+  setIssuer(value) {
+    return validateStringClaim("iss", value), producerPayload(this).iss = value, this;
+  }
+  setSubject(value) {
+    return validateStringClaim("sub", value), producerPayload(this).sub = value, this;
+  }
+  setAudience(value) {
+    return validateAudienceClaim(value), producerPayload(this).aud = value, this;
+  }
+  setJti(value) {
+    return validateStringClaim("jti", value), producerPayload(this).jti = value, this;
+  }
+  setNotBefore(value) {
+    return producerPayload(this).nbf = numericDate(value, "setNotBefore"), this;
+  }
+  setExpirationTime(value) {
+    return producerPayload(this).exp = numericDate(value, "setExpirationTime"), this;
+  }
+  setIssuedAt(value) {
+    const payload = producerPayload(this);
+    return value === void 0 ? payload.iat = epoch(/* @__PURE__ */ new Date()) : typeof value == "string" ? payload.iat = validateInput("setIssuedAt", epoch(/* @__PURE__ */ new Date()) + secs(value)) : payload.iat = numericDate(value, "setIssuedAt"), this;
+  }
+};
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/jwt/verify.js
+async function jwtVerify(jwt, key, options) {
+  const [verified, b64] = await verifyCompact(jwt, prepareVerify(options), key);
+  if (!b64)
+    throw new JWTInvalid("JWTs MUST NOT use unencoded payload");
+  const payload = validateClaimsSet(verified.protectedHeader, verified.payload, options);
+  return { ...verified, payload };
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/jws_sign.js
+async function createSignature(input, key, rejectUnencoded) {
+  let [payload, protectedHeader, unprotectedHeader, crit] = input, protectedHeaderString = "";
+  if (protectedHeader !== void 0) {
+    const normalized = serializeJoseHeader(JWSInvalid, protectedHeader);
+    protectedHeader = normalized[0], protectedHeaderString = encode2(normalized[1]);
+  }
+  if (unprotectedHeader !== void 0 && (unprotectedHeader = serializeJoseHeader(JWSInvalid, unprotectedHeader)[0]), !protectedHeader && !unprotectedHeader)
+    throw new JWSInvalid("either setProtectedHeader or setUnprotectedHeader must be called before #sign()");
+  if (!isDisjoint(protectedHeader, unprotectedHeader))
+    throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
+  const joseHeader = { ...protectedHeader, ...unprotectedHeader };
+  validateCritDuplicates(JWSInvalid, protectedHeader);
+  const b64 = validateB64(protectedHeader, validateCrit(JWSInvalid, JWS_RECOGNIZED, crit, protectedHeader, joseHeader));
+  b64 || rejectUnencoded?.();
+  const { alg } = joseHeader;
+  if (typeof alg != "string" || !alg)
+    throw new JWSInvalid('JWS "alg" (Algorithm) Header Parameter missing or invalid');
+  const entry = jwsAlgorithm(alg);
+  let payloadS = "", payloadB = payload, data;
+  if (b64) {
+    const encoded = input[4];
+    encoded ? (payloadS = encoded[0] ??= encode2(payload), payloadB = encoded[1] ??= encode(payloadS)) : (payloadS = encode2(payload), data = encoder.encode(`${protectedHeaderString}.${payloadS}`));
+  }
+  data ??= concat(encode(protectedHeaderString), encode("."), payloadB);
+  const k2 = await rawKey(await prepareKey(entry, key, "sign"), entry.subtle, "sign");
+  entry.minRsaBits && checkModulusLength(entry.alg, k2);
+  const jws = {
+    signature: encode2(new Uint8Array(await crypto.subtle.sign(entry.signing, k2, data))),
+    payload: payloadS
+  };
+  return protectedHeader && (jws.protected = protectedHeaderString), unprotectedHeader && (jws.header = unprotectedHeader), [jws, b64];
+}
+async function createCompactSignature(payload, protectedHeader, crit, key, rejectUnencoded) {
+  const [jws] = await createSignature([payload, protectedHeader, void 0, crit], key, rejectUnencoded);
+  return `${jws.protected}.${jws.payload}.${jws.signature}`;
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/jwt/sign.js
+var SignJWT_base = JWTClaimsBuilder;
+var SignJWT = class extends SignJWT_base {
+  #protectedHeader;
+  setProtectedHeader(protectedHeader) {
+    return assertNotSet(this.#protectedHeader, "setProtectedHeader"), this.#protectedHeader = protectedHeader, this;
+  }
+  async sign(key, options) {
+    return createCompactSignature(jwtData(this), this.#protectedHeader, options?.crit, key, () => {
+      throw new JWTInvalid("JWTs MUST NOT use unencoded payload");
+    });
+  }
+};
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/key_algorithm.js
+var algArgument = '"alg" (Algorithm)';
+function unsupportedAlg(source = 'JWK "alg" (Algorithm) Parameter') {
+  throw new JOSENotSupported(`Invalid or unsupported ${source} value`);
+}
+function keyAlgorithm(alg, source) {
+  return (typeof alg == "string" ? JWS[alg] ?? JWE[alg] : void 0) ?? unsupportedAlg(source);
+}
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/asn1.js
+var bytesEqual = (a2, b2) => {
+  if (a2.byteLength !== b2.length)
+    return false;
+  for (let i2 = 0; i2 < a2.byteLength; i2++)
+    if (a2[i2] !== b2[i2])
+      return false;
+  return true;
+};
+var createASN1State = (data) => ({ data, pos: 0 });
+var readByte = (state) => {
+  const byte = state.data[state.pos++];
+  if (byte === void 0)
+    throw new Error("Unexpected end of ASN.1 input");
+  return byte;
+};
+var parseLength = (state) => {
+  const first = readByte(state);
+  if (first & 128) {
+    const lengthOfLen = first & 127;
+    let length = 0;
+    for (let i2 = 0; i2 < lengthOfLen; i2++)
+      length = length << 8 | readByte(state);
+    return length;
+  }
+  return first;
+};
+var expectTag = (state, expectedTag, errorMessage) => {
+  if (readByte(state) !== expectedTag)
+    throw new Error(errorMessage);
+};
+var getSubarray = (state, length) => {
+  if (length < 0 || state.pos + length > state.data.length)
+    throw new Error("Unexpected end of ASN.1 input");
+  const result = state.data.subarray(state.pos, state.pos + length);
+  return state.pos += length, result;
+};
+var parseAlgorithmOID = (state) => {
+  expectTag(state, 6, "Expected algorithm OID");
+  const oidLen = parseLength(state);
+  return getSubarray(state, oidLen);
+};
+function parseKeyHeader(state, keyFormat) {
+  if (expectTag(state, 48, `Invalid ${keyFormat === "spki" ? "SPKI" : "PKCS#8"} structure`), parseLength(state), keyFormat === "pkcs8") {
+    expectTag(state, 2, "Expected version field");
+    const length = parseLength(state);
+    state.pos += length;
+  }
+  expectTag(state, 48, "Expected algorithm identifier"), parseLength(state);
+}
+var parseECAlgorithmIdentifier = (state) => {
+  const algOid = parseAlgorithmOID(state);
+  if (bytesEqual(algOid, [43, 101, 110]))
+    return "X25519";
+  if (!bytesEqual(algOid, [42, 134, 72, 206, 61, 2, 1]))
+    throw new Error("Unsupported key algorithm");
+  expectTag(state, 6, "Expected curve OID");
+  const curveOidLen = parseLength(state), curveOid = getSubarray(state, curveOidLen);
+  if (bytesEqual(curveOid, [42, 134, 72, 206, 61, 3, 1, 7]))
+    return "P-256";
+  if (bytesEqual(curveOid, [43, 129, 4, 0, 34]))
+    return "P-384";
+  if (bytesEqual(curveOid, [43, 129, 4, 0, 35]))
+    return "P-521";
+  throw new Error("Unsupported named curve");
+};
+var genericImport = async (keyFormat, keyData, alg, options) => {
+  const extractable = validateExtractableOption(options?.extractable), entry = keyAlgorithm(alg, algArgument);
+  entry.secret && unsupportedAlg(algArgument);
+  const isPublic = keyFormat === "spki";
+  let algorithm;
+  if (entry.resolve)
+    try {
+      const state = createASN1State(keyData);
+      parseKeyHeader(state, keyFormat), algorithm = entry.resolve({ crv: parseECAlgorithmIdentifier(state) });
+    } catch {
+      throw new JOSENotSupported("Invalid or unsupported key format");
+    }
+  else
+    algorithm = entry.subtle;
+  return crypto.subtle.importKey(keyFormat, keyData, algorithm, extractable ?? isPublic, entry.usages[isPublic ? 0 : 1]);
+};
+var processPEMData = (pem, pattern) => decodeBase64(pem.replace(pattern, ""));
+var fromPKCS8 = (pem, alg, options) => {
+  const keyData = processPEMData(pem, /(?:-----(?:BEGIN|END) PRIVATE KEY-----|\s)/g);
+  return genericImport("pkcs8", keyData, alg, options);
+};
+var fromSPKI = (pem, alg, options) => {
+  const keyData = processPEMData(pem, /(?:-----(?:BEGIN|END) PUBLIC KEY-----|\s)/g);
+  return genericImport("spki", keyData, alg, options);
+};
+
+// ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/key/import.js
+async function importSPKI(spki, alg, options) {
+  if (typeof spki != "string" || spki.indexOf("-----BEGIN PUBLIC KEY-----") !== 0)
+    throw new TypeError('"spki" must be SPKI formatted string');
+  return fromSPKI(spki, alg, options);
+}
+async function importPKCS8(pkcs8, alg, options) {
+  if (typeof pkcs8 != "string" || pkcs8.indexOf("-----BEGIN PRIVATE KEY-----") !== 0)
+    throw new TypeError('"pkcs8" must be PKCS#8 formatted string');
+  return fromPKCS8(pkcs8, alg, options);
+}
 
 // src/auth.ts
-import { importSPKI, jwtVerify } from "jose";
 var saasPublicKey = null;
 var ownVmId = null;
 var mitmPinnedKey = null;
@@ -135,10 +1027,9 @@ async function requireAuth(req, res) {
 }
 
 // src/session.ts
-import crypto from "crypto";
+import crypto2 from "crypto";
 import { existsSync, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
 import { join as join2 } from "path";
-import { SignJWT, jwtVerify as jwtVerify2 } from "jose";
 
 // ../origin-guard/src/index.ts
 var SAFE_METHODS = /* @__PURE__ */ new Set(["GET", "HEAD", "OPTIONS"]);
@@ -224,10 +1115,10 @@ var REVOKED_KEEP_MS = 12 * 60 * 6e4;
 function statePath() {
   return join(process.env.STATE_DIR ?? "/opt/controlclaw/state", "access.json");
 }
-var cache = null;
+var cache2 = null;
 function load() {
   const path = statePath();
-  if (cache?.path === path) return cache.state;
+  if (cache2?.path === path) return cache2.state;
   let state = { firewallOrigin: null, revoked: {} };
   try {
     const raw = JSON.parse(readFileSync(path, "utf8"));
@@ -237,7 +1128,7 @@ function load() {
     };
   } catch {
   }
-  cache = { path, state };
+  cache2 = { path, state };
   return state;
 }
 function save(state) {
@@ -246,7 +1137,7 @@ function save(state) {
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(state), { mode: 384 });
   renameSync(tmp, path);
-  cache = { path, state };
+  cache2 = { path, state };
 }
 function validFirewallOrigin(origin) {
   return /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(origin) && origin.length <= 261;
@@ -291,7 +1182,7 @@ function ensureSessionSecret(keysDir2) {
   secretDir = keysDir2;
   const path = join2(keysDir2, "session_secret");
   if (!existsSync(path)) {
-    writeFileSync2(path, crypto.randomBytes(32).toString("hex"), { mode: 384 });
+    writeFileSync2(path, crypto2.randomBytes(32).toString("hex"), { mode: 384 });
     console.log("[session] generated session secret");
   }
   secret = Buffer.from(readFileSync2(path, "utf8").trim(), "hex");
@@ -299,7 +1190,7 @@ function ensureSessionSecret(keysDir2) {
 function rotateSessionSecret() {
   if (!secretDir) throw new Error("session secret not initialised");
   const path = join2(secretDir, "session_secret");
-  writeFileSync2(path, crypto.randomBytes(32).toString("hex"), { mode: 384 });
+  writeFileSync2(path, crypto2.randomBytes(32).toString("hex"), { mode: 384 });
   secret = Buffer.from(readFileSync2(path, "utf8").trim(), "hex");
   clearRevoked();
   console.log("[session] rotated the session secret: every browser is signed out");
@@ -319,7 +1210,7 @@ async function readSession(cookieHeader, vmId) {
   const token = uniqueCookie(cookieHeader, SESSION_COOKIE);
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"] });
+    const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
     if (payload.sub !== vmId || payload.aud !== void 0) return null;
     const deviceId = typeof payload.dev === "string" ? payload.dev : void 0;
     if (deviceId && isRevoked(deviceId)) return null;
@@ -346,7 +1237,7 @@ async function verifyViewSession(cookieHeader, vmId) {
   const token = uniqueCookie(cookieHeader, VIEW_COOKIE);
   if (!token) return false;
   try {
-    const { payload } = await jwtVerify2(token, secret, { algorithms: ["HS256"], audience: VIEW_AUDIENCE });
+    const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"], audience: VIEW_AUDIENCE });
     if (typeof payload.dev === "string" && isRevoked(payload.dev)) return false;
     return payload.sub === vmId;
   } catch {
@@ -687,15 +1578,15 @@ function mapJournalRecord(raw) {
   } catch {
     return null;
   }
-  const message = typeof rec.MESSAGE === "string" ? rec.MESSAGE : null;
-  if (!message) return null;
+  const message2 = typeof rec.MESSAGE === "string" ? rec.MESSAGE : null;
+  if (!message2) return null;
   const ts = Number(rec.__REALTIME_TIMESTAMP);
   const time = Number.isFinite(ts) ? new Date(ts / 1e3).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
   if (rec.SYSLOG_IDENTIFIER === "systemd") {
-    return { time, level: "unit", subsystem: "systemd", message: redact(message) };
+    return { time, level: "unit", subsystem: "systemd", message: redact(message2) };
   }
-  if (CRASH_RE.test(message)) {
-    return { time, level: "error", subsystem: "stderr", message: redact(message) };
+  if (CRASH_RE.test(message2)) {
+    return { time, level: "error", subsystem: "stderr", message: redact(message2) };
   }
   return null;
 }
@@ -964,12 +1855,13 @@ function sameSite(a2, b2) {
   const x2 = site(a2);
   return x2 !== null && x2 === site(b2);
 }
-var AGENT_POLICY = () => ({ allowed: [allowedOrigins().box], allowTopLevelNavigation: true });
-var VIEW_POLICY = () => ({ allowed: [allowedOrigins().box], allowTopLevelNavigation: true });
-var EXCHANGE_POLICY = () => ({ allowed: [allowedOrigins().box], uncredentialed: "check" });
+var ownOrigins = () => [allowedOrigins().box, readKey("access_hostname") ? `https://${readKey("access_hostname")}` : null];
+var AGENT_POLICY = () => ({ allowed: ownOrigins(), allowTopLevelNavigation: true });
+var VIEW_POLICY = () => ({ allowed: ownOrigins(), allowTopLevelNavigation: true });
+var EXCHANGE_POLICY = () => ({ allowed: ownOrigins(), uncredentialed: "check" });
 var LOGOUT_POLICY = () => {
   const { box, console: consoleOrigin2 } = allowedOrigins();
-  return { allowed: [box, consoleOrigin2], uncredentialed: "check" };
+  return { allowed: [...ownOrigins(), box, consoleOrigin2], uncredentialed: "check" };
 };
 function originAllowed(req, policy, label) {
   const verdict = checkOrigin(nodeRequestFacts(req), policy);
@@ -1282,10 +2174,10 @@ function bindingHash(value) {
   return createHash("sha256").update(value).digest("base64url");
 }
 async function acceptTicket(req, token, vmId, purpose) {
-  const invalid = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
-  if (!token) return invalid;
+  const invalid2 = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
+  if (!token) return invalid2;
   const fw = await verifyFirewallTicket(token, vmId, purpose);
-  if (!fw) return invalid;
+  if (!fw) return invalid2;
   const match = bindings(req.headers.cookie).find((b2) => bindingHash(b2.value) === fw.c);
   if (!match) return { error: "This link was opened in a different browser. Open the agent again from this one." };
   return {
@@ -1502,7 +2394,8 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    const hostname = readKey("vm_hostname");
+    const exchangeOrigin = req.headers.origin;
+    const hostname = typeof exchangeOrigin === "string" && ownOrigins().includes(exchangeOrigin) ? new URL(exchangeOrigin).hostname : readKey("vm_hostname");
     let next = "/";
     let paired = false;
     let pairError = null;
@@ -1591,7 +2484,6 @@ async function handleAccess(req, res, pathname, opts = {}) {
 
 // src/box-token.ts
 import { readFileSync as readFileSync5 } from "fs";
-import { importPKCS8, SignJWT as SignJWT2 } from "jose";
 function readKeyFile(keysDir2, name) {
   try {
     return readFileSync5(`${keysDir2}/${name}`, "utf-8").trim();
@@ -1601,7 +2493,7 @@ function readKeyFile(keysDir2, name) {
 }
 async function signBoxToken(vmId, privateKeyPem) {
   const key = await importPKCS8(privateKeyPem, "EdDSA");
-  return new SignJWT2({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
+  return new SignJWT({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
 }
 function makeBoxTokenSigner(keysDir2) {
   return async () => {
@@ -1622,8 +2514,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "05ef649" : "unknown",
-  builtAt: true ? "2026-10-01T20:03:14+01:00" : "unknown"
+  commit: true ? "c1bb8b8" : "unknown",
+  builtAt: true ? "2026-10-02T12:26:49+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -1724,6 +2616,14 @@ async function reportReady(readSsh, extra = {}) {
   console.error(`[ready] gave up reporting ready after ${maxAttempts} attempts`);
 }
 
+// src/pool-mode.ts
+function unclaimedStatus(method, path, ready) {
+  return method === "GET" && path === "/health" ? ready ? 200 : 503 : 401;
+}
+
+// src/handle-certificate.ts
+import { readFileSync as readFileSync7 } from "fs";
+
 // src/https-ready.ts
 import { connect } from "tls";
 function ownCertificateServes(hostname, opts = {}) {
@@ -1752,12 +2652,40 @@ async function waitForOwnCertificate(probe2, opts) {
   }
 }
 
+// src/handle-certificate.ts
+async function reportHandleCertificate(keysDir2) {
+  let hostname;
+  try {
+    hostname = readFileSync7(`${keysDir2}/access_hostname`, "utf8").trim();
+  } catch {
+    return;
+  }
+  const base = saasBaseUrl(keysDir2);
+  if (!hostname || !base) return;
+  const sign = makeBoxTokenSigner(keysDir2);
+  for (; ; ) {
+    try {
+      if (await ownCertificateServes(hostname)) {
+        const result = await fetch(`${base}/api/vm-agent/handle-certificate`, {
+          method: "POST",
+          signal: AbortSignal.timeout(5e3),
+          headers: { authorization: `Bearer ${await sign()}`, "content-type": "application/json" },
+          body: JSON.stringify({ hostname })
+        });
+        if (result.ok || result.status === 409) return;
+      }
+    } catch {
+    }
+    await new Promise((resolve2) => setTimeout(resolve2, 5e3));
+  }
+}
+
 // src/keys.ts
-import crypto2 from "crypto";
-import { readFileSync as readFileSync7, writeFileSync as writeFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
+import crypto3 from "crypto";
+import { readFileSync as readFileSync8, writeFileSync as writeFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
 function readFile2(path) {
   try {
-    return readFileSync7(path, "utf8").trim();
+    return readFileSync8(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1766,9 +2694,9 @@ function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
   if (existsSync2(privPath)) {
-    return readFile2(pubPath) ?? derivePublicKey(readFileSync7(privPath, "utf8"));
+    return readFile2(pubPath) ?? derivePublicKey(readFileSync8(privPath, "utf8"));
   }
-  const { publicKey, privateKey } = crypto2.generateKeyPairSync("ed25519", {
+  const { publicKey, privateKey } = crypto3.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" }
   });
@@ -1779,7 +2707,7 @@ function ensureVmKeypair(keysDir2) {
   return publicKey;
 }
 function derivePublicKey(privatePem) {
-  const pub = crypto2.createPublicKey(privatePem);
+  const pub = crypto3.createPublicKey(privatePem);
   return pub.export({ type: "spki", format: "pem" }).toString();
 }
 var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
@@ -1821,27 +2749,27 @@ async function registerPublicKey(keysDir2) {
 }
 function spkiFromPem(pem) {
   const body = pem.replace(/-----(BEGIN|END) PUBLIC KEY-----/g, "").replace(/\s+/g, "");
-  return crypto2.createPublicKey({ key: Buffer.from(body, "base64"), format: "der", type: "spki" });
+  return crypto3.createPublicKey({ key: Buffer.from(body, "base64"), format: "der", type: "spki" });
 }
-function verifyDetached(message, signatureB64, publicKeyPem) {
+function verifyDetached(message2, signatureB64, publicKeyPem) {
   try {
     const key = spkiFromPem(publicKeyPem);
-    return crypto2.verify(null, Buffer.from(message, "utf8"), key, Buffer.from(signatureB64, "base64"));
+    return crypto3.verify(null, Buffer.from(message2, "utf8"), key, Buffer.from(signatureB64, "base64"));
   } catch {
     return false;
   }
 }
 function sha256Hex(s2) {
-  return crypto2.createHash("sha256").update(s2, "utf8").digest("hex");
+  return crypto3.createHash("sha256").update(s2, "utf8").digest("hex");
 }
 
 // src/mitm-ca.ts
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync4, existsSync as existsSync3 } from "fs";
+import { readFileSync as readFileSync9, writeFileSync as writeFileSync4, existsSync as existsSync3 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
 function readFile3(path) {
   try {
-    return readFileSync8(path, "utf8").trim();
+    return readFileSync9(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1922,13 +2850,13 @@ function installCa(caSrcPath, caCert) {
 }
 
 // src/egress.ts
-import { readFileSync as readFileSync9 } from "fs";
+import { readFileSync as readFileSync10 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
 function readFile4(path) {
   try {
-    return readFileSync9(path, "utf8").trim();
+    return readFileSync10(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -2105,8 +3033,8 @@ function runAction(action) {
     execSync2(`sudo systemctl ${action} ${SERVICE2}`, { encoding: "utf-8", timeout: ACTION_TIMEOUT_MS });
     return { ok: true };
   } catch (err) {
-    const message = err.stderr?.toString().trim() || (err instanceof Error ? err.message : "systemctl failed");
-    return { ok: false, error: message };
+    const message2 = err.stderr?.toString().trim() || (err instanceof Error ? err.message : "systemctl failed");
+    return { ok: false, error: message2 };
   }
 }
 function isOpenClawActive() {
@@ -2160,11 +3088,11 @@ var DEFAULT_CALL_TIMEOUT_MS = 1e4;
 var DEFAULT_MIN_BACKOFF_MS = 1e3;
 var RESTART_BEGIN_WAIT_MS = 15e3;
 var RESTART_BACK_WAIT_MS = 9e4;
-function isPersistedPendingRestart(message) {
-  return /persisted and (updated the active Gateway, but a recovery restart is required|was accepted for restart)/i.test(message);
+function isPersistedPendingRestart(message2) {
+  return /persisted and (updated the active Gateway, but a recovery restart is required|was accepted for restart)/i.test(message2);
 }
-function isRestartWindow(message) {
-  return /unavailable during gateway restart|gateway not connected|gateway disconnected|ECONNREFUSED/i.test(message);
+function isRestartWindow(message2) {
+  return /unavailable during gateway restart|gateway not connected|gateway disconnected|ECONNREFUSED/i.test(message2);
 }
 var DEFAULT_MAX_BACKOFF_MS = 2e3;
 var CONFIG_WRITE_METHODS = /* @__PURE__ */ new Set(["config.patch", "config.apply", "config.set"]);
@@ -2177,13 +3105,13 @@ async function patchConfig(gw, patch, opts) {
       await gw.call("config.patch", { raw, baseHash }, opts.timeoutMs);
       return;
     } catch (err) {
-      const message = err.message ?? "";
-      if (isPersistedPendingRestart(message)) {
+      const message2 = err.message ?? "";
+      if (isPersistedPendingRestart(message2)) {
         log("config write saved; waiting for the gateway restart it is queued behind");
         if (!await awaitRestart(gw)) throw new Error("The config was saved but the agent did not come back after restarting.", { cause: err });
         return;
       }
-      if (attempt === 0 && isRestartWindow(message)) {
+      if (attempt === 0 && isRestartWindow(message2)) {
         log("config write landed while the gateway was restarting; sending it again once it is back");
         if (!await whenBack(gw, RESTART_BACK_WAIT_MS)) throw err;
         continue;
@@ -2608,7 +3536,7 @@ var ConfigActivation = class {
 };
 
 // src/audit.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync11, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname3 } from "path";
 var PAGE_LIMIT = 500;
 var MAX_PAGES = 40;
@@ -2666,7 +3594,7 @@ var AuditShipper = class {
   loadCursor() {
     try {
       if (!existsSync4(this.opts.cursorPath)) return null;
-      const c2 = JSON.parse(readFileSync10(this.opts.cursorPath, "utf-8"));
+      const c2 = JSON.parse(readFileSync11(this.opts.cursorPath, "utf-8"));
       if (typeof c2.sequence === "number" && typeof c2.occurredAt === "number") return { sequence: c2.sequence, occurredAt: c2.occurredAt };
     } catch {
     }
@@ -3036,7 +3964,7 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync12, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname4 } from "path";
 import { randomUUID } from "crypto";
 
@@ -3086,15 +4014,15 @@ var defaultOpener = (path) => {
   }
   return db;
 };
-function looksBusy(message) {
-  return /\b(EBUSY|EAGAIN|SQLITE_BUSY|SQLITE_PROTOCOL)\b|database is locked|database table is locked|locking protocol/i.test(message);
+function looksBusy(message2) {
+  return /\b(EBUSY|EAGAIN|SQLITE_BUSY|SQLITE_PROTOCOL)\b|database is locked|database table is locked|locking protocol/i.test(message2);
 }
-function looksUnopenable(message) {
-  return /\b(SQLITE_CANTOPEN|SQLITE_READONLY_CANTINIT|SQLITE_READONLY_RECOVERY)\b|unable to open database file/i.test(message);
+function looksUnopenable(message2) {
+  return /\b(SQLITE_CANTOPEN|SQLITE_READONLY_CANTINIT|SQLITE_READONLY_RECOVERY)\b|unable to open database file/i.test(message2);
 }
-function failure(message) {
-  if (looksBusy(message)) return { busy: true, message: "The agent is busy right now, so who it has allowed could not be read." };
-  if (looksUnopenable(message)) {
+function failure(message2) {
+  if (looksBusy(message2)) return { busy: true, message: "The agent is busy right now, so who it has allowed could not be read." };
+  if (looksUnopenable(message2)) {
     return { busy: false, message: "Your agent's own list could not be opened. Restarting the agent clears this." };
   }
   return { busy: false, message: "Your agent's own list could not be read." };
@@ -3131,9 +4059,9 @@ function readAllowList(opts) {
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
   } catch (err) {
-    const message = err.message;
-    opts.log?.(`[channels] could not open OpenClaw's state database: ${message}`);
-    return { senders: [], canonical: false, error: failure(message) };
+    const message2 = err.message;
+    opts.log?.(`[channels] could not open OpenClaw's state database: ${message2}`);
+    return { senders: [], canonical: false, error: failure(message2) };
   }
   try {
     const senders = [];
@@ -3143,8 +4071,8 @@ function readAllowList(opts) {
       try {
         rows = db.prepare("SELECT account_id, entry, updated_at FROM channel_pairing_allow_entries WHERE channel_key = ? ORDER BY account_id, sort_order, entry").all(channel);
       } catch (err) {
-        const message = err.message;
-        if (/no such table/i.test(message)) return { senders: [], error: null, canonical: false };
+        const message2 = err.message;
+        if (/no such table/i.test(message2)) return { senders: [], error: null, canonical: false };
         throw err;
       }
       if (rows.length > 0) {
@@ -3169,9 +4097,9 @@ function readAllowList(opts) {
     }
     return { senders, error: null, canonical: true };
   } catch (err) {
-    const message = err.message;
-    opts.log?.(`[channels] could not read OpenClaw's allow list: ${message}`);
-    return { senders: [], canonical: false, error: failure(message) };
+    const message2 = err.message;
+    opts.log?.(`[channels] could not read OpenClaw's allow list: ${message2}`);
+    return { senders: [], canonical: false, error: failure(message2) };
   } finally {
     try {
       db.close();
@@ -3186,9 +4114,9 @@ function readPendingPairings(opts) {
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
   } catch (err) {
-    const message = err.message;
-    opts.log?.(`[channels] could not open OpenClaw's state database: ${message}`);
-    return { pairings: [], canonical: false, error: pairingFailure(message) };
+    const message2 = err.message;
+    opts.log?.(`[channels] could not open OpenClaw's state database: ${message2}`);
+    return { pairings: [], canonical: false, error: pairingFailure(message2) };
   }
   try {
     const pairings = [];
@@ -3197,8 +4125,8 @@ function readPendingPairings(opts) {
       try {
         rows = db.prepare("SELECT request_id, code, created_at, meta_json FROM channel_pairing_requests WHERE channel_key = ? ORDER BY created_at").all(channel);
       } catch (err) {
-        const message = err.message;
-        if (/no such table/i.test(message)) return { pairings: [], error: null, canonical: false };
+        const message2 = err.message;
+        if (/no such table/i.test(message2)) return { pairings: [], error: null, canonical: false };
         throw err;
       }
       for (const row of rows) {
@@ -3211,9 +4139,9 @@ function readPendingPairings(opts) {
     }
     return { pairings, error: null, canonical: true };
   } catch (err) {
-    const message = err.message;
-    opts.log?.(`[channels] could not read OpenClaw's pending pairings: ${message}`);
-    return { pairings: [], canonical: false, error: pairingFailure(message) };
+    const message2 = err.message;
+    opts.log?.(`[channels] could not read OpenClaw's pending pairings: ${message2}`);
+    return { pairings: [], canonical: false, error: pairingFailure(message2) };
   } finally {
     try {
       db.close();
@@ -3229,9 +4157,9 @@ function textStamp(v2) {
   const d2 = new Date(raw);
   return Number.isNaN(d2.getTime()) ? null : d2.toISOString();
 }
-function pairingFailure(message) {
-  if (looksBusy(message)) return { busy: true, message: "The agent is busy right now, so who is waiting could not be read." };
-  if (looksUnopenable(message)) return { busy: false, message: "Your agent's pairing list could not be opened. Restarting the agent clears this." };
+function pairingFailure(message2) {
+  if (looksBusy(message2)) return { busy: true, message: "The agent is busy right now, so who is waiting could not be read." };
+  if (looksUnopenable(message2)) return { busy: false, message: "Your agent's pairing list could not be opened. Restarting the agent clears this." };
   return { busy: false, message: "Your agent's pairing list could not be read." };
 }
 
@@ -3262,15 +4190,15 @@ var Once = class {
     const running = this.inFlight.get(key);
     if (running) return running;
     const started = this.now();
-    const epoch = this.epoch.get(key) ?? 0;
+    const epoch2 = this.epoch.get(key) ?? 0;
     const value = (async () => run3())();
     const tracked = value.then(
       (v2) => {
-        this.settle(key, started, true, value, epoch);
+        this.settle(key, started, true, value, epoch2);
         return v2;
       },
       (err) => {
-        this.settle(key, started, false, value, epoch);
+        this.settle(key, started, false, value, epoch2);
         throw err;
       }
     );
@@ -3278,9 +4206,9 @@ var Once = class {
     tracked.catch(() => void 0);
     return tracked;
   }
-  settle(key, started, ok, value, epoch) {
+  settle(key, started, ok, value, epoch2) {
     this.inFlight.delete(key);
-    if ((this.epoch.get(key) ?? 0) !== epoch) return;
+    if ((this.epoch.get(key) ?? 0) !== epoch2) return;
     this.entries.set(key, { at: started, ok, value });
   }
   /** Drop what is cached, so the next caller runs again. Does not touch a run in flight. */
@@ -3370,15 +4298,15 @@ function toPairing(type, r2) {
   const label = str2(meta.name) ?? str2(meta.displayName) ?? str2(meta.username) ?? str2(meta.title) ?? str2(r2.label) ?? null;
   return { type, code, senderId, label, createdAt: str2(r2.createdAt) };
 }
-function looksBusy2(message) {
+function looksBusy2(message2) {
   return /\b(EBUSY|EAGAIN|ECONNREFUSED|SQLITE_BUSY)\b|database is locked|gateway (is )?(not running|unavailable|starting|restarting)|connection refused|socket hang up/i.test(
-    message
+    message2
   );
 }
 function readChannelState(path) {
   if (!path || !existsSync6(path)) return { version: 1, seededAt: null, approved: [] };
   try {
-    const parsed = JSON.parse(readFileSync11(path, "utf8"));
+    const parsed = JSON.parse(readFileSync12(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
     return {
       version: 1,
@@ -3684,7 +4612,7 @@ var ChannelsService = class {
     for (const type of CHANNEL_TYPES) {
       let raw;
       try {
-        raw = readFileSync11(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
+        raw = readFileSync12(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
       } catch {
         continue;
       }
@@ -3864,9 +4792,9 @@ var ChannelsService = class {
     const inFlight = this.installing.get(type);
     if (inFlight) return inFlight;
     const run3 = this.installPlugin(type, pkg).catch((err) => {
-      const message = execFailureLine(err);
-      this.setup.set(type, { state: "failed", message });
-      this.log(`[channels] installing ${pkg} failed: ${message}`);
+      const message2 = execFailureLine(err);
+      this.setup.set(type, { state: "failed", message: message2 });
+      this.log(`[channels] installing ${pkg} failed: ${message2}`);
       return false;
     }).finally(() => this.installing.delete(type));
     this.installing.set(type, run3);
@@ -3900,9 +4828,9 @@ var ChannelsService = class {
     if (!await this.trustPlugin(type, pkg)) return false;
     const restart = this.opts.restartService?.();
     if (restart && !restart.ok) {
-      const message = restart.error ?? "the agent could not be restarted";
-      this.setup.set(type, { state: "failed", message });
-      this.log(`[channels] restart after installing ${pkg} failed: ${message}`);
+      const message2 = restart.error ?? "the agent could not be restarted";
+      this.setup.set(type, { state: "failed", message: message2 });
+      this.log(`[channels] restart after installing ${pkg} failed: ${message2}`);
       return false;
     }
     if (!await this.waitForGateway()) {
@@ -3941,9 +4869,9 @@ var ChannelsService = class {
       await this.patchConfig({ plugins: { entries: { [type]: { enabled: true } } } });
       return true;
     } catch (err) {
-      const message = err.message;
-      this.setup.set(type, { state: "failed", message });
-      this.log(`[channels] trusting ${pkg} failed: ${message}`);
+      const message2 = err.message;
+      this.setup.set(type, { state: "failed", message: message2 });
+      this.log(`[channels] trusting ${pkg} failed: ${message2}`);
       return false;
     }
   }
@@ -4128,9 +5056,9 @@ function isType(v2) {
   return typeof v2 === "string" && CHANNEL_TYPES.includes(v2);
 }
 function fail(res, err) {
-  const message = err instanceof Error ? err.message : String(err);
-  const status = /not running|not connected/i.test(message) ? 503 : 500;
-  sendJson(res, status, { ok: false, error: message });
+  const message2 = err instanceof Error ? err.message : String(err);
+  const status = /not running|not connected/i.test(message2) ? 503 : 500;
+  sendJson(res, status, { ok: false, error: message2 });
 }
 async function handleChannels(req, res, pathname, service) {
   const write = req.method === "POST";
@@ -4216,7 +5144,7 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync13, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname5 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
@@ -4256,7 +5184,7 @@ function readMemory(config) {
 function readReindexFailure(path) {
   if (!path || !existsSync7(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync12(path, "utf8"));
+    const parsed = JSON.parse(readFileSync13(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
   } catch {
     return null;
@@ -4516,10 +5444,10 @@ var LlmService = class {
 
 // src/routes/llm.ts
 function fail2(res, err) {
-  const message = err instanceof Error ? err.message : String(err);
-  const status = /not running|not connected/i.test(message) ? 503 : 500;
+  const message2 = err instanceof Error ? err.message : String(err);
+  const status = /not running|not connected/i.test(message2) ? 503 : 500;
   const applied = err.applied;
-  sendJson(res, status, { ok: false, error: message, ...applied ? { applied } : {} });
+  sendJson(res, status, { ok: false, error: message2, ...applied ? { applied } : {} });
 }
 var KINDS = /* @__PURE__ */ new Set(["api_key", "token", "oauth"]);
 var PROVIDER_RE = /^[a-z0-9][a-z0-9_-]{0,40}$/i;
@@ -4764,9 +5692,9 @@ var ID_RE = /^[a-z0-9][a-z0-9_-]{0,40}$/i;
 var PROVIDER_RE2 = /^[a-z0-9][a-z0-9_-]{0,60}$/i;
 var CONFIG_KEYS_MAX = 10;
 function fail3(res, err) {
-  const message = err instanceof Error ? err.message : String(err);
-  const status = /not running|not connected/i.test(message) ? 503 : 500;
-  sendJson(res, status, { ok: false, error: message });
+  const message2 = err instanceof Error ? err.message : String(err);
+  const status = /not running|not connected/i.test(message2) ? 503 : 500;
+  sendJson(res, status, { ok: false, error: message2 });
 }
 function parseDesired(raw) {
   if (raw === null || raw === void 0) return null;
@@ -4843,7 +5771,7 @@ async function handleSearch(req, res, url2, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync5, unlinkSync, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync6, readFileSync as readFileSync14, renameSync as renameSync5, unlinkSync, writeFileSync as writeFileSync8 } from "fs";
 import { dirname as dirname6 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -4998,7 +5926,7 @@ var ConnectorsService = class {
 function readState(path) {
   if (!existsSync8(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
-    const parsed = JSON.parse(readFileSync13(path, "utf8"));
+    const parsed = JSON.parse(readFileSync14(path, "utf8"));
     return {
       gateway: parsed.gateway && typeof parsed.gateway.url === "string" && typeof parsed.gateway.token === "string" ? parsed.gateway : null,
       connections: Array.isArray(parsed.connections) ? parsed.connections : [],
@@ -5100,13 +6028,13 @@ async function handleConnectors(req, res, url2, service) {
     }
     sendJson(res, 404, { error: "Not found" });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    sendJson(res, /not running|not connected/i.test(message) ? 503 : 500, { ok: false, error: message });
+    const message2 = err instanceof Error ? err.message : String(err);
+    sendJson(res, /not running|not connected/i.test(message2) ? 503 : 500, { ok: false, error: message2 });
   }
 }
 
 // src/drive.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync6, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync7, readFileSync as readFileSync15, renameSync as renameSync6, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname7 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -5183,7 +6111,7 @@ var DriveService = class {
   modes() {
     const out = /* @__PURE__ */ new Map();
     try {
-      const desired = JSON.parse(readFileSync14(this.opts.desiredPath, "utf8"));
+      const desired = JSON.parse(readFileSync15(this.opts.desiredPath, "utf8"));
       for (const m2 of desired.mounts ?? []) if (m2?.name) out.set(m2.name, m2.mode);
     } catch {
     }
@@ -5197,7 +6125,7 @@ var DriveService = class {
    */
   readState() {
     try {
-      const raw = JSON.parse(readFileSync14(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync15(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object" || !Array.isArray(raw.mounts)) return null;
       const mounts = raw.mounts.filter((m2) => !!m2 && typeof m2.name === "string" && typeof m2.rcPort === "number");
       return {
@@ -5238,7 +6166,7 @@ var DriveService = class {
   /** The desired file as written, so a failed launch can put it back byte for byte. */
   readDesiredRaw() {
     try {
-      return readFileSync14(this.opts.desiredPath, "utf8");
+      return readFileSync15(this.opts.desiredPath, "utf8");
     } catch {
       return null;
     }
@@ -5383,7 +6311,7 @@ async function handleDrive(req, res, url2, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync15, renameSync as renameSync7, rmSync, writeFileSync as writeFileSync10 } from "fs";
+import { existsSync as existsSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync16, renameSync as renameSync7, rmSync, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname8 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -5498,7 +6426,7 @@ var GoogleService = class {
   }
   readState() {
     try {
-      const raw = JSON.parse(readFileSync15(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync16(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object") return null;
       return {
         placeholder: null,
@@ -5568,7 +6496,7 @@ async function handleGoogle(req, res, url2, service) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync16 } from "fs";
+import { readFileSync as readFileSync17 } from "fs";
 import { spawn as spawn2 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -5600,7 +6528,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync16(path, "utf8");
+      raw = readFileSync17(path, "utf8");
     } catch {
       return null;
     }
@@ -5614,7 +6542,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync16(this.opts.statePath, "utf8");
+      raw = readFileSync17(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -10003,8 +10931,8 @@ async function handleBackup(req, res, url2, service, kinds = AGENT_KINDS) {
     }
     sendJson(res, 404, { error: "Not found" });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    sendJson(res, /already backing up|already restoring/i.test(message) ? 409 : 500, { ok: false, error: message });
+    const message2 = err instanceof Error ? err.message : String(err);
+    sendJson(res, /already backing up|already restoring/i.test(message2) ? 409 : 500, { ok: false, error: message2 });
   }
 }
 
@@ -10133,8 +11061,8 @@ function humanBytes(n2) {
   return `${v2 < 10 ? v2.toFixed(1) : Math.round(v2)} ${units[i2]}`;
 }
 var FilesError = class extends Error {
-  constructor(status, code, message) {
-    super(message);
+  constructor(status, code, message2) {
+    super(message2);
     this.status = status;
     this.code = code;
   }
@@ -10742,7 +11670,7 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync9, mkdtempSync, readFileSync as readFileSync17, rmSync as rmSync2, writeFileSync as writeFileSync11 } from "fs";
+import { mkdirSync as mkdirSync9, mkdtempSync, readFileSync as readFileSync18, rmSync as rmSync2, writeFileSync as writeFileSync11 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
 import { dirname as dirname11, join as join9 } from "path";
 var MIN_SECONDS = 5 * 60;
@@ -10837,8 +11765,8 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync17(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync17(path, "utf8")
+        publicKey: readFileSync18(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync18(path, "utf8")
       };
     } finally {
       rmSync2(dir, { recursive: true, force: true });
@@ -10846,7 +11774,7 @@ var SshAccessService = class {
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync18(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -11075,8 +12003,8 @@ var TailscaleService = class {
     try {
       raw = (await this.exec("sudo", ["-n", this.helper(), "status"], CLI_TIMEOUT_MS4)).stdout;
     } catch (err) {
-      const message = looksUnsupported(err) ? TAILSCALE_UNSUPPORTED_MESSAGE : execFailureLine(err);
-      return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message };
+      const message2 = looksUnsupported(err) ? TAILSCALE_UNSUPPORTED_MESSAGE : execFailureLine(err);
+      return { state: "unavailable", name: null, ip: null, ssh: false, backendState: null, message: message2 };
     }
     let parsed;
     try {
@@ -11175,9 +12103,9 @@ function num(v2) {
 function strings(v2) {
   return Array.isArray(v2) ? v2.filter((s2) => typeof s2 === "string") : [];
 }
-function looksBusy3(message) {
+function looksBusy3(message2) {
   return /\b(EBUSY|EAGAIN|ECONNREFUSED|SQLITE_BUSY)\b|database is locked|gateway (is )?(not (running|connected)|unavailable|starting|restarting)|connection refused|socket hang up|disconnected/i.test(
-    message
+    message2
   );
 }
 function toPending(r2) {
@@ -11389,7 +12317,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile5 } from "child_process";
-import { existsSync as existsSync11, mkdirSync as mkdirSync10, readFileSync as readFileSync18, rmSync as rmSync3, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync11, mkdirSync as mkdirSync10, readFileSync as readFileSync19, rmSync as rmSync3, writeFileSync as writeFileSync12 } from "fs";
 import { dirname as dirname12 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile5);
@@ -11470,7 +12398,7 @@ var GmailWatchService = class {
   async status() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync18(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync19(this.opts.statePath, "utf8"));
     } catch {
       cfg = null;
     }
@@ -11505,7 +12433,7 @@ var GmailWatchService = class {
   async renew() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync18(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync19(this.opts.statePath, "utf8"));
     } catch {
       return { ok: false, message: "This box is not watching a mailbox." };
     }
@@ -11750,8 +12678,8 @@ async function handleGbrain(req, res, url2, service) {
     console.log(`[gbrain] ${r2.configured ? "connected to" : "disconnected from"} the organization's brain`);
     sendJson(res, 200, { ...r2, applied: [] });
   } catch (err) {
-    const message = err.message;
-    sendJson(res, /not running/i.test(message) ? 503 : 500, { ok: false, error: message });
+    const message2 = err.message;
+    sendJson(res, /not running/i.test(message2) ? 503 : 500, { ok: false, error: message2 });
   }
 }
 
@@ -11767,8 +12695,15 @@ var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
+var POOL_UNCLAIMED = existsSync12("/etc/controlclaw/pool-unclaimed");
+var poolHealthy = false;
+if (POOL_UNCLAIMED && !existsSync12(`${KEYS_DIR2}/saas_public_key.pem`)) {
+  const key = ensureVmKeypair(KEYS_DIR2);
+  if (!key) throw new Error("Pool signing key unavailable");
+  writeFileSync13(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+}
 try {
-  const saasPublicKey2 = readFileSync19(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync20(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -11776,7 +12711,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync19(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync20(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -11790,7 +12725,23 @@ try {
 console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redaction`);
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
+  if (POOL_UNCLAIMED) {
+    for (let i2 = 0; i2 < 300 && !existsSync12(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+      await new Promise((resolve2) => setTimeout(resolve2, 1e3));
+    }
+    if (!existsSync12(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    const egress = await enableTransparentEgress(KEYS_DIR2);
+    if (!egress) return;
+    const hostname2 = readKeyFile(KEYS_DIR2, "vm_hostname");
+    const [gatewayReady, certificateReady] = await Promise.all([
+      client?.whenConnected(GATEWAY_READY_TIMEOUT_MS2) ?? Promise.resolve(false),
+      hostname2 ? waitForOwnCertificate(() => ownCertificateServes(hostname2), { timeoutMs: CERT_READY_TIMEOUT_MS }) : Promise.resolve(false)
+    ]);
+    poolHealthy = gatewayReady && certificateReady;
+    return;
+  }
   await registerPublicKey(KEYS_DIR2);
+  void reportHandleCertificate(KEYS_DIR2);
   const caReady = (await ensureMitmCaInstalled(KEYS_DIR2)).trusted;
   if (!caReady) {
     console.error("[bootstrap] mitm CA not installed \u2014 skipping ready report (box stays initializing)");
@@ -11811,6 +12762,7 @@ async function bootstrap(client, readSsh) {
   await reportReady(readSsh);
 }
 function startSshLoginWatch() {
+  if (POOL_UNCLAIMED) return;
   const base = saasBaseUrl(KEYS_DIR2);
   if (!base) {
     console.log("[ssh] no config_api_url in KEYS_DIR: login reporting off");
@@ -11826,11 +12778,15 @@ function startSshLoginWatch() {
 function startGatewayBridge() {
   const token = readKeyFile(KEYS_DIR2, "openclaw_gateway_token");
   const base = saasBaseUrl(KEYS_DIR2);
-  if (!token || !base) {
+  if (!token || !POOL_UNCLAIMED && !base) {
     console.log("[gateway] no openclaw_gateway_token / config_api_url in KEYS_DIR: audit + approvals bridge off");
     return null;
   }
   const client = new GatewayClient({ url: `ws://127.0.0.1:${GATEWAY_PORT}`, token });
+  if (POOL_UNCLAIMED) {
+    client.start();
+    return client;
+  }
   const getToken = makeBoxTokenSigner(KEYS_DIR2);
   const audit = new AuditShipper({
     client,
@@ -11845,7 +12801,7 @@ function startGatewayBridge() {
   client.on("config.changed", () => activation.changed());
   client.onConnected(() => activation.reconnected());
   client.start();
-  const oneLine = (tag) => (err) => console.error(`${tag} tick failed: ${err.message}`);
+  const oneLine = (tag2) => (err) => console.error(`${tag2} tick failed: ${err.message}`);
   setInterval(() => void audit.tick().catch(oneLine("[audit]")), AUDIT_POLL_MS);
   setInterval(() => void approvals.tick().catch(oneLine("[approvals]")), APPROVAL_POLL_MS);
   return client;
@@ -11902,6 +12858,11 @@ async function reportFileWrite(write) {
   if (!res.ok) console.error(`[files] activity report: HTTP ${res.status}`);
 }
 var server = createServer2(async (req, res) => {
+  if (POOL_UNCLAIMED) {
+    res.writeHead(unclaimedStatus(req.method, req.url, poolHealthy), { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ unclaimed: true, ready: poolHealthy }));
+    return;
+  }
   const url2 = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url2.pathname.startsWith("/__cc/")) {
     await handleAccess(req, res, url2.pathname);

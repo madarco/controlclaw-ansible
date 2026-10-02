@@ -1,0 +1,24 @@
+---
+- name: Pool identity | require the local root-owned marker and encrypted keys
+  ansible.builtin.shell: |
+    set -eu
+    test "$(stat -c %u:%a /etc/controlclaw/pool-unclaimed)" = 0:644
+    mountpoint -q /opt/controlclaw/keys
+    if [ ! -s /opt/controlclaw/keys/vm_private_key.pem ]; then
+      umask 077
+      openssl genpkey -algorithm ED25519 -out /opt/controlclaw/keys/vm_private_key.pem
+      openssl pkey -in /opt/controlclaw/keys/vm_private_key.pem -pubout -out /opt/controlclaw/keys/vm_public_key.pem
+      chown controlclaw:controlclaw /opt/controlclaw/keys/vm_*key.pem
+      chmod 0644 /opt/controlclaw/keys/vm_public_key.pem
+    fi
+  changed_when: false
+  no_log: true
+
+- name: Pool identity | read this box's public half
+  ansible.builtin.slurp:
+    src: /opt/controlclaw/keys/vm_public_key.pem
+  register: pool_public_key
+
+- name: Pool identity | use an inert verifier until the claim commits
+  ansible.builtin.set_fact:
+    saas_public_key: "{{ pool_public_key.content | b64decode }}"

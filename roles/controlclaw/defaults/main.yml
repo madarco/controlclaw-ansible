@@ -410,7 +410,7 @@ luks_binds: >-
     ['keys:/opt/controlclaw/keys:' ~ controlclaw_user ~ ':0750',
      'state:/opt/controlclaw/state:' ~ controlclaw_user ~ ':0750']
     + (['openclaw:' ~ controlclaw_home ~ '/.openclaw:' ~ controlclaw_user ~ ':0750'] if box_role == 'openclaw' else [])
-    + (['mitm-ca:/opt/controlclaw/mitm/ca:root:0700',
+    + (['mitm-ca:/opt/controlclaw/mitm/ca:' ~ (controlclaw_user if ((pool_unclaimed | default(false) | bool) or (cc_prepared_pool.stat.exists | default(false))) else 'root') ~ ':0700',
         'connector:/opt/controlclaw/connector:root:0700'] if box_role == 'mitm' else [])
     + (['gbrain:' ~ gbrain_home ~ ':' ~ gbrain_user ~ ':0750',
         'postgresql:/var/lib/postgresql:postgres:0700'] if box_role == 'gbrain' else [])

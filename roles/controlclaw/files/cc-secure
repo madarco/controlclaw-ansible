@@ -60,7 +60,9 @@ is_open()    { [ -e "/dev/mapper/$MAPPER" ]; }
 
 cmd_init() {
   [ -f "$IMG" ] && { log "container already exists"; return 0; }
-  [ -s "$RECOVERY_PUB" ] || die "no org recovery public key at $RECOVERY_PUB; refusing to make a container nobody can ever open"
+  local pool=false
+  if [ -f /etc/controlclaw/pool-unclaimed ] && [ "$(stat -c %u:%a /etc/controlclaw/pool-unclaimed)" = "0:644" ]; then pool=true; fi
+  [ "$pool" = true ] || [ -s "$RECOVERY_PUB" ] || die "no org recovery public key at $RECOVERY_PUB; refusing to make a container nobody can ever open"
 
   mkdir -p "$(dirname "$IMG")" "$SECURE"
   log "creating a ${SIZE_GB}G sparse container at $IMG"
@@ -95,11 +97,13 @@ cmd_init() {
   install -m 0600 "$tmp" "$KEYFILE"
   # Seal the passphrase to the org's recovery key. This blob is the only way in when no partner is
   # up; it lives on the PLAIN root on purpose, because a locked box has to be able to serve it.
-  seal_to_recovery "$tmp" || { rm -f "$tmp"; die "could not seal the passphrase to the recovery key"; }
+  if [ "$pool" != true ]; then
+    seal_to_recovery "$tmp" || { rm -f "$tmp"; die "could not seal the passphrase to the recovery key"; }
+  fi
   rm -f "$tmp"
 
   cmd_tang_keygen
-  log "container created, mounted and sealed"
+  log "container created and mounted"
 }
 
 # ---------------------------------------------------------------------------- open / mount

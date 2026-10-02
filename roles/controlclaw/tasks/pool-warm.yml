@@ -1,0 +1,93 @@
+---
+- name: Pool | validate immutable creation inputs
+  ansible.builtin.assert:
+    that:
+      - pool_box_id | length > 0
+      - pool_token | length == 64
+      - pool_commit is match('^[0-9a-f]{40}$')
+      - pool_api_url is match('^https://')
+      - pool_role in ['openclaw', 'mitm']
+  no_log: true
+
+- name: Pool | require a matching prepared image
+  ansible.builtin.shell: |
+    set -eu
+    . /etc/controlclaw/base-image
+    test "$ANSIBLE_COMMIT" = "{{ pool_commit }}"
+    test ! -e /etc/controlclaw/release.json
+    test ! -e /var/lib/controlclaw/secure.img
+    command -v node
+    command -v cryptsetup
+    command -v clevis
+    command -v caddy
+    command -v nft
+    command -v openclaw
+  changed_when: false
+
+- name: Pool | deploy metadata guard before starting worker
+  ansible.builtin.include_tasks: metadata-guard.yml
+  vars:
+    box_role: "{{ pool_role }}"
+    ci_test: false
+    cc_skip:
+      nftables: true
+
+- name: Pool | install fixed worker
+  ansible.builtin.copy:
+    src: cc-pool-worker.py
+    dest: /usr/local/bin/cc-pool-worker
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Pool | persist trusted source and enrollment data
+  ansible.builtin.copy:
+    dest: /root/cc-pool-worker.json
+    owner: root
+    group: root
+    mode: '0600'
+    content: "{{ {'boxId': pool_box_id, 'token': pool_token, 'url': pool_api_url, 'commit': pool_commit, 'role': pool_role, 'checkout': playbook_dir, 'repo': pool_repo, 'branch': pool_branch, 'hostname': pool_hostname, 'proxyIp': pool_proxy_ip, 'firewallIp': pool_firewall_ip} | to_json }}"
+  no_log: true
+
+- name: Pool | mark an unclaimed box before any customer-facing service starts
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/pool-unclaimed
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ pool_box_id }}"
+
+- name: Pool | lock logins
+  ansible.builtin.shell: |
+    set -eu
+    systemctl mask --now ssh.service ssh.socket
+    rm -f /etc/ssh/ssh_host_* /root/.ssh/authorized_keys /home/controlclaw/.ssh/authorized_keys
+    for account in $(awk -F: '$2 != "!" && $2 != "*" && $2 !~ /^!/ { print $1 }' /etc/shadow); do usermod -L "$account"; done
+  changed_when: true
+
+- name: Pool | install worker unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-pool-worker.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Prepare a pair and wait for one-time enrollment
+      After=network-online.target cc-metadata-guard.service
+      Wants=network-online.target
+      Requires=cc-metadata-guard.service
+      ConditionPathExists=!/etc/controlclaw/pool-claimed
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/cc-pool-worker
+      Restart=on-failure
+      RestartSec=5
+      UMask=0077
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Pool | start worker
+  ansible.builtin.systemd:
+    name: cc-pool-worker
+    enabled: true
+    state: started
+    daemon_reload: true

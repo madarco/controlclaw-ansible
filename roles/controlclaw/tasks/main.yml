@@ -94,6 +94,12 @@
 # It also refuses to let the play continue on a box whose container did not open — see the assert in
 # disk-encryption.yml, which is the difference between a locked box and a box that has silently
 # regenerated its identity on the plain disk.
+# A claimed pair keeps the pool mount ownership on subsequent full role updates.
+- name: Check whether this box was prepared in the pool
+  ansible.builtin.stat:
+    path: /etc/controlclaw/pool-claimed
+  register: cc_prepared_pool
+
 - name: Include disk encryption (LUKS opened by the org's own boxes)
   ansible.builtin.include_tasks: disk-encryption.yml
   when:
@@ -103,6 +109,10 @@
 
 # Before the browser: the live browser is what makes a swapless 4 GB box a problem, and a box
 # that has already started Chrome is a bad moment to be allocating a swap file.
+- name: Prepare the unclaimed box identity inside its encrypted container
+  ansible.builtin.include_tasks: pool-identity.yml
+  when: pool_unclaimed | default(false) | bool
+
 - name: Include swap tasks
   ansible.builtin.include_tasks: swap.yml
   when: swap_size_mb | int > 0 and box_role == 'openclaw' and not ci_test
