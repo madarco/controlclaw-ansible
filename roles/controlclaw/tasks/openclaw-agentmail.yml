@@ -1,0 +1,180 @@
+---
+# AgentMail 0.2.2 declares a higher floor than the original 2026.7.2 integration docs.
+- name: AgentMail | read OpenClaw version
+  ansible.builtin.command: /usr/bin/openclaw --version
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: agentmail_openclaw_version
+  changed_when: false
+
+- name: AgentMail | require the plugin's minimum OpenClaw version
+  ansible.builtin.assert:
+    that:
+      - (agentmail_openclaw_version.stdout | regex_search('[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?')) is version('2026.8.1-beta.2', '>=', version_type='semver')
+    fail_msg: "AgentMail 0.2.2 requires OpenClaw 2026.8.1-beta.2 or newer. Update OpenClaw first."
+
+- name: AgentMail | inspect installed plugins
+  ansible.builtin.command: /usr/bin/openclaw plugins list --json
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: agentmail_plugins
+  changed_when: false
+
+- name: AgentMail | remember the enabled state before a pinned upgrade
+  ansible.builtin.slurp:
+    src: "{{ controlclaw_home }}/.openclaw/openclaw.json"
+  register: agentmail_previous_config
+  no_log: true
+
+- name: AgentMail | install pinned plugin through the org proxy
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/openclaw
+      - plugins
+      - install
+      - "clawhub:@agentmail/agentmail@{{ agentmail_plugin_version }}"
+      - --no-enable
+      - --force
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  # Includes NODE_EXTRA_CA_CERTS when secured-box installed the firewall CA.
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  notify: restart openclaw
+  when: >-
+    (agentmail_plugins.stdout[agentmail_plugins.stdout.index('{'):] | from_json).plugins
+    | selectattr('id', 'equalto', 'agentmail')
+    | selectattr('version', 'defined')
+    | selectattr('version', 'equalto', agentmail_plugin_version)
+    | list | length == 0
+
+- name: AgentMail | leave new installations disabled until the firewall assigns an inbox
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json, os
+    from pathlib import Path
+    p = Path({{ (controlclaw_home ~ '/.openclaw/openclaw.json') | to_json }})
+    config = json.loads(p.read_text())
+    previous = json.loads({{ (agentmail_previous_config.content | b64decode) | to_json }})
+    wanted = previous.get('plugins', {}).get('entries', {}).get('agentmail', {}).get('enabled', False) if previous.get('channels', {}).get('agentmail') else False
+    entry = config.setdefault('plugins', {}).setdefault('entries', {}).setdefault('agentmail', {})
+    if entry.get('enabled') != wanted:
+        entry['enabled'] = wanted
+        tmp = p.with_suffix('.agentmail.tmp')
+        tmp.write_text(json.dumps(config, indent=2) + '\n')
+        os.chmod(tmp, 0o600)
+        tmp.replace(p)
+        print('changed')
+    PY
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: agentmail_disabled
+  no_log: true
+  changed_when: "'changed' in agentmail_disabled.stdout"
+  notify: restart openclaw
+
+
+- name: AgentMail | select Linux CLI archive
+  ansible.builtin.set_fact:
+    agentmail_cli_arch: "{{ agentmail_cli_arches[ansible_architecture] }}"
+    agentmail_root: "{{ controlclaw_home }}/.openclaw/extensions/agentmail"
+
+- name: AgentMail | download checksum-pinned Linux CLI
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  ansible.builtin.get_url:
+    url: "https://github.com/agentmail-to/agentmail-cli/releases/download/v{{ agentmail_cli_version }}/agentmail_{{ agentmail_cli_version }}_linux_{{ agentmail_cli_arch.release }}.tar.gz"
+    dest: "/tmp/agentmail-{{ agentmail_cli_version }}-{{ agentmail_cli_arch.release }}.tar.gz"
+    checksum: "sha256:{{ agentmail_cli_arch.sha256 }}"
+    mode: "0644"
+  environment: "{{ controlclaw_node_env | combine({'SSL_CERT_FILE': '/etc/ssl/certs/ca-certificates.crt'}) }}"
+
+- name: AgentMail | create Linux vendor directory
+  ansible.builtin.file:
+    path: "{{ agentmail_root }}/vendor/agentmail/linux-{{ agentmail_cli_arch.node }}"
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "0755"
+
+- name: AgentMail | unpack Linux CLI
+  ansible.builtin.unarchive:
+    src: "/tmp/agentmail-{{ agentmail_cli_version }}-{{ agentmail_cli_arch.release }}.tar.gz"
+    dest: "{{ agentmail_root }}/vendor/agentmail/linux-{{ agentmail_cli_arch.node }}"
+    remote_src: true
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+
+- name: AgentMail | register the Linux executable
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import json, os
+    from pathlib import Path
+    root = Path({{ agentmail_root | to_json }})
+    metadata = root / 'dist/cli/agentmail-cli-release.json'
+    data = json.loads(metadata.read_text())
+    target = 'linux-' + {{ agentmail_cli_arch.node | to_json }}
+    changed = False
+    if target not in data['assets']:
+        data['assets'][target] = {'executableName': 'agentmail'}
+        tmp = metadata.with_suffix('.tmp')
+        tmp.write_text(json.dumps(data, indent=2) + '\n')
+        tmp.replace(metadata)
+        changed = True
+    print('changed' if changed else 'ready')
+    PY
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: agentmail_linux
+  changed_when: "'changed' in agentmail_linux.stdout"
+
+
+# Gateway startup recreates its own hardlinks. A managed skill copy remains independent.
+- name: AgentMail | create managed skills directory
+  ansible.builtin.file:
+    path: "{{ controlclaw_home }}/.openclaw/skills/agentmail"
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "0755"
+
+- name: AgentMail | read the official skill
+  ansible.builtin.slurp:
+    src: "{{ agentmail_root }}/skills/agentmail/SKILL.md"
+  register: agentmail_skill
+
+- name: AgentMail | install the native CLI skill without hardlinks
+  ansible.builtin.copy:
+    dest: "{{ controlclaw_home }}/.openclaw/skills/agentmail/SKILL.md"
+    content: >-
+      {{ agentmail_skill.content | b64decode
+         | replace('openclaw agentmail --', 'cc-agentmail')
+         | replace('"bins": ["openclaw"]', '"bins": ["cc-agentmail"]')
+         | replace('Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags.', 'The ControlClaw launcher loads the inbox placeholder from the local environment file.') }}
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: "0644"
+  notify: restart openclaw
+
+- name: AgentMail | install the Linux CLI launcher
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-agentmail
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/usr/bin/python3
+      import os, re, sys
+      from pathlib import Path
+      env_file = Path({{ (controlclaw_home ~ '/.openclaw/.env') | to_json }})
+      match = re.search(r'^AGENTMAIL_API_KEY=(CC-AMAIL-[0-9a-f]{32})$', env_file.read_text() if env_file.exists() else '', re.M)
+      if not match:
+          sys.exit('Assign an AgentMail inbox in ControlClaw first.')
+      env = dict(os.environ, AGENTMAIL_API_KEY=match.group(1))
+      binary = {{ (agentmail_root ~ '/vendor/agentmail/linux-' ~ agentmail_cli_arch.node ~ '/agentmail') | to_json }}
+      os.execve(binary, [binary, *sys.argv[1:]], env)
