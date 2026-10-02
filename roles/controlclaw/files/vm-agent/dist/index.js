@@ -2520,8 +2520,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "242e3ea" : "unknown",
-  builtAt: true ? "2026-10-02T20:50:09+00:00" : "unknown"
+  commit: true ? "157e521" : "unknown",
+  builtAt: true ? "2026-10-02T21:00:23+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -5616,37 +5616,36 @@ var requireBuiltin2 = createRequire2(import.meta.url);
 var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:(?:your )?(?:microphone|camera) is (?:on|off|muted)[.!]?\s*)+|you have joined the call\.(?:\s*(?:there (?:is|are) (?:one|\d+) other (?:person|people) in the call|your (?:camera|microphone) is (?:off|on|muted)|your hand is (?:lowered|raised))\.)*|(?:arrow_downward\s*)?jump to bottom|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
 function cleanCaptions(input2) {
   const out = [];
-  const revisions = [];
-  const sources = /* @__PURE__ */ new Map();
   for (const row of input2) {
-    const key = row.source ? JSON.stringify([row.speaker, row.source.id]) : void 0;
-    const index = key ? sources.get(key) : void 0;
-    if (index !== void 0) {
-      if (row.source.revision >= revisions[index].source.revision)
-        revisions[index] = { ...row, at: revisions[index].at };
-    } else {
-      if (key) sources.set(key, revisions.length);
-      revisions.push(row);
-    }
-  }
-  for (const row of revisions) {
     const text2 = row.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").split(/\n/).map((s2) => s2.trim()).filter((s2) => s2 && !UI_LINE.test(s2)).join(" ").replace(/\s+/g, " ").trim();
     if (!text2 || UI_LINE.test(text2)) continue;
     const item = {
       at: row.at,
       speaker: row.speaker || "Unknown speaker",
       text: text2,
-      ...row.source ? { source: row.source } : {}
+      ...row.source ? { source: row.source } : {},
+      ...row.updatedAt ? { updatedAt: row.updatedAt } : {}
     };
     const last = out.at(-1);
-    const delta = last ? Date.parse(item.at) - Date.parse(last.at) : NaN;
-    if (last && last.speaker === item.speaker && !last.source && !item.source && Number.isFinite(delta) && delta >= 0 && delta <= 1e4) {
+    const delta = last ? Date.parse(item.updatedAt ?? item.at) - Date.parse(last.updatedAt ?? last.at) : NaN;
+    if (last && last.speaker === item.speaker && Number.isFinite(delta) && delta >= 0 && delta <= 1e4) {
       const previous = last.text.replace(/[.!?…]+$/u, "");
       const current = item.text.replace(/[.!?…]+$/u, "");
-      if (current === previous || previous.startsWith(current + " "))
+      const sameSource = last.source && item.source && last.source.id === item.source.id;
+      const legacy = !last.source && !item.source;
+      const words = (value) => value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/);
+      const before = words(previous), after = words(current);
+      let shared = 0;
+      while (shared < Math.min(before.length, after.length) && before[shared] === after[shared]) shared++;
+      const correction = sameSource && item.source.revision > last.source.revision && shared >= 4 && shared >= Math.min(before.length, after.length) * 0.6 && after.length >= before.length;
+      if ((legacy || sameSource) && (current === previous || previous.startsWith(current + " "))) {
+        last.updatedAt = item.updatedAt ?? item.at;
         continue;
-      if (current.startsWith(previous + " ")) {
+      }
+      if ((legacy || sameSource) && current.startsWith(previous + " ") || correction) {
         last.text = item.text;
+        last.updatedAt = item.updatedAt ?? item.at;
+        if (item.source) last.source = item.source;
         continue;
       }
     }

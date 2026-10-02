@@ -51,3 +51,14 @@ assert.ok(Number(corrected.source.revision)>Number(initial.source.revision));
 console.log('PASS native caption activation, UI filtering and revision identities');
 await page.close();
 await browser.close();
+const recoveryFn=execFileSync('python3',[fileURLToPath(new URL('./export-meet-status.py',import.meta.url)),process.env.MEET_UPSTREAM || '/tmp/meet-upstream','recovery'],{encoding:'utf8'});
+let recoveryParams;
+const probe=runInNewContext(recoveryFn,{
+ GOOGLE_MEET_PLATFORM_ADAPTER:{},
+ resolveLocalMeetingBrowserRequest:async()=>()=>{},
+ shouldCaptureCaptions:()=>true,
+ recoverMeetingBrowserTab:async params=>{recoveryParams=params;return {found:false};},
+});
+await probe.run({id:'native-test-session',transport:'chrome',mode:'transcribe',url:'https://meet.google.com/abc-defg-hij',chrome:{}});
+assert.equal(recoveryParams.meetingSessionId,'native-test-session','caption session identity survives both recovery layers');
+console.log('PASS native recovery propagates caption session identity');

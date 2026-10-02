@@ -20,6 +20,17 @@ with tempfile.TemporaryDirectory() as d:
     import io
     with contextlib.redirect_stdout(io.StringIO()):
         patcher.patch(dest / 'host', dest / 'plugin')
+    if len(sys.argv) > 2 and sys.argv[2] == 'recovery':
+        source = (dest / 'plugin/dist/.setup/runtime-BdiF53A2.mjs').read_text()
+        start = source.index('async function recoverCurrentMeetTab(params) {')
+        end = source.index('\n}', start) + 2
+        print(source[start:end])
+        start = source.index('\tasync #refreshBrowserHealth(session, options = {}) {')
+        end = source.index('\n\tasync #refreshStatus(', start)
+        print('class Probe { params = {config: {}, fullConfig: {}, runtime: {}, logger: {debug() {}}}; async run(session) { return this.#refreshBrowserHealth(session); }')
+        print(source[start:end])
+        print('}; new Probe()')
+        sys.exit(0)
     source = (dest / 'plugin/dist/.setup/google-meet-platform-adapter-gosgbMIM.mjs').read_text()
     print(source[source.index('const GOOGLE_MEET_TRANSCRIPT_MAX_LINES'):source.index('function meetAudioCaptureScript(')])
     print(source[source.index('function meetStatusScript(params) {'):source.index('\nfunction meetLeaveScript(')])
