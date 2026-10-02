@@ -39,4 +39,27 @@ class MeetingPins(unittest.TestCase):
             for p in patcher.PATCHES:
                 self.assertEqual(patcher.hashlib.sha256((root / p['kind'] / p['path']).read_bytes()).hexdigest(), p['after'])
 
+    def test_prior_patch_versions_upgrade_to_the_current_pin(self):
+        upstream = Path('/tmp/meet-upstream')
+        if not upstream.exists():
+            self.skipTest('download the documented pinned npm archives for this integration test')
+        target_spec = next(p for p in patcher.PATCHES if p.get('upgrades'))
+        source = (upstream / 'package' / target_spec['path']).read_text()
+        versions = {patcher.hashlib.sha256(source.encode()).hexdigest(): source}
+        for old, new, count in target_spec['replacements']:
+            source = source.replace(old, new)
+            versions[patcher.hashlib.sha256(source.encode()).hexdigest()] = source
+        for digest in target_spec['upgrades']:
+            with self.subTest(digest=digest), tempfile.TemporaryDirectory() as d:
+                self.assertIn(digest, versions)
+                root = Path(d)
+                for spec in patcher.PATCHES:
+                    original = upstream / ('host/package' if spec['kind'] == 'host' else 'package') / spec['path']
+                    target = root / spec['kind'] / spec['path']
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(original, target)
+                (root / 'plugin' / target_spec['path']).write_text(versions[digest])
+                patcher.patch(root / 'host', root / 'plugin')
+                self.assertEqual(patcher.hashlib.sha256((root / 'plugin' / target_spec['path']).read_bytes()).hexdigest(), target_spec['after'])
+
 if __name__ == '__main__': unittest.main()
