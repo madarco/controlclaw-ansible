@@ -2520,8 +2520,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "b68c7dc" : "unknown",
-  builtAt: true ? "2026-10-02T20:31:02+00:00" : "unknown"
+  commit: true ? "242e3ea" : "unknown",
+  builtAt: true ? "2026-10-02T20:50:09+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -5613,23 +5613,39 @@ import {
 import { join as join7, resolve, sep } from "path";
 import { createRequire as createRequire2 } from "module";
 var requireBuiltin2 = createRequire2(import.meta.url);
-var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:(?:your )?(?:microphone|camera) is (?:on|off|muted)[.!]?\s*)+|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
+var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:(?:your )?(?:microphone|camera) is (?:on|off|muted)[.!]?\s*)+|you have joined the call\.(?:\s*(?:there (?:is|are) (?:one|\d+) other (?:person|people) in the call|your (?:camera|microphone) is (?:off|on|muted)|your hand is (?:lowered|raised))\.)*|(?:arrow_downward\s*)?jump to bottom|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
 function cleanCaptions(input2) {
   const out = [];
+  const revisions = [];
+  const sources = /* @__PURE__ */ new Map();
   for (const row of input2) {
+    const key = row.source ? JSON.stringify([row.speaker, row.source.id]) : void 0;
+    const index = key ? sources.get(key) : void 0;
+    if (index !== void 0) {
+      if (row.source.revision >= revisions[index].source.revision)
+        revisions[index] = { ...row, at: revisions[index].at };
+    } else {
+      if (key) sources.set(key, revisions.length);
+      revisions.push(row);
+    }
+  }
+  for (const row of revisions) {
     const text2 = row.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").split(/\n/).map((s2) => s2.trim()).filter((s2) => s2 && !UI_LINE.test(s2)).join(" ").replace(/\s+/g, " ").trim();
     if (!text2 || UI_LINE.test(text2)) continue;
     const item = {
       at: row.at,
       speaker: row.speaker || "Unknown speaker",
-      text: text2
+      text: text2,
+      ...row.source ? { source: row.source } : {}
     };
     const last = out.at(-1);
     const delta = last ? Date.parse(item.at) - Date.parse(last.at) : NaN;
-    if (last && last.speaker === item.speaker && Number.isFinite(delta) && delta >= 0 && delta <= 1e4) {
-      if (item.text === last.text || last.text.startsWith(item.text + " "))
+    if (last && last.speaker === item.speaker && !last.source && !item.source && Number.isFinite(delta) && delta >= 0 && delta <= 1e4) {
+      const previous = last.text.replace(/[.!?…]+$/u, "");
+      const current = item.text.replace(/[.!?…]+$/u, "");
+      if (current === previous || previous.startsWith(current + " "))
         continue;
-      if (item.text.startsWith(last.text + " ")) {
+      if (current.startsWith(previous + " ")) {
         last.text = item.text;
         continue;
       }
@@ -6032,7 +6048,8 @@ var MeetingService = class {
       runtime.record.transcript.push({
         at: at2,
         speaker: typeof line.speaker === "string" ? line.speaker : "Unknown speaker",
-        text: line.text
+        text: line.text,
+        ...typeof line.source?.id === "string" && line.source.id.length <= 1024 && (typeof line.source.revision === "string" || typeof line.source.revision === "number") && Number.isSafeInteger(Number(line.source.revision)) && Number(line.source.revision) >= 0 ? { source: { id: sessionId + ":" + line.source.id, revision: Number(line.source.revision) } } : {}
       });
     }
     runtime.record.transcript = cleanCaptions(runtime.record.transcript);
@@ -6296,7 +6313,7 @@ if (!output?.text?.trim()) throw new Error('The configured models could not gene
 process.stdout.write('\nCC_MEETING_NOTES\n' + JSON.stringify({ text: output.text }));
 `;
 function summarizeMeeting(captions, signal) {
-  const full = JSON.stringify(captions);
+  const full = JSON.stringify(captions.map(({ at: at2, speaker, text: text3 }) => ({ at: at2, speaker, text: text3 })));
   const text2 = full.length <= 48e3 ? full : full.slice(0, 24e3) + "\n[Middle omitted from summary input; full transcript is saved.]\n" + full.slice(-24e3);
   return new Promise((resolve3, reject) => {
     const child = spawn2(

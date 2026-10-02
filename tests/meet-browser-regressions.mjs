@@ -23,12 +23,31 @@ const page=await browser.newPage();
 await page.route('https://meet.google.com/**',route=>route.fulfill({contentType:'text/html',body:'<button aria-label="Leave call">Leave call</button><div aria-live="polite">Your camera is off. Your microphone is muted.</div>'}));
 await page.goto('https://meet.google.com/test');
 await page.evaluate(()=>Object.defineProperty(navigator,'permissions',{value:{query:async()=>({state:'denied'})}}));
+await page.evaluate(() => {
+  const button=document.createElement('button');
+  button.setAttribute('aria-label','Turn on captions');
+  button.onclick=()=>button.setAttribute('aria-label','Turn off captions');
+  document.body.append(button);
+});
 let health=JSON.parse(await page.evaluate('('+captionSource+')()'));
 assert.equal(health.transcriptLines,0,'combined device announcement must not enter native captions');
+assert.equal(await page.getByRole('button',{name:'Turn off captions',exact:true}).count(),1,'the bot enables its own captions');
+for (const announcement of ['You have joined the call. There is one other person in the call. Your camera is off. Your microphone is off. Your hand is lowered.','arrow_downwardJump to bottom']) {
+ await page.locator('[aria-live]').evaluate((el,text)=>el.innerText=text,announcement);
+ health=JSON.parse(await page.evaluate('('+captionSource+')()'));
+ assert.equal(health.transcriptLines,0,'Meet UI must not enter native captions: '+announcement);
+}
 await page.locator('[aria-live]').evaluate(el=>el.innerText='Alex\nAlex will check why the camera is off by Friday.');
 health=JSON.parse(await page.evaluate('('+captionSource+')()'));
 assert.equal(health.transcriptLines,1);
 assert.equal(health.recentTranscript[0].text,'Alex will check why the camera is off by Friday.');
-console.log('PASS native captions discard device announcements and retain spoken actions');
+const initial=health.recentTranscript[0];
+assert.ok(initial.source?.id,'session-scoped caption identity is available');
+await page.locator('[aria-live]').evaluate(el=>el.innerText='Alex\nAlex will investigate why the camera is off by Friday.');
+health=JSON.parse(await page.evaluate('('+captionSource+')()'));
+const corrected=health.recentTranscript.at(-1);
+assert.equal(corrected.source.id,initial.source.id,'a correction keeps the same caption identity');
+assert.ok(Number(corrected.source.revision)>Number(initial.source.revision));
+console.log('PASS native caption activation, UI filtering and revision identities');
 await page.close();
 await browser.close();
