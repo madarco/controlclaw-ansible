@@ -143,3 +143,34 @@
     owner: "{{ controlclaw_user }}"
     group: "{{ controlclaw_user }}"
     mode: preserve
+
+- name: AgentMail | install the Linux CLI launcher
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-agentmail
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/usr/bin/python3
+      import os, re, sys
+      from pathlib import Path
+      env_file = Path({{ (controlclaw_home ~ '/.openclaw/.env') | to_json }})
+      match = re.search(r'^AGENTMAIL_API_KEY=(CC-AMAIL-[0-9a-f]{32})$', env_file.read_text() if env_file.exists() else '', re.M)
+      if not match:
+          sys.exit('Assign an AgentMail inbox in ControlClaw first.')
+      env = dict(os.environ, AGENTMAIL_API_KEY=match.group(1))
+      binary = {{ (agentmail_root ~ '/vendor/agentmail/linux-' ~ agentmail_cli_arch.node ~ '/agentmail') | to_json }}
+      os.execve(binary, [binary, *sys.argv[1:]], env)
+
+- name: AgentMail | use the native CLI in the managed skill
+  ansible.builtin.replace:
+    path: "{{ controlclaw_home }}/.openclaw/skills/agentmail/SKILL.md"
+    regexp: "{{ item.pattern }}"
+    replace: "{{ item.replacement }}"
+  loop:
+    - pattern: 'openclaw agentmail --'
+      replacement: 'cc-agentmail'
+    - pattern: '"bins": \["openclaw"\]'
+      replacement: '"bins": ["cc-agentmail"]'
+    - pattern: 'Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags\.'
+      replacement: 'The ControlClaw launcher loads the inbox placeholder from the local environment file.'
