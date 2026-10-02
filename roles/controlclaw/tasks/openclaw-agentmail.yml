@@ -26,6 +26,7 @@
   ansible.builtin.slurp:
     src: "{{ controlclaw_home }}/.openclaw/openclaw.json"
   register: agentmail_previous_config
+  no_log: true
 
 - name: AgentMail | install pinned plugin through the org proxy
   ansible.builtin.command:
@@ -71,6 +72,7 @@
   become: true
   become_user: "{{ controlclaw_user }}"
   register: agentmail_disabled
+  no_log: true
   changed_when: "'changed' in agentmail_disabled.stdout"
   notify: restart openclaw
 
