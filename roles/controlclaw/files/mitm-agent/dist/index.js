@@ -83884,8 +83884,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "c1bb8b8" : "unknown",
-  builtAt: true ? "2026-10-02T12:26:49+01:00" : "unknown"
+  commit: true ? "529e74e" : "unknown",
+  builtAt: true ? "2026-10-02T15:07:26+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

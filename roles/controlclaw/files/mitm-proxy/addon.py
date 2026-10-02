@@ -72,6 +72,11 @@ import logging
 
 from mitmproxy import connection
 from mitmproxy import http
+from mitmproxy import ctx as _mitm_ctx
+# Enforcement cannot be optional: refuse to load on an incompatible proxy version.
+from mitmproxy.proxy.commands import CloseConnection as _CloseConnection
+from mitmproxy.proxy.layer import Layer as _EnforcementLayer
+from mitmproxy.proxy.layers.tcp import TCPLayer as _TCPLayer, TcpStartHook as _TcpStartHook
 
 try:  # raw-TCP passthrough layer (used by next_layer); guarded so a version skew can't break import
     from mitmproxy.proxy import layers as _proxy_layers
@@ -1309,6 +1314,28 @@ def _residential_stack(ctx, host: str, port: int, rule: dict[str, Any], vm_id: s
 
 # ----- hooks ----------------------------------------------------------------
 
+class _DeniedTCP(_EnforcementLayer):
+    """Consume all events and close both sides without opening or forwarding anything.
+
+    mitmproxy 12.2.2's TCPLayer ignores Flow.kill(), including after TLS interception.
+    Keep the tcp_start hook for the drop record, but enforce denial with transport commands.
+    Hook/logging failures cannot turn this layer into a relay.
+    """
+
+    def __init__(self, selected: _TCPLayer) -> None:
+        super().__init__(selected.context)
+        self.flow = selected.flow
+        self._closed = False
+
+    def _handle_event(self, event):
+        if not self._closed:
+            self._closed = True
+            yield _TcpStartHook(self.flow)
+            yield _CloseConnection(self.context.client)
+            yield _CloseConnection(self.context.server)
+            self.flow.live = False
+
+
 def tls_clienthello(data) -> None:
     """Pass a connection through untouched (no TLS interception), matched by SNI: a built-in host
     (the control plane, so the JWT channel is never MITM'd, and the backup object store, whose bodies
@@ -1363,16 +1390,22 @@ def next_layer(data) -> None:
     - Everything else falls through to mitmproxy's defaults: HTTP/TLS are intercepted as usual,
       and any other raw TCP becomes a flow that `tcp_start` drops.
 
-    This addon's hook runs after mitmproxy's own, so `data.layer` already holds its choice: an
-    override assigns, and a *deferral* must clear it back to None (which makes mitmproxy buffer and
-    ask again when more bytes arrive). Chrome's ClientHello with post-quantum key shares is ~2 KB
-    and arrives in two TCP segments, so that deferral is the normal path, not an edge case.
+    Script hooks run BEFORE the built-in selector in mitmproxy 12.2.2. Ask it for its choice
+    first so the enforcement step can replace raw TCP, including decrypted non-HTTP traffic.
+    A deferral clears the choice back to None so mitmproxy buffers more bytes.
 
-    Fully guarded: any error leaves mitmproxy's default layer selection untouched.
+    A final enforcement step replaces every unapproved TCP relay, even if matching fails.
     """
-    if _proxy_layers is None:
+    try:
+        if data.layer is None:
+            _mitm_ctx.master.addons.get("nextlayer").next_layer(data)
+    except Exception as exc:
+        log.error(f"[mitm] protocol selection failed; closing connection: {exc}")
+        data.layer = _DeniedTCP(_TCPLayer(data.context))
         return
     try:
+        if _proxy_layers is None:
+            return
         ctx = getattr(data, "context", None)
         host, port = _server_addr(ctx)
         vm_id = ctx_vm_id(ctx)
@@ -1427,6 +1460,11 @@ def next_layer(data) -> None:
                 data.layer = _proxy_layers.TCPLayer(ctx, ignore=True)
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[mitm] next_layer passthrough check failed: {exc}")
+    finally:
+        selected = data.layer
+        if (isinstance(selected, _TCPLayer) and selected.flow is not None
+                and not selected.flow.metadata.get("cc_exit")):
+            data.layer = _DeniedTCP(selected)
 
 
 def residential_configured() -> bool:
@@ -1461,7 +1499,7 @@ def _use_residential(data, ctx, host: str, port: int, rule: dict[str, Any], vm_i
 def tcp_start(flow) -> None:
     """Central drop: any RAW TCP flow that reaches interception is non-HTTP/TLS and not an
     allowlisted tunnel (those are passed through in next_layer/tls_clienthello and never become a
-    TCP flow). Since the box redirects ALL TCP here, this is the "drop everything not allowed" point.
+    TCP flow). `_DeniedTCP` closes the transport; this hook records the decision.
 
     The one exception is a residential relay, which IS a raw TCP flow on purpose: it is how the
     client's own TLS bytes reach the site unmodified, and it is a flow rather than an ignored
@@ -1492,6 +1530,10 @@ def tcp_message(flow) -> None:
     """
     meta = flow.metadata.get("cc_exit")
     if not meta:
+        # Defense in depth for an unexpected TCP layer: never forward a denied payload,
+        # even when Flow.kill() is ineffective. The normal path closes in _DeniedTCP.
+        for msg in flow.messages:
+            msg.content = b""
         return
     try:
         msg = flow.messages[-1]
