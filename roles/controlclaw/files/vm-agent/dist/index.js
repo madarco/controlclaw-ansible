@@ -2520,8 +2520,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "6ca8508" : "unknown",
-  builtAt: true ? "2026-10-02T18:29:56+00:00" : "unknown"
+  commit: true ? "d72d8ce" : "unknown",
+  builtAt: true ? "2026-10-02T19:19:02+00:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -6169,7 +6169,7 @@ var MeetingService = class {
       }
     } catch {
       if (!controller.signal.aborted) {
-        record2.error = "Notes generation failed. Configure an owner-managed model; included AI is not available for meeting notes. Your transcript is saved.";
+        record2.error = "Notes generation failed. Check this agent's model settings and available credit. Your transcript is saved.";
         try {
           this.opts.archive.save(record2);
         } catch {
@@ -6278,9 +6278,6 @@ const attempted = new Set();
 for (const selected of candidates) {
   if (!selected) continue;
   const provider = selected.runtimeProvider ?? selected.provider;
-  const endpoint = cfg.models?.providers?.[provider]?.baseUrl ?? '';
-  // Managed Gateway content logging has not been verified for meeting data. Fail closed.
-  if (provider === 'controlclaw' || /ai-gateway\.vercel\.sh/i.test(endpoint)) continue;
   const identity = JSON.stringify(selected);
   if (attempted.has(identity)) continue;
   attempted.add(identity);
@@ -6293,7 +6290,7 @@ for (const selected of candidates) {
     if (output.text?.trim()) break;
   } catch { /* Try the configured primary after the utility model. */ }
 }
-if (!output?.text?.trim()) throw new Error('Configure an owner-managed model for meeting notes');
+if (!output?.text?.trim()) throw new Error('The configured models could not generate meeting notes');
 process.stdout.write('\nCC_MEETING_NOTES\n' + JSON.stringify({ text: output.text }));
 `;
 function summarizeMeeting(captions, signal) {
@@ -6334,7 +6331,7 @@ function summarizeMeeting(captions, signal) {
 // src/routes/meetings-ui.ts
 var MEETINGS_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Meetings \xB7 ControlClaw</title><style>
 :root{color-scheme:light dark;--bg:#f8f8f6;--panel:#fff;--ink:#242821;--muted:#686e64;--line:#dfe2d9;--accent:#386245}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:40px 24px}header{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:32px}.brand{font-size:13px;letter-spacing:.08em;color:var(--muted)}h1{font-size:36px;letter-spacing:-.035em;line-height:1.15;margin:18px 0 12px}h2{font-size:21px;letter-spacing:-.02em;margin:0 0 10px}p{margin:8px 0;color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;margin:18px 0}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}label{display:block;font-size:14px;margin-bottom:8px}input{width:100%;min-width:0;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:12px;border-radius:6px;font:inherit}.input{flex:1;min-width:220px}button{border:1px solid var(--line);border-radius:6px;padding:11px 16px;font:inherit;background:var(--panel);color:var(--ink);cursor:pointer}button.primary{background:var(--accent);color:white;border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #88ad80;outline-offset:3px}.badge{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:30px;padding:3px 10px;font-size:12px}.spacer{flex:1}.error{color:#aa443a}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}summary{cursor:pointer;font-weight:600}details{border-top:1px solid var(--line);padding-top:16px;margin-top:16px}.caption{padding:8px 0;border-bottom:1px solid var(--line)}.caption small{color:var(--muted)}[hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--bg:#171b18;--panel:#202620;--ink:#e5e9e0;--muted:#a3af9d;--line:#3b453a;--accent:#52765a}.error{color:#ffa99e}}@media(max-width:480px){main{padding:24px 16px}h1{font-size:30px}.panel{padding:18px}.row button{flex-grow:1}.input{min-width:100%}}
-</style></head><body><main><header><div class="brand">CONTROLCLAW / ON YOUR AGENT</div><h1>Meetings</h1><p>Join as a guest. Keep the conversation here.</p><span class="badge">Google Meet \xB7 Transcript</span></header><section class="panel"><h2>Join a meeting</h2><p>Your camera and microphone stay off. The host may need to admit you. Transcript capture needs captions.</p><form id="join"><label for="url">Google Meet link</label><div class="row"><div class="input"><input id="url" type="url" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" required></div><button class="primary" id="join-button">Join meeting</button><button type="button" id="stop" hidden>Stop</button></div></form><p id="status" role="status" aria-live="polite">Checking meeting setup\u2026</p><p id="error" class="error" role="alert"></p><p id="setup"></p></section><section><div class="row"><h2>Meeting notes</h2><span class="spacer"></span><button id="delete-all" type="button">Delete all</button></div><p>Kept until you delete them. Notes use this agent's configured owner-managed model. Included AI is not available for meeting notes. Meeting platforms and your model provider receive the content they process.</p><p>Delete removes the live archive and managed notes. Backups keep seven daily and four weekly copies, with a day of grace; the newest is kept until a newer backup exists. Check Backups in your console for remaining copies. Personal exports remain yours to remove.</p><div id="meetings"></div></section></main><script src="/__cc/meetings/app.js" defer></script></body></html>`;
+</style></head><body><main><header><div class="brand">CONTROLCLAW / ON YOUR AGENT</div><h1>Meetings</h1><p>Join as a guest. Keep the conversation here.</p><span class="badge">Google Meet \xB7 Transcript</span></header><section class="panel"><h2>Join a meeting</h2><p>Your camera and microphone stay off. The host may need to admit you. Transcript capture needs captions.</p><form id="join"><label for="url">Google Meet link</label><div class="row"><div class="input"><input id="url" type="url" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" required></div><button class="primary" id="join-button">Join meeting</button><button type="button" id="stop" hidden>Stop</button></div></form><p id="status" role="status" aria-live="polite">Checking meeting setup\u2026</p><p id="error" class="error" role="alert"></p><p id="setup"></p></section><section><div class="row"><h2>Meeting notes</h2><span class="spacer"></span><button id="delete-all" type="button">Delete all</button></div><p>Kept until you delete them. Notes use this agent's configured model, including AI Gateway with included credit. Meeting platforms and your model provider receive the content they process.</p><p>Delete removes the live archive and managed notes. Backups keep seven daily and four weekly copies, with a day of grace; the newest is kept until a newer backup exists. Check Backups in your console for remaining copies. Personal exports remain yours to remove.</p><div id="meetings"></div></section></main><script src="/__cc/meetings/app.js" defer></script></body></html>`;
 var MEETINGS_SCRIPT = String.raw`
 let state = null, busy = false;
 const el = id => document.getElementById(id);
