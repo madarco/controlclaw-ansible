@@ -12,7 +12,7 @@ export class VoiceBridge {
     this.pending=[];this.pendingBytes=0;this.lastSpeech=Date.now();this.speaking=false;this.silentMs=0;
     this.responseId=null;this.stale=new Set();this.inputBytes=0;this.outputBytes=0;
     this.supportsToolResultContinuation=false;
-    this.recentOutput=[];this.outputText='';
+    this.recentOutput=[];this.outputText='';this.inputTurns=new Map();this.inputSequence=0;this.addressedSequence=0;
   }
   async connect() {
     if(this.closed)throw new Error('Voice session closed');
@@ -54,7 +54,7 @@ export class VoiceBridge {
   }
   normalize(e){
     if(this.gateway)return e;
-    const types={'session.updated':'session-updated','session.created':'session-created','input_audio_buffer.speech_started':'speech-started','conversation.item.input_audio_transcription.completed':'input-transcription-completed','response.created':'response-created','response.done':'response-done','response.output_audio.delta':'audio-delta','response.output_audio_transcript.delta':'audio-transcript-delta','response.output_audio_transcript.done':'audio-transcript-done','response.function_call_arguments.done':'function-call-arguments-done'};
+    const types={'session.updated':'session-updated','session.created':'session-created','input_audio_buffer.speech_started':'speech-started','input_audio_buffer.speech_stopped':'speech-stopped','conversation.item.input_audio_transcription.completed':'input-transcription-completed','response.created':'response-created','response.done':'response-done','response.output_audio.delta':'audio-delta','response.output_audio_transcript.delta':'audio-transcript-delta','response.output_audio_transcript.done':'audio-transcript-done','response.function_call_arguments.done':'function-call-arguments-done'};
     return {...e,type:types[e.type]??e.type,responseId:e.response_id??e.response?.id,itemId:e.item_id,callId:e.call_id};
   }
   send(event){if(!this.closed&&this.ws?.readyState===1){if(this.ws.bufferedAmount>192000){this.fail();return;}this.ws.send(JSON.stringify(event));}}
@@ -87,14 +87,20 @@ export class VoiceBridge {
       const session=e.raw?.session??e.session;
       console.info(JSON.stringify({event:'cc.meeting.voice.ready',provider:this.config.provider,toolRegistered:session?.tools?.some(t=>t.name==='ask_agent'),autoResponse:session?.audio?.input?.turn_detection?.create_response,autoInterrupt:session?.audio?.input?.turn_detection?.interrupt_response}));
     }
-    if(e.type==='speech-started'){this.lastSpeech=Date.now();this.inputId=e.itemId;this.inputPending=false;return;}
+    if(e.type==='speech-started'){
+      this.lastSpeech=Date.now();this.inputId=e.itemId;this.inputPending=false;
+      if(e.itemId){this.inputTurns.set(e.itemId,{sequence:++this.inputSequence,at:this.lastSpeech});if(this.inputTurns.size>16)this.inputTurns.delete(this.inputTurns.keys().next().value);}
+      return;
+    }
+    if(e.type==='speech-stopped'){const turn=this.inputTurns.get(e.itemId);if(turn)turn.at=this.lastSpeech;return;}
     if(e.type==='input-transcription-completed'){
-      if(this.inputPending||this.inputId&&e.itemId!==this.inputId)return;
+      const turn=e.itemId?this.inputTurns.get(e.itemId):{sequence:++this.inputSequence,at:this.lastSpeech};
+      if(!turn||turn.sequence<=this.addressedSequence)return;
       const text=String(e.transcript??'').slice(0,8000);
       if(this.isEcho(text))return;
       this.req.onTranscript?.('user',text,true);
       if(!WAKE.test(text))return;
-      this.turnStartedAt=this.lastSpeech;
+      this.addressedSequence=turn.sequence;this.turnStartedAt=turn.at;
       this.handleBargeIn();this.allowed=true;
       this.control('response-create');
       this.pending=[];this.pendingBytes=0;return;
@@ -195,7 +201,7 @@ export class VoiceBridge {
     this.abort?.abort();clearTimeout(this.deadline);clearInterval(this.idle);
     for(const c of this.calls.values())clearTimeout(c.timer);this.calls.clear();
     this.pending=[];this.pendingBytes=0;this.req.onClearAudio?.();
-    this.recentOutput=[];this.currentOutput=undefined;this.outputText='';
+    this.recentOutput=[];this.currentOutput=undefined;this.outputText='';this.inputTurns.clear();
     this.ws?.terminate();this.req.onClose?.('completed');
   }
 }

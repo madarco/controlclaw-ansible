@@ -120,3 +120,15 @@ test('background input cannot reset first-audio latency for an outstanding turn'
  f.bridge.lastSpeech=Date.now();f.bridge.event({type:'response-created',responseId:'r1'});f.bridge.event(chunk);
  assert.ok(metrics[0].latencyMs>=10000);f.bridge.close();
 });
+test('a new VAD segment cannot discard an earlier addressed stop transcript',()=>{
+ const f=fixture();f.bridge.event({type:'speech-started',itemId:'stop'});f.bridge.event({type:'speech-stopped',itemId:'stop'});
+ f.bridge.event({type:'speech-started',itemId:'done'});
+ f.bridge.event({type:'input-transcription-completed',itemId:'stop',transcript:'ControlClaw stop speaking now.'});
+ assert.equal(f.bridge.allowed,true);const clears=f.cleared();
+ f.bridge.event({type:'input-transcription-completed',itemId:'done',transcript:'Say only done.'});assert.equal(f.cleared(),clears);f.bridge.close();
+});
+test('a late old addressed transcript cannot replace an already accepted newer request',()=>{
+ const f=fixture();f.bridge.event({type:'speech-started',itemId:'old'});f.bridge.event({type:'speech-started',itemId:'new'});
+ f.bridge.event({type:'input-transcription-completed',itemId:'new',transcript:'ControlClaw stop.'});const clears=f.cleared();
+ f.bridge.event({type:'input-transcription-completed',itemId:'old',transcript:'ControlClaw explain clouds.'});assert.equal(f.cleared(),clears);f.bridge.close();
+});
