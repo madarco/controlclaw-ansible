@@ -1,6 +1,7 @@
 """Pinned runtime patches must be atomic, idempotent and refuse unknown upstream code."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -24,7 +25,7 @@ class MeetingPins(unittest.TestCase):
                 self.assertEqual((root / p['kind'] / p['path']).read_text(), 'unknown upstream build')
 
     def test_pinned_archive(self):
-        upstream = Path('/tmp/meet-upstream')
+        upstream = Path(os.environ.get('MEET_UPSTREAM', '/tmp/meet-upstream'))
         if not upstream.exists():
             self.skipTest('download the documented pinned npm archives for this integration test')
         with tempfile.TemporaryDirectory() as d:
@@ -40,11 +41,11 @@ class MeetingPins(unittest.TestCase):
                 self.assertEqual(patcher.hashlib.sha256((root / p['kind'] / p['path']).read_bytes()).hexdigest(), p['after'])
 
     def test_prior_patch_versions_upgrade_to_the_current_pin(self):
-        upstream = Path('/tmp/meet-upstream')
+        upstream = Path(os.environ.get('MEET_UPSTREAM', '/tmp/meet-upstream'))
         if not upstream.exists():
             self.skipTest('download the documented pinned npm archives for this integration test')
         for target_spec in (p for p in patcher.PATCHES if p.get('upgrades')):
-            source = (upstream / 'package' / target_spec['path']).read_text()
+            source = (upstream / ('host/package' if target_spec['kind'] == 'host' else 'package') / target_spec['path']).read_text()
             versions = {patcher.hashlib.sha256(source.encode()).hexdigest(): source}
             for old, new, count in target_spec['replacements']:
                 source = source.replace(old, new)
@@ -58,8 +59,8 @@ class MeetingPins(unittest.TestCase):
                         target = root / spec['kind'] / spec['path']
                         target.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copyfile(original, target)
-                    (root / 'plugin' / target_spec['path']).write_text(versions[digest])
+                    (root / target_spec['kind'] / target_spec['path']).write_text(versions[digest])
                     patcher.patch(root / 'host', root / 'plugin')
-                    self.assertEqual(patcher.hashlib.sha256((root / 'plugin' / target_spec['path']).read_bytes()).hexdigest(), target_spec['after'])
+                    self.assertEqual(patcher.hashlib.sha256((root / target_spec['kind'] / target_spec['path']).read_bytes()).hexdigest(), target_spec['after'])
 
 if __name__ == '__main__': unittest.main()

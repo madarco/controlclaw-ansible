@@ -17,9 +17,11 @@
     mode: '0644'
     content: |
       pulse.cmd = [
+        { cmd = "load-module" args = "module-null-sink sink_name=cc_meeting_remote rate=48000 channels=2" }
         { cmd = "load-module" args = "module-null-sink sink_name=openclaw_meeting_audio rate=48000 channels=2" }
         { cmd = "load-module" args = "module-remap-source source_name=openclaw_meeting_audio master=openclaw_meeting_audio.monitor channels=2 remix=no" }
       ]
+  register: meeting_audio_config
 
 - name: Meetings | read the controlclaw uid
   ansible.builtin.command: "id -u {{ controlclaw_user }}"
@@ -49,6 +51,18 @@
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ meeting_user_uid.stdout }}/bus"
   loop: [pipewire.socket, pipewire-pulse.socket, wireplumber.service]
 
+- name: Meetings | load changed virtual audio devices
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  ansible.builtin.systemd:
+    scope: user
+    name: pipewire-pulse.service
+    state: restarted
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ meeting_user_uid.stdout }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ meeting_user_uid.stdout }}/bus"
+  when: meeting_audio_config.changed
+
 - name: Meetings | connect system units to the same audio session
   ansible.builtin.file:
     path: "/etc/systemd/system/{{ item }}.service.d"
@@ -77,6 +91,21 @@
     mode: '0644'
     content: '{"profile":{"default_content_setting_values":{"media_stream_mic":2,"media_stream_camera":2}}}'
 
+- name: Meetings | install the per-call microphone preference helper
+  ansible.builtin.copy:
+    src: meeting-browser-preferences.py
+    dest: /opt/controlclaw/meeting-browser-preferences.py
+    mode: '0644'
+
+- name: Meetings | install the scoped speech provider
+  ansible.builtin.copy:
+    src: meeting-voice/
+    dest: /opt/controlclaw/meeting-voice/
+    owner: root
+    group: root
+    mode: '0755'
+  notify: restart openclaw
+
 - name: Meetings | provision an ephemeral guest browser unit
   ansible.builtin.copy:
     dest: /etc/systemd/user/cc-meeting-browser.service
@@ -89,12 +118,12 @@
       Type=simple
       Environment=DISPLAY=:1
       Environment=PULSE_SERVER=unix:%t/pulse/native
-      Environment=PULSE_SINK=openclaw_meeting_audio
+      Environment=PULSE_SINK=cc_meeting_remote
       Environment=PULSE_SOURCE=openclaw_meeting_audio
       RuntimeDirectory=cc-meetings
       RuntimeDirectoryMode=0700
       ExecStartPre=/usr/bin/mkdir -p %t/cc-meetings/profile/Default
-      ExecStartPre=/usr/bin/cp /opt/controlclaw/meeting-browser-preferences.json %t/cc-meetings/profile/Default/Preferences
+      ExecStartPre=/usr/bin/python3 /opt/controlclaw/meeting-browser-preferences.py %t/cc-meetings/profile/Default/Preferences
       ExecStart=/usr/bin/google-chrome-stable --user-data-dir=%t/cc-meetings/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-sync --disable-background-networking --password-store=basic --force-webrtc-ip-handling-policy=disable_non_proxied_udp --autoplay-policy=no-user-gesture-required about:blank
       KillMode=control-group
       TimeoutStopSec=10

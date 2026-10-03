@@ -1,1 +1,12 @@
-{"id":"cc-meeting-guard","name":"ControlClaw meeting browser reservation","configSchema":{"type":"object","properties":{},"additionalProperties":false}}
+{
+  "id": "cc-meeting-guard",
+  "name": "ControlClaw meeting browser reservation",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  }
+}
