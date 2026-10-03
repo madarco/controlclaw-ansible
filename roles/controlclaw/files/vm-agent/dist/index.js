@@ -21643,7 +21643,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID4 } from "crypto";
-import { readFileSync as readFileSync23, existsSync as existsSync15, writeFileSync as writeFileSync15, rmSync as rmSync5 } from "fs";
+import { readFileSync as readFileSync24, existsSync as existsSync16, writeFileSync as writeFileSync16, rmSync as rmSync5 } from "fs";
 
 // src/session.ts
 import crypto2 from "crypto";
@@ -23100,8 +23100,8 @@ import { readFileSync as readFileSync6, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8f8d78e" : "unknown",
-  builtAt: true ? "2026-10-03T14:21:53+01:00" : "unknown"
+  commit: true ? "8e5fb71" : "unknown",
+  builtAt: true ? "2026-10-03T17:34:49+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -27416,7 +27416,7 @@ async function handleDrive(req, res, url3, service) {
   }
 }
 
-// src/agentmail.ts
+// src/secrets.ts
 import {
   existsSync as existsSync12,
   mkdirSync as mkdirSync9,
@@ -27425,6 +27425,86 @@ import {
   writeFileSync as writeFileSync11
 } from "fs";
 import { dirname as dirname8 } from "path";
+function parseSecretApply(raw) {
+  if (!Array.isArray(raw.entries) || raw.entries.length > 100) return null;
+  const entries = [];
+  for (const entry of raw.entries) {
+    if (!entry || typeof entry.name !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(entry.name) || /^(?:PATH|HOME|SHELL|USER|LOGNAME|ENV|BASH_ENV|IFS|NODE_.*|LD_.*|OPENCLAW_.*|CONTROLCLAW_.*|AGENTMAIL_.*)$/.test(
+      entry.name
+    ) || typeof entry.placeholder !== "string" || !/^CC-SEC-[a-f0-9]{48}$/.test(entry.placeholder) || entries.some((e) => e.name === entry.name))
+      return null;
+    entries.push({ name: entry.name, placeholder: entry.placeholder });
+  }
+  return { entries };
+}
+var SecretsService = class {
+  constructor(opts) {
+    this.opts = opts;
+  }
+  apply(input2) {
+    const current = existsSync12(this.opts.envPath) ? readFileSync18(this.opts.envPath, "utf8") : "";
+    const unmanaged = current.split(/\r?\n/).filter(
+      (line) => !/^[A-Z][A-Z0-9_]{0,63}=CC-SEC-[a-f0-9]{48}$/.test(line)
+    );
+    for (const { name } of input2.entries) {
+      if (unmanaged.some(
+        (line) => new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=`).test(line)
+      ))
+        throw new Error(
+          "An environment variable with this name already exists"
+        );
+    }
+    const next = [
+      ...unmanaged.filter(Boolean),
+      ...input2.entries.map((e) => `${e.name}=${e.placeholder}`)
+    ].join("\n") + "\n";
+    if (current !== next) {
+      mkdirSync9(dirname8(this.opts.envPath), { recursive: true });
+      const tmp = `${this.opts.envPath}.secrets.tmp`;
+      writeFileSync11(tmp, next, { mode: 384 });
+      renameSync8(tmp, this.opts.envPath);
+    }
+    if (!this.opts.restartService().ok)
+      throw new Error("Could not restart OpenClaw");
+    return { ok: true };
+  }
+};
+
+// src/routes/secrets.ts
+async function handleSecrets(req, res, url3, service) {
+  if (!await verifyMitmRequest(req, "secrets")) {
+    sendJson(res, 401, {
+      error: "Secrets changes must come from the org firewall"
+    });
+    return;
+  }
+  if (req.method !== "POST" || url3.pathname !== "/secrets/apply") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  const raw = await readJsonBody(req), input2 = raw && parseSecretApply(raw);
+  if (!input2) {
+    sendJson(res, 400, { error: "Invalid secret placeholders" });
+    return;
+  }
+  try {
+    sendJson(res, 200, service.apply(input2));
+  } catch {
+    sendJson(res, 500, {
+      error: "Could not apply placeholders. Check for an existing environment variable or restart the agent."
+    });
+  }
+}
+
+// src/agentmail.ts
+import {
+  existsSync as existsSync13,
+  mkdirSync as mkdirSync10,
+  readFileSync as readFileSync19,
+  renameSync as renameSync9,
+  writeFileSync as writeFileSync12
+} from "fs";
+import { dirname as dirname9 } from "path";
 function parseAgentMailApply(raw) {
   if (raw.placeholder === null && raw.inboxId === null)
     return { placeholder: null, inboxId: null, humanEmail: null };
@@ -27489,20 +27569,20 @@ var AgentMailService = class {
       GATEWAY_READ_MS
     );
     if (!snapshot.hash) throw new Error("OpenClaw returned no config hash");
-    const current = existsSync12(this.opts.envPath) ? readFileSync18(this.opts.envPath, "utf8") : "";
+    const current = existsSync13(this.opts.envPath) ? readFileSync19(this.opts.envPath, "utf8") : "";
     const lines = current.split(/\r?\n/).filter(
       (line) => !/^\s*(?:export\s+)?AGENTMAIL_(?:API_KEY|WEBHOOK_SECRET)\s*=/.test(
         line
       )
     );
     if (input2.placeholder) lines.push(`AGENTMAIL_API_KEY=${input2.placeholder}`);
-    mkdirSync9(dirname8(this.opts.envPath), { recursive: true });
+    mkdirSync10(dirname9(this.opts.envPath), { recursive: true });
     const tmp = `${this.opts.envPath}.agentmail.tmp`;
-    writeFileSync11(tmp, `${lines.filter(Boolean).join("\n")}
+    writeFileSync12(tmp, `${lines.filter(Boolean).join("\n")}
 `, {
       mode: 384
     });
-    renameSync8(tmp, this.opts.envPath);
+    renameSync9(tmp, this.opts.envPath);
     let patchError;
     try {
       await patchConfig(
@@ -27618,8 +27698,8 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync13, mkdirSync as mkdirSync10, readFileSync as readFileSync19, renameSync as renameSync9, rmSync as rmSync2, writeFileSync as writeFileSync12 } from "fs";
-import { dirname as dirname9 } from "path";
+import { existsSync as existsSync14, mkdirSync as mkdirSync11, readFileSync as readFileSync20, renameSync as renameSync10, rmSync as rmSync2, writeFileSync as writeFileSync13 } from "fs";
+import { dirname as dirname10 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 var SERVICES = ["gmail", "calendar", "drive", "contacts", "sheets", "docs"];
@@ -27647,10 +27727,10 @@ function parseApply5(body) {
   return { placeholder, connected: body.connected === true, projectId, services, accountLabel };
 }
 function writeAtomic2(path, body, mode) {
-  mkdirSync10(dirname9(path), { recursive: true });
+  mkdirSync11(dirname10(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync12(tmp, body, { mode });
-  renameSync9(tmp, path);
+  writeFileSync13(tmp, body, { mode });
+  renameSync10(tmp, path);
 }
 function envValue(value) {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -27667,7 +27747,7 @@ var GoogleService = class {
   gogBin;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync13(this.gogBin);
+    return existsSync14(this.gogBin);
   }
   /**
    * Make the box match the desired state. One atomic write, or one removal.
@@ -27723,7 +27803,7 @@ var GoogleService = class {
       gogVersion: await this.version(),
       // The file, not the remembered state: this is the question the console is really asking, and
       // a state file that outlived its env file would answer it wrongly.
-      hasPlaceholder: existsSync13(this.opts.envPath),
+      hasPlaceholder: existsSync14(this.opts.envPath),
       connected: applied?.connected ?? false,
       services: applied?.services ?? [],
       projectId: applied?.projectId ?? null,
@@ -27733,7 +27813,7 @@ var GoogleService = class {
   }
   readState() {
     try {
-      const raw = JSON.parse(readFileSync19(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync20(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object") return null;
       return {
         placeholder: null,
@@ -27803,7 +27883,7 @@ async function handleGoogle(req, res, url3, service) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync20 } from "fs";
+import { readFileSync as readFileSync21 } from "fs";
 import { spawn as spawn3 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -27835,7 +27915,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync20(path, "utf8");
+      raw = readFileSync21(path, "utf8");
     } catch {
       return null;
     }
@@ -27849,7 +27929,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync20(this.opts.statePath, "utf8");
+      raw = readFileSync21(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -27921,7 +28001,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp as mkdtemp2, lstat, opendir, readlink, rename as rename2, rm as rm2, stat, symlink, utimes, writeFile as writeFile2, chmod } from "fs/promises";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname10, join as join11 } from "path";
+import { dirname as dirname11, join as join11 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -31860,7 +31940,7 @@ var BackupService = class {
         takenAt: manifest.takenAt
       };
     } finally {
-      if (spool) await rm2(dirname10(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (spool) await rm2(dirname11(spool), { recursive: true, force: true }).catch(() => void 0);
       if (staged) await staged.release().catch((err) => this.log(`[backup] could not drop the staged copy: ${err.message}`));
       this.busy = null;
     }
@@ -31956,7 +32036,7 @@ var BackupService = class {
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
             continue;
           }
-          await mkdir(dirname10(abs), { recursive: true, mode: 448 });
+          await mkdir(dirname11(abs), { recursive: true, mode: 448 });
           if (e.type === "link") {
             await symlink(e.target ?? "", abs).catch(() => void 0);
             continue;
@@ -32092,7 +32172,7 @@ async function swapDirectory(opts) {
       );
       if (!exists2) continue;
       await rm2(to, { recursive: true, force: true });
-      await mkdir(dirname10(to), { recursive: true, mode: 448 });
+      await mkdir(dirname11(to), { recursive: true, mode: 448 });
       await rename2(from, to);
       moved.push({ from, to });
     }
@@ -32251,7 +32331,7 @@ async function handleBackup(req, res, url3, service, kinds = AGENT_KINDS) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open as open2, readdir, realpath, rename as rename3, rm as rm3, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID3 } from "crypto";
-import { basename as basename2, dirname as dirname11, join as join12, resolve as resolve2, sep as sep2 } from "path";
+import { basename as basename2, dirname as dirname12, join as join12, resolve as resolve2, sep as sep2 } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -32402,7 +32482,7 @@ async function realpathLenient(path) {
       const real = await realpath(cursor);
       return missing.length ? join12(real, ...missing.reverse()) : real;
     } catch {
-      const parent = dirname11(cursor);
+      const parent = dirname12(cursor);
       if (parent === cursor) return resolve2(path);
       missing.push(basename2(cursor));
       cursor = parent;
@@ -32510,7 +32590,7 @@ var FilesService = class {
     }
     const name = basename2(normalized);
     if (!name || name === "." || name === "..") throw new FilesError(400, "bad_path", "That name is not allowed.");
-    const parentRel = dirname11(normalized) === "." ? "" : dirname11(normalized);
+    const parentRel = dirname12(normalized) === "." ? "" : dirname12(normalized);
     const parent = await this.resolveExisting(parentRel);
     const st2 = await stat2(parent.abs).catch(() => null);
     if (!st2?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
@@ -32981,9 +33061,9 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash5 } from "crypto";
-import { mkdirSync as mkdirSync11, mkdtempSync, readFileSync as readFileSync21, rmSync as rmSync3, writeFileSync as writeFileSync13 } from "fs";
+import { mkdirSync as mkdirSync12, mkdtempSync, readFileSync as readFileSync22, rmSync as rmSync3, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { dirname as dirname12, join as join13 } from "path";
+import { dirname as dirname13, join as join13 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -33076,8 +33156,8 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync21(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync21(path, "utf8")
+        publicKey: readFileSync22(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync22(path, "utf8")
       };
     } finally {
       rmSync3(dir, { recursive: true, force: true });
@@ -33085,7 +33165,7 @@ var SshAccessService = class {
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync21(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync22(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -33098,8 +33178,8 @@ var SshAccessService = class {
     }
   }
   writeState(state) {
-    mkdirSync11(dirname12(this.opts.statePath), { recursive: true });
-    writeFileSync13(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    mkdirSync12(dirname13(this.opts.statePath), { recursive: true });
+    writeFileSync14(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -33628,8 +33708,8 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile5 } from "child_process";
-import { existsSync as existsSync14, mkdirSync as mkdirSync12, readFileSync as readFileSync22, rmSync as rmSync4, writeFileSync as writeFileSync14 } from "fs";
-import { dirname as dirname13 } from "path";
+import { existsSync as existsSync15, mkdirSync as mkdirSync13, readFileSync as readFileSync23, rmSync as rmSync4, writeFileSync as writeFileSync15 } from "fs";
+import { dirname as dirname14 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile5);
 var UNIT = "cc-gmail-watch.service";
@@ -33669,7 +33749,7 @@ var GmailWatchService = class {
   unit;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync14(this.gogBin);
+    return existsSync15(this.gogBin);
   }
   /**
    * Write the watcher's configuration and (re)start it.
@@ -33678,7 +33758,7 @@ var GmailWatchService = class {
    * role, so nothing here writes a systemd unit at runtime.
    */
   async apply(cfg) {
-    mkdirSync12(dirname13(this.opts.envPath), { recursive: true });
+    mkdirSync13(dirname14(this.opts.envPath), { recursive: true });
     const lines = [
       "# Managed by the ControlClaw vm-agent. Do not edit.",
       "# The audience is the firewall's public URL for this webhook, set explicitly: derived from",
@@ -33693,8 +33773,8 @@ var GmailWatchService = class {
       "OPENCLAW_SKIP_GMAIL_WATCHER=1",
       ""
     ];
-    writeFileSync14(this.opts.envPath, lines.join("\n"), { mode: 384 });
-    writeFileSync14(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+    writeFileSync15(this.opts.envPath, lines.join("\n"), { mode: 384 });
+    writeFileSync15(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
     await this.systemctl("restart");
     this.log(`[gmail-watch] serving ${cfg.path} on 127.0.0.1:${cfg.port} for ${cfg.audience}`);
     return this.status();
@@ -33709,7 +33789,7 @@ var GmailWatchService = class {
   async status() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync22(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync23(this.opts.statePath, "utf8"));
     } catch {
       cfg = null;
     }
@@ -33744,7 +33824,7 @@ var GmailWatchService = class {
   async renew() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync22(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync23(this.opts.statePath, "utf8"));
     } catch {
       return { ok: false, message: "This box is not watching a mailbox." };
     }
@@ -34031,15 +34111,15 @@ var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
-var POOL_UNCLAIMED = existsSync15("/etc/controlclaw/pool-unclaimed");
+var POOL_UNCLAIMED = existsSync16("/etc/controlclaw/pool-unclaimed");
 var poolHealthy = false;
-if (POOL_UNCLAIMED && !existsSync15(`${KEYS_DIR2}/saas_public_key.pem`)) {
+if (POOL_UNCLAIMED && !existsSync16(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
-  writeFileSync15(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+  writeFileSync16(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync23(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync24(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -34047,7 +34127,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync23(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync24(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -34062,10 +34142,10 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   if (POOL_UNCLAIMED) {
-    for (let i2 = 0; i2 < 300 && !existsSync15(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+    for (let i2 = 0; i2 < 300 && !existsSync16(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
       await new Promise((resolve3) => setTimeout(resolve3, 1e3));
     }
-    if (!existsSync15(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    if (!existsSync16(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
     const egress = await enableTransparentEgress(KEYS_DIR2);
     if (!egress) return;
     const hostname4 = readKeyFile(KEYS_DIR2, "vm_hostname");
@@ -34250,6 +34330,10 @@ var server = createServer2(async (req, res) => {
     await handlePhone(req, res, url3, phone);
     return;
   }
+  if (url3.pathname.startsWith("/secrets/")) {
+    await handleSecrets(req, res, url3, new SecretsService({ envPath: "/home/controlclaw/.openclaw/.env", restartService: () => runAction("restart") }));
+    return;
+  }
   if (url3.pathname.startsWith("/agentmail/")) {
     await handleAgentMail(req, res, url3, agentmail);
     return;
@@ -34364,7 +34448,7 @@ server.listen(PORT, BIND, () => {
     gateway: client,
     browser: async (start, voice = false) => {
       const marker = `${STATE_DIR}/meeting-browser-voice`;
-      if (start && voice) writeFileSync15(marker, "bidi", { mode: 384 });
+      if (start && voice) writeFileSync16(marker, "bidi", { mode: 384 });
       else rmSync5(marker, { force: true });
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
       if (!start) return;
@@ -34380,7 +34464,7 @@ server.listen(PORT, BIND, () => {
       throw new Error("Meeting browser did not become ready");
     },
     reserve: (reserved) => {
-      if (reserved) writeFileSync15(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
+      if (reserved) writeFileSync16(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
       else rmSync5(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
     },
     summarize: summarizeMeeting,

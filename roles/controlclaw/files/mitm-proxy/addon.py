@@ -509,6 +509,21 @@ def match_rule(host: str, method: str, path: str, vm_id: str | None = None) -> d
     return None
 
 
+def running() -> None:
+    # mitmdump's built-in dumper otherwise prints the rewritten query string.
+    # Activity is emitted separately below, with named swaps and no values.
+    if hasattr(_mitm_ctx.options, "flow_detail"):
+        _mitm_ctx.options.update(flow_detail=0)
+
+
+def secret_host_matches(pattern: str, host: str) -> bool:
+    host = host.lower().rstrip(".")
+    pattern = pattern.lower()
+    if pattern.startswith("*."):
+        return host.endswith(pattern[1:]) and host != pattern[2:]
+    return "*" not in pattern and host == pattern
+
+
 def credentials_for(host: str, vm_id: str | None = None) -> list[dict[str, Any]]:
     """Credentials matching `host`, vm-scoped with ORG FALLBACK: a credential with no `vm_id` is
     org-wide; one with a `vm_id` applies only to that VM and OVERRIDES the org-wide credential for
@@ -516,7 +531,13 @@ def credentials_for(host: str, vm_id: str | None = None) -> list[dict[str, Any]]
     still get the org credential."""
     by_placeholder: dict[str, dict[str, Any]] = {}
     for c in _creds.get():
-        if not host_matches(c.get("match_domain", ""), host):
+        if c.get("secret_name"):
+            # Custom secrets never inherit org fallback or legacy broad swap locations.
+            if not c.get("vm_id") or c["vm_id"] != vm_id:
+                continue
+            if not any(secret_host_matches(pattern, host) for pattern in c.get("allowed_hosts", [])):
+                continue
+        elif not host_matches(c.get("match_domain", ""), host):
             continue
         cv = c.get("vm_id")
         if cv is not None and cv != vm_id:
@@ -1096,6 +1117,47 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
             if authorization[:7].lower() == "bearer " and authorization[7:] == placeholder:
                 flow.request.headers["authorization"] = "Bearer " + secret
                 applied.append((secret, placeholder))
+            continue
+        if cred.get("secret_name"):
+            # Behind redsocks the routing authority is an IP. Require the client's
+            # TLS name to match Host, then route to that approved name, never to the
+            # caller's IP. Ordinary named authorities must also match Host exactly.
+            authority = flow.request.host.lower().rstrip(".")
+            destination = host.lower().rstrip(".")
+            client_sni = getattr(flow.client_conn, "sni", None)
+            server_sni = getattr(flow.server_conn, "sni", None)
+            if any(sni and sni.lower().rstrip(".") != destination for sni in (client_sni, server_sni)):
+                continue
+            if authority != destination:
+                try:
+                    ipaddress.ip_address(authority)
+                except ValueError:
+                    continue
+                if flow.request.scheme != "https" or not client_sni:
+                    continue
+                flow.request.host = host
+                flow.server_conn = connection.Server(address=(host, flow.request.port), sni=host)
+            hit = False
+            for loc in cred.get("secret_locations", []):
+                name = loc.get("name", "")
+                if loc.get("kind") == "header":
+                    prefix = loc.get("prefix", "")
+                    # Compare the whole field, including prefix; never substitute a substring.
+                    values = flow.request.headers.get_all(name)
+                    changed = [prefix + secret if v == prefix + placeholder else v for v in values]
+                    if values != changed:
+                        flow.request.headers.set_all(name, changed)
+                        hit = True
+                elif loc.get("kind") == "query":
+                    values = flow.request.query.get_all(name)
+                    changed = [secret if v == placeholder else v for v in values]
+                    if values != changed:
+                        flow.request.query.set_all(name, changed)
+                        hit = True
+            if hit:
+                applied.append((secret, placeholder))
+                flow.metadata.setdefault("cc_secret_swaps", []).append(cred["secret_name"])
+                log.info("[mitm] secret=%s host=%s verdict=swapped", cred["secret_name"], host)
             continue
         locations = cred.get("locations") or DEFAULT_LOCATIONS
         hit = False
@@ -2568,7 +2630,7 @@ async def request(flow: http.HTTPFlow) -> None:
 
 def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
     rec = _http_record(flow, "allow")
-    rec["swapped"] = [p for _, p in flow.metadata.get("cc_applied", [])]
+    rec["swapped"] = [p for _, p in flow.metadata.get("cc_applied", []) if not p.startswith("CC-SEC-")] + flow.metadata.get("cc_secret_swaps", [])
     if flow.metadata.get("cc_granted"):
         rec["permission_id"] = flow.metadata["cc_granted"]
     req_raw = flow.request.raw_content
@@ -2619,7 +2681,7 @@ def error(flow: http.HTTPFlow) -> None:
     if NON_ROUTABLE_REFUSAL in str(getattr(flow.error, "msg", "") or ""):
         return  # `server_connect` refused the connection and already wrote the block record
     rec = _allow_record(flow)
-    rec["error"] = "Integration request failed" if flow.request.pretty_host in ("api.agentmail.to", "ws.agentmail.to", "api.twilio.com") else str(getattr(flow.error, "msg", "") or "upstream error")[:200]
+    rec["error"] = "Secret request failed" if flow.metadata.get("cc_secret_swaps") else "Integration request failed" if flow.request.pretty_host in ("api.agentmail.to", "ws.agentmail.to", "api.twilio.com") else str(getattr(flow.error, "msg", "") or "upstream error")[:200]
     start = flow.request.timestamp_start
     end = getattr(flow.error, "timestamp", None)
     if start and end:

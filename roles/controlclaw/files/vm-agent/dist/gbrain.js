@@ -6009,8 +6009,8 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8f8d78e" : "unknown",
-  builtAt: true ? "2026-10-03T14:21:53+01:00" : "unknown"
+  commit: true ? "8e5fb71" : "unknown",
+  builtAt: true ? "2026-10-03T17:34:49+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [

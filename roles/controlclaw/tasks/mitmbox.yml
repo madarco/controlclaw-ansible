@@ -339,7 +339,7 @@
       # at request time instead of at CONNECT time.
       ExecStart=/opt/controlclaw/mitm/venv/bin/mitmdump --listen-port {{ mitm_proxy_port }} \
         --ignore-hosts "^{{ controlclaw_url | urlsplit('hostname') | regex_escape }}:[0-9]+$$" \
-        --set connection_strategy=lazy \
+        --set flow_detail=0 --set connection_strategy=lazy \
         --set confdir=/opt/controlclaw/mitm/ca -s /opt/controlclaw/mitm/proxy/addon.py
       Restart=always
       RestartSec=5
