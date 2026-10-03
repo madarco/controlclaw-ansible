@@ -1,5 +1,6 @@
 // No provider payloads, transcripts, credentials or audio are logged here.
 const WAKE = /^\s*(?:(?:hey|hi|okay|ok)\s+)?control[\s-]*cl(?:aw|one|oak|oud|ub)\b/i;
+const STOP = /^[\s,.:;!?-]*(?:please\s+)?stop(?:\s+(?:speaking|talking))?(?:\s+now)?(?:\s+please)?[\s.!?]*$/i;
 const MAX_TOOL_CALLS = 24;
 const TOOL_TIMEOUT = 30000;
 const words = text => String(text).normalize('NFKC').toLowerCase().replace(/control[\s-]*cl(?:aw|one|oak|oud|ub)/g,'controlclaw').match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -101,7 +102,12 @@ export class VoiceBridge {
       this.req.onTranscript?.('user',text,true);
       if(!WAKE.test(text))return;
       this.addressedSequence=turn.sequence;this.turnStartedAt=turn.at;
-      this.handleBargeIn();this.allowed=true;
+      this.handleBargeIn();
+      // Stop is a playback control. A new model response could resume the cancelled
+      // answer or produce an unwanted acknowledgement. The next addressed request
+      // can reopen output normally; late audio and tool results stay fenced.
+      if(STOP.test(text.replace(WAKE,'')))return;
+      this.allowed=true;
       this.control('response-create');
       this.pending=[];this.pendingBytes=0;return;
     }

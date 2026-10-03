@@ -124,11 +124,36 @@ test('a new VAD segment cannot discard an earlier addressed stop transcript',()=
  const f=fixture();f.bridge.event({type:'speech-started',itemId:'stop'});f.bridge.event({type:'speech-stopped',itemId:'stop'});
  f.bridge.event({type:'speech-started',itemId:'done'});
  f.bridge.event({type:'input-transcription-completed',itemId:'stop',transcript:'ControlClaw stop speaking now.'});
- assert.equal(f.bridge.allowed,true);const clears=f.cleared();
+ assert.equal(f.bridge.allowed,false);assert.ok(f.cleared()>0);const clears=f.cleared();
  f.bridge.event({type:'input-transcription-completed',itemId:'done',transcript:'Say only done.'});assert.equal(f.cleared(),clears);f.bridge.close();
 });
 test('a late old addressed transcript cannot replace an already accepted newer request',()=>{
  const f=fixture();f.bridge.event({type:'speech-started',itemId:'old'});f.bridge.event({type:'speech-started',itemId:'new'});
  f.bridge.event({type:'input-transcription-completed',itemId:'new',transcript:'ControlClaw stop.'});const clears=f.cleared();
  f.bridge.event({type:'input-transcription-completed',itemId:'old',transcript:'ControlClaw explain clouds.'});assert.equal(f.cleared(),clears);f.bridge.close();
+});
+test('a stop-only request cancels playback and delegation without asking the model to speak again',()=>{
+ for(const gateway of [true,false]) {
+  const f=fixture();f.bridge.gateway=gateway;
+  const create=gateway?'response-create':'response.create';
+  f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw tell a story'});
+  f.bridge.event({type:'response-created',responseId:'r1'});f.bridge.event(chunk);f.bridge.event(tool);
+  const creates=f.sent.filter(e=>e.type===create).length,clears=f.cleared();
+  f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, stop.'});
+  assert.equal(f.bridge.allowed,false);assert.ok(f.cleared()>clears);assert.equal(f.bridge.calls.size,0);
+  f.bridge.event(chunk);f.bridge.submitToolResult('c1',{text:'late result'});f.bridge.event({type:'response-done',responseId:'r1'});
+  assert.equal(f.audio.length,1);assert.equal(f.sent.filter(e=>e.type===create).length,creates);
+  f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw say hello'});
+  assert.equal(f.sent.filter(e=>e.type===create).length,creates+1);f.bridge.close();
+ }
+});
+test('stop while response creation is in flight cannot schedule a replacement',()=>{
+ const f=fixture();f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw tell a story'});
+ f.bridge.event({type:'input-transcription-completed',transcript:'Hey Control Claw, please stop speaking now.'});
+ f.bridge.event({type:'response-created',responseId:'r1'});f.bridge.event(chunk);f.bridge.event({type:'response-done',responseId:'r1'});
+ assert.equal(f.audio.length,0);assert.equal(f.bridge.allowed,false);assert.equal(f.sent.filter(e=>e.type==='response-create').length,1);f.bridge.close();
+});
+test('a stop followed by a new spoken request still allows the requested response',()=>{
+ const f=fixture();f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, stop. Say only done.'});
+ assert.equal(f.bridge.allowed,true);assert.equal(f.sent.at(-1).type,'response-create');f.bridge.close();
 });
