@@ -1,0 +1,18 @@
+#!/usr/bin/python3
+import os, re, sys
+from pathlib import Path
+if os.geteuid()!=0 or len(sys.argv)!=2 or not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',sys.argv[1]): sys.exit(1)
+work=Path('/run/ccdoctor')/sys.argv[1]
+# Every directory is opened without following symlinks. A CLI can edit its workdir, so a root
+# cleanup must never follow .codex or .pi to a different directory, even during another session.
+for parts in [('key',),('request.json',),('.codex','auth.json'),('.pi','agent','auth.json')]:
+    fd=None
+    try:
+        fd=os.open(work,os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for directory in parts[:-1]:
+            child=os.open(directory,os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,dir_fd=fd)
+            os.close(fd);fd=child
+        os.unlink(parts[-1],dir_fd=fd)
+    except (FileNotFoundError,NotADirectoryError): pass
+    finally:
+        if fd is not None: os.close(fd)

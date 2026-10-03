@@ -39,6 +39,10 @@
     # Open, through the firewall (browser-enrollment.md §3). A form POST from an agent's own page:
     # an open intent and a binding, or a pending id and a code. Both fit in a few hundred bytes.
     # Exact paths, not prefixes, so nothing else under /__cc/ reaches the mitm-agent.
+    handle /__cc/doctor/* {
+        reverse_proxy 127.0.0.1:{{ ingress_port }}
+    }
+
     @access path /__cc/open /__cc/enroll/confirm /__cc/meetings/media
     handle @access {
         request_body {

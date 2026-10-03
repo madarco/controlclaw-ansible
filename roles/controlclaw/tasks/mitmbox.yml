@@ -473,6 +473,9 @@
   ansible.builtin.include_tasks: connector.yml
   when: not ci_test
 
+- name: Include doctor runtime
+  ansible.builtin.include_tasks: doctor-firewall.yml
+
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true

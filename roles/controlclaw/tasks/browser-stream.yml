@@ -276,10 +276,12 @@
 # unanchored `google-chrome-stable --remote-debugging` matches the wrapper as happily as Chrome
 # — which on a box where Chrome has not come up yet reads as "a browser is running" and then
 # asserts against the wrapper's arguments. Chrome's cmdline starts with the binary; no shell's
-# does.
+# does. Chrome can retain the wrapper argv[0] or expose its native binary path after exec.
+# Accept both, plus the bare wrapper name used by PATH launches. Renderers start with --type
+# and must not satisfy this probe.
 - name: Read the running browser's flags before deciding on a restart
   ansible.builtin.command:
-    cmd: pgrep -a -f "^(/usr/bin/google-chrome-stable|/opt/google/chrome/chrome) --remote-debugging"
+    cmd: pgrep -a -f "^(google-chrome-stable|/usr/bin/google-chrome-stable|/opt/google/chrome/(google-chrome|chrome)) --remote-debugging"
   register: browser_cmdline_now
   changed_when: false
   failed_when: false
@@ -387,7 +389,7 @@
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      printf 'CMDLINE=%s\n' "$(pgrep -a -f '^(/usr/bin/google-chrome-stable|/opt/google/chrome/chrome) --remote-debugging' | head -1)"
+      printf 'CMDLINE=%s\n' "$(pgrep -a -f '^(google-chrome-stable|/usr/bin/google-chrome-stable|/opt/google/chrome/(google-chrome|chrome)) --remote-debugging' | head -1)"
       printf 'MEMMAX=%s\n' "$(systemctl show browser-stream -p MemoryMax --value)"
       printf 'SANDBOXHELPER=%s\n' "$(pgrep -c -f '/opt/google/chrome/chrome-sandbox' || true)"
     executable: /bin/bash

@@ -21643,7 +21643,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID4 } from "crypto";
-import { readFileSync as readFileSync24, existsSync as existsSync16, writeFileSync as writeFileSync16, rmSync as rmSync5 } from "fs";
+import { readFileSync as readFileSync25, existsSync as existsSync17, writeFileSync as writeFileSync16, rmSync as rmSync5 } from "fs";
 
 // src/session.ts
 import crypto2 from "crypto";
@@ -23096,12 +23096,45 @@ function saasBaseUrl(keysDir2) {
 }
 
 // src/software.ts
-import { readFileSync as readFileSync6, realpathSync } from "fs";
+import { readFileSync as readFileSync7, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
+
+// src/doctor.ts
+import { verify, createHash as createHash4 } from "crypto";
+import { readFileSync as readFileSync6, existsSync as existsSync2 } from "fs";
+var DOCTOR_KEY_DOMAIN = "controlclaw:doctor-key:v1\n";
+var DOCTOR_KEY_FILE = "/home/ccdoctor/.ssh/authorized_keys";
+function doctorHostKey() {
+  try {
+    return readFileSync6("/etc/ssh/ssh_host_ed25519_key.pub", "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+function doctorAvailable() {
+  return existsSync2("/usr/local/bin/cc-doctor-key-install") && existsSync2("/etc/controlclaw/doctor-mitm-pin.pem") && doctorStatus().fingerprint !== null;
+}
+function doctorStatus(path = DOCTOR_KEY_FILE) {
+  try {
+    const key = readFileSync6(path, "utf8").match(/ssh-ed25519 ([A-Za-z0-9+/=]+)/)?.[1];
+    return { fingerprint: key ? `SHA256:${createHash4("sha256").update(Buffer.from(key, "base64")).digest("base64").replace(/=+$/, "")}` : null };
+  } catch {
+    return { fingerprint: null };
+  }
+}
+async function installDoctorKey(pub, sig2, opts = {}) {
+  if (typeof pub !== "string" || !/^ssh-ed25519 [A-Za-z0-9+/=]{68}(?: [A-Za-z0-9_-]{1,64})?$/.test(pub) || typeof sig2 !== "string" || !/^[A-Za-z0-9+/=]{88}$/.test(sig2)) throw new Error("Invalid doctor key");
+  const pin = readFileSync6(opts.pinPath ?? `${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`, "utf8");
+  if (!verify(null, Buffer.from(DOCTOR_KEY_DOMAIN + pub), pin, Buffer.from(sig2, "base64"))) throw new Error("Invalid doctor key signature");
+  await (opts.exec ?? defaultExec)("sudo", ["-n", "/usr/local/bin/cc-doctor-key-install"], 15e3, JSON.stringify({ pub, sig: sig2 }));
+  return `SHA256:${createHash4("sha256").update(Buffer.from(pub.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
+}
+
+// src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8e5fb71" : "unknown",
-  builtAt: true ? "2026-10-03T17:34:49+01:00" : "unknown"
+  commit: true ? "14e4569" : "unknown",
+  builtAt: true ? "2026-10-03T18:18:48+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
@@ -23115,7 +23148,7 @@ function clip(value) {
 }
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync6(path, "utf8"));
+    const parsed = JSON.parse(readFileSync7(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -23156,7 +23189,7 @@ function boxSoftware(opts = {}) {
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
-    features: [...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -23208,7 +23241,7 @@ function unclaimedStatus(method, path, ready) {
 }
 
 // src/handle-certificate.ts
-import { readFileSync as readFileSync7 } from "fs";
+import { readFileSync as readFileSync8 } from "fs";
 
 // src/https-ready.ts
 import { connect } from "tls";
@@ -23242,7 +23275,7 @@ async function waitForOwnCertificate(probe2, opts) {
 async function reportHandleCertificate(keysDir2) {
   let hostname3;
   try {
-    hostname3 = readFileSync7(`${keysDir2}/access_hostname`, "utf8").trim();
+    hostname3 = readFileSync8(`${keysDir2}/access_hostname`, "utf8").trim();
   } catch {
     return;
   }
@@ -23268,10 +23301,10 @@ async function reportHandleCertificate(keysDir2) {
 
 // src/keys.ts
 import crypto3 from "crypto";
-import { readFileSync as readFileSync8, writeFileSync as writeFileSync3, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
+import { readFileSync as readFileSync9, writeFileSync as writeFileSync3, existsSync as existsSync3, mkdirSync as mkdirSync2 } from "fs";
 function readFile4(path) {
   try {
-    return readFileSync8(path, "utf8").trim();
+    return readFileSync9(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -23279,8 +23312,8 @@ function readFile4(path) {
 function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
-  if (existsSync2(privPath)) {
-    return readFile4(pubPath) ?? derivePublicKey(readFileSync8(privPath, "utf8"));
+  if (existsSync3(privPath)) {
+    return readFile4(pubPath) ?? derivePublicKey(readFileSync9(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto3.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
@@ -23350,12 +23383,12 @@ function sha256Hex(s2) {
 }
 
 // src/mitm-ca.ts
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync4, existsSync as existsSync3 } from "fs";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync4, existsSync as existsSync4 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
 function readFile5(path) {
   try {
-    return readFileSync9(path, "utf8").trim();
+    return readFileSync10(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -23393,7 +23426,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
         const cfg = await res.json();
         const mitm = cfg.mitm;
         if (mitm?.caCert && mitm.caSig) {
-          let pin = existsSync3(pinPath) ? readFile5(pinPath) : null;
+          let pin = existsSync4(pinPath) ? readFile5(pinPath) : null;
           if (!pin && mitm.pubKey) {
             pin = mitm.pubKey;
             writeFileSync4(pinPath, pin, { mode: 420 });
@@ -23436,13 +23469,13 @@ function installCa(caSrcPath, caCert) {
 }
 
 // src/egress.ts
-import { readFileSync as readFileSync10 } from "fs";
+import { readFileSync as readFileSync11 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
 function readFile6(path) {
   try {
-    return readFileSync10(path, "utf8").trim();
+    return readFileSync11(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -23641,6 +23674,7 @@ function handleStatus(res, drive2, gateway2) {
     ...connected !== null ? { gateway: connected } : {},
     message: summary,
     software: boxSoftware(),
+    doctor: doctorStatus(),
     // A count, not the detail: this is polled for every agent, so it reads a file and makes no
     // rclone call. `GET /drive/status` is where the cache sizes and queues live.
     ...drive2 ? { drive: drive2 } : {}
@@ -23648,8 +23682,8 @@ function handleStatus(res, drive2, gateway2) {
 }
 
 // src/audit.ts
-import { createHash as createHash4 } from "crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync11, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { createHash as createHash5 } from "crypto";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname3 } from "path";
 var PAGE_LIMIT = 500;
 var MAX_PAGES = 40;
@@ -23673,7 +23707,7 @@ function mapAuditEvent(ev) {
   const toolName = cut(ev.toolName, 120);
   const toolCallId = cut(ev.toolCallId, 200);
   const runId = cut(ev.runId, 128);
-  const sessionKey = ev.sessionKey?.includes(":agentmail:") ? `agentmail:${createHash4("sha256").update(ev.sessionKey).digest("hex")}` : cut(ev.sessionKey, 200);
+  const sessionKey = ev.sessionKey?.includes(":agentmail:") ? `agentmail:${createHash5("sha256").update(ev.sessionKey).digest("hex")}` : cut(ev.sessionKey, 200);
   const agentId = cut(ev.agentId, 64);
   if (toolName) rec.tool_name = toolName;
   if (toolCallId) rec.tool_call_id = toolCallId;
@@ -23706,8 +23740,8 @@ var AuditShipper = class {
   }
   loadCursor() {
     try {
-      if (!existsSync4(this.opts.cursorPath)) return null;
-      const c2 = JSON.parse(readFileSync11(this.opts.cursorPath, "utf-8"));
+      if (!existsSync5(this.opts.cursorPath)) return null;
+      const c2 = JSON.parse(readFileSync12(this.opts.cursorPath, "utf-8"));
       if (typeof c2.sequence === "number" && typeof c2.occurredAt === "number") return { sequence: c2.sequence, occurredAt: c2.occurredAt };
     } catch {
     }
@@ -24077,12 +24111,12 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync12, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync13, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname4 } from "path";
 import { randomUUID } from "crypto";
 
 // src/openclaw-allow.ts
-import { existsSync as existsSync5 } from "fs";
+import { existsSync as existsSync6 } from "fs";
 import { createRequire } from "module";
 var ENTRY_CAP = 200;
 var requireBuiltin = createRequire(import.meta.url);
@@ -24143,7 +24177,7 @@ function labelFromMeta(metaJson) {
 }
 function readAllowList(opts) {
   if (opts.channels.length === 0) return { senders: [], error: null, canonical: false };
-  if (!existsSync5(opts.dbPath)) return { senders: [], error: null, canonical: false };
+  if (!existsSync6(opts.dbPath)) return { senders: [], error: null, canonical: false };
   let db;
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
@@ -24198,7 +24232,7 @@ function readAllowList(opts) {
 }
 function readPendingPairings(opts) {
   if (opts.channels.length === 0) return { pairings: [], error: null, canonical: false };
-  if (!existsSync5(opts.dbPath)) return { pairings: [], error: null, canonical: false };
+  if (!existsSync6(opts.dbPath)) return { pairings: [], error: null, canonical: false };
   let db;
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
@@ -24393,9 +24427,9 @@ function looksBusy2(message2) {
   );
 }
 function readChannelState(path) {
-  if (!path || !existsSync6(path)) return { version: 1, seededAt: null, approved: [] };
+  if (!path || !existsSync7(path)) return { version: 1, seededAt: null, approved: [] };
   try {
-    const parsed = JSON.parse(readFileSync12(path, "utf8"));
+    const parsed = JSON.parse(readFileSync13(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
     return {
       version: 1,
@@ -24701,7 +24735,7 @@ var ChannelsService = class {
     for (const type of CHANNEL_TYPES) {
       let raw;
       try {
-        raw = readFileSync12(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
+        raw = readFileSync13(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
       } catch {
         continue;
       }
@@ -24900,7 +24934,7 @@ var ChannelsService = class {
     this.log(`[channels] installing ${pkg}`);
     try {
       const ca2 = this.opts.mitmCaPath;
-      const env2 = ca2 && existsSync6(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
+      const env2 = ca2 && existsSync7(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
       await this.exec(this.bin(), ["plugins", "install", `npm:${pkg}`], PLUGIN_INSTALL_TIMEOUT_MS, void 0, {
         maxBuffer: PLUGIN_INSTALL_MAX_BUFFER,
         env: env2
@@ -25233,7 +25267,7 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync13, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync14, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname5 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
@@ -25271,9 +25305,9 @@ function readMemory(config2) {
   return { provider: str3(search2?.provider), model: str3(search2?.model), baseUrl: str3(remote?.baseUrl), apiKey: str3(remote?.apiKey), dreaming: dreaming !== false };
 }
 function readReindexFailure(path) {
-  if (!path || !existsSync7(path)) return null;
+  if (!path || !existsSync8(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync13(path, "utf8"));
+    const parsed = JSON.parse(readFileSync14(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
   } catch {
     return null;
@@ -25419,7 +25453,7 @@ var LlmService = class {
     this.reindexing = true;
     this.writeReindexFailure("the memory index rebuild did not finish");
     const ca2 = this.opts.mitmCaPath;
-    const env2 = ca2 && existsSync7(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
+    const env2 = ca2 && existsSync8(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
     void this.exec(this.bin(), ["memory", "index", "--force"], REINDEX_TIMEOUT_MS, void 0, { env: env2 }).then(() => {
       this.writeReindexFailure(null);
       this.log("[llm] memory index rebuilt for the new embedding provider");
@@ -25653,7 +25687,7 @@ async function handleLlm(req, res, url3, service) {
 
 // src/meetings.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import { existsSync as existsSync9, readFileSync as readFileSync15, statfsSync } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync16, statfsSync } from "fs";
 import { totalmem } from "os";
 import { join as join10 } from "path";
 
@@ -25704,9 +25738,9 @@ function canonicalMeetUrl(value) {
 
 // src/meeting-notes.ts
 import {
-  existsSync as existsSync8,
+  existsSync as existsSync9,
   mkdirSync as mkdirSync6,
-  readFileSync as readFileSync14,
+  readFileSync as readFileSync15,
   renameSync as renameSync5,
   rmSync,
   writeFileSync as writeFileSync8,
@@ -25765,8 +25799,8 @@ var MeetingArchive = class {
     return join9(this.root, `${id}.json`);
   }
   deleted() {
-    if (!existsSync8(this.tombstonesPath)) return {};
-    return JSON.parse(readFileSync14(this.tombstonesPath, "utf8"));
+    if (!existsSync9(this.tombstonesPath)) return {};
+    return JSON.parse(readFileSync15(this.tombstonesPath, "utf8"));
   }
   save(record2) {
     if (this.deleted()[record2.id]) return false;
@@ -25776,9 +25810,9 @@ var MeetingArchive = class {
   }
   list() {
     const deleted = this.deleted();
-    if (!existsSync8(this.root)) return [];
+    if (!existsSync9(this.root)) return [];
     return readdirSync2(this.root).filter((n2) => /^[a-f0-9-]{36}\.json$/.test(n2)).map(
-      (n2) => JSON.parse(readFileSync14(join9(this.root, n2), "utf8"))
+      (n2) => JSON.parse(readFileSync15(join9(this.root, n2), "utf8"))
     ).filter((r2) => !deleted[r2.id]).sort((a2, b2) => b2.startedAt.localeCompare(a2.startedAt));
   }
   tombstone(record2) {
@@ -25790,7 +25824,7 @@ var MeetingArchive = class {
     atomicJson(this.tombstonesPath, deleted);
   }
   deletionPending() {
-    return existsSync8(this.tombstonesPath + ".pending");
+    return existsSync9(this.tombstonesPath + ".pending");
   }
   deletionFinished() {
     rmSync(this.tombstonesPath + ".pending", { force: true });
@@ -25801,7 +25835,7 @@ var MeetingArchive = class {
 };
 function nativeMeetingIds(stateDir) {
   const file2 = join9(stateDir, "state", "openclaw.sqlite");
-  if (!existsSync8(file2)) return [];
+  if (!existsSync9(file2)) return [];
   const { DatabaseSync } = requireBuiltin2(
     "node:sqlite"
   );
@@ -25819,7 +25853,7 @@ function nativeMeetingIds(stateDir) {
 function eraseNativeMeetings(stateDir, sessionIds) {
   if (!sessionIds.length) return;
   const file2 = join9(stateDir, "state", "openclaw.sqlite");
-  if (existsSync8(file2)) {
+  if (existsSync9(file2)) {
     const { DatabaseSync } = requireBuiltin2(
       "node:sqlite"
     );
@@ -25854,7 +25888,7 @@ function eraseNativeMeetings(stateDir, sessionIds) {
     }
   }
   const exports = join9(stateDir, "transcripts");
-  if (!existsSync8(exports)) return;
+  if (!existsSync9(exports)) return;
   for (const date5 of readdirSync2(exports, { withFileTypes: true })) {
     if (!date5.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(date5.name)) continue;
     for (const entry of readdirSync2(join9(exports, date5.name), {
@@ -25865,8 +25899,8 @@ function eraseNativeMeetings(stateDir, sessionIds) {
       if (!dir.startsWith(resolve(exports) + sep))
         throw new Error("Invalid transcript export");
       const metadata = join9(dir, "metadata.json");
-      if (!existsSync8(metadata)) continue;
-      const raw = JSON.parse(readFileSync14(metadata, "utf8"));
+      if (!existsSync9(metadata)) continue;
+      const raw = JSON.parse(readFileSync15(metadata, "utf8"));
       if (raw.sessionId && sessionIds.includes(raw.sessionId))
         rmSync(dir, { recursive: true, force: true });
     }
@@ -25879,8 +25913,8 @@ var MeetingService = class {
     this.opts = opts;
     this.ready = opts.browser(false).then(() => opts.reserve?.(false));
     void this.ready.catch(() => void 0);
-    if (existsSync9(opts.statePath)) {
-      const saved = JSON.parse(readFileSync15(opts.statePath, "utf8"));
+    if (existsSync10(opts.statePath)) {
+      const saved = JSON.parse(readFileSync16(opts.statePath, "utf8"));
       this.applied = saved.applied;
       this.revision = saved.revision;
       for (const id of saved.operations) this.operations.add(id);
@@ -26411,8 +26445,8 @@ var MeetingService = class {
   /** Restore content without rolling back the firewall's accepted meeting policy. */
   sanitizeRestoredConfig(staging) {
     const path = join10(staging, "openclaw.json");
-    if (!existsSync9(path)) return;
-    const config2 = JSON.parse(readFileSync15(path, "utf8"));
+    if (!existsSync10(path)) return;
+    const config2 = JSON.parse(readFileSync16(path, "utf8"));
     config2.plugins ??= {};
     config2.plugins.entries ??= {};
     config2.plugins.entries["google-meet"] = {
@@ -26447,8 +26481,8 @@ var MeetingService = class {
     config2.browser.profiles ??= {};
     config2.browser.profiles["cc-meetings"] = { cdpUrl: "http://127.0.0.1:9223", attachOnly: true };
     const livePath = join10(this.opts.openclawStateDir, "openclaw.json");
-    if (existsSync9(livePath)) {
-      const live = JSON.parse(readFileSync15(livePath, "utf8"));
+    if (existsSync10(livePath)) {
+      const live = JSON.parse(readFileSync16(livePath, "utf8"));
       if (live.plugins?.installs?.["google-meet"]) {
         config2.plugins.installs ??= {};
         config2.plugins.installs["google-meet"] = live.plugins.installs["google-meet"];
@@ -26877,7 +26911,7 @@ async function handleSearch(req, res, url3, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync10, mkdirSync as mkdirSync7, readFileSync as readFileSync16, renameSync as renameSync6, unlinkSync, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync11, mkdirSync as mkdirSync7, readFileSync as readFileSync17, renameSync as renameSync6, unlinkSync, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname6 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -27030,9 +27064,9 @@ var ConnectorsService = class {
   }
 };
 function readState(path) {
-  if (!existsSync10(path)) return { gateway: null, connections: [], updatedAt: "" };
+  if (!existsSync11(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
-    const parsed = JSON.parse(readFileSync16(path, "utf8"));
+    const parsed = JSON.parse(readFileSync17(path, "utf8"));
     return {
       gateway: parsed.gateway && typeof parsed.gateway.url === "string" && typeof parsed.gateway.token === "string" ? parsed.gateway : null,
       connections: Array.isArray(parsed.connections) ? parsed.connections : [],
@@ -27065,7 +27099,7 @@ function writeCliEnv(path, relayUrl, token) {
 }
 function removeFile(path) {
   try {
-    if (existsSync10(path)) unlinkSync(path);
+    if (existsSync11(path)) unlinkSync(path);
   } catch {
   }
 }
@@ -27140,7 +27174,7 @@ async function handleConnectors(req, res, url3, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync11, mkdirSync as mkdirSync8, readFileSync as readFileSync17, renameSync as renameSync7, writeFileSync as writeFileSync10 } from "fs";
+import { existsSync as existsSync12, mkdirSync as mkdirSync8, readFileSync as readFileSync18, renameSync as renameSync7, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname7 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -27217,7 +27251,7 @@ var DriveService = class {
   modes() {
     const out = /* @__PURE__ */ new Map();
     try {
-      const desired = JSON.parse(readFileSync17(this.opts.desiredPath, "utf8"));
+      const desired = JSON.parse(readFileSync18(this.opts.desiredPath, "utf8"));
       for (const m2 of desired.mounts ?? []) if (m2?.name) out.set(m2.name, m2.mode);
     } catch {
     }
@@ -27231,7 +27265,7 @@ var DriveService = class {
    */
   readState() {
     try {
-      const raw = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync18(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object" || !Array.isArray(raw.mounts)) return null;
       const mounts = raw.mounts.filter((m2) => !!m2 && typeof m2.name === "string" && typeof m2.rcPort === "number");
       return {
@@ -27272,7 +27306,7 @@ var DriveService = class {
   /** The desired file as written, so a failed launch can put it back byte for byte. */
   readDesiredRaw() {
     try {
-      return readFileSync17(this.opts.desiredPath, "utf8");
+      return readFileSync18(this.opts.desiredPath, "utf8");
     } catch {
       return null;
     }
@@ -27370,7 +27404,7 @@ var DriveService = class {
   }
   /** Whether this box has Drive support installed at all (an older box does not). */
   supported() {
-    return existsSync11(this.applyScript);
+    return existsSync12(this.applyScript);
   }
 };
 
@@ -27418,9 +27452,9 @@ async function handleDrive(req, res, url3, service) {
 
 // src/secrets.ts
 import {
-  existsSync as existsSync12,
+  existsSync as existsSync13,
   mkdirSync as mkdirSync9,
-  readFileSync as readFileSync18,
+  readFileSync as readFileSync19,
   renameSync as renameSync8,
   writeFileSync as writeFileSync11
 } from "fs";
@@ -27442,7 +27476,7 @@ var SecretsService = class {
     this.opts = opts;
   }
   apply(input2) {
-    const current = existsSync12(this.opts.envPath) ? readFileSync18(this.opts.envPath, "utf8") : "";
+    const current = existsSync13(this.opts.envPath) ? readFileSync19(this.opts.envPath, "utf8") : "";
     const unmanaged = current.split(/\r?\n/).filter(
       (line) => !/^[A-Z][A-Z0-9_]{0,63}=CC-SEC-[a-f0-9]{48}$/.test(line)
     );
@@ -27498,9 +27532,9 @@ async function handleSecrets(req, res, url3, service) {
 
 // src/agentmail.ts
 import {
-  existsSync as existsSync13,
+  existsSync as existsSync14,
   mkdirSync as mkdirSync10,
-  readFileSync as readFileSync19,
+  readFileSync as readFileSync20,
   renameSync as renameSync9,
   writeFileSync as writeFileSync12
 } from "fs";
@@ -27569,7 +27603,7 @@ var AgentMailService = class {
       GATEWAY_READ_MS
     );
     if (!snapshot.hash) throw new Error("OpenClaw returned no config hash");
-    const current = existsSync13(this.opts.envPath) ? readFileSync19(this.opts.envPath, "utf8") : "";
+    const current = existsSync14(this.opts.envPath) ? readFileSync20(this.opts.envPath, "utf8") : "";
     const lines = current.split(/\r?\n/).filter(
       (line) => !/^\s*(?:export\s+)?AGENTMAIL_(?:API_KEY|WEBHOOK_SECRET)\s*=/.test(
         line
@@ -27698,7 +27732,7 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync14, mkdirSync as mkdirSync11, readFileSync as readFileSync20, renameSync as renameSync10, rmSync as rmSync2, writeFileSync as writeFileSync13 } from "fs";
+import { existsSync as existsSync15, mkdirSync as mkdirSync11, readFileSync as readFileSync21, renameSync as renameSync10, rmSync as rmSync2, writeFileSync as writeFileSync13 } from "fs";
 import { dirname as dirname10 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -27747,7 +27781,7 @@ var GoogleService = class {
   gogBin;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync14(this.gogBin);
+    return existsSync15(this.gogBin);
   }
   /**
    * Make the box match the desired state. One atomic write, or one removal.
@@ -27803,7 +27837,7 @@ var GoogleService = class {
       gogVersion: await this.version(),
       // The file, not the remembered state: this is the question the console is really asking, and
       // a state file that outlived its env file would answer it wrongly.
-      hasPlaceholder: existsSync14(this.opts.envPath),
+      hasPlaceholder: existsSync15(this.opts.envPath),
       connected: applied?.connected ?? false,
       services: applied?.services ?? [],
       projectId: applied?.projectId ?? null,
@@ -27813,7 +27847,7 @@ var GoogleService = class {
   }
   readState() {
     try {
-      const raw = JSON.parse(readFileSync20(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync21(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object") return null;
       return {
         placeholder: null,
@@ -27883,7 +27917,7 @@ async function handleGoogle(req, res, url3, service) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync21 } from "fs";
+import { readFileSync as readFileSync22 } from "fs";
 import { spawn as spawn3 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -27915,7 +27949,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync21(path, "utf8");
+      raw = readFileSync22(path, "utf8");
     } catch {
       return null;
     }
@@ -27929,7 +27963,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync21(this.opts.statePath, "utf8");
+      raw = readFileSync22(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -33060,8 +33094,8 @@ async function readHead(path, max) {
 }
 
 // src/ssh.ts
-import { createHash as createHash5 } from "crypto";
-import { mkdirSync as mkdirSync12, mkdtempSync, readFileSync as readFileSync22, rmSync as rmSync3, writeFileSync as writeFileSync14 } from "fs";
+import { createHash as createHash6 } from "crypto";
+import { mkdirSync as mkdirSync12, mkdtempSync, readFileSync as readFileSync23, rmSync as rmSync3, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { dirname as dirname13, join as join13 } from "path";
 var MIN_SECONDS = 5 * 60;
@@ -33071,7 +33105,7 @@ var SUDO_TIMEOUT_MS = 3e4;
 var SUPPORT_USER = "ccsupport";
 function fingerprintOf(publicKey) {
   const blob = publicKey.trim().split(/\s+/)[1] ?? "";
-  const digest = createHash5("sha256").update(Buffer.from(blob, "base64")).digest("base64");
+  const digest = createHash6("sha256").update(Buffer.from(blob, "base64")).digest("base64");
   return `SHA256:${digest.replace(/=+$/, "")}`;
 }
 var MARK = "controlclaw-rescue";
@@ -33156,8 +33190,8 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync22(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync22(path, "utf8")
+        publicKey: readFileSync23(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync23(path, "utf8")
       };
     } finally {
       rmSync3(dir, { recursive: true, force: true });
@@ -33165,7 +33199,7 @@ var SshAccessService = class {
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync22(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync23(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -33182,6 +33216,30 @@ var SshAccessService = class {
     writeFileSync14(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
+
+// src/routes/doctor.ts
+async function handleDoctor(req, res, pathname) {
+  if (!await verifyMitmRequest(req, "doctor")) {
+    sendJson(res, 401, { error: "Doctor keys require the org firewall" });
+    return;
+  }
+  if (pathname === "/doctor/status" && req.method === "GET") {
+    sendJson(res, 200, { ...doctorStatus(), sshHostKey: doctorHostKey() });
+    return;
+  }
+  if (pathname !== "/doctor/key" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  const body = await readJsonBody(req, 2048);
+  try {
+    const fingerprint2 = await installDoctorKey(body?.pub, body?.sig);
+    sendJson(res, 200, { ok: true, fingerprint: fingerprint2 });
+    void reportReady().catch(() => void 0);
+  } catch {
+    sendJson(res, 400, { error: "Doctor key installation refused" });
+  }
+}
 
 // src/routes/ssh.ts
 async function handleSsh(req, res, pathname, service) {
@@ -33220,7 +33278,7 @@ async function handleSsh(req, res, pathname, service) {
 }
 
 // src/ssh-logins.ts
-import { createHash as createHash6 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 import { execFile as execFile4 } from "child_process";
 var POLL_TIMEOUT_MS = 15e3;
 var MAX_PER_TICK = 50;
@@ -33274,7 +33332,7 @@ var SshLoginWatcher = class {
         source: "ssh_login",
         // The line itself is the identity of the session: same second, same port, same key means
         // the same login. The journal cursor already stops the common repeat; this stops the rest.
-        login_id: createHash6("sha256").update(line).digest("hex").slice(0, 32),
+        login_id: createHash7("sha256").update(line).digest("hex").slice(0, 32),
         // The journal's own stamp, so a backlog shipped after a restart does not land as "now"
         // and sort wrongly against the grant it belongs to.
         ts: parsed.at !== null ? Math.round(parsed.at / 1e3) : tickTs,
@@ -33708,7 +33766,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile5 } from "child_process";
-import { existsSync as existsSync15, mkdirSync as mkdirSync13, readFileSync as readFileSync23, rmSync as rmSync4, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync16, mkdirSync as mkdirSync13, readFileSync as readFileSync24, rmSync as rmSync4, writeFileSync as writeFileSync15 } from "fs";
 import { dirname as dirname14 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile5);
@@ -33749,7 +33807,7 @@ var GmailWatchService = class {
   unit;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync15(this.gogBin);
+    return existsSync16(this.gogBin);
   }
   /**
    * Write the watcher's configuration and (re)start it.
@@ -33789,7 +33847,7 @@ var GmailWatchService = class {
   async status() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync23(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync24(this.opts.statePath, "utf8"));
     } catch {
       cfg = null;
     }
@@ -33824,7 +33882,7 @@ var GmailWatchService = class {
   async renew() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync23(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync24(this.opts.statePath, "utf8"));
     } catch {
       return { ok: false, message: "This box is not watching a mailbox." };
     }
@@ -34111,15 +34169,15 @@ var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
-var POOL_UNCLAIMED = existsSync16("/etc/controlclaw/pool-unclaimed");
+var POOL_UNCLAIMED = existsSync17("/etc/controlclaw/pool-unclaimed");
 var poolHealthy = false;
-if (POOL_UNCLAIMED && !existsSync16(`${KEYS_DIR2}/saas_public_key.pem`)) {
+if (POOL_UNCLAIMED && !existsSync17(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
   writeFileSync16(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync24(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync25(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -34127,7 +34185,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync24(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync25(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -34142,10 +34200,10 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   if (POOL_UNCLAIMED) {
-    for (let i2 = 0; i2 < 300 && !existsSync16(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+    for (let i2 = 0; i2 < 300 && !existsSync17(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
       await new Promise((resolve3) => setTimeout(resolve3, 1e3));
     }
-    if (!existsSync16(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    if (!existsSync17(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
     const egress = await enableTransparentEgress(KEYS_DIR2);
     if (!egress) return;
     const hostname4 = readKeyFile(KEYS_DIR2, "vm_hostname");
@@ -34304,6 +34362,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url3.pathname.startsWith("/__cc/")) {
     await handleAccess(req, res, url3.pathname);
+    return;
+  }
+  if (url3.pathname.startsWith("/doctor/")) {
+    await handleDoctor(req, res, url3.pathname);
     return;
   }
   if (url3.pathname.startsWith("/channels/")) {

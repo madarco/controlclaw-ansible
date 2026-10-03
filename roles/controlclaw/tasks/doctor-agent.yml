@@ -1,0 +1,67 @@
+---
+- name: Doctor | create the repair login
+  ansible.builtin.user:
+    name: ccdoctor
+    system: true
+    home: /home/ccdoctor
+    shell: /bin/bash
+    create_home: true
+    password_lock: true
+
+- name: Doctor | keep the login directory writable only by root
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - /home/ccdoctor
+    - /home/ccdoctor/.ssh
+
+# Caller extra-vars can originate from service-writable legacy key files during updates.
+# Only the root helper reads initial cloud-init / verified pool claim records to establish trust.
+- name: Doctor | install the root trust bootstrapper
+  ansible.builtin.copy:
+    src: cc-doctor-trust
+    dest: /usr/local/bin/cc-doctor-trust
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Doctor | establish immutable trust from root provisioning records
+  ansible.builtin.command: /usr/local/bin/cc-doctor-trust
+  register: doctor_root_trust
+  changed_when: false
+  when:
+    - not ci_test
+    - vm_id is defined
+    - not (pool_unclaimed | default(false) | bool)
+
+- name: Doctor | install the signed-key verifier
+  ansible.builtin.copy:
+    src: cc-doctor-key-install
+    dest: /usr/local/bin/cc-doctor-key-install
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Doctor | sudo policies for delivery and the repair login
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-doctor
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-doctor-key-install ""
+      ccdoctor ALL=(ALL) NOPASSWD: ALL
+
+- name: Doctor | allow SSH only from the org firewall
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ doctor_root_trust.stdout | trim }}"
+    port: '22'
+    proto: tcp
+    comment: ControlClaw doctor from org firewall
+  when: doctor_root_trust.stdout | default('') | length > 0

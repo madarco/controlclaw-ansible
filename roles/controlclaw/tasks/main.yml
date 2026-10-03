@@ -219,6 +219,10 @@
 
 # Last step of an agent box: starting the agent confines the box and reports ready, so every task
 # that needs the open internet (npm above all) must already be done. See vm-agent-start.yml.
+- name: Include the doctor SSH login
+  ansible.builtin.include_tasks: doctor-agent.yml
+  when: box_role == 'openclaw'
+
 - name: Start the VM agent (confines the box and reports ready)
   ansible.builtin.include_tasks: vm-agent-start.yml
   when: vm_id is defined and box_role in ['openclaw', 'gbrain']

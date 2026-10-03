@@ -128,6 +128,10 @@ def report_progress(payload, stage, rc=None, task="Ready-pool claim"):
 def claim(config):
     payload = json.loads(PAYLOAD.read_text())
     variables = validate(payload, config)
+    # Retain only the API-verified root claim as the immutable identity source for later updates.
+    original = Path('/root/cc-ansible-vars.json')
+    original.write_text(json.dumps(variables))
+    os.chmod(original, 0o600)
     # Never put the token in argv or stdout. Only this root-owned file reaches Ansible.
     varfile = Path('/root/cc-pool-vars.json')
     varfile.write_text(json.dumps(variables))

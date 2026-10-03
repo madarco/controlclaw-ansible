@@ -1,0 +1,27 @@
+#!/usr/bin/python3
+import fcntl, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+if os.geteuid()==0 and sys.argv[1:]==['--all']:
+    failures=0
+    for metadata in Path('/run/ccdoctor').glob('*.json'):
+        sid=metadata.stem
+        if re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',sid):
+            failures+=subprocess.run(['/usr/local/bin/cc-doctor-stop',sid]).returncode!=0
+    sys.exit(1 if failures else 0)
+if os.geteuid()!=0 or len(sys.argv) not in (2,3) or not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',sys.argv[1]) or (len(sys.argv)==3 and sys.argv[2]!='pause'): sys.exit(1)
+sid=sys.argv[1]
+base=Path('/run/ccdoctor')
+base.mkdir(mode=0o711,exist_ok=True)
+lock=os.open(base/(sid+'.lock'),os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,0o600)
+fcntl.flock(lock,fcntl.LOCK_EX)
+subprocess.run(['/usr/bin/systemctl','stop','cc-doctor-'+sid+'.service'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+if subprocess.run(['/usr/bin/systemctl','is-active','--quiet','cc-doctor-'+sid+'.service']).returncode == 0:
+    print('Doctor unit is still running',file=sys.stderr); sys.exit(1)
+subprocess.run(['/usr/local/lib/cc-doctor-cleanup',sid],check=True)
+if len(sys.argv)==2:
+    subprocess.run(['/usr/bin/systemctl','stop','cc-doctor-expire-'+sid+'.timer'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    shutil.rmtree(Path('/run/ccdoctor')/sid,ignore_errors=True)
+    # Tombstone refuses a queued start arriving after Stop, until this box reboots.
+    metadata=base/(sid+'.json')
+    fd=os.open(metadata,os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w') as out: json.dump({'ended':True},out)

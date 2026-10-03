@@ -1,0 +1,27 @@
+#!/usr/bin/python3
+"""Root owns both the pin and authorized_keys. No caller-chosen paths or source IP."""
+import base64, ipaddress, json, os, re, subprocess, sys, tempfile
+from pathlib import Path
+try:
+    if os.geteuid() != 0 or len(sys.argv) != 1: raise ValueError()
+    body = json.loads(sys.stdin.buffer.read(2049))
+    pub, sig = body['pub'], body['sig']
+    if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]{68}(?: [A-Za-z0-9_-]{1,64})?', pub): raise ValueError()
+    signature = base64.b64decode(sig, validate=True)
+    if len(signature) != 64: raise ValueError()
+    # This IP is set only by provisioning, never by vm-agent or its request.
+    ip = str(ipaddress.ip_address(Path('/etc/controlclaw/doctor-firewall-ip').read_text().strip()))
+    with tempfile.TemporaryDirectory(prefix='cc-doctor-verify-', dir='/run') as tmp:
+        Path(tmp, 'message').write_bytes(b'controlclaw:doctor-key:v1\n' + pub.encode())
+        Path(tmp, 'signature').write_bytes(signature)
+        subprocess.run(['/usr/bin/openssl', 'pkeyutl', '-verify', '-pubin', '-inkey',
+          '/etc/controlclaw/doctor-mitm-pin.pem', '-rawin', '-in', tmp+'/message',
+          '-sigfile', tmp+'/signature'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    target = Path('/home/ccdoctor/.ssh/authorized_keys')
+    fd = os.open(str(target)+'.new', os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, 'w') as out:
+        out.write(f'from="{ip}",no-agent-forwarding,no-port-forwarding,no-X11-forwarding {pub}\n')
+    os.replace(str(target)+'.new', target)
+except Exception:
+    print('Doctor key installation refused', file=sys.stderr)
+    sys.exit(1)

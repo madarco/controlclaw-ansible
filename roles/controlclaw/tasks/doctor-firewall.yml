@@ -1,0 +1,89 @@
+---
+- name: Doctor | create an unprivileged firewall account
+  ansible.builtin.user:
+    name: ccdoctor
+    system: true
+    home: /var/lib/ccdoctor
+    shell: /usr/sbin/nologin
+    create_home: true
+    password_lock: true
+
+- name: Doctor | session tools
+  ansible.builtin.apt:
+    name: [tmux, openssh-client, python3, util-linux]
+    state: present
+  when: not ci_test
+
+- name: Doctor | tmpfs session root
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/ccdoctor.conf
+    content: "d /run/ccdoctor 0711 root root -\n"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Doctor | install root brokers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop: [cc-doctor-run, cc-doctor-stop, cc-doctor-attach]
+
+- name: Doctor | install unit helpers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/lib/{{ item }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop: [cc-doctor-worker, cc-doctor-cleanup]
+
+- name: Doctor | narrow sudo policies
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-doctor
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-doctor-run *, /usr/local/bin/cc-doctor-stop *
+      {{ controlclaw_user }} ALL=(ccdoctor) NOPASSWD: /usr/local/bin/cc-doctor-attach *
+
+- name: Doctor | download integrity-pinned CLI packages
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "/var/cache/cc-doctor-{{ item.cli }}-{{ item.version }}.tgz"
+    checksum: "sha512:{{ item.sha512 }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ doctor_cli_pins }}"
+  when: not ci_test
+
+- name: Doctor | install pinned CLI packages
+  ansible.builtin.command:
+    argv:
+      - npm
+      - install
+      - --global
+      - --prefix
+      - /usr/local
+      - --no-audit
+      - --no-fund
+      - "/var/cache/cc-doctor-{{ item.cli }}-{{ item.version }}.tgz"
+    creates: "/var/cache/cc-doctor-{{ item.cli }}-{{ item.version }}.installed"
+  loop: "{{ doctor_cli_pins }}"
+  environment: "{{ controlclaw_node_env | combine({'DISABLE_AUTOUPDATER': '1', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'}) }}"
+  when: not ci_test
+
+- name: Doctor | remember installed CLI versions
+  ansible.builtin.copy:
+    dest: "/var/cache/cc-doctor-{{ item.cli }}-{{ item.version }}.installed"
+    content: "{{ item.sha512 }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ doctor_cli_pins }}"
+  when: not ci_test

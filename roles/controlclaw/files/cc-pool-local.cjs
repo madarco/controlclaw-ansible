@@ -83,6 +83,10 @@ function activate(vars) {
     vm_bootstrap_token: 'bootstrap_token', register_api_url: 'register_api_url', ready_api_url: 'ready_api_url',
     config_api_url: 'config_api_url', org_id: 'org_id', controlclaw_url: 'controlclaw_url' };
   for (const [name, file] of Object.entries(files)) if (vars[name]) write(`${keys}/${file}`, vars[name], name === 'vm_bootstrap_token' ? 0o600 : 0o644, true);
+  if (config.role === 'openclaw') {
+    const source = cmd(['/usr/local/bin/cc-doctor-trust']).trim();
+    cmd(['ufw', 'allow', 'from', source, 'to', 'any', 'port', '22', 'proto', 'tcp']);
+  }
   const base = config.url.split('/api/internal/ready-pool/poll')[0];
   write('/etc/controlclaw/disk.env', `VM_ID=${vars.vm_id}\nCONTROLCLAW_URL=${base}\n`);
   const pin = read('/etc/controlclaw/update.conf').replace(/^LUKS_RECOVERY_PUBKEY=.*$/m, `LUKS_RECOVERY_PUBKEY=${vars.luks_recovery_pubkey}`).replace(/^ORG_ID=.*$/m, `ORG_ID=${vars.org_id}`);

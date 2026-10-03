@@ -1,0 +1,89 @@
+#!/usr/bin/python3
+"""One bounded tmux attachment. stdin is JSON input/resize; stdout is the terminal stream."""
+import fcntl, json, os, pty, re, selectors, signal, struct, subprocess, sys, termios, time, tty
+from pathlib import Path
+if len(sys.argv) not in (2,4) or not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',sys.argv[1]): sys.exit(1)
+sid=sys.argv[1]
+work=Path('/run/ccdoctor')/sid
+socket=str(work/'tmux.sock')
+def size(cols,rows):
+    if type(cols) is not int or type(rows) is not int or not 20<=cols<=300 or not 5<=rows<=100: raise ValueError()
+    fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',rows,cols,0,0))
+try:
+    # A second helper cannot leave a second live pty, even if its caller misbehaves.
+    lock=os.open(work/'attach.lock',os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,0o600)
+    fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+    master,slave=pty.openpty()
+    tty.setraw(slave)
+    size(int(sys.argv[2]),int(sys.argv[3])) if len(sys.argv)==4 else size(120,35)
+except Exception: sys.exit(1)
+stop=False
+def stopping(_sig,_frame):
+    global stop
+    stop=True
+for sig in (signal.SIGTERM,signal.SIGHUP,signal.SIGINT): signal.signal(sig,stopping)
+# Give tmux an actual controlling PTY: changing only its window leaves the client at 80x24.
+# Kernel TIOCSWINSZ delivers SIGWINCH to this client; tmux then resizes its window and CLI.
+def child_terminal():
+    os.setsid()
+    fcntl.ioctl(slave,termios.TIOCSCTTY,0)
+proc=subprocess.Popen(['/usr/bin/tmux','-S',socket,'attach-session','-t','doctor-'+sid],stdin=slave,stdout=slave,stderr=slave,preexec_fn=child_terminal,env={'PATH':'/usr/bin:/bin','TERM':'xterm-256color','SHELL':'/bin/bash'})
+os.close(slave)
+def descendants(pid):
+    try: children=[int(p) for p in Path(f'/proc/{pid}/task/{pid}/children').read_text().split()]
+    except FileNotFoundError: return []
+    result=[]
+    for child in children:
+        result.extend(descendants(child))
+        try: result.append((child,Path(f'/proc/{child}/stat').read_text().rsplit(')',1)[1].split()[19]))
+        except FileNotFoundError: pass
+    return result
+def send(pid,start,sig):
+    try:
+        if Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]==start: os.kill(pid,sig)
+    except ProcessLookupError: pass
+    except FileNotFoundError: pass
+selector=selectors.DefaultSelector()
+selector.register(sys.stdin.buffer,selectors.EVENT_READ,'input')
+selector.register(master,selectors.EVENT_READ,'output')
+os.set_blocking(master,False)
+buffer=b''
+last_resize=0
+pending_size=None
+try:
+    deadline=time.monotonic()+7200
+    while not stop and proc.poll() is None and time.monotonic()<deadline:
+        for key,_events in selector.select(.1):
+            raw=os.read(key.fd,16384)
+            if not raw: stop=True;break
+            if key.data=='output':
+                os.write(sys.stdout.fileno(),raw)
+                continue
+            buffer+=raw
+            if len(buffer)>65536: raise ValueError()
+            while b'\n' in buffer:
+                line,buffer=buffer.split(b'\n',1)
+                message=json.loads(line)
+                if message.get('type')=='input' and isinstance(message.get('data'),str) and len(message['data'])<=8192:
+                    data=message['data'].encode()
+                    if os.write(master,data)!=len(data): raise ValueError()
+                elif message.get('type')=='resize':
+                    cols,rows=message.get('cols'),message.get('rows')
+                    if type(cols) is not int or type(rows) is not int or not 20<=cols<=300 or not 5<=rows<=100: raise ValueError()
+                    pending_size=(cols,rows)
+                else: raise ValueError()
+        if pending_size and time.monotonic()-last_resize>=.1:
+            size(*pending_size);pending_size=None;last_resize=time.monotonic()
+except Exception:
+    pass
+finally:
+    children=descendants(proc.pid)
+    for pid,start in children: send(pid,start,signal.SIGTERM)
+    try: os.killpg(proc.pid,signal.SIGTERM)
+    except ProcessLookupError: pass
+    try: proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid,signal.SIGKILL);proc.wait()
+    for pid,start in children: send(pid,start,signal.SIGKILL)
+    selector.close()
+    os.close(master)

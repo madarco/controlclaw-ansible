@@ -1,0 +1,101 @@
+#!/usr/bin/python3
+"""Runs without privilege inside the session unit; tmux and CLI share its cgroup."""
+import json, os, re, shlex, subprocess, sys, time
+from pathlib import Path
+sid=sys.argv[1]
+if not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',sid): sys.exit(1)
+work=Path('/run/ccdoctor')/sid
+os.environ['SHELL']='/bin/bash'
+socket=str(work/'tmux.sock')
+if len(sys.argv)>2 and sys.argv[2]=='cli':
+    data=json.loads((work/'request.json').read_text())
+    env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':str(work),'TERM':'xterm-256color',
+      'DISABLE_AUTOUPDATER':'1','CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1',
+      'DISABLE_TELEMETRY':'1','DO_NOT_TRACK':'1','NO_UPDATE_NOTIFIER':'1',
+      'PI_OFFLINE':'1','PI_SKIP_VERSION_CHECK':'1','PI_TELEMETRY':'0',
+      'CODEX_HOME':str(work/'.codex'),'PI_CODING_AGENT_DIR':str(work/'.pi/agent'),**data['env']}
+    cli,mode=data['cli'],data['mode']
+    model=data.get('model')
+    resume=data.get('resumeId')
+    prompt=data.get('problem','')
+    config=work/'.codex'
+    config.mkdir(exist_ok=True)
+    (config/'config.toml').write_text('check_for_update = false\n[analytics]\nenabled = false\n')
+    if cli=='claude':
+        args=['/usr/local/bin/claude','--dangerously-skip-permissions']
+        if mode=='chat': args += ['-p','--output-format','stream-json','--verbose']
+        if resume: args += ['--resume',resume]
+        if model: args += ['--model',model]
+        if prompt: args += ['--',prompt]
+    elif cli=='codex':
+        args=['/usr/local/bin/codex']
+        if mode=='chat': args += ['exec','--json','--skip-git-repo-check','--dangerously-bypass-approvals-and-sandbox']
+        else: args += ['--dangerously-bypass-approvals-and-sandbox']
+        if model: args += ['--model',model]
+        if data.get('provider') in ('openai','openai_codex') or env.get('OPENAI_BASE_URL'):
+            base_url='https://chatgpt.com/backend-api/codex' if data.get('provider')=='openai_codex' else env.get('OPENAI_BASE_URL','https://api.openai.com/v1')
+            args += ['-c','model_provider="doctor"','-c','model_providers.doctor.name="Doctor"',
+              '-c','model_providers.doctor.base_url='+json.dumps(base_url),
+              '-c','model_providers.doctor.env_key="OPENAI_API_KEY"','-c','model_providers.doctor.wire_api="responses"',
+              '-c','model_providers.doctor.requires_openai_auth=false',
+              '-c','model_providers.doctor.supports_websockets=false']
+            if data.get('provider')=='openai_codex':
+                # Access-only custom-provider auth has no login/refresh state to rotate.
+                args += ['-c','model_providers.doctor.env_http_headers={"ChatGPT-Account-Id"="CC_DOCTOR_OPENAI_ACCOUNT_ID"}']
+        if resume: args += ['resume',resume]
+        if prompt: args += ['--',prompt]
+    else:
+        args=['/usr/local/bin/pi']
+        provider=data.get('provider','anthropic')
+        if provider=='openai_codex':
+            config=work/'.pi/agent'
+            config.mkdir(parents=True,exist_ok=True)
+            # api_key resolves the env value and skips Pi's OAuth refresh path entirely.
+            (config/'auth.json').write_text(json.dumps({'openai-codex':{'type':'api_key','key':'OPENAI_API_KEY'}}))
+            # Subscription models come from the account catalog and may be newer
+            # than pinned Pi's built-in catalog. Register the selected native API.
+            (config/'models.json').write_text(json.dumps({'providers':{'openai-codex':{
+              'baseUrl':'https://chatgpt.com/backend-api/codex',
+              'api':'openai-codex-responses','apiKey':'OPENAI_API_KEY',
+              'models':[{'id':model,'name':model,'reasoning':True,
+                'contextWindow':128000,'maxTokens':8192}]}}}))
+            args += ['--provider','openai-codex']
+        elif provider=='gateway':
+            config=work/'.pi/agent'
+            config.mkdir(parents=True,exist_ok=True)
+            (config/'models.json').write_text(json.dumps({'providers':{'doctor':{
+              'baseUrl':env.get('OPENAI_BASE_URL','https://ai-gateway.vercel.sh/v1'),
+              'api':'openai-completions','apiKey':'OPENAI_API_KEY',
+              'models':[{'id':model,'name':model,'contextWindow':128000,'maxTokens':8192}]}}}))
+            args += ['--provider','doctor']
+        else: args += ['--provider',provider]
+        if mode=='chat': args += ['--mode','json','-p']
+        args += ['--session',str(work/'pi-session.jsonl')]
+        if model: args += ['--model',model]
+        # Pi has no -- terminator. A leading newline keeps untrusted text positional,
+        # including prompts starting with '-' or '@'.
+        if prompt: args += ['\n'+prompt]
+    try:
+        if mode=='chat':
+            with (work/'output.jsonl').open('w') as out:
+                result=subprocess.run(args,env=env,cwd=work,stdout=out,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL)
+        else: result=subprocess.run(args,env=env,cwd=work)
+        (work/'exit-code').write_text(str(result.returncode))
+    finally:
+        for name in ('key','request.json','.codex/auth.json','.pi/agent/auth.json'):
+            (work/name).unlink(missing_ok=True)
+    sys.exit(result.returncode)
+(work/'exit-code').unlink(missing_ok=True)
+(work/'output.jsonl').write_text('')
+command=shlex.join(['/usr/local/lib/cc-doctor-worker',sid,'cli'])
+subprocess.run(['/usr/bin/tmux','-S',socket,'new-session','-d','-s','doctor-'+sid,'-x','120','-y','35',command],check=True)
+offset=0
+while subprocess.run(['/usr/bin/tmux','-S',socket,'has-session','-t','doctor-'+sid],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:
+    with (work/'output.jsonl').open() as out:
+        out.seek(offset); chunk=out.read(); offset=out.tell()
+        if chunk: sys.stdout.write(chunk); sys.stdout.flush()
+    time.sleep(.15)
+with (work/'output.jsonl').open() as out:
+    out.seek(offset);sys.stdout.write(out.read());sys.stdout.flush()
+try: sys.exit(int((work/'exit-code').read_text()))
+except FileNotFoundError: sys.exit(1)

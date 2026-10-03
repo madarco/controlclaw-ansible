@@ -1,0 +1,128 @@
+#!/usr/bin/python3
+"""Establish Doctor trust from root provisioning records, never service-owned vars."""
+import base64
+import ipaddress
+import json
+import os
+from pathlib import Path
+import stat
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT_VARS = Path('/root/cc-ansible-vars.json')
+PIN = Path('/etc/controlclaw/doctor-mitm-pin.pem')
+SOURCE = Path('/etc/controlclaw/doctor-firewall-ip')
+PRIVATE = Path('/opt/controlclaw/keys/vm_private_key.pem')
+
+
+def trusted_read(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd) as source:
+        info = os.fstat(source.fileno())
+        if info.st_uid != 0 or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode):
+            raise ValueError('untrusted root record')
+        return source.read(65537)
+
+
+def validate(pub, address):
+    ip = ipaddress.ip_address(address.strip())
+    if ip.version != 4 or not ip.is_private or ip.is_loopback or ip.is_unspecified or ip.is_link_local:
+        raise ValueError('invalid firewall address')
+    result = subprocess.run(['/usr/bin/openssl', 'pkey', '-pubin', '-text', '-noout'],
+                            input=pub, text=True, capture_output=True, timeout=5)
+    if result.returncode or 'ED25519' not in result.stdout:
+        raise ValueError('invalid firewall key')
+    return pub.strip() + '\n', str(ip)
+
+
+def token(vm_id):
+    def b64(data):
+        return base64.urlsafe_b64encode(data).decode().rstrip('=')
+    now = int(time.time())
+    content = b64(b'{"alg":"EdDSA"}') + '.' + b64(json.dumps({'vmId': vm_id, 'iat': now, 'exp': now + 30}).encode())
+    # The service's private key only authenticates to the original control-plane URL. Replacing
+    # it cannot select another org: SaaS verifies it against the original root-recorded VM ID.
+    with tempfile.TemporaryDirectory(prefix='cc-doctor-auth-', dir='/run') as tmp:
+        message = Path(tmp, 'message')
+        message.write_text(content)
+        signed = subprocess.run(['/usr/bin/openssl', 'pkeyutl', '-sign', '-rawin', '-inkey', str(PRIVATE), '-in', str(message)],
+                                check=True, capture_output=True, timeout=5).stdout
+    return content + '.' + b64(signed)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        raise ValueError('redirect refused')
+
+
+def request(url, bearer, data=None):
+    req = urllib.request.Request(url, data=None if data is None else json.dumps(data).encode(),
+                                 headers={'Authorization': 'Bearer ' + bearer, 'Content-Type': 'application/json'})
+    # Ignore mutable proxy environment; use system TLS validation against the root-recorded host.
+    with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(), urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile="/etc/ssl/certs/ca-certificates.crt"))).open(req, timeout=10) as response:
+        return json.loads(response.read(65536))
+
+
+def resolve(original):
+    pub, address = original.get('mitm_vm_public_key', ''), original.get('mitm_box_private_ip', '')
+    if pub:
+        return validate(pub, address)
+    url = original.get('config_api_url', '')
+    parsed = urllib.parse.urlsplit(url)
+    vm_id = original.get('vm_id')
+    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.path.endswith('/config') or not isinstance(vm_id, str) or not vm_id:
+        raise ValueError('missing original identity')
+    base = url[:-len('/config')]
+    for attempt in range(60):
+        try:
+            if PRIVATE.exists():
+                result = request(base + '/ca', token(vm_id))
+                pub, address = result.get('pubKey'), result.get('privateIp')
+            else:
+                bootstrap = original.get('vm_bootstrap_token')
+                if not isinstance(bootstrap, str) or not bootstrap:
+                    raise ValueError('missing original bootstrap')
+                result = request(base + '/doctor-pin', bootstrap, {'vmId': vm_id})
+                pub = result.get('publicKey')
+            if pub:
+                return validate(pub, address)
+        except urllib.error.HTTPError as error:
+            if error.code != 503:
+                raise
+        if attempt < 59:
+            time.sleep(5)
+    raise ValueError('firewall identity unavailable')
+
+
+def install():
+    if PIN.exists() and SOURCE.exists():
+        pub, address = validate(trusted_read(PIN), trusted_read(SOURCE))
+        print(address)
+        return
+    original = json.loads(trusted_read(ROOT_VARS))
+    pub, address = resolve(original)
+    for path, value in ((PIN, pub), (SOURCE, address + '\n')):
+        if path.exists():
+            if trusted_read(path).strip() != value.strip():
+                raise ValueError('standing identity mismatch')
+            continue
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, 'w') as out:
+            out.write(value)
+    print(address)
+
+
+if __name__ == '__main__':
+    try:
+        if os.geteuid() != 0 or len(sys.argv) != 1:
+            raise ValueError('root only')
+        install()
+    except Exception:
+        print('Doctor trust installation refused', file=sys.stderr)
+        sys.exit(1)

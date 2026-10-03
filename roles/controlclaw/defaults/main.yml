@@ -476,3 +476,21 @@ openclaw_version: "2026.9.7"
 openclaw_meet_version: "2026.9.7"
 openclaw_host_sha512: "ffc3762e77d31503ef9d98b38bca8a4857e72d068fbd21b709be31a35615edbe09858894738dd9351a57274d5b5a084b2b41339371d57a8fc3187708450c1158"
 openclaw_meet_sha512: "92692214bca4fa925a8170d8b97e3423082dbc4c64048070030303d8e5ca48abf5c4af934481e537522519c5fd8301f73036a0aa4aaaf59a7cb295b0fd6b4918"
+
+# Agent Doctor CLI hosts, registry SHA-512 pins. Updates are manual.
+doctor_cli_pins:
+  - cli: claude
+    name: "@anthropic-ai/claude-code"
+    version: "2.1.288"
+    url: "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.288.tgz"
+    sha512: "b6773c5ee2b9c5093213aa28c218523c88cbb8d7344b73248c81eac9c0ec28feb22652ed22332deafd533a460b522ba6719f633a0259ea1f559f7fdfd26bab75"
+  - cli: codex
+    name: "@openai/codex"
+    version: "0.160.0"
+    url: "https://registry.npmjs.org/@openai/codex/-/codex-0.160.0.tgz"
+    sha512: "904b551b38d101800c3b0271377f5b19c9daecb4f7203420abae0d349fdd0d37eee0ecd96a870973235be7f80627f21517f563ee82bb1369b79e64da9fb9698e"
+  - cli: pi
+    name: "@mariozechner/pi-coding-agent"
+    version: "0.73.1"
+    url: "https://registry.npmjs.org/@mariozechner/pi-coding-agent/-/pi-coding-agent-0.73.1.tgz"
+    sha512: "817421dd26999964df54c738028e7e2c66d578abf3c8eeeda25a24d272ec660abd9c68d9c7f10453734cf02faa52707836fb36aecc06e6a39580bcd092ad1f1d"
