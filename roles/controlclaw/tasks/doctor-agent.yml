@@ -29,6 +29,10 @@
     group: root
     mode: '0755'
 
+# A base-image agent pass has a dummy vm_id but no config callback or root provisioning
+# record. Bake the login and helpers, not a firewall identity. Real agents supply this
+# callback on first boot and updates; the helper still reads only root-owned records.
+# Do not gate trust on cc_skip: even a matching image needs its own firewall pin.
 - name: Doctor | establish immutable trust from root provisioning records
   ansible.builtin.command: /usr/local/bin/cc-doctor-trust
   register: doctor_root_trust
@@ -36,6 +40,7 @@
   when:
     - not ci_test
     - vm_id is defined
+    - config_api_url is defined
     - not (pool_unclaimed | default(false) | bool)
 
 - name: Doctor | install the signed-key verifier
