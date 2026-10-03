@@ -983,7 +983,7 @@ async function verifyMitmRequest(req, purpose = "channels") {
     const p2 = payload;
     if (p2.purpose !== purpose || typeof p2.vmId !== "string") return null;
     if (ownVmId && p2.vmId !== ownVmId) return null;
-    return { vmId: p2.vmId, iss: typeof p2.iss === "string" ? p2.iss : "" };
+    return { vmId: p2.vmId, iss: typeof p2.iss === "string" ? p2.iss : "", claims: payload };
   } catch {
     return null;
   }
@@ -6051,8 +6051,8 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e0131ac" : "unknown",
-  builtAt: true ? "2026-10-03T19:11:37+01:00" : "unknown"
+  commit: true ? "3c092fa" : "unknown",
+  builtAt: true ? "2026-10-03T21:47:29+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [

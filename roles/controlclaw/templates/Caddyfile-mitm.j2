@@ -26,6 +26,10 @@
 }
 
 {{ vm_hostname }}{% if cc_handle_alias | default('') and cc_handle_alias != vm_hostname %}, {{ cc_handle_alias }}{% endif %} {
+    handle /phone-stream/* {
+        reverse_proxy 127.0.0.1:{{ ingress_port }}
+    }
+
     handle /hook/* {
         # The ingress caps the body itself, because an HMAC is computed over the whole of it and
         # the check has to see the same bytes. This is the outer bound, so a stranger cannot make

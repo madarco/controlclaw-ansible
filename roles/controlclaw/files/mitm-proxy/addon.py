@@ -1084,7 +1084,10 @@ def phone_authorized(flow, cred) -> bool:
             if fields.get("Timeout") and not re.fullmatch(r"[1-9]|[12][0-9]|30", fields["Timeout"]):
                 return False
             # Always set the provider's hard duration for outbound calls.
-            pairs = [(k, v) for k, v in pairs if k != "TimeLimit"] + [("TimeLimit", "300")]
+            limit = config.get("max_duration", 300)
+            if type(limit) is not int or not 30 <= limit <= 300:
+                return False
+            pairs = [(k, v) for k, v in pairs if k != "TimeLimit"] + [("TimeLimit", str(limit))]
             flow.request.set_text(urlencode(pairs))
         else:
             if fields == {"Status": "completed"}:
@@ -2197,6 +2200,28 @@ VOICE_PATHS = {"ai-gateway.vercel.sh": {"/v1/realtime/client-secrets", "/v4/ai/r
                "api.openai.com": {"/v1/realtime", "/v1/live", "/v1/live/sessions", "/v1/realtime/calls"}}
 
 
+PHONE_MEDIA_PATH = os.environ.get("MITM_PHONE_MEDIA_PATH", os.path.join(os.path.dirname(RULES_PATH), "phone-media.json"))
+
+
+def phone_lease(vm_id, lease_id=None):
+    if not vm_id or kill_switched(vm_id):
+        return None
+    try:
+        with open(PHONE_MEDIA_PATH, encoding="utf-8") as f:
+            lease = json.load(f).get(vm_id)
+        now = time.time()
+        if (not isinstance(lease, dict) or lease.get("purpose") != "phone"
+            or not re.fullmatch(r"[a-f0-9]{64}", lease.get("id", ""))
+            or not all(type(lease.get(k)) in (int, float) for k in ("started", "expires", "deadline"))
+            or not MEETING_PROXY_STARTED <= lease["started"] <= now < lease["expires"] <= min(lease["deadline"], now + 5)
+            or not lease["started"] < lease["deadline"] <= lease["started"] + 300
+            or lease_id is not None and lease["id"] != lease_id):
+            return None
+        return lease
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
 def voice_request(flow, vm_id):
     host, path = flow.request.pretty_host, flow.request.path.split("?", 1)[0]
     credentials = credentials_for(host, vm_id)
@@ -2208,10 +2233,17 @@ def voice_request(flow, vm_id):
     realtime = path in VOICE_PATHS.get(host, set())
     if not realtime and not speech_cred:
         return None
-    lease = meeting_lease(vm_id)
+    purpose = "phone" if speech_cred and speech_cred.get("phone_speech") else "meeting"
+    if not speech_cred:
+        tokens = [p.strip()[len("ai-gateway-auth."):] for p in flow.request.headers.get("sec-websocket-protocol", "").split(",") if p.strip().startswith("ai-gateway-auth.")]
+        if len(tokens) == 1:
+            bound = _voice_tokens.get(hashlib.sha256(tokens[0].encode()).hexdigest())
+            if bound and len(bound) > 5:
+                purpose = bound[5]
+    lease = phone_lease(vm_id) if purpose == "phone" else meeting_lease(vm_id)
     speech = lease.get("speech") if lease else None
     if not realtime or not isinstance(speech, dict):
-        return "Voice needs an active approved meeting"
+        return "Voice needs an active approved call"
     provider, model = speech.get("provider"), speech.get("model")
     if speech_cred and speech_cred["placeholder"] != lease.get("voice_placeholder"):
         return "Speech credential does not match this call"
@@ -2268,7 +2300,7 @@ def voice_request(flow, vm_id):
                 return "Missing call token"
             digest = hashlib.sha256(tokens[0].encode()).hexdigest()
             bound = _voice_tokens.pop(digest, None)
-            if not bound or bound[:3] != (vm_id, lease["id"], model) or bound[3] <= now:
+            if not bound or bound[:3] != (vm_id, lease["id"], model) or bound[3] <= now or (bound[5] if len(bound) > 5 else "meeting") != purpose:
                 return "Call token expired or belongs to another call"
             flow.request.headers["sec-websocket-protocol"] = ", ".join(
                 "ai-gateway-auth." + bound[4] if p.startswith("ai-gateway-auth.") else p for p in protocols)
@@ -2278,7 +2310,7 @@ def voice_request(flow, vm_id):
             usage["attempts"] += 1
             if provider == "codex" and speech_cred.get("speech_account_id"):
                 flow.request.headers["chatgpt-account-id"] = speech_cred["speech_account_id"]
-    flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint}
+    flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint, "purpose": purpose}
     if speech_cred:
         flow.metadata["voice_credential"] = speech_cred["placeholder"]
     return None
@@ -2295,7 +2327,7 @@ def voice_response(flow):
             raise ValueError()
         opaque = "cc-voice-" + secrets.token_hex(32)
         digest = hashlib.sha256(opaque.encode()).hexdigest()
-        _voice_tokens[digest] = (voice["vm_id"], voice["lease_id"], voice["model"], time.time() + 60, token)
+        _voice_tokens[digest] = (voice["vm_id"], voice["lease_id"], voice["model"], time.time() + 60, token, voice.get("purpose", "meeting"))
         flow.response.content = json.dumps({"token": opaque}).encode()
     except (ValueError, KeyError, TypeError):
         flow.response = http.Response.make(502, b'{"error":"Voice token unavailable"}')
@@ -2321,10 +2353,12 @@ def voice_client_event(event, provider, model):
             return False
         if provider == "gateway" and "model" in config:
             return False
+        if provider in ("openai", "codex") and config.get("max_output_tokens") != 512:
+            return False
         options = config.get("providerOptions", {})
         if not isinstance(options, dict) or set(options) - {"audio", "max_output_tokens"}:
             return False
-        if options and (not model.startswith("openai/") or options.get("max_output_tokens") != 512):
+        if provider == "gateway" and (not model.startswith("openai/") or options.get("max_output_tokens") != 512):
             return False
         tools = config.get("tools", [])
         if not isinstance(tools, list) or len(tools) > 1 or any(t.get("type") != "function" or t.get("name") != "ask_agent" for t in tools if isinstance(t, dict)) or any(not isinstance(t, dict) for t in tools):
@@ -2333,7 +2367,7 @@ def voice_client_event(event, provider, model):
 
 
 def voice_lease(voice):
-    lease = meeting_lease(voice["vm_id"], voice["lease_id"])
+    lease = phone_lease(voice["vm_id"], voice["lease_id"]) if voice.get("purpose") == "phone" else meeting_lease(voice["vm_id"], voice["lease_id"])
     speech = lease.get("speech") if lease else None
     return lease if isinstance(speech, dict) and speech.get("provider") == voice["provider"] and speech.get("model") == voice["model"] else None
 
@@ -2347,7 +2381,7 @@ async def _voice_watch(flow):
     voice = flow.metadata["cc_voice"]
     try:
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.25 if voice.get("purpose") == "phone" else 1)
             if not voice_lease(voice):
                 _voice_close(flow)
                 return
