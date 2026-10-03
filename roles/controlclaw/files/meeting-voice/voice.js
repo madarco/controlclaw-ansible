@@ -94,6 +94,7 @@ export class VoiceBridge {
       if(this.isEcho(text))return;
       this.req.onTranscript?.('user',text,true);
       if(!WAKE.test(text))return;
+      this.turnStartedAt=this.lastSpeech;
       this.handleBargeIn();this.allowed=true;
       this.control('response-create');
       this.pending=[];this.pendingBytes=0;return;
@@ -121,7 +122,7 @@ export class VoiceBridge {
       if(typeof e.delta!=='string'||e.delta.length>256000){this.fail();return;}
       const audio=Buffer.from(e.delta,'base64');this.outputBytes+=audio.length;
       if(this.outputBytes>90*1024*1024){this.fail();return;}
-      if(this.allowed){if(!this.measured){this.measured=true;const metric={event:'cc.meeting.voice.first_audio',provider:this.config.provider,model:this.config.model,latencyMs:Math.max(0,Date.now()-this.lastSpeech)};(this.deps.metric??(m=>console.info(JSON.stringify(m))))(metric);}this.req.onAudio(audio);}
+      if(this.allowed){if(!this.measured){this.measured=true;const metric={event:'cc.meeting.voice.first_audio',provider:this.config.provider,model:this.config.model,latencyMs:Math.max(0,Date.now()-(this.turnStartedAt??this.lastSpeech))};(this.deps.metric??(m=>console.info(JSON.stringify(m))))(metric);}this.req.onAudio(audio);}
       else {this.pendingBytes+=audio.length;if(this.pendingBytes>192000){this.pending=[];this.control('response-cancel');}else this.pending.push(audio);}
     }else if(e.type==='audio-transcript-delta'&&this.allowed){this.rememberOutput(String(e.delta??''),true);}
     else if(e.type==='audio-transcript-done'&&this.allowed){const text=String(e.transcript??'').slice(0,8000);this.rememberOutput(text);this.req.onTranscript?.('assistant',text,true);}

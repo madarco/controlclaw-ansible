@@ -114,3 +114,9 @@ test('failed terminal responses surface an error and close instead of silently r
  f.bridge.event({type:'response-done',responseId:'r1',response:{status:'failed'}});
  assert.equal(outcomes[0].status,'failed');assert.equal(errors,1);assert.equal(f.bridge.isConnected(),false);
 });
+test('background input cannot reset first-audio latency for an outstanding turn',()=>{
+ const f=fixture(),metrics=[];f.bridge.deps.metric=x=>metrics.push(x);
+ f.bridge.lastSpeech=Date.now()-10000;f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw ask the main agent'});
+ f.bridge.lastSpeech=Date.now();f.bridge.event({type:'response-created',responseId:'r1'});f.bridge.event(chunk);
+ assert.ok(metrics[0].latencyMs>=10000);f.bridge.close();
+});
