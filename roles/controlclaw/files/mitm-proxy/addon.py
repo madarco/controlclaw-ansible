@@ -954,6 +954,127 @@ def reword_402(flow: http.HTTPFlow) -> str | None:
 
 # ----- swap -----------------------------------------------------------------
 
+# Twilio v1: one assigned VM per account; narrow REST operations and TwiML verbs.
+def phone_hook_url(value: str, hook: str) -> bool:
+    from urllib.parse import urlsplit, parse_qsl
+    try:
+        u, h = urlsplit(value), urlsplit(hook)
+        if (u.scheme, u.netloc, u.path) != (h.scheme, h.netloc, h.path) or u.fragment or len(u.query) > 2048:
+            return False
+        pairs = parse_qsl(u.query, keep_blank_values=True, strict_parsing=True)
+        if len({k for k, _ in pairs}) != len(pairs):
+            return False
+        return all(v == "status" if k == "type" else k in ("callId", "turnToken") and re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", v) for k, v in pairs)
+    except ValueError:
+        return False
+
+
+def phone_twiml_allowed(xml: str, hook: str) -> bool:
+    import xml.etree.ElementTree as ET
+    if len(xml.encode()) > 65536 or "<!" in xml or re.search(r"&(?!amp;|lt;|gt;|quot;|apos;)", xml):
+        return False
+    xml = re.sub(r'^\s*<\?xml version="1\.0"(?: encoding="UTF-8")?\?>', '', xml)
+    if "<?" in xml:
+        return False
+    attrs = {"Response": set(), "Say": {"voice", "language", "loop"},
+             "Gather": {"input", "speechTimeout", "timeout", "language", "action", "method", "numDigits", "finishOnKey", "actionOnEmptyResult"},
+             "Pause": {"length"}, "Hangup": set(), "Reject": {"reason"}, "Play": {"digits"}, "Redirect": {"method"}}
+    try:
+        root = ET.fromstring(xml)
+        if root.tag != "Response":
+            return False
+        nodes = list(root.iter())
+        if len(nodes) > 128:
+            return False
+        for node in nodes:
+            if node.tag not in attrs or set(node.attrib) - attrs[node.tag] or (node is not root and node.tag == "Response"):
+                return False
+            if node.attrib.get("method", "POST") != "POST":
+                return False
+            if node.tag == "Gather" and not phone_hook_url(node.attrib.get("action", ""), hook):
+                return False
+            if node.tag == "Redirect" and not phone_hook_url((node.text or "").strip(), hook):
+                return False
+            if node.tag == "Play" and (not re.fullmatch(r"[0-9*#wW]{1,100}", node.attrib.get("digits", "")) or (node.text or "").strip()):
+                return False
+            if node.tag in ("Say", "Play", "Redirect") and len(node):
+                return False
+        return True
+    except (ET.ParseError, ValueError):
+        return False
+
+
+def phone_credential(flow, vm_id):
+    if flow.request.pretty_host.lower() != "api.twilio.com":
+        return None
+    for c in credentials_for("api.twilio.com", vm_id):
+        if c.get("phone") and c.get("vm_id") == vm_id and vm_id:
+            return c
+    return None
+
+
+def phone_authorized(flow, cred) -> bool:
+    import base64
+    from urllib.parse import parse_qsl, urlencode
+    if not cred or flow.request.pretty_host.lower() != "api.twilio.com" or (getattr(flow.client_conn, "sni", None) or "").lower() != "api.twilio.com" or flow.request.scheme != "https" or flow.request.port != 443:
+        return False
+    # Transparent requests carry a destination IP. Pin routing to the verified
+    # TLS/Host name before any secret can be inserted, never to that client IP.
+    flow.request.host = "api.twilio.com"
+    config = cred["phone"]
+    headers = flow.request.headers.get_all("authorization")
+    if len(headers) != 1 or not headers[0].startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(headers[0][6:], validate=True).decode("ascii")
+        if decoded != config["account_sid"] + ":" + cred["placeholder"]:
+            return False
+        prefix = "/2010-04-01/Accounts/" + config["account_sid"] + "/Calls"
+        path = flow.request.path
+        create = path == prefix + ".json"
+        item = re.fullmatch(re.escape(prefix) + r"/CA[0-9a-fA-F]{32}\.json", path)
+        if flow.request.method == "GET":
+            return bool(item)
+        if flow.request.method != "POST" or not (create or item):
+            return False
+        if not flow.request.headers.get("content-type", "").lower().startswith("application/x-www-form-urlencoded"):
+            return False
+        body = (flow.request.raw_content or b"").decode("utf-8", errors="strict")
+        if len(body) > 65536 or re.search(r"%(?![0-9a-fA-F]{2})", body):
+            return False
+        pairs = parse_qsl(body, keep_blank_values=True, strict_parsing=True, errors="strict", max_num_fields=128)
+        # Twilio's plugin repeats StatusCallbackEvent, all other fields are scalar.
+        fields = {}
+        for k, v in pairs:
+            if k in fields and k != "StatusCallbackEvent":
+                return False
+            fields[k] = v
+        if create:
+            if set(fields) - {"To", "From", "Url", "Method", "StatusCallback", "StatusCallbackMethod", "StatusCallbackEvent", "Timeout", "TimeLimit"}:
+                return False
+            if fields.get("From") != config["from_number"] or not re.fullmatch(r"\+[1-9]\d{6,14}", fields.get("To", "")):
+                return False
+            if not phone_hook_url(fields.get("Url", ""), config["hook_url"]) or not phone_hook_url(fields.get("StatusCallback", ""), config["hook_url"]):
+                return False
+            if fields.get("Method", "POST") != "POST" or fields.get("StatusCallbackMethod", "POST") != "POST":
+                return False
+            if any(v not in ("initiated", "ringing", "answered", "completed") for k, v in pairs if k == "StatusCallbackEvent"):
+                return False
+            if fields.get("Timeout") and not re.fullmatch(r"[1-9]|[12][0-9]|30", fields["Timeout"]):
+                return False
+            # Always set the provider's hard duration for outbound calls.
+            pairs = [(k, v) for k, v in pairs if k != "TimeLimit"] + [("TimeLimit", "300")]
+            flow.request.set_text(urlencode(pairs))
+        else:
+            if fields == {"Status": "completed"}:
+                return True
+            if set(fields) != {"Twiml"} or not phone_twiml_allowed(fields["Twiml"], config["hook_url"]):
+                return False
+        return True
+    except (ValueError, UnicodeError, KeyError):
+        return False
+
+
 def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str, str]]:
     """Replace placeholders with real secrets, domain-scoped (+ vm-scoped with org fallback).
     Returns [(secret, placeholder)] pairs applied, for later log redaction."""
@@ -980,7 +1101,13 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
         hit = False
 
         for loc in locations:
-            if loc.startswith("header:"):
+            if loc == "basic:authorization" and cred.get("phone"):
+                if phone_authorized(flow, cred):
+                    import base64
+                    sid = cred["phone"]["account_sid"]
+                    flow.request.headers["Authorization"] = "Basic " + base64.b64encode((sid + ":" + secret).encode()).decode()
+                    hit = True
+            elif loc.startswith("header:"):
                 name = loc.split(":", 1)[1]
                 for hname in list(flow.request.headers.keys()):
                     if hname.lower() == name.lower():
@@ -1009,7 +1136,7 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
 
         if hit:
             applied.append((secret, placeholder))
-            log.info(f"[mitm] swapped {placeholder} for host={host} (tenant={TENANT})")
+            log.info(f"[mitm] credential swap for host={host} (tenant={TENANT})")
 
     return applied
 
@@ -1051,6 +1178,8 @@ _TELEGRAM_TOKEN_RE = re.compile(r"/bot\d+:[A-Za-z0-9_-]{20,}(?=/|$)")
 
 def redact_path(path: str, host: str = "") -> str:
     """The query-stripped path with any embedded credential replaced by a marker."""
+    if host.lower() == "api.twilio.com":
+        return "/".join(p if p in ("", "2010-04-01", "Accounts", "Calls", "Calls.json") else "{id}" for p in path.split("?", 1)[0].split("/"))
     if host.lower() in ("api.agentmail.to", "ws.agentmail.to"):
         # Only fixed resource names survive. IDs, addresses, search terms and arbitrary segments
         # must never reach activity storage or an AI review prompt.
@@ -1084,6 +1213,12 @@ def _http_record(flow: http.HTTPFlow, effect: str) -> dict[str, Any]:
         "path": redact_path(flow.request.path, flow.request.pretty_host), "effect": effect,
         "rule": flow.metadata.get("cc_rule"),
     })
+    if flow.request.pretty_host.lower() == "api.twilio.com":
+        try:
+            destination = flow.request.urlencoded_form.get("To", "")
+            rec["rule"] = "phone: outbound ****" + destination[-4:] if re.fullmatch(r"\+[1-9]\d{6,14}", destination) else "phone"
+        except (ValueError, KeyError):
+            rec["rule"] = "phone"
     if flow.metadata.get("cc_ai"):
         rec["ai"] = flow.metadata["cc_ai"]
     return rec
@@ -1131,7 +1266,7 @@ async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
                    approve: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Ask the local judge about one request. None means "no opinion": the rule's effect stands.
     Runs in a thread so a slow judge never stalls other flows."""
-    if flow.request.pretty_host.lower() in ("api.agentmail.to", "ws.agentmail.to"):
+    if flow.request.pretty_host.lower() in ("api.agentmail.to", "ws.agentmail.to", "api.twilio.com"):
         return None  # Mail content never goes to the judge or its remote model provider.
     if not AI_JUDGE_URL:
         return None
@@ -2394,6 +2529,15 @@ async def request(flow: http.HTTPFlow) -> None:
             _log_once(flow, rec)
             return
 
+    if host.lower() == "api.twilio.com" and not phone_authorized(flow, phone_credential(flow, vm_id)):
+        flow.response = http.Response.make(403, '{"error":"phone_assignment_required_or_operation_refused"}', {"Content-Type": "application/json"})
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = "phone"
+        rec = _http_record(flow, "block")
+        rec["status"] = 403
+        _log_once(flow, rec)
+        return
+
     voice_refusal = voice_request(flow, vm_id)
     if voice_refusal:
         flow.response = http.Response.make(403, json.dumps({"error": voice_refusal}), {"Content-Type": "application/json"})
@@ -2475,7 +2619,7 @@ def error(flow: http.HTTPFlow) -> None:
     if NON_ROUTABLE_REFUSAL in str(getattr(flow.error, "msg", "") or ""):
         return  # `server_connect` refused the connection and already wrote the block record
     rec = _allow_record(flow)
-    rec["error"] = "AgentMail request failed" if flow.request.pretty_host in ("api.agentmail.to", "ws.agentmail.to") else str(getattr(flow.error, "msg", "") or "upstream error")[:200]
+    rec["error"] = "Integration request failed" if flow.request.pretty_host in ("api.agentmail.to", "ws.agentmail.to", "api.twilio.com") else str(getattr(flow.error, "msg", "") or "upstream error")[:200]
     start = flow.request.timestamp_start
     end = getattr(flow.error, "timestamp", None)
     if start and end:
