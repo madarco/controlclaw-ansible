@@ -3,7 +3,7 @@ import {execFileSync} from 'node:child_process';
 import {runInNewContext} from 'node:vm';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
-const browser=await chromium.launch({headless:true});
+const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
 const fn=execFileSync('python3',[fileURLToPath(new URL('./export-meet-status.py',import.meta.url)),process.env.MEET_UPSTREAM || '/tmp/meet-upstream'],{encoding:'utf8'});
 const source=runInNewContext(fn+`;meetStatusScript({allowMicrophone:false,autoJoin:true,captureCaptions:false,readOnly:false,guestName:'ControlClaw meeting assistant'})`,{});
 for(const [name,html,permission,expected] of [
@@ -18,6 +18,40 @@ for(const [name,html,permission,expected] of [
  for(const [k,v] of Object.entries(expected))assert.deepEqual(health[k],v,name+': '+k);
  console.log('PASS '+name);await page.close();
 }
+const voiceSource=runInNewContext(fn+`;meetStatusScript({allowMicrophone:true,autoJoin:true,captureCaptions:false,readOnly:false,guestName:'ControlClaw meeting assistant'})`,{});
+const voicePage=await browser.newPage();
+await voicePage.setContent('<button aria-label="Leave call">Leave call</button><button aria-label="Turn off microphone">mic</button><button aria-label="Camera problem. Show more info">camera</button>');
+await voicePage.evaluate(()=>Object.defineProperty(navigator,'permissions',{value:{query:async({name})=>({state:name==='camera'?'denied':'granted'})}}));
+const voiceHealth=JSON.parse(await voicePage.evaluate('('+voiceSource+')()'));
+assert.equal(voiceHealth.micMuted,false);assert.equal(voiceHealth.cameraOff,true);
+await voicePage.close();console.log('PASS Bidi verifies camera denied while microphone is on');
+const devicePage=await browser.newPage();
+await devicePage.setContent('<button aria-label="Leave call"></button><button aria-label="Microphone: Remapped openclaw_meeting_audio.monitor source"></button><button id="mic" aria-label="Turn on microphone"></button><audio></audio>');
+await devicePage.evaluate(()=>{
+ Object.defineProperty(navigator,'permissions',{value:{query:async({name})=>({state:name==='camera'?'denied':'granted'})}});
+ Object.defineProperty(navigator,'mediaDevices',{value:{enumerateDevices:async()=>[
+  {kind:'audioinput',deviceId:'virtual-mic',label:'Remapped openclaw_meeting_audio.monitor source'},
+  {kind:'audiooutput',deviceId:'remote-playback',label:'cc_meeting_remote Audio/Sink sink'},
+  {kind:'audiooutput',deviceId:'virtual-output',label:'openclaw_meeting_audio Audio/Sink sink'},
+ ]}});
+ const audio=document.querySelector('audio');audio.setSinkId=async id=>Object.defineProperty(audio,'sinkId',{value:id,configurable:true});
+ document.querySelector('#mic').onclick=e=>e.currentTarget.setAttribute('aria-label','Turn off microphone');
+});
+const deviceHealth=JSON.parse(await devicePage.evaluate('('+voiceSource+')()'));
+assert.equal(deviceHealth.audioInputRouted,true);assert.equal(deviceHealth.micMuted,false);
+assert.equal(deviceHealth.audioOutputRouted,true);
+assert.equal(await devicePage.locator('audio').evaluate(e=>e.sinkId),'remote-playback');
+await devicePage.evaluate(()=>{
+ const speaker=document.createElement('button');speaker.setAttribute('aria-label','Speaker: Default');
+ const option=document.createElement('li');option.setAttribute('role','menuitemradio');option.textContent='cc_meeting_remote Audio/Sink sink';
+ option.onclick=()=>speaker.setAttribute('aria-label','Speaker: cc_meeting_remote Audio/Sink sink');
+ speaker.onclick=()=>document.body.append(option);document.body.append(speaker);
+ document.querySelector('audio').setSinkId=async()=>{throw new Error('inactive media element');};
+});
+const selectedOutput=JSON.parse(await devicePage.evaluate('('+voiceSource+')()'));
+assert.equal(selectedOutput.audioOutputRouted,true,'Meet speaker selection works even with inactive DOM media');
+assert.equal(await devicePage.locator('button[aria-label^="Speaker:"]').getAttribute('aria-label'),'Speaker: cc_meeting_remote Audio/Sink sink');
+await devicePage.close();console.log('PASS Linux virtual mic and current Meet selector route playback separately');
 const captionSource=runInNewContext(fn+`;meetStatusScript({allowMicrophone:false,autoJoin:false,captureCaptions:true,captionSessionId:'regression',readOnly:false})`,{});
 const lobbyPage=await browser.newPage();
 await lobbyPage.setContent('<h1>Please wait until a meeting host brings you into the call</h1><button aria-label="Leave call">Leave call</button><div aria-live="polite">No one responded to your request to join.</div>');

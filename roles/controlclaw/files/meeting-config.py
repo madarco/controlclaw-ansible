@@ -8,11 +8,14 @@ with open(path) as f:
     config = json.load(f)
 before = json.dumps(config, sort_keys=True)
 config.setdefault('plugins', {}).setdefault('entries', {})['cc-meeting-guard'] = {'enabled': True}
+config['plugins']['entries']['cc-meeting-voice'] = {'enabled': True}
 if isinstance(config['plugins'].get('allow'), list):
-    config['plugins']['allow'] = list(dict.fromkeys(config['plugins']['allow'] + ['google-meet', 'cc-meeting-guard']))
+    config['plugins']['allow'] = list(dict.fromkeys(config['plugins']['allow'] + ['google-meet', 'cc-meeting-guard', 'cc-meeting-voice']))
 paths = config['plugins'].setdefault('load', {}).setdefault('paths', [])
 if '/opt/controlclaw/meeting-guard' not in paths:
     paths.append('/opt/controlclaw/meeting-guard')
+if '/opt/controlclaw/meeting-voice' not in paths:
+    paths.append('/opt/controlclaw/meeting-voice')
 entry = config.setdefault('plugins', {}).setdefault('entries', {}).setdefault('google-meet', {})
 # A fresh install may auto-enable the plugin. The vm-agent's accepted signed settings are
 # the only marker that allows preserving enabled across reprovisioning.

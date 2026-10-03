@@ -20,6 +20,25 @@ with tempfile.TemporaryDirectory() as d:
     import io
     with contextlib.redirect_stdout(io.StringIO()):
         patcher.patch(dest / 'host', dest / 'plugin')
+    if len(sys.argv) > 2 and sys.argv[2] == 'backend':
+        source = (dest / 'host/dist/plugin-sdk/meeting-runtime.js').read_text()
+        start = source.index('async function ensureMeetingAudioBackend(params) {')
+        print(source[start:source.index('\n}', start)+2])
+        print('; ensureMeetingAudioBackend')
+        sys.exit(0)
+    if len(sys.argv) > 2 and sys.argv[2] == 'consult':
+        source = (dest / 'host/dist/plugin-sdk/meeting-runtime.js').read_text()
+        start = source.index('async function consultMeetingAgent(params) {')
+        print(source[start:source.index('\n}', start)+2])
+        print('; consultMeetingAgent')
+        sys.exit(0)
+    if len(sys.argv) > 2 and sys.argv[2] == 'output-queue':
+        source = (dest / 'host/dist/plugin-sdk/meeting-runtime.js').read_text()
+        start = source.index('const OUTPUT_MAX_PENDING_MS')
+        end = source.index('\n}', source.index('function createMeetingRealtimeOutputQueue', start)) + 2
+        print(source[start:end])
+        print('; createMeetingRealtimeOutputQueue')
+        sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[2] == 'recovery':
         source = (dest / 'plugin/dist/.setup/runtime-BdiF53A2.mjs').read_text()
         start = source.index('async function recoverCurrentMeetTab(params) {')

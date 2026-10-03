@@ -1,0 +1,18 @@
+{
+  "id": "cc-meeting-voice",
+  "name": "ControlClaw meeting voice",
+  "description": "Call-scoped voice through the organization's firewall.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "realtimeVoiceProviders": [
+      "cc-meeting-voice"
+    ]
+  }
+}

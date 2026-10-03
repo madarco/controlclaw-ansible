@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import secrets
 import hashlib
 import hmac
 import ipaddress
@@ -960,9 +961,20 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
     applied: list[tuple[str, str]] = []
 
     for cred in credentials_for(host, vm_id):
+        # Speech credentials may only be substituted after voice_request has
+        # admitted this exact request. Do not let alternate header spellings or
+        # additional placeholder occurrences reach the general swapper.
+        if cred.get("speech") and flow.metadata.get("voice_credential") != cred.get("placeholder"):
+            continue
         placeholder = cred.get("placeholder")
         secret = _secret_value(cred)
         if not placeholder or not secret:
+            continue
+        if cred.get("speech"):
+            authorization = flow.request.headers.get("authorization", "")
+            if authorization[:7].lower() == "bearer " and authorization[7:] == placeholder:
+                flow.request.headers["authorization"] = "Bearer " + secret
+                applied.append((secret, placeholder))
             continue
         locations = cred.get("locations") or DEFAULT_LOCATIONS
         hit = False
@@ -1976,6 +1988,229 @@ def server_connect_error(data) -> None:
     _unpin(data)
 
 
+# Realtime is a call-scoped capability, separate from ordinary text credentials.
+# No audio, transcripts or tool arguments are retained here. Upstream ephemeral
+# credentials remain in firewall RAM until their one-time use or 60-second expiry.
+_voice_tokens = {}
+_voice_usage = {}
+_voice_tasks = {}
+VOICE_MAX_BYTES = 512 * 1024 * 1024
+VOICE_MAX_FRAMES = 250000
+VOICE_PATHS = {"ai-gateway.vercel.sh": {"/v1/realtime/client-secrets", "/v4/ai/realtime-model"},
+               "api.openai.com": {"/v1/realtime", "/v1/live", "/v1/live/sessions", "/v1/realtime/calls"}}
+
+
+def voice_request(flow, vm_id):
+    host, path = flow.request.pretty_host, flow.request.path.split("?", 1)[0]
+    credentials = credentials_for(host, vm_id)
+    authorization = flow.request.headers.get("authorization", "")
+    speech_cred = next((c for c in credentials if c.get("speech") and c.get("placeholder") and
+                       c["placeholder"] in authorization), None)
+    if speech_cred and (authorization[:7].lower() != "bearer " or authorization[7:] != speech_cred["placeholder"]):
+        return "Invalid speech authorization"
+    realtime = path in VOICE_PATHS.get(host, set())
+    if not realtime and not speech_cred:
+        return None
+    lease = meeting_lease(vm_id)
+    speech = lease.get("speech") if lease else None
+    if not realtime or not isinstance(speech, dict):
+        return "Voice needs an active approved meeting"
+    provider, model = speech.get("provider"), speech.get("model")
+    if speech_cred and speech_cred["placeholder"] != lease.get("voice_placeholder"):
+        return "Speech credential does not match this call"
+    expected_host = "ai-gateway.vercel.sh" if provider == "gateway" else "api.openai.com"
+    # pretty_host trusts Host; credential translation also requires the actual
+    # HTTPS target, port and (when present) client TLS name to agree.
+    sni = (getattr(flow.client_conn, "sni", None) or "").lower()
+    if (flow.request.scheme != "https" or flow.request.port != 443
+            or sni and sni != expected_host):
+        return "Voice requires the verified provider HTTPS destination"
+    if flow.request.host != expected_host:
+        # Redsocks CONNECT names the original IP. Require the provider TLS name,
+        # then route by the pinned provider hostname, never the supplied IP/Host.
+        try:
+            ipaddress.ip_address(flow.request.host)
+        except ValueError:
+            return "Voice requires the verified provider HTTPS destination"
+        if sni != expected_host:
+            return "Voice requires the verified provider HTTPS destination"
+        flow.request.host = expected_host
+    if host != expected_host or not isinstance(model, str):
+        return "Speech provider does not match this call"
+    now = time.time()
+    for key, entry in list(_voice_tokens.items()):
+        if entry[3] < now:
+            del _voice_tokens[key]
+    for key, entry in list(_voice_usage.items()):
+        if entry["deadline"] < now:
+            del _voice_usage[key]
+    usage = _voice_usage.setdefault(lease["id"], {"deadline": lease["deadline"], "bytes": 0, "frames": 0, "attempts": 0, "active": False, "responses": 0})
+    if usage["bytes"] >= VOICE_MAX_BYTES or usage["responses"] >= 120 or usage["active"]:
+        return "Voice call limit reached"
+    mint = provider == "gateway" and path == "/v1/realtime/client-secrets"
+    if (mint or provider != "gateway") and usage["attempts"] >= 4:
+        return "Voice call limit reached"
+    if mint:
+        try:
+            body = json.loads(flow.request.content)
+            if flow.request.method != "POST" or not speech_cred or body != {"model": model, "expiresIn": 60}:
+                return "Invalid realtime token request"
+        except (ValueError, TypeError):
+            return "Invalid realtime token request"
+        usage["attempts"] += 1
+    else:
+        if flow.request.method != "GET" or flow.request.headers.get("upgrade", "").lower() != "websocket":
+            return "Only the approved voice WebSocket is allowed"
+        query = dict(flow.request.query)
+        if provider == "gateway":
+            if path != "/v4/ai/realtime-model" or query != {"ai-model-id": model}:
+                return "Realtime model does not match this call"
+            protocols = [p.strip() for p in flow.request.headers.get("sec-websocket-protocol", "").split(",")]
+            tokens = [p[len("ai-gateway-auth."):] for p in protocols if p.startswith("ai-gateway-auth.")]
+            if len(tokens) != 1:
+                return "Missing call token"
+            digest = hashlib.sha256(tokens[0].encode()).hexdigest()
+            bound = _voice_tokens.pop(digest, None)
+            if not bound or bound[:3] != (vm_id, lease["id"], model) or bound[3] <= now:
+                return "Call token expired or belongs to another call"
+            flow.request.headers["sec-websocket-protocol"] = ", ".join(
+                "ai-gateway-auth." + bound[4] if p.startswith("ai-gateway-auth.") else p for p in protocols)
+        else:
+            if path != "/v1/realtime" or query != {"model": model} or not speech_cred:
+                return "Invalid provider voice request"
+            usage["attempts"] += 1
+            if provider == "codex" and speech_cred.get("speech_account_id"):
+                flow.request.headers["chatgpt-account-id"] = speech_cred["speech_account_id"]
+    flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint}
+    if speech_cred:
+        flow.metadata["voice_credential"] = speech_cred["placeholder"]
+    return None
+
+
+def voice_response(flow):
+    voice = flow.metadata.get("cc_voice")
+    if not voice or not voice["mint"] or flow.response.status_code != 200:
+        return
+    try:
+        value = json.loads(flow.response.content)
+        token = value["token"]
+        if not isinstance(token, str) or len(token) > 8192:
+            raise ValueError()
+        opaque = "cc-voice-" + secrets.token_hex(32)
+        digest = hashlib.sha256(opaque.encode()).hexdigest()
+        _voice_tokens[digest] = (voice["vm_id"], voice["lease_id"], voice["model"], time.time() + 60, token)
+        flow.response.content = json.dumps({"token": opaque}).encode()
+    except (ValueError, KeyError, TypeError):
+        flow.response = http.Response.make(502, b'{"error":"Voice token unavailable"}')
+
+
+def voice_client_event(event, provider, model):
+    if not isinstance(event, dict):
+        return False
+    kind = event.get("type")
+    allowed = {"session-update", "input-audio-append", "input-audio-commit", "input-audio-clear",
+               "conversation-item-create", "conversation-item-truncate", "response-create", "response-cancel"}
+    if provider in ("openai", "codex"):
+        allowed = {"session.update", "input_audio_buffer.append", "input_audio_buffer.commit", "input_audio_buffer.clear", "conversation.item.create", "conversation.item.truncate", "response.create", "response.cancel"}
+    if kind not in allowed:
+        return False
+    if kind in ("response.create", "response-create"):
+        # Session policy cannot be overridden on an individual response.
+        if set(event) != {"type"}:
+            return False
+    config = event.get("config", {}) if provider == "gateway" else event.get("session", {})
+    if kind in ("session-update", "session.update"):
+        if not isinstance(config, dict) or config.get("model", model) != model:
+            return False
+        if provider == "gateway" and "model" in config:
+            return False
+        options = config.get("providerOptions", {})
+        if not isinstance(options, dict) or set(options) - {"audio", "max_output_tokens"}:
+            return False
+        if options and (not model.startswith("openai/") or options.get("max_output_tokens") != 512):
+            return False
+        tools = config.get("tools", [])
+        if not isinstance(tools, list) or len(tools) > 1 or any(t.get("type") != "function" or t.get("name") != "ask_agent" for t in tools if isinstance(t, dict)) or any(not isinstance(t, dict) for t in tools):
+            return False
+    return True
+
+
+def voice_lease(voice):
+    lease = meeting_lease(voice["vm_id"], voice["lease_id"])
+    speech = lease.get("speech") if lease else None
+    return lease if isinstance(speech, dict) and speech.get("provider") == voice["provider"] and speech.get("model") == voice["model"] else None
+
+
+def _voice_close(flow):
+    if getattr(flow, "live", False):
+        flow.kill()
+
+
+async def _voice_watch(flow):
+    voice = flow.metadata["cc_voice"]
+    try:
+        while True:
+            await asyncio.sleep(1)
+            if not voice_lease(voice):
+                _voice_close(flow)
+                return
+    except asyncio.CancelledError:
+        pass
+
+
+def websocket_start(flow):
+    voice = flow.metadata.get("cc_voice")
+    if not voice:
+        return
+    usage = _voice_usage.get(voice["lease_id"])
+    if not usage or usage["active"] or not voice_lease(voice):
+        _voice_close(flow)
+        return
+    usage["active"] = flow.id
+    _voice_tasks[flow.id] = asyncio.create_task(_voice_watch(flow))
+
+
+def websocket_message(flow):
+    voice = flow.metadata.get("cc_voice")
+    if not voice or not flow.websocket.messages:
+        return
+    message = flow.websocket.messages[-1]
+    usage = _voice_usage.get(voice["lease_id"])
+    reject = not usage or not voice_lease(voice)
+    if usage:
+        usage["bytes"] += len(message.content)
+        usage["frames"] += 1
+        reject |= usage["bytes"] > VOICE_MAX_BYTES or usage["frames"] > VOICE_MAX_FRAMES or len(message.content) > 512 * 1024
+    try:
+        event = json.loads(message.content)
+        if message.from_client:
+            reject |= not voice_client_event(event, voice["provider"], voice["model"])
+        elif isinstance(event, dict) and event.get("type") in ("response-created", "response.created") and usage:
+            usage["responses"] += 1
+            reject |= usage["responses"] > 120
+    except (ValueError, TypeError):
+        reject = True
+    if reject:
+        message.drop()
+        _voice_close(flow)
+    # mitmproxy relays its local message reference after this hook. The flow must not retain it.
+    flow.websocket.messages.clear()
+
+
+def websocket_end(flow):
+    voice = flow.metadata.get("cc_voice")
+    if not voice:
+        return
+    task = _voice_tasks.pop(flow.id, None)
+    if task:
+        task.cancel()
+    usage = _voice_usage.get(voice["lease_id"])
+    if usage and usage["active"] == flow.id:
+        usage["active"] = False
+    flow.websocket.messages.clear()
+    # Ordinary HTTP activity records the upgrade; never emit provider payloads or close reasons.
+
+
 async def request(flow: http.HTTPFlow) -> None:
     host = flow.request.pretty_host
     method = flow.request.method
@@ -2159,6 +2394,16 @@ async def request(flow: http.HTTPFlow) -> None:
             _log_once(flow, rec)
             return
 
+    voice_refusal = voice_request(flow, vm_id)
+    if voice_refusal:
+        flow.response = http.Response.make(403, json.dumps({"error": voice_refusal}), {"Content-Type": "application/json"})
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = "meeting_voice"
+        rec = _http_record(flow, "block")
+        rec["status"] = 403
+        _log_once(flow, rec)
+        return
+
     refusal = included_refusal(flow, vm_id)
     if refusal:
         flow.response = http.Response.make(INCLUDED_BLOCK_STATUS, _error_body(refusal, "model_not_included"), {"Content-Type": "application/json"})
@@ -2188,6 +2433,7 @@ def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
 
 
 def response(flow: http.HTTPFlow) -> None:
+    voice_response(flow)
     if flow.metadata.get("cc_exit_http"):
         rec = _residential_http_record(flow)
         rec.update({"status": flow.response.status_code,

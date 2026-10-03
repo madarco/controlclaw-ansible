@@ -279,7 +279,7 @@
 # does.
 - name: Read the running browser's flags before deciding on a restart
   ansible.builtin.command:
-    cmd: pgrep -a -f "^/usr/bin/google-chrome-stable --remote-debugging"
+    cmd: pgrep -a -f "^(/usr/bin/google-chrome-stable|/opt/google/chrome/chrome) --remote-debugging"
   register: browser_cmdline_now
   changed_when: false
   failed_when: false
@@ -387,7 +387,7 @@
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      printf 'CMDLINE=%s\n' "$(pgrep -a -f '^/usr/bin/google-chrome-stable --remote-debugging' | head -1)"
+      printf 'CMDLINE=%s\n' "$(pgrep -a -f '^(/usr/bin/google-chrome-stable|/opt/google/chrome/chrome) --remote-debugging' | head -1)"
       printf 'MEMMAX=%s\n' "$(systemctl show browser-stream -p MemoryMax --value)"
       printf 'SANDBOXHELPER=%s\n' "$(pgrep -c -f '/opt/google/chrome/chrome-sandbox' || true)"
     executable: /bin/bash

@@ -31148,6 +31148,18 @@ var LlmFirewall = class {
   plainOnBox(c2) {
     return !!this.opts.plainKeys && c2.kind !== "oauth" && !c2.allowedModels;
   }
+  /** Speech is an explicit owner-approved binding, independent of text model selection. */
+  speechCredential(provider, credentialId) {
+    const id = credentialId === "included" ? this.includedCredentialId() : credentialId;
+    const c2 = id ? this.store.credentials[id] : void 0;
+    const host = provider === "gateway" ? "ai-gateway.vercel.sh" : "api.openai.com";
+    if (!c2 || c2.failed) return null;
+    if (provider === "codex") {
+      if (c2.kind !== "oauth" || c2.swap.matchDomain !== "chatgpt.com" || !["openai", "openai_codex"].includes(c2.provider)) return null;
+    } else if (c2.kind !== "api_key" || c2.swap.matchDomain !== host) return null;
+    if (provider === "openai" && c2.provider !== "openai") return null;
+    return { secret: secretValue(c2.secret), host, ...provider === "codex" && "accountId" in c2.secret && c2.secret.accountId ? { accountId: c2.secret.accountId } : {} };
+  }
   /** The included-AI credential this firewall holds, if any (reported on the heartbeat). */
   includedCredentialId() {
     return Object.entries(this.store.credentials).find(([, c2]) => c2.allowedModels)?.[0] ?? null;
@@ -31584,6 +31596,19 @@ import { mkdirSync as mkdirSync4, renameSync as renameSync2, writeFileSync as wr
 import { dirname as dirname3 } from "path";
 
 // ../meetings/src/index.ts
+var SPEECH_MODELS = {
+  gateway: ["openai/gpt-realtime-1.5"],
+  openai: ["gpt-realtime-1.5"],
+  codex: ["gpt-realtime"]
+};
+function parseSpeechPolicy(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid speech settings");
+  const p2 = value;
+  if (Object.keys(p2).some((k2) => !["provider", "credentialId", "model", "maxMinutes"].includes(k2)) || !Object.hasOwn(SPEECH_MODELS, p2.provider) || !SPEECH_MODELS[p2.provider].includes(p2.model) || typeof p2.credentialId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(p2.credentialId) || p2.credentialId === "included" && p2.provider !== "gateway" || !Number.isSafeInteger(p2.maxMinutes) || p2.maxMinutes < 5 || p2.maxMinutes > 60)
+    throw new Error("Choose a supported speech model and a call limit from 5 to 60 minutes");
+  return { provider: p2.provider, credentialId: p2.credentialId, model: p2.model, maxMinutes: p2.maxMinutes };
+}
 var MEDIA_MAX_SECONDS = 4 * 60 * 60;
 var MEDIA_MAX_BYTES = 512 * 1024 * 1024;
 var MEDIA_TTL_SECONDS = 30;
@@ -31596,14 +31621,16 @@ function parseMeetingPolicy(value) {
     (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech"].includes(
       k2
     )
-  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || p2.defaultMode !== "transcript" || p2.invokers !== "owner-browser" || p2.speech !== null)
-    throw new Error("Only owner-browser Google Meet Transcript is available");
+  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser")
+    throw new Error("Invalid owner-browser Google Meet settings");
+  const speech = parseSpeechPolicy(p2.speech);
+  if (p2.defaultMode === "bidi" && !speech) throw new Error("Bidi needs a speech provider");
   return {
     enabled: p2.enabled,
     platforms: ["google-meet"],
-    defaultMode: "transcript",
+    defaultMode: p2.defaultMode,
     invokers: "owner-browser",
-    speech: null
+    speech
   };
 }
 
@@ -31677,6 +31704,7 @@ var MeetingsFirewall = class {
       throw new Error("Invalid meetings request");
     const target = this.target(vmId);
     const policy = parseMeetingPolicy(raw.policy);
+    if (policy.enabled && policy.speech && !this.opts.speechCredential?.(policy.speech)) throw new Error("Speech credential unavailable. Add a compatible API key or included credit first.");
     const current = this.entries[vmId];
     if (revision !== (current?.revision ?? 0))
       return { ok: false, status: "conflict", data: { changeId } };
@@ -31703,7 +31731,7 @@ var MeetingsFirewall = class {
       `meetings:${vmId}`,
       proposal,
       target.hostname,
-      "Enable guest Google Meet Transcript from your enrolled browser. Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.",
+      `Enable guest Google Meet from your enrolled browser. ${policy.speech ? `Allow Bidi speech through ${policy.speech.provider}, model ${policy.speech.model}, for at most ${policy.speech.maxMinutes} minutes per call. The speech provider receives meeting audio. Meeting tools are read-only; actions need your private channel.` : "Transcript keeps microphone and camera off."} Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.`,
       routes
     );
     return sent.ok ? {
@@ -31733,16 +31761,21 @@ var MeetingsFirewall = class {
     if ((this.entries[p2.vmId]?.revision ?? 0) !== p2.baseRevision)
       return { ok: false, status: "conflict", data: { changeId: p2.changeId } };
     const target = this.target(p2.vmId);
+    if (p2.policy.enabled && p2.policy.speech && !this.opts.speechCredential?.(p2.policy.speech)) throw new Error("Speech credential was removed before confirmation");
+    const previous = this.entries[p2.vmId];
+    const sameAccess = previous && previous.policy.enabled === p2.policy.enabled && JSON.stringify(previous.policy.speech) === JSON.stringify(p2.policy.speech);
     this.entries[p2.vmId] = {
       policy: p2.policy,
       revision: p2.baseRevision + 1,
-      token: randomBytes8(32).toString("hex"),
+      token: sameAccess ? previous.token : randomBytes8(32).toString("hex"),
       hostname: target.hostname,
-      applied: false
+      applied: false,
+      voicePlaceholder: sameAccess ? previous.voicePlaceholder : `cc-speech-${randomBytes8(24).toString("hex")}`
     };
-    this.leases.delete(p2.vmId);
+    if (!sameAccess) this.leases.delete(p2.vmId);
     this.save();
     this.publish();
+    await this.opts.onCredentialsChanged?.();
     const outcome = await this.push(p2.vmId);
     return { ...outcome, data: { ...outcome.data, changeId: p2.changeId } };
   }
@@ -31759,6 +31792,7 @@ var MeetingsFirewall = class {
         vmId,
         revision: entry.revision,
         policy: entry.policy,
+        speech: entry.policy.speech ? { ...entry.policy.speech, placeholder: entry.voicePlaceholder } : null,
         media: { origin: this.opts.firewallOrigin(), token: entry.token }
       });
       entry.applied = true;
@@ -31786,12 +31820,33 @@ var MeetingsFirewall = class {
       applied: e.applied
     }));
   }
+  credentials() {
+    const out = [];
+    for (const [vmId, e] of Object.entries(this.entries)) {
+      if (!e.policy.enabled || !e.policy.speech || !e.voicePlaceholder || this.opts.locked(vmId)) continue;
+      const c2 = this.opts.speechCredential?.(e.policy.speech);
+      if (!c2) continue;
+      out.push({
+        placeholder: e.voicePlaceholder,
+        secret: c2.secret,
+        match_domain: c2.host,
+        locations: ["header:authorization"],
+        vm_id: vmId,
+        ...c2.accountId ? { speech_account_id: c2.accountId } : {},
+        speech: { provider: e.policy.speech.provider, model: e.policy.speech.model }
+      });
+    }
+    return out;
+  }
   publish() {
     const live = {};
     for (const [vmId, lease] of this.leases) {
       if (!this.opts.identities().some((i2) => i2.vm_id === vmId) || !this.entries[vmId]?.policy.enabled || this.opts.locked(vmId) || lease.expires <= this.now() / 1e3)
         this.leases.delete(vmId);
-      else live[vmId] = lease;
+      else live[vmId] = { ...lease, ...this.entries[vmId].policy.speech && this.opts.speechCredential?.(this.entries[vmId].policy.speech) ? {
+        speech: this.entries[vmId].policy.speech,
+        voice_placeholder: this.entries[vmId].voicePlaceholder
+      } : {} };
     }
     mkdirSync4(dirname3(this.opts.mediaPath), { recursive: true });
     writeFileSync5(`${this.opts.mediaPath}.tmp`, JSON.stringify(live), {
@@ -31841,7 +31896,7 @@ var MeetingsFirewall = class {
         id: randomBytes8(16).toString("hex"),
         started: now2,
         expires: now2 + MEDIA_TTL_SECONDS,
-        deadline: now2 + MEDIA_MAX_SECONDS,
+        deadline: now2 + (found[1].policy.speech ? found[1].policy.speech.maxMinutes * 60 : MEDIA_MAX_SECONDS),
         max_bytes: MEDIA_MAX_BYTES
       };
       this.leases.set(vmId, lease);
@@ -84841,8 +84896,8 @@ import { readFileSync as readFileSync17 } from "fs";
 import { readFileSync as readFileSync16 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "3fbdf11" : "unknown",
-  builtAt: true ? "2026-10-02T23:37:22+01:00" : "unknown"
+  commit: true ? "unknown" : "unknown",
+  builtAt: true ? "2026-10-03T08:55:04.237Z" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -85096,6 +85151,7 @@ async function runSync(boxKey) {
   if (llm) {
     cfg.credentials = [...cfg.credentials ?? [], ...llm.credentials()];
   }
+  if (meetings) cfg.credentials = [...cfg.credentials ?? [], ...meetings.credentials()];
   if (drive) {
     cfg.credentials = [...cfg.credentials ?? [], ...drive.credentials()];
   }
@@ -85352,7 +85408,9 @@ async function main() {
         firewallOrigin: () => `https://${readKeyFile2("vm_hostname")}`,
         codeRoutes: () => channels?.codeRoutes() ?? [],
         channelsReady: () => channels !== null,
-        locked: (vmId) => !kill || kill.lockedVmIds([vmId]).includes(vmId)
+        locked: (vmId) => !kill || kill.lockedVmIds([vmId]).includes(vmId),
+        speechCredential: (speech) => llm?.speechCredential(speech.provider, speech.credentialId) ?? null,
+        onCredentialsChanged: () => runSync(boxKey)
       });
       setInterval(() => {
         try {
