@@ -29400,23 +29400,31 @@ var PhoneFirewall = class {
       "read",
       "push",
       "unassign",
-      "forget"
+      "forget",
+      "disconnect"
     ])
       handlers[`phone.${action}`] = (p2) => {
+        if (action === "disconnect" && typeof p2.changeId === "string" && this.store.completed.includes(p2.changeId))
+          return Promise.resolve({
+            ok: true,
+            status: "applied",
+            data: this.summary()
+          });
         if (action === "cancel") {
           this.epoch++;
           this.codes.cancel("phone", String(p2.changeId ?? "") || null);
         }
-        if (action === "unassign" || action === "forget") {
+        if (action === "unassign" || action === "forget" || action === "disconnect") {
           const a2 = this.store.assignment;
           this.epoch++;
           this.codes.drop("phone");
-          if (a2 && (action === "unassign" || p2.vmId === a2.vmId)) {
+          if (a2 && (action !== "forget" || p2.vmId === a2.vmId)) {
             this.store.cleanup = a2;
             this.store.assignment = null;
             this.save();
           }
-          void this.opts.onCredentialsChanged();
+          void this.opts.onCredentialsChanged().catch(() => {
+          });
         }
         const epoch2 = this.epoch;
         return this.enqueue(async () => {
@@ -29445,9 +29453,26 @@ var PhoneFirewall = class {
             } else if (action === "cancel") {
               this.codes.cancel("phone", String(p2.changeId ?? "") || null);
               out = { status: "cancelled" };
-            } else if (action === "unassign" || action === "forget") {
+            } else if (action === "unassign" || action === "forget" || action === "disconnect") {
               await this.opts.onCredentialsChanged();
               await this.cleanup();
+              if (action === "disconnect") {
+                const previous = this.store;
+                this.store = {
+                  ...previous,
+                  accountSid: null,
+                  token: null,
+                  accountType: null,
+                  numbers: [],
+                  completed: typeof p2.changeId === "string" ? [...previous.completed.slice(-99), p2.changeId] : previous.completed
+                };
+                try {
+                  this.save();
+                } catch (error62) {
+                  this.store = previous;
+                  throw error62;
+                }
+              }
             } else if (action === "push") {
               const a2 = this.store.assignment;
               if (a2 && (!p2.vmId || p2.vmId === a2.vmId)) await this.push(a2);
@@ -29753,6 +29778,15 @@ var PhoneFirewall = class {
         a2.numberSid,
         fields
       );
+    if (Object.keys(fields).length) {
+      const checked = await this.api.number(
+        this.store.accountSid,
+        this.store.token,
+        a2.numberSid
+      );
+      if (checked.voice_url === this.url(a2) || checked.status_callback === `${this.url(a2)}?type=status`)
+        throw new PhoneError("routing_cleanup_failed");
+    }
     if (this.current(a2)) {
       a2.routed = false;
       a2.routingHash = routingHash(
@@ -92074,8 +92108,8 @@ import { readFileSync as readFileSync19 } from "fs";
 import { readFileSync as readFileSync18 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7548675" : "unknown",
-  builtAt: true ? "2026-10-04T10:03:13+01:00" : "unknown"
+  commit: true ? "d1d459f" : "unknown",
+  builtAt: true ? "2026-10-04T11:14:48+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;

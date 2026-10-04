@@ -27414,8 +27414,8 @@ async function installDoctorKey(pub, sig2, opts = {}) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7548675" : "unknown",
-  builtAt: true ? "2026-10-04T10:03:13+01:00" : "unknown"
+  commit: true ? "d1d459f" : "unknown",
+  builtAt: true ? "2026-10-04T11:14:48+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
