@@ -15,7 +15,8 @@ Implements the security-critical core of the two-box architecture
      ControlClaw (`POST /api/vm-agent/activity`); see MITM_LOG_FILE / MITM_LOG_MAX_BYTES.
   4. Inline AI review (docs: apps/saas/docs/features/ai-firewall-review.md): an `allow` rule
      with `ai_review` asks the mitm-agent's local judge (MITM_AI_JUDGE_URL) before the request
-     leaves. The judge can let it through, block it, or turn it into a permission request. A
+     leaves (with the rule's `ai_policy`, if any, as a note for the AI). The judge can let it
+     through, block it, or turn it into a permission request. A
      `require_permission` rule with `ai_review` and an `ai_policy` asks it to approve on a
      person's behalf; an approval writes a normal grant (`by: "ai"`). A judge that is off, slow
      or failing never changes the rule's decision.
@@ -1404,7 +1405,10 @@ async def ai_judge(flow: http.HTTPFlow, rule: dict[str, Any], vm_id: str | None,
         "content_type": (flow.request.headers.get("content-type") or "")[:100] or None,
         "body_start": _body_start(flow),
         "recent": list(_recent[vm_id]),
-        **({"mode": "approve", "policy": rule.get("ai_policy"), **approve} if approve else {"mode": "review"}),
+        # The rule's note for the AI: the approval policy on an Ask rule, extra instructions on an
+        # Allow rule. Written by the org admin; the judge puts it in its questions, not the state.
+        "policy": rule.get("ai_policy"),
+        **({"mode": "approve", **approve} if approve else {"mode": "review"}),
     }
     try:
         out = await asyncio.to_thread(_judge_sync, payload)
