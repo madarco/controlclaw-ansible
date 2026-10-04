@@ -27529,8 +27529,8 @@ async function installDoctorKey(pub, sig2, opts = {}) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "bbbf0f8" : "unknown",
-  builtAt: true ? "2026-10-04T14:08:01+01:00" : "unknown"
+  commit: true ? "280a844" : "unknown",
+  builtAt: true ? "2026-10-04T15:12:10+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -28756,9 +28756,12 @@ var Once = class {
 
 // src/channels.ts
 var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
+var APPLY_CHANNELS = [...CHANNEL_TYPES, "clickclack"];
+var TEAMCHAT_GATE_PORT = 3930;
 var PLUGIN_BY_CHANNEL = {
   slack: "@openclaw/slack",
-  whatsapp: "@openclaw/whatsapp"
+  whatsapp: "@openclaw/whatsapp",
+  clickclack: "@openclaw/clickclack"
 };
 var APPROVE_TIMEOUT_MS = 45e3;
 var LIST_TIMEOUT_MS = 2e4;
@@ -28804,8 +28807,10 @@ function channelStatusFrom(type, payload) {
   if (!s2) return null;
   const account = channelAccount(type, payload);
   const entry = {
-    configured: bool(s2.configured),
-    running: bool(s2.running),
+    // A plugin channel (ClickClack, OpenClaw 2026.9) reports only `{ok, label, detail}` on the
+    // summary and keeps configured/running on the account, like `connected` below.
+    configured: typeof s2.configured === "boolean" ? s2.configured : bool(account?.configured),
+    running: typeof s2.running === "boolean" ? s2.running : bool(account?.running),
     connected: typeof s2.connected === "boolean" ? s2.connected : bool(account?.connected),
     lastError: str2(s2.lastError) ?? str2(account?.lastError)
   };
@@ -28861,7 +28866,41 @@ function channelBlock(input2) {
       }
       return { enabled: true, dmPolicy: "pairing" };
     }
+    case "clickclack": {
+      const t2 = input2.settings;
+      return {
+        enabled: true,
+        baseUrl: t2.baseUrl,
+        apiBaseUrl: t2.apiBaseUrl,
+        token: t2.token,
+        workspace: t2.workspace,
+        ...t2.botUserId ? { botUserId: t2.botUserId } : {},
+        defaultTo: "channel:general",
+        requireMention: true,
+        allowBots: "mentions",
+        allowFrom: ["*", ...t2.peers]
+      };
+    }
   }
+}
+function parseClickClackSettings(raw, mitmIp) {
+  if (!raw || typeof raw !== "object" || !mitmIp) return null;
+  const r2 = raw;
+  const s2 = (v2, max) => typeof v2 === "string" && v2.length > 0 && v2.length <= max ? v2 : null;
+  const baseUrl = s2(r2.baseUrl, 300);
+  const apiBaseUrl = s2(r2.apiBaseUrl, 100);
+  const token = s2(r2.token, 200);
+  const workspace = s2(r2.workspace, 64);
+  const botUserId = r2.botUserId === void 0 || r2.botUserId === null ? null : s2(r2.botUserId, 64);
+  if (!baseUrl || !apiBaseUrl || !token || !workspace) return null;
+  if (!/^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(baseUrl)) return null;
+  if (apiBaseUrl !== `http://${mitmIp}:${TEAMCHAT_GATE_PORT}`) return null;
+  if (!/^cctc_[A-Za-z0-9_-]{20,100}$/.test(token)) return null;
+  if (!/^wsp_[0-9a-z]{8,40}$/.test(workspace)) return null;
+  if (r2.botUserId !== void 0 && r2.botUserId !== null && (!botUserId || !/^usr_[0-9a-z]{8,40}$/.test(botUserId))) return null;
+  const rawPeers = r2.peers === void 0 ? [] : r2.peers;
+  if (!Array.isArray(rawPeers) || rawPeers.length > 200 || !rawPeers.every((p2) => typeof p2 === "string" && /^usr_[0-9a-z]{8,40}$/.test(p2))) return null;
+  return { baseUrl, apiBaseUrl, token, workspace, botUserId, peers: [...new Set(rawPeers)] };
 }
 var ChannelsService = class {
   constructor(opts) {
@@ -28896,6 +28935,10 @@ var ChannelsService = class {
     at: 0,
     personal: false
   };
+  /** Team chat settings from a firewall write, checked against this box's own firewall. */
+  clickclackSettings(raw) {
+    return parseClickClackSettings(raw, this.opts.mitmPrivateIp?.() ?? null);
+  }
   /**
    * Everyone this box has approved. The firewall reads this back to repair its own list, so it
    * must not depend on the gateway or on the pairing listing — both of which fail exactly when a
@@ -29151,11 +29194,11 @@ var ChannelsService = class {
     return out;
   }
   /** Per-channel state from `channels.status`, reduced to what the console needs. */
-  async status() {
+  async status(opts = {}) {
     const channels2 = {};
     if (this.opts.client?.connected) {
       const payload = await this.gateway().call("channels.status", { probe: false }, CHANNELS_STATUS_MS);
-      for (const type of CHANNEL_TYPES) {
+      for (const type of APPLY_CHANNELS) {
         const entry = channelStatusFrom(type, payload);
         if (entry) channels2[type] = entry;
       }
@@ -29163,13 +29206,21 @@ var ChannelsService = class {
     for (const [type, setup] of this.setup) {
       channels2[type] = { configured: false, running: false, connected: false, lastError: null, ...channels2[type], setup };
     }
-    for (const type of CHANNEL_TYPES) {
+    for (const type of APPLY_CHANNELS) {
       const record2 = this.applyRecord(type);
       if (!record2) continue;
       channels2[type] = { configured: false, running: false, connected: false, lastError: null, ...channels2[type], lastApply: record2 };
     }
+    if (opts.teamChatPeers && channels2.clickclack?.configured) {
+      try {
+        const block = (await this.config()).channels?.clickclack;
+        const allow = Array.isArray(block?.allowFrom) ? block.allowFrom : [];
+        channels2.clickclack.peers = allow.filter((p2) => typeof p2 === "string" && p2 !== "*").sort();
+      } catch {
+      }
+    }
     const wa2 = this.whatsappLogin();
-    const configured = Object.keys(channels2).filter((t2) => channels2[t2]?.configured);
+    const configured = CHANNEL_TYPES.filter((t2) => channels2[t2]?.configured);
     const read = await this.pairingsRead(configured);
     return { channels: channels2, pairings: read.pairings, pairingsError: read.error, whatsappLogin: wa2.state === "idle" ? null : { state: wa2.state } };
   }
@@ -29190,11 +29241,12 @@ var ChannelsService = class {
     const id = input2.applyId ?? randomUUID();
     const type = input2.type;
     this.noteApply(type, { id, state: "pending", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
-    const write = this.patchConfig(patch).then(
+    const replacePaths = type === "clickclack" ? ["channels.clickclack.allowFrom"] : void 0;
+    const write = this.patchConfig(patch, replacePaths).then(
       () => {
         this.noteApply(type, { id, state: "applied", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
         this.log(`[channels] ${what}`);
-        if (!block) this.forgetApproved(type);
+        if (!block && type !== "clickclack") this.forgetApproved(type);
         if (block) void this.ensurePlugin(type);
         return true;
       },
@@ -29264,25 +29316,25 @@ var ChannelsService = class {
    * One config write at a time, with a single retry when OpenClaw says the file moved under us —
    * `openclaw plugins install` edits the same file, and so does the WhatsApp login when it lands.
    */
-  patchConfig(patch) {
+  patchConfig(patch, replacePaths) {
     const run3 = this.patchChain.then(
-      () => this.patchOnce(patch),
-      () => this.patchOnce(patch)
+      () => this.patchOnce(patch, replacePaths),
+      () => this.patchOnce(patch, replacePaths)
     );
     this.patchChain = run3.catch(() => void 0);
     return run3;
   }
-  async patchOnce(patch) {
+  async patchOnce(patch, replacePaths) {
     try {
-      await this.writeConfig(patch);
+      await this.writeConfig(patch, replacePaths);
     } catch (err) {
       if (!/config changed since last load/i.test(err.message ?? "")) throw err;
-      await this.writeConfig(patch);
+      await this.writeConfig(patch, replacePaths);
     }
   }
-  async writeConfig(patch) {
+  async writeConfig(patch, replacePaths) {
     const budget = patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS;
-    await patchConfig(this.gateway(), patch, { timeoutMs: budget, readTimeoutMs: GATEWAY_READ_MS });
+    await patchConfig(this.gateway(), patch, { timeoutMs: budget, readTimeoutMs: GATEWAY_READ_MS, ...replacePaths ? { replacePaths } : {} });
   }
   /** The live config, for deciding whether a channel's plugin is already there. */
   async config() {
@@ -29424,7 +29476,7 @@ var ChannelsService = class {
       return;
     }
     const channels2 = config2.channels ?? {};
-    for (const type of CHANNEL_TYPES) {
+    for (const type of APPLY_CHANNELS) {
       if (!PLUGIN_BY_CHANNEL[type]) continue;
       if (!bool(channels2[type]?.enabled)) continue;
       if (this.pluginInstalled(config2, type)) continue;
@@ -29577,6 +29629,9 @@ var ChannelsService = class {
 function isType(v2) {
   return typeof v2 === "string" && CHANNEL_TYPES.includes(v2);
 }
+function isApplyType(v2) {
+  return typeof v2 === "string" && APPLY_CHANNELS.includes(v2);
+}
 function fail(res, err) {
   const message2 = err instanceof Error ? err.message : String(err);
   const status = /not running|not connected/i.test(message2) ? 503 : 500;
@@ -29596,7 +29651,7 @@ async function handleChannels(req, res, pathname, service) {
   }
   try {
     if (pathname === "/channels/status" && req.method === "GET") {
-      sendJson(res, 200, await service.status());
+      sendJson(res, 200, await service.status({ teamChatPeers: !!mitm }));
       return;
     }
     if (pathname === "/channels/approved" && req.method === "GET") {
@@ -29622,12 +29677,16 @@ async function handleChannels(req, res, pathname, service) {
       return;
     }
     if (pathname === "/channels/apply") {
-      if (!isType(body.type)) return sendJson(res, 400, { ok: false, error: "type must be telegram, slack or whatsapp" });
+      if (!isApplyType(body.type)) return sendJson(res, 400, { ok: false, error: "type must be telegram, slack, whatsapp or clickclack" });
       const secrets2 = body.secrets ?? {};
       const applyId = typeof body.applyId === "string" && /^[\w.:-]{1,64}$/.test(body.applyId) ? body.applyId : void 0;
       let input2;
       if (body.remove === true) input2 = { applyId, type: body.type, remove: true };
-      else if (body.type === "telegram") {
+      else if (body.type === "clickclack") {
+        const settings = service.clickclackSettings(body.settings);
+        if (!settings) return sendJson(res, 400, { ok: false, error: "invalid Team chat settings" });
+        input2 = { applyId, type: "clickclack", settings };
+      } else if (body.type === "telegram") {
         if (typeof secrets2.botToken !== "string") return sendJson(res, 400, { ok: false, error: "botToken required" });
         input2 = { applyId, type: "telegram", secrets: { botToken: secrets2.botToken } };
       } else if (body.type === "slack") {
@@ -38872,7 +38931,8 @@ server.listen(PORT, BIND, () => {
     // OpenClaw's own state database, read read-only for its DM allow list (`openclaw-allow.ts`).
     stateDbPath: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw/state/openclaw.sqlite`,
     restartService: () => runAction("restart"),
-    mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt`
+    mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt`,
+    mitmPrivateIp: () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip")
   });
   const channelsForQr = channels;
   setWhatsappLoginProvider(() => channelsForQr.whatsappLogin());

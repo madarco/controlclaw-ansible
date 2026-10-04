@@ -6069,8 +6069,8 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "bbbf0f8" : "unknown",
-  builtAt: true ? "2026-10-04T14:08:01+01:00" : "unknown"
+  commit: true ? "280a844" : "unknown",
+  builtAt: true ? "2026-10-04T15:12:10+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
