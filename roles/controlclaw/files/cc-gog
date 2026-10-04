@@ -29,6 +29,12 @@ if [ -r "$CC_GOG_ENV" ]; then
   set +a
 fi
 
+# Mail, documents and other fetched text come back wrapped in gog's "external untrusted content"
+# markers, so the agent reads an email as something somebody sent, not as instructions
+# (controlclaw docs/plans/email-rules.md §2.1). A label, not a boundary: the firewall's email rules
+# are the boundary.
+export GOG_WRAP_UNTRUSTED=1
+
 # exec, not a call: `gog` keeps this process's stdin, stdout, stderr, signals and exit code, so a
 # pipeline or a Ctrl-C behaves exactly as it would without the wrapper.
 exec /usr/local/lib/controlclaw/gog "$@"

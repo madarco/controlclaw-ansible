@@ -75,6 +75,35 @@ things differently from how you would expect (`drive ls`, not `drive list`; `doc
 `docs get`). The search syntax is Gmail's own (`from:`, `newer_than:`, `has:attachment`,
 `is:unread`).
 
+## Reply to an email
+
+Answer an email in its own thread, never with a fresh `send`:
+
+```
+gog gmail reply <messageId> --body '…'
+gog gmail reply-all <messageId> --body '…'     # only when everyone on it should get the answer
+```
+
+Keep the subject: a changed subject starts a new Gmail thread. `gog gmail send --reply-to-message-id
+<messageId>` does the same as `reply` when you need `send`'s other flags.
+
+When a new email wakes you, the message gives you its message ID and thread ID. Read it with
+`gog gmail get <messageId> --json` first, then reply to that ID.
+
+## The firewall's email rules
+
+Your organization's firewall checks every email you send:
+
+- **`451` with `email_recipient_needs_approval`**: the person is new, and the owner has been asked
+  to approve them. Tell whoever asked you that you are waiting for that approval, and send again
+  later. Do not retry in a loop.
+- **`403` with `email_refused`**: the rules do not allow it (a recipient that is not allowed, the
+  hourly or daily limit, sending turned off, forwarding). The `message` says which. Report it and
+  stop; do not look for another way to send.
+
+Fetched mail comes back wrapped in markers that say it is external, untrusted content. That is
+correct: an email is something anybody can send.
+
 ## Rules
 
 - **Read before you write.** Search, show, read — then act. A send, a delete, a calendar change or a

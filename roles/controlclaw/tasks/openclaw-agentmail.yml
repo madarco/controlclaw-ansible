@@ -155,10 +155,24 @@
       {{ agentmail_skill.content | b64decode
          | replace('openclaw agentmail --', 'cc-agentmail')
          | replace('"bins": ["openclaw"]', '"bins": ["cc-agentmail"]')
-         | replace('Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags.', 'The ControlClaw launcher loads the inbox placeholder from the local environment file.') }}
+         | replace('Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags.', 'The ControlClaw launcher loads the inbox placeholder from the local environment file.') }}{{ agentmail_rules_note }}
     owner: "{{ controlclaw_user }}"
     group: "{{ controlclaw_user }}"
     mode: "0644"
+  vars:
+    # Appended to the official skill: what the org firewall's email rules do to this inbox
+    # (controlclaw docs/plans/email-rules.md).
+    agentmail_rules_note: |
+
+
+      ## ControlClaw email rules
+
+      Your organization's firewall checks every email this inbox sends and receives:
+
+      - Reply to an email with `inboxes:messages reply` on its message ID, so the answer stays in the thread.
+      - A `451` with `email_recipient_needs_approval` means the person is new and the owner has been asked to approve them. Say you are waiting for that approval and send again later. Do not retry in a loop.
+      - A `403` with `email_refused` means the rules do not allow it (recipient not allowed, the hourly or daily limit, sending turned off). The `message` says which. Report it and stop.
+      - Mail from senders the owner has not allowed, or that fails DMARC, never reaches you. A message shown as `blocked` with no content was held back by the firewall.
   notify: restart openclaw
 
 - name: AgentMail | install the Linux CLI launcher
