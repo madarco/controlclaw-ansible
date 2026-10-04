@@ -2537,7 +2537,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net2 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes3, createHash: createHash9 } = __require("crypto");
+    var { randomBytes: randomBytes3, createHash: createHash10 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -3218,7 +3218,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash9("sha1").update(key + GUID).digest("base64");
+        const digest = createHash10("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3587,7 +3587,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash9 } = __require("crypto");
+    var { createHash: createHash10 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3894,7 +3894,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash9("sha1").update(key + GUID).digest("base64");
+        const digest = createHash10("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -5156,10 +5156,10 @@ function canonicalMeetUrl(value) {
 }
 
 // src/phone.ts
-import { mkdtemp, readFile as readFile2, rm } from "fs/promises";
+import { mkdtemp, readFile as readFile3, rm } from "fs/promises";
 import { tmpdir } from "os";
-import { join as join2 } from "path";
-import { createHash as createHash3, createHmac as createHmac2, randomBytes } from "crypto";
+import { join as join3 } from "path";
+import { createHash as createHash4, createHmac as createHmac2, randomBytes } from "crypto";
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -24830,17 +24830,46 @@ function date4(params) {
 }
 
 // src/phone-compat.ts
+import { createHash as createHash3 } from "crypto";
+import { readFile as readFile2, writeFile, rename } from "fs/promises";
+import { join as join2 } from "path";
+
+// src/phone-runtime.ts
 import { createHash as createHash2 } from "crypto";
-import { readFile, writeFile, rename } from "fs/promises";
+import { readdir, readFile } from "fs/promises";
 import { join } from "path";
+var PHONE_ADMISSION_DIGEST = "e9f7717502261327a4fe58a7f18fa0e60fa2e7a6193e18fdabebf98a9481b387";
+function phoneAdmissionDigest(source) {
+  return createHash2("sha256").update(source.replace(/-[A-Za-z0-9_-]{8}(?=\.mjs["'])/g, "-BUILDHASH")).digest("hex");
+}
+async function resolvePhoneAdmission(dir = "/usr/lib/node_modules/openclaw/dist") {
+  const files2 = (await readdir(dir)).filter(
+    (file2) => /^gateway-work-admission-[A-Za-z0-9_-]{8}\.mjs$/.test(file2)
+  );
+  if (files2.length !== 1)
+    throw new Error("Unsupported realtime consult runtime");
+  const path = join(dir, files2[0]);
+  if (phoneAdmissionDigest(await readFile(path, "utf8")) !== PHONE_ADMISSION_DIGEST)
+    throw new Error("Unsupported realtime consult runtime");
+  return path;
+}
+var PHONE_ADMISSION_IMPORT = `const admissionDir = "/usr/lib/node_modules/openclaw/dist";
+            const { readdir, readFile } = await import("node:fs/promises");
+            const { createHash } = await import("node:crypto");
+            const admissionFiles = (await readdir(admissionDir)).filter(file => /^gateway-work-admission-[A-Za-z0-9_-]{8}\\.mjs$/.test(file));
+            if (admissionFiles.length !== 1) throw new Error("Unsupported realtime consult runtime");
+            const admissionPath = admissionDir + "/" + admissionFiles[0];
+            const admissionSource = (await readFile(admissionPath, "utf8")).replace(/-[A-Za-z0-9_-]{8}(?=\\.mjs["'])/g, "-BUILDHASH");
+            if (createHash("sha256").update(admissionSource).digest("hex") !== "${PHONE_ADMISSION_DIGEST}") throw new Error("Unsupported realtime consult runtime");
+            const { E: beginPhoneConsult } = await import(admissionPath);`;
 
 // src/phone-realtime-compat.ts
 var PHONE_REALTIME_COMPAT = [
   {
-    "file": "runtime-entry-BNOQRXii.mjs",
-    "before": "3cd13a4dde64bfb0909bd8ed5e6288b67436dfb816affd27b09e12f7f9837ee6",
-    "after": "480dec4e7be9cb5d50a984c728fdfed3cbba4ebc5f17debefa00bb52c62e9fc4",
-    "changes": [
+    file: "runtime-entry-BNOQRXii.mjs",
+    before: "3cd13a4dde64bfb0909bd8ed5e6288b67436dfb816affd27b09e12f7f9837ee6",
+    after: "480dec4e7be9cb5d50a984c728fdfed3cbba4ebc5f17debefa00bb52c62e9fc4",
+    changes: [
       [
         'params.ctx.provider?.name !== "twilio" || effectiveConfig.streaming.enabled',
         'params.ctx.provider?.name !== "twilio" || effectiveConfig.streaming.enabled || effectiveConfig.realtime.enabled'
@@ -24872,10 +24901,10 @@ var PHONE_REALTIME_COMPAT = [
     ]
   },
   {
-    "file": "twilio-Bp3gfmUB.mjs",
-    "before": "c019ce1c3fe0f6bf49d80d2e6f98f53f2c06b1d254f57eee681406c6ff942337",
-    "after": "7a3f4089458a2108a5466d2aa442e3606e1819da096f339a8f681bd22412092b",
-    "changes": [
+    file: "twilio-Bp3gfmUB.mjs",
+    before: "c019ce1c3fe0f6bf49d80d2e6f98f53f2c06b1d254f57eee681406c6ff942337",
+    after: "7a3f4089458a2108a5466d2aa442e3606e1819da096f339a8f681bd22412092b",
+    changes: [
       [
         'if (!hook || ctx.query?.type === "status" || p.get("Direction") !== "inbound" || p.get("CallStatus") !== "ringing") return null;',
         'if (!hook || ctx.query?.type === "status" || (!(ctx.headers?.["x-cc-phone-mode"] === "classic" && ctx.query?.turnToken === "classic") && (p.get("Direction") !== "inbound" || p.get("CallStatus") !== "ringing")) || p.get("SpeechResult") || p.get("Digits")) return null;'
@@ -24883,10 +24912,10 @@ var PHONE_REALTIME_COMPAT = [
     ]
   },
   {
-    "file": "realtime-handler-BgDPcPZt.mjs",
-    "before": "226f3ea2203d44537c4380c50e6ccff412dcae7e5156e63cf31e7f05d999cbb0",
-    "after": "04f63ed216d37669493a748df66f1b6469941fb8d88996a100629722099565ed",
-    "changes": [
+    file: "realtime-handler-BgDPcPZt.mjs",
+    before: "226f3ea2203d44537c4380c50e6ccff412dcae7e5156e63cf31e7f05d999cbb0",
+    after: "04f63ed216d37669493a748df66f1b6469941fb8d88996a100629722099565ed",
+    changes: [
       [
         "this.publicPathPrefix = resolveVoiceCallPublicPathPrefix(parsed.pathname, this.servePath);",
         'this.publicPathPrefix = ""; // Managed fixed loopback route; firewall rewrites the external stream URL.'
@@ -24910,6 +24939,17 @@ var PHONE_REALTIME_COMPAT = [
       [
         'if (ownsCall && stillOwnsCall && cause && cause !== "disconnect") return emitCallEnd(cause);',
         'if (ownsCall && stillOwnsCall && cause && cause !== "disconnect" && cause !== "error") return emitCallEnd(cause);'
+      ]
+    ]
+  },
+  {
+    file: "runtime-entry-BNOQRXii.mjs",
+    before: "480dec4e7be9cb5d50a984c728fdfed3cbba4ebc5f17debefa00bb52c62e9fc4",
+    after: "aa0e18119e8e22857e850ba3c07c4c37ea789d52004b16af1d58115bd846b94b",
+    changes: [
+      [
+        'const { E: beginPhoneConsult } = await import("/usr/lib/node_modules/openclaw/dist/gateway-work-admission-DPOFUg7J.mjs");',
+        PHONE_ADMISSION_IMPORT
       ]
     ]
   }
@@ -24997,7 +25037,7 @@ var PHONE_COMPAT = [
   }
 ];
 function patchPhoneSource(source, patch) {
-  const hash2 = (s2) => createHash2("sha256").update(s2).digest("hex");
+  const hash2 = (s2) => createHash3("sha256").update(s2).digest("hex");
   if (hash2(source) === patch.after) return source;
   if (hash2(source) !== patch.before)
     throw new Error("voice plugin source integrity mismatch");
@@ -25011,16 +25051,23 @@ function patchPhoneSource(source, patch) {
     throw new Error("voice plugin patched integrity mismatch");
   return result;
 }
+function patchPhoneStages(source, steps) {
+  const digest = createHash3("sha256").update(source).digest("hex");
+  if (digest === steps.at(-1)?.after) return source;
+  const start = steps.findIndex((step) => step.before === digest);
+  if (start < 0) throw new Error("voice plugin source integrity mismatch");
+  for (const step of steps.slice(start))
+    source = patchPhoneSource(source, step);
+  return source;
+}
 async function patchPhonePlugin(installPath) {
   const patches = [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT];
   const files2 = await Promise.all(
     [...new Set(patches.map((p2) => p2.file))].map(async (name) => {
-      const path = join(installPath, "dist", ".setup", name);
-      const source = await readFile(path, "utf8");
+      const path = join2(installPath, "dist", ".setup", name);
+      const source = await readFile2(path, "utf8");
       const steps = patches.filter((p2) => p2.file === name);
-      let patched = source;
-      if (createHash2("sha256").update(source).digest("hex") !== steps.at(-1).after)
-        for (const patch of steps) patched = patchPhoneSource(patched, patch);
+      const patched = patchPhoneStages(source, steps);
       return { path, source, patched };
     })
   );
@@ -25046,6 +25093,41 @@ function phoneModelEntry(config2, primary) {
   if (typeof token !== "string" || !(token.startsWith("CC-TWILIO-") || token === "__OPENCLAW_REDACTED__"))
     return null;
   return primary ? { config: { responseModel: plugins?.entries?.["voice-call"]?.config?.realtime?.enabled ? primary : phoneResponseModel(config2, primary) } } : { enabled: false };
+}
+
+// src/phone-setup.ts
+var PhoneSetupError = class extends Error {
+  constructor(code) {
+    super(code);
+    this.code = code;
+  }
+};
+var PHONE_PLUGIN_INSTALL_MS = 15 * 6e4;
+async function runPhonePluginMutation(exec, args) {
+  try {
+    return await exec(
+      "/usr/bin/openclaw",
+      args,
+      PHONE_PLUGIN_INSTALL_MS,
+      void 0,
+      { maxBuffer: 4 * 1024 * 1024 }
+    );
+  } catch (error62) {
+    const e = error62;
+    const text2 = [e?.message, e?.stderr, e?.stdout].join("\n");
+    throw new PhoneSetupError(
+      /OPENCLAW_STATE_LEASE_HELD|plugin lifecycle lease[^\n]*held by/i.test(
+        text2
+      ) ? "plugin_busy" : "plugin_install_failed"
+    );
+  }
+}
+async function phoneSetupStep(code, run3) {
+  try {
+    return await run3();
+  } catch (error62) {
+    throw error62 instanceof PhoneSetupError ? error62 : new PhoneSetupError(code);
+  }
 }
 
 // src/exec.ts
@@ -25696,7 +25778,8 @@ var PhoneService = class {
       return this.last;
     const record2 = {
       generation: input2.generation,
-      status: "pending"
+      status: "pending",
+      error: void 0
     };
     this.last = record2;
     this.lastInput = encoded;
@@ -25707,8 +25790,10 @@ var PhoneService = class {
       () => {
         record2.status = "active";
       },
-      () => {
+      (error62) => {
         record2.status = "failed";
+        record2.error = error62 instanceof PhoneSetupError ? error62.code : "phone_setup_failed";
+        console.warn(`[phone] setup failed: ${record2.error}`);
       }
     );
     return record2;
@@ -25723,7 +25808,7 @@ var PhoneService = class {
     );
     const match = /\b(\d{4})\.(\d+)\.(\d+)\b/.exec(version2);
     if (!match || Number(match[1]) * 1e4 + Number(match[2]) * 100 + Number(match[3]) < 20260907)
-      throw new Error("OpenClaw 2026.9.7 required");
+      throw new PhoneSetupError("openclaw_version");
     const receipt = async () => {
       const { stdout } = await exec(
         "/usr/bin/openclaw",
@@ -25737,12 +25822,15 @@ var PhoneService = class {
       const info = await receipt();
       existing = true;
       if (trustedPhoneInstall(info)) {
-        await patchPhonePlugin(info.install.installPath);
+        await phoneSetupStep(
+          "plugin_integrity",
+          () => patchPhonePlugin(info.install.installPath)
+        );
         return;
       }
     } catch {
     }
-    const dir = await mkdtemp(join2(tmpdir(), "cc-phone-"));
+    const dir = await mkdtemp(join3(tmpdir(), "cc-phone-"));
     try {
       const packed = await exec(
         "npm",
@@ -25761,67 +25849,72 @@ var PhoneService = class {
       const rows = JSON.parse(packed.stdout);
       const name = rows[0]?.filename;
       if (!name || !/^[a-zA-Z0-9.-]+\.tgz$/.test(name))
-        throw new Error("invalid plugin archive");
-      const path = join2(dir, name), archive = await readFile2(path);
-      if (`sha512-${createHash3("sha512").update(archive).digest("base64")}` !== PHONE_INTEGRITY)
-        throw new Error("plugin integrity mismatch");
+        throw new PhoneSetupError("plugin_integrity");
+      const path = join3(dir, name), archive = await readFile3(path);
+      if (`sha512-${createHash4("sha512").update(archive).digest("base64")}` !== PHONE_INTEGRITY)
+        throw new PhoneSetupError("plugin_integrity");
       if (existing)
-        await exec(
-          "/usr/bin/openclaw",
-          ["plugins", "disable", "voice-call"],
-          6e4
-        );
-      await exec(
-        "/usr/bin/openclaw",
-        [
+        await runPhonePluginMutation(exec, [
           "plugins",
-          "install",
-          PHONE_PACKAGE,
-          "--pin",
-          "--no-enable",
-          "--force",
-          "--accept-capabilities"
-        ],
-        3e5,
-        void 0,
-        { maxBuffer: 4 * 1024 * 1024 }
-      );
+          "disable",
+          "voice-call"
+        ]);
+      await runPhonePluginMutation(exec, [
+        "plugins",
+        "install",
+        PHONE_PACKAGE,
+        "--pin",
+        "--no-enable",
+        "--force",
+        "--accept-capabilities"
+      ]);
       const installed = await receipt();
       if (!trustedPhoneInstall(installed))
-        throw new Error("plugin provenance mismatch");
-      await patchPhonePlugin(installed.install.installPath);
+        throw new PhoneSetupError("plugin_integrity");
+      await phoneSetupStep(
+        "plugin_integrity",
+        () => patchPhonePlugin(installed.install.installPath)
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }
   async apply(input2) {
     const client = this.opts.client;
-    if (!client) throw new Error("OpenClaw unavailable");
+    if (!client) throw new PhoneSetupError("gateway_unavailable");
     if (input2.placeholder && input2.speech) {
-      const manifest = JSON.parse(
-        await readFile2(
-          "/opt/controlclaw/meeting-voice/openclaw.plugin.json",
-          "utf8"
+      const manifest = await phoneSetupStep(
+        "voice_adapter_missing",
+        async () => JSON.parse(
+          await readFile3(
+            "/opt/controlclaw/meeting-voice/openclaw.plugin.json",
+            "utf8"
+          )
         )
       );
       if (!manifest.contracts?.realtimeVoiceProviders?.includes("cc-phone-voice"))
-        throw new Error(
-          "Update the phone voice adapter before enabling realtime"
-        );
-      const admission = await readFile2(
-        "/usr/lib/node_modules/openclaw/dist/gateway-work-admission-DPOFUg7J.mjs"
+        throw new PhoneSetupError("voice_adapter_missing");
+      await phoneSetupStep(
+        "runtime_unsupported",
+        () => resolvePhoneAdmission()
       );
-      if (createHash3("sha256").update(admission).digest("hex") !== "7887df330b6e81c1628ce8938dcb42447f7c3a95c7da3625d521d714c705a069")
-        throw new Error("Unsupported realtime consult runtime");
     }
-    if (input2.placeholder) await this.install();
-    if (client.whenConnected) await client.whenConnected(9e4);
-    const snapshot = await client.call("config.get", {}, GATEWAY_READ_MS);
-    if (!snapshot.hash) throw new Error("config unavailable");
+    if (input2.placeholder)
+      await phoneSetupStep("plugin_install_failed", () => this.install());
+    if (client.whenConnected)
+      await phoneSetupStep(
+        "gateway_unavailable",
+        () => client.whenConnected(9e4)
+      );
+    const snapshot = await phoneSetupStep(
+      "gateway_unavailable",
+      () => client.call("config.get", {}, GATEWAY_READ_MS)
+    );
+    if (!snapshot.hash) throw new PhoneSetupError("gateway_unavailable");
     const model = snapshot.config?.agents?.list?.find((a2) => a2.id === "main")?.model ?? snapshot.config?.agents?.defaults?.model;
     const primary = typeof model === "string" ? model : model?.primary;
     if (input2.placeholder && !primary)
-      throw new Error("Configure an agent model before Phone");
+      throw new PhoneSetupError("model_missing");
     const entry = input2.placeholder ? phoneConfig(
       input2,
       input2.placeholder && input2.speech ? primary : phoneResponseModel(snapshot.config ?? {}, primary)
@@ -25868,6 +25961,7 @@ var PhoneService = class {
     }
     this.opts.restartService();
     const until = Date.now() + 3e5;
+    let configured = false;
     while (Date.now() < until) {
       try {
         if (client.whenConnected) await client.whenConnected(5e3);
@@ -25875,6 +25969,7 @@ var PhoneService = class {
         const e = live.config?.plugins?.entries?.["voice-call"];
         if (configActive(live) && (input2.placeholder ? phoneConfigMatches(e, entry) : e?.enabled === false)) {
           if (!input2.placeholder) return;
+          configured = true;
           const ready = this.opts.probe ? await this.opts.probe() : await probePhone(
             input2
           );
@@ -25884,7 +25979,9 @@ var PhoneService = class {
       }
       await new Promise((resolve3) => setTimeout(resolve3, 2e3));
     }
-    throw new Error("Phone settings did not become active");
+    throw new PhoneSetupError(
+      configured ? "listener_unavailable" : "activation_timeout"
+    );
   }
 };
 
@@ -25946,7 +26043,7 @@ import { readFileSync as readFileSync25, existsSync as existsSync18, writeFileSy
 // src/session.ts
 import crypto2 from "crypto";
 import { existsSync, readFileSync as readFileSync2, writeFileSync as writeFileSync2 } from "fs";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // ../origin-guard/src/index.ts
 var SAFE_METHODS = /* @__PURE__ */ new Set(["GET", "HEAD", "OPTIONS"]);
@@ -26027,10 +26124,10 @@ function readUniqueCookie(header2, name) {
 
 // src/access-state.ts
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
-import { dirname, join as join3 } from "path";
+import { dirname, join as join4 } from "path";
 var REVOKED_KEEP_MS = 12 * 60 * 6e4;
 function statePath() {
-  return join3(process.env.STATE_DIR ?? "/opt/controlclaw/state", "access.json");
+  return join4(process.env.STATE_DIR ?? "/opt/controlclaw/state", "access.json");
 }
 var cache2 = null;
 function load() {
@@ -26097,7 +26194,7 @@ var secret = null;
 var secretDir = null;
 function ensureSessionSecret(keysDir2) {
   secretDir = keysDir2;
-  const path = join4(keysDir2, "session_secret");
+  const path = join5(keysDir2, "session_secret");
   if (!existsSync(path)) {
     writeFileSync2(path, crypto2.randomBytes(32).toString("hex"), { mode: 384 });
     console.log("[session] generated session secret");
@@ -26106,7 +26203,7 @@ function ensureSessionSecret(keysDir2) {
 }
 function rotateSessionSecret() {
   if (!secretDir) throw new Error("session secret not initialised");
-  const path = join4(secretDir, "session_secret");
+  const path = join5(secretDir, "session_secret");
   writeFileSync2(path, crypto2.randomBytes(32).toString("hex"), { mode: 384 });
   secret = Buffer.from(readFileSync2(path, "utf8").trim(), "hex");
   clearRevoked();
@@ -26176,14 +26273,14 @@ function consumeJti(jti, expSeconds) {
 }
 
 // src/routes/access.ts
-import { createHash as createHash4, randomBytes as randomBytes2 } from "crypto";
+import { createHash as createHash5, randomBytes as randomBytes2 } from "crypto";
 import { execFile as execFile3 } from "child_process";
 import { readFileSync as readFileSync4 } from "fs";
-import { join as join8 } from "path";
+import { join as join9 } from "path";
 
 // src/routes/files-page.ts
-import { readFile as readFile3 } from "fs/promises";
-import { basename, join as join5 } from "path";
+import { readFile as readFile4 } from "fs/promises";
+import { basename, join as join6 } from "path";
 import { fileURLToPath } from "url";
 function uiDir() {
   return process.env.FILES_UI_DIR ?? fileURLToPath(new URL("./files-ui/", import.meta.url));
@@ -26202,7 +26299,7 @@ async function serveFilesAsset(res, name) {
   }
   let body;
   try {
-    body = await readFile3(join5(uiDir(), file2));
+    body = await readFile4(join6(uiDir(), file2));
   } catch {
     res.writeHead(404, { "Content-Type": "text/plain" }).end("Not found");
     return;
@@ -26245,11 +26342,11 @@ async function serveFilesPage(req, res, ctx) {
 // src/routes/logs.ts
 import { execFile as execFile2, spawn } from "child_process";
 import { closeSync, fstatSync, openSync, readSync, readdirSync, statSync } from "fs";
-import { join as join7 } from "path";
+import { join as join8 } from "path";
 
 // src/redact.ts
 import { readFileSync as readFileSync3 } from "fs";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
 var MIN_SECRET_LENGTH = 8;
 var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
@@ -26263,7 +26360,7 @@ function loadRedactionSecrets(keysDir2) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
-      const value = readFileSync3(join6(keysDir2, name), "utf-8").trim();
+      const value = readFileSync3(join7(keysDir2, name), "utf-8").trim();
       if (value.length >= MIN_SECRET_LENGTH) found.push(value);
     } catch {
     }
@@ -26366,7 +26463,7 @@ function newestLogFile() {
     const candidates = readdirSync(LOG_DIR).filter((f2) => f2.startsWith("openclaw") && f2.endsWith(".log"));
     let best = null;
     for (const f2 of candidates) {
-      const path = join7(LOG_DIR, f2);
+      const path = join8(LOG_DIR, f2);
       const mtime = statSync(path).mtimeMs;
       if (!best || mtime > best.mtime) best = { path, mtime };
     }
@@ -26674,7 +26771,7 @@ function keysDir() {
   return process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 }
 function installId(gatewayToken, vmId) {
-  return createHash4("sha256").update(gatewayToken ?? vmId).digest("hex").slice(0, 16);
+  return createHash5("sha256").update(gatewayToken ?? vmId).digest("hex").slice(0, 16);
 }
 var FORGET_PREVIOUS_GATEWAY_JS = `
   try {
@@ -26692,7 +26789,7 @@ var FORGET_PREVIOUS_GATEWAY_JS = `
   } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
-    return readFileSync4(join8(keysDir(), name), "utf-8").trim() || null;
+    return readFileSync4(join9(keysDir(), name), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -27055,7 +27152,7 @@ function bindCookie(name, value) {
   return value ? `${name}=${value}; Path=/; Max-Age=${BIND_TTL_S}; HttpOnly; Secure; SameSite=Lax` : `${name}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
 function bindingHash(value) {
-  return createHash4("sha256").update(value).digest("base64url");
+  return createHash5("sha256").update(value).digest("base64url");
 }
 async function acceptTicket(req, token, vmId, purpose) {
   const invalid2 = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
@@ -27399,7 +27496,7 @@ import { existsSync as existsSync3, readFileSync as readFileSync7, realpathSync 
 import { dirname as dirname2 } from "path";
 
 // src/doctor.ts
-import { verify, createHash as createHash5 } from "crypto";
+import { verify, createHash as createHash6 } from "crypto";
 import { readFileSync as readFileSync6, existsSync as existsSync2 } from "fs";
 var DOCTOR_KEY_DOMAIN = "controlclaw:doctor-key:v1\n";
 var DOCTOR_KEY_FILE = "/home/ccdoctor/.ssh/authorized_keys";
@@ -27416,7 +27513,7 @@ function doctorAvailable() {
 function doctorStatus(path = DOCTOR_KEY_FILE) {
   try {
     const key = readFileSync6(path, "utf8").match(/ssh-ed25519 ([A-Za-z0-9+/=]+)/)?.[1];
-    return { fingerprint: key ? `SHA256:${createHash5("sha256").update(Buffer.from(key, "base64")).digest("base64").replace(/=+$/, "")}` : null };
+    return { fingerprint: key ? `SHA256:${createHash6("sha256").update(Buffer.from(key, "base64")).digest("base64").replace(/=+$/, "")}` : null };
   } catch {
     return { fingerprint: null };
   }
@@ -27426,14 +27523,14 @@ async function installDoctorKey(pub, sig2, opts = {}) {
   const pin = readFileSync6(opts.pinPath ?? `${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`, "utf8");
   if (!verify(null, Buffer.from(DOCTOR_KEY_DOMAIN + pub), pin, Buffer.from(sig2, "base64"))) throw new Error("Invalid doctor key signature");
   await (opts.exec ?? defaultExec)("sudo", ["-n", "/usr/local/bin/cc-doctor-key-install"], 15e3, JSON.stringify({ pub, sig: sig2 }));
-  return `SHA256:${createHash5("sha256").update(Buffer.from(pub.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
+  return `SHA256:${createHash6("sha256").update(Buffer.from(pub.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
 }
 
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8f03171" : "unknown",
-  builtAt: true ? "2026-10-04T11:33:52+01:00" : "unknown"
+  commit: true ? "bbbf0f8" : "unknown",
+  builtAt: true ? "2026-10-04T14:08:01+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -27604,7 +27701,7 @@ async function reportHandleCertificate(keysDir2) {
 // src/keys.ts
 import crypto3 from "crypto";
 import { readFileSync as readFileSync9, writeFileSync as writeFileSync3, existsSync as existsSync4, mkdirSync as mkdirSync2 } from "fs";
-function readFile4(path) {
+function readFile5(path) {
   try {
     return readFileSync9(path, "utf8").trim();
   } catch {
@@ -27615,7 +27712,7 @@ function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
   if (existsSync4(privPath)) {
-    return readFile4(pubPath) ?? derivePublicKey(readFileSync9(privPath, "utf8"));
+    return readFile5(pubPath) ?? derivePublicKey(readFileSync9(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto3.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
@@ -27633,10 +27730,10 @@ function derivePublicKey(privatePem) {
 }
 var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 async function registerPublicKey(keysDir2) {
-  const vmId = readFile4(`${keysDir2}/vm_id`);
-  const token = readFile4(`${keysDir2}/bootstrap_token`);
-  const registerUrl = readFile4(`${keysDir2}/register_api_url`);
-  const publicKey = readFile4(`${keysDir2}/vm_public_key.pem`);
+  const vmId = readFile5(`${keysDir2}/vm_id`);
+  const token = readFile5(`${keysDir2}/bootstrap_token`);
+  const registerUrl = readFile5(`${keysDir2}/register_api_url`);
+  const publicKey = readFile5(`${keysDir2}/vm_public_key.pem`);
   if (!token || !registerUrl) {
     return;
   }
@@ -27688,7 +27785,7 @@ function sha256Hex(s2) {
 import { readFileSync as readFileSync10, writeFileSync as writeFileSync4, existsSync as existsSync5 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
-function readFile5(path) {
+function readFile6(path) {
   try {
     return readFileSync10(path, "utf8").trim();
   } catch {
@@ -27697,21 +27794,21 @@ function readFile5(path) {
 }
 var SYSTEM_MITM_CA_PATH = "/usr/local/share/ca-certificates/controlclaw-mitm.crt";
 function trustMitmCaInProcess(path = SYSTEM_MITM_CA_PATH) {
-  const pem = readFile5(path);
+  const pem = readFile6(path);
   if (!pem) return false;
   setDefaultCACertificates([...getCACertificates("bundled"), pem]);
   return true;
 }
 var sleep3 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
-  const mitmIp = readFile5(`${keysDir2}/mitm_box_private_ip`);
+  const mitmIp = readFile6(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
     return { trusted: true, installed: false, message: "This box is not behind a firewall proxy." };
   }
   trustMitmCaInProcess();
-  const configUrl = readFile5(`${keysDir2}/config_api_url`);
-  const vmId = readFile5(`${keysDir2}/vm_id`);
-  const privateKey = readFile5(`${keysDir2}/vm_private_key.pem`);
+  const configUrl = readFile6(`${keysDir2}/config_api_url`);
+  const vmId = readFile6(`${keysDir2}/vm_id`);
+  const privateKey = readFile6(`${keysDir2}/vm_private_key.pem`);
   if (!configUrl || !vmId || !privateKey) {
     console.warn("[mitm-ca] missing config_api_url / vm_id / vm_private_key.pem \u2014 cannot install CA");
     return { trusted: false, installed: false, message: "This box cannot ask for the firewall's certificate." };
@@ -27728,7 +27825,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
         const cfg = await res.json();
         const mitm = cfg.mitm;
         if (mitm?.caCert && mitm.caSig) {
-          let pin = existsSync5(pinPath) ? readFile5(pinPath) : null;
+          let pin = existsSync5(pinPath) ? readFile6(pinPath) : null;
           if (!pin && mitm.pubKey) {
             pin = mitm.pubKey;
             writeFileSync4(pinPath, pin, { mode: 420 });
@@ -27742,7 +27839,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
             last = "The certificate on offer is not signed by this box's pinned firewall key, so it was refused.";
           } else {
             const fpr = sha256Hex(mitm.caCert);
-            if (readFile5(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
+            if (readFile6(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
             installCa(caSrcPath, mitm.caCert);
             trustMitmCaInProcess();
             writeFileSync4(fprPath, fpr, { mode: 420 });
@@ -27775,7 +27872,7 @@ import { readFileSync as readFileSync11 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
-function readFile6(path) {
+function readFile7(path) {
   try {
     return readFileSync11(path, "utf8").trim();
   } catch {
@@ -27797,7 +27894,7 @@ function probe(host, port, timeoutMs = 3e3) {
   });
 }
 async function enableTransparentEgress(keysDir2) {
-  const mitmIp = readFile6(`${keysDir2}/mitm_box_private_ip`);
+  const mitmIp = readFile7(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) return true;
   if (await waitForMitmProxy(mitmIp)) {
     try {
@@ -27984,7 +28081,7 @@ function handleStatus(res, drive2, gateway2) {
 }
 
 // src/audit.ts
-import { createHash as createHash6 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname3 } from "path";
 var PAGE_LIMIT = 500;
@@ -28009,7 +28106,7 @@ function mapAuditEvent(ev) {
   const toolName = cut(ev.toolName, 120);
   const toolCallId = cut(ev.toolCallId, 200);
   const runId = cut(ev.runId, 128);
-  const sessionKey = ev.sessionKey?.includes(":agentmail:") ? `agentmail:${createHash6("sha256").update(ev.sessionKey).digest("hex")}` : cut(ev.sessionKey, 200);
+  const sessionKey = ev.sessionKey?.includes(":agentmail:") ? `agentmail:${createHash7("sha256").update(ev.sessionKey).digest("hex")}` : cut(ev.sessionKey, 200);
   const agentId = cut(ev.agentId, 64);
   if (toolName) rec.tool_name = toolName;
   if (toolCallId) rec.tool_call_id = toolCallId;
@@ -29991,7 +30088,7 @@ async function handleLlm(req, res, url3, service) {
 import { randomUUID as randomUUID2 } from "crypto";
 import { existsSync as existsSync11, readFileSync as readFileSync16, statfsSync } from "fs";
 import { totalmem } from "os";
-import { join as join10 } from "path";
+import { join as join11 } from "path";
 
 // src/meeting-notes.ts
 import {
@@ -30003,7 +30100,7 @@ import {
   writeFileSync as writeFileSync8,
   readdirSync as readdirSync2
 } from "fs";
-import { join as join9, resolve, sep } from "path";
+import { join as join10, resolve, sep } from "path";
 import { createRequire as createRequire2 } from "module";
 var requireBuiltin2 = createRequire2(import.meta.url);
 var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:(?:your )?(?:microphone|camera) is (?:on|off|muted)[.!]?\s*)+|you have joined the call\.(?:\s*(?:there (?:is|are) (?:one|\d+) other (?:person|people) in the call|your (?:camera|microphone) is (?:off|on|muted)|your hand is (?:lowered|raised))\.)*|(?:arrow_downward\s*)?jump to bottom|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
@@ -30053,7 +30150,7 @@ var MeetingArchive = class {
   }
   filename(id) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid meeting");
-    return join9(this.root, `${id}.json`);
+    return join10(this.root, `${id}.json`);
   }
   deleted() {
     if (!existsSync10(this.tombstonesPath)) return {};
@@ -30069,7 +30166,7 @@ var MeetingArchive = class {
     const deleted = this.deleted();
     if (!existsSync10(this.root)) return [];
     return readdirSync2(this.root).filter((n2) => /^[a-f0-9-]{36}\.json$/.test(n2)).map(
-      (n2) => JSON.parse(readFileSync15(join9(this.root, n2), "utf8"))
+      (n2) => JSON.parse(readFileSync15(join10(this.root, n2), "utf8"))
     ).filter((r2) => !deleted[r2.id]).sort((a2, b2) => b2.startedAt.localeCompare(a2.startedAt));
   }
   tombstone(record2) {
@@ -30091,7 +30188,7 @@ var MeetingArchive = class {
   }
 };
 function nativeMeetingIds(stateDir) {
-  const file2 = join9(stateDir, "state", "openclaw.sqlite");
+  const file2 = join10(stateDir, "state", "openclaw.sqlite");
   if (!existsSync10(file2)) return [];
   const { DatabaseSync } = requireBuiltin2(
     "node:sqlite"
@@ -30109,7 +30206,7 @@ function nativeMeetingIds(stateDir) {
 }
 function eraseNativeMeetings(stateDir, sessionIds) {
   if (!sessionIds.length) return;
-  const file2 = join9(stateDir, "state", "openclaw.sqlite");
+  const file2 = join10(stateDir, "state", "openclaw.sqlite");
   if (existsSync10(file2)) {
     const { DatabaseSync } = requireBuiltin2(
       "node:sqlite"
@@ -30144,18 +30241,18 @@ function eraseNativeMeetings(stateDir, sessionIds) {
       db.close();
     }
   }
-  const exports = join9(stateDir, "transcripts");
+  const exports = join10(stateDir, "transcripts");
   if (!existsSync10(exports)) return;
   for (const date5 of readdirSync2(exports, { withFileTypes: true })) {
     if (!date5.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(date5.name)) continue;
-    for (const entry of readdirSync2(join9(exports, date5.name), {
+    for (const entry of readdirSync2(join10(exports, date5.name), {
       withFileTypes: true
     })) {
       if (!entry.isDirectory()) continue;
       const dir = resolve(exports, date5.name, entry.name);
       if (!dir.startsWith(resolve(exports) + sep))
         throw new Error("Invalid transcript export");
-      const metadata = join9(dir, "metadata.json");
+      const metadata = join10(dir, "metadata.json");
       if (!existsSync10(metadata)) continue;
       const raw = JSON.parse(readFileSync15(metadata, "utf8"));
       if (raw.sessionId && sessionIds.includes(raw.sessionId))
@@ -30701,7 +30798,7 @@ var MeetingService = class {
   }
   /** Restore content without rolling back the firewall's accepted meeting policy. */
   sanitizeRestoredConfig(staging) {
-    const path = join10(staging, "openclaw.json");
+    const path = join11(staging, "openclaw.json");
     if (!existsSync11(path)) return;
     const config2 = JSON.parse(readFileSync16(path, "utf8"));
     config2.plugins ??= {};
@@ -30737,7 +30834,7 @@ var MeetingService = class {
     config2.browser ??= {};
     config2.browser.profiles ??= {};
     config2.browser.profiles["cc-meetings"] = { cdpUrl: "http://127.0.0.1:9223", attachOnly: true };
-    const livePath = join10(this.opts.openclawStateDir, "openclaw.json");
+    const livePath = join11(this.opts.openclawStateDir, "openclaw.json");
     if (existsSync11(livePath)) {
       const live = JSON.parse(readFileSync16(livePath, "utf8"));
       if (live.plugins?.installs?.["google-meet"]) {
@@ -32309,7 +32406,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp as mkdtemp2, lstat, opendir, readlink, rename as rename2, rm as rm2, stat, symlink, utimes, writeFile as writeFile2, chmod } from "fs/promises";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname11, join as join11 } from "path";
+import { dirname as dirname11, join as join12 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -36141,7 +36238,7 @@ var BackupService = class {
       return this.opts.staged.root;
     }
     if (kind === "gbrain") throw new Error("an agent box does not hold a brain");
-    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join11(this.home, ARCHIVE_ROOTS[kind]);
+    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join12(this.home, ARCHIVE_ROOTS[kind]);
     assertArchivableRoot(root);
     return root;
   }
@@ -36155,25 +36252,25 @@ var BackupService = class {
     const walk = async (rel) => {
       let dir;
       try {
-        dir = await opendir(rel === "" ? root : join11(root, rel));
+        dir = await opendir(rel === "" ? root : join12(root, rel));
       } catch {
         return;
       }
       for await (const item of dir) {
         const childRel = rel === "" ? item.name : `${rel}/${item.name}`;
         if (shouldExclude(childRel, kind)) {
-          const bytes = item.isDirectory() ? await dirSize(join11(root, childRel)) : await fileSize(join11(root, childRel));
+          const bytes = item.isDirectory() ? await dirSize(join12(root, childRel)) : await fileSize(join12(root, childRel));
           excluded.push({ path: childRel, bytes });
           continue;
         }
         let st2;
         try {
-          st2 = await lstat(join11(root, childRel));
+          st2 = await lstat(join12(root, childRel));
         } catch {
           continue;
         }
         if (st2.isSymbolicLink()) {
-          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join11(root, childRel)) });
+          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join12(root, childRel)) });
           continue;
         }
         if (st2.isDirectory()) {
@@ -36226,8 +36323,8 @@ var BackupService = class {
         backupId: input2.backupId,
         kind: input2.kind
       });
-      const dir = await mkdtemp2(join11(this.spoolDir, "cc-backup-"));
-      spool = join11(dir, "archive.bin");
+      const dir = await mkdtemp2(join12(this.spoolDir, "cc-backup-"));
+      spool = join12(dir, "archive.bin");
       await pipeline(
         Readable.from(tarOf(plan.root, manifest, input2.kind)),
         createGzip({ level: 6 }),
@@ -36338,7 +36435,7 @@ var BackupService = class {
             manifest = parseManifest(new TextDecoder().decode(e.body));
             continue;
           }
-          const abs = join11(into, rel);
+          const abs = join12(into, rel);
           if (e.type === "dir") {
             await mkdir(abs, { recursive: true, mode: 448 });
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
@@ -36412,7 +36509,7 @@ async function* tarOf(root, manifest, kind) {
   yield manifestBody;
   yield* tarPadding(manifestBody.length);
   for (const e of manifest.entries) {
-    const abs = join11(root, e.path);
+    const abs = join12(root, e.path);
     if (e.kind === "dir") {
       yield* tarHeader({ path: `${e.path}/`, type: "dir", size: 0, mode: e.mode, mtime });
       continue;
@@ -36472,8 +36569,8 @@ async function swapDirectory(opts) {
   };
   try {
     for (const rel of opts.keep ?? []) {
-      const from = join11(opts.target, rel);
-      const to = join11(opts.staged, rel);
+      const from = join12(opts.target, rel);
+      const to = join12(opts.staged, rel);
       const exists2 = await lstat(from).then(
         () => true,
         () => false
@@ -36523,7 +36620,7 @@ async function dirSize(path) {
     return 0;
   }
   for await (const item of dir) {
-    const child = join11(path, item.name);
+    const child = join12(path, item.name);
     if (item.isDirectory()) total += await dirSize(child);
     else if (item.isFile()) total += await fileSize(child);
   }
@@ -36637,9 +36734,9 @@ async function handleBackup(req, res, url3, service, kinds = AGENT_KINDS) {
 
 // src/routes/files.ts
 import { createReadStream as createReadStream2 } from "fs";
-import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open as open2, readdir, realpath, rename as rename3, rm as rm3, stat as stat2, unlink } from "fs/promises";
+import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open as open2, readdir as readdir2, realpath, rename as rename3, rm as rm3, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID3 } from "crypto";
-import { basename as basename2, dirname as dirname12, join as join12, resolve as resolve2, sep as sep2 } from "path";
+import { basename as basename2, dirname as dirname12, join as join13, resolve as resolve2, sep as sep2 } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -36788,7 +36885,7 @@ async function realpathLenient(path) {
   for (; ; ) {
     try {
       const real = await realpath(cursor);
-      return missing.length ? join12(real, ...missing.reverse()) : real;
+      return missing.length ? join13(real, ...missing.reverse()) : real;
     } catch {
       const parent = dirname12(cursor);
       if (parent === cursor) return resolve2(path);
@@ -36871,7 +36968,7 @@ var FilesService = class {
     const normalized = normalizeRelative(rel);
     let real;
     try {
-      real = await realpath(normalized ? join12(root, normalized) : root);
+      real = await realpath(normalized ? join13(root, normalized) : root);
     } catch {
       throw new FilesError(404, "not_found", "No such file or folder.");
     }
@@ -36902,7 +36999,7 @@ var FilesService = class {
     const parent = await this.resolveExisting(parentRel);
     const st2 = await stat2(parent.abs).catch(() => null);
     if (!st2?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
-    const abs = join12(parent.abs, name);
+    const abs = join13(parent.abs, name);
     await this.assertAllowed(abs);
     return { rel: normalized, abs, parent: parent.abs, name };
   }
@@ -36917,11 +37014,11 @@ var FilesService = class {
     const { rel: relPath, abs } = await this.resolveExisting(rel);
     const dirStat = await stat2(abs);
     if (!dirStat.isDirectory()) throw new FilesError(400, "not_a_directory", "That is a file, not a folder.");
-    const names = await readdir(abs);
+    const names = await readdir2(abs);
     const truncated = names.length > this.limits.listMaxEntries;
     const entries = [];
     for (const name of names.slice(0, this.limits.listMaxEntries)) {
-      const entry = await describe3(root, join12(abs, name), name);
+      const entry = await describe3(root, join13(abs, name), name);
       if (entry) entries.push(entry);
     }
     entries.sort((a2, b2) => {
@@ -36978,7 +37075,7 @@ var FilesService = class {
       this.announce({ op: "delete", path: relPath, size: st2.isSymbolicLink() ? null : st2.size });
       return { path: relPath, entries: 1 };
     }
-    const names = await readdir(abs);
+    const names = await readdir2(abs);
     if (names.length > 0 && !recursive2) {
       throw new FilesError(409, "not_empty", "That folder is not empty. Delete it with its contents to remove it.");
     }
@@ -37081,7 +37178,7 @@ var FilesService = class {
   async spool(req, parent, max, op) {
     const declared = Number(req.headers["content-length"] ?? "");
     if (Number.isFinite(declared) && declared > max) throw tooLargeError(op, max);
-    const tmp = join12(parent, `.cc-${op}-${randomUUID3()}.part`);
+    const tmp = join13(parent, `.cc-${op}-${randomUUID3()}.part`);
     let written = 0;
     let tooBig = false;
     const meter = new Transform({
@@ -37148,14 +37245,14 @@ async function countEntries(dir, max) {
     const current = stack.pop();
     let names;
     try {
-      names = await readdir(current);
+      names = await readdir2(current);
     } catch {
       continue;
     }
     for (const name of names) {
       count++;
       if (count > max) return null;
-      const child = join12(current, name);
+      const child = join13(current, name);
       const st2 = await lstat2(child).catch(() => null);
       if (st2?.isDirectory()) stack.push(child);
     }
@@ -37368,10 +37465,10 @@ async function readHead(path, max) {
 }
 
 // src/ssh.ts
-import { createHash as createHash7 } from "crypto";
+import { createHash as createHash8 } from "crypto";
 import { mkdirSync as mkdirSync12, mkdtempSync, readFileSync as readFileSync23, rmSync as rmSync3, writeFileSync as writeFileSync14 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { dirname as dirname13, join as join13 } from "path";
+import { dirname as dirname13, join as join14 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -37379,7 +37476,7 @@ var SUDO_TIMEOUT_MS = 3e4;
 var SUPPORT_USER = "ccsupport";
 function fingerprintOf(publicKey) {
   const blob = publicKey.trim().split(/\s+/)[1] ?? "";
-  const digest = createHash7("sha256").update(Buffer.from(blob, "base64")).digest("base64");
+  const digest = createHash8("sha256").update(Buffer.from(blob, "base64")).digest("base64");
   return `SHA256:${digest.replace(/=+$/, "")}`;
 }
 var MARK = "controlclaw-rescue";
@@ -37455,8 +37552,8 @@ var SshAccessService = class {
   }
   // ---- internals ----
   async mint(grantId) {
-    const dir = mkdtempSync(join13(this.opts.workDir ?? tmpdir3(), "cc-ssh-"));
-    const path = join13(dir, "key");
+    const dir = mkdtempSync(join14(this.opts.workDir ?? tmpdir3(), "cc-ssh-"));
+    const path = join14(dir, "key");
     try {
       await this.exec(
         "ssh-keygen",
@@ -37552,7 +37649,7 @@ async function handleSsh(req, res, pathname, service) {
 }
 
 // src/ssh-logins.ts
-import { createHash as createHash8 } from "crypto";
+import { createHash as createHash9 } from "crypto";
 import { execFile as execFile4 } from "child_process";
 var POLL_TIMEOUT_MS = 15e3;
 var MAX_PER_TICK = 50;
@@ -37606,7 +37703,7 @@ var SshLoginWatcher = class {
         source: "ssh_login",
         // The line itself is the identity of the session: same second, same port, same key means
         // the same login. The journal cursor already stops the common repeat; this stops the rest.
-        login_id: createHash8("sha256").update(line).digest("hex").slice(0, 32),
+        login_id: createHash9("sha256").update(line).digest("hex").slice(0, 32),
         // The journal's own stamp, so a backlog shipped after a restart does not land as "now"
         // and sort wrongly against the grant it belongs to.
         ts: parsed.at !== null ? Math.round(parsed.at / 1e3) : tickTs,

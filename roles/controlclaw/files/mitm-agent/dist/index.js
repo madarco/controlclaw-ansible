@@ -25176,6 +25176,70 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 
+// src/phone-activity.ts
+function maskTwilioAccountSids(text2) {
+  return text2.replace(
+    /AC[0-9a-f]{28}([0-9a-f]{4})/gi,
+    (_sid, last4) => `AC\u2026${last4.toLowerCase()}`
+  );
+}
+function sanitizePhoneActivity(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  const r2 = raw;
+  if (r2.host !== "api.twilio.com" && r2.rule !== "phone" && !String(r2.hook_name ?? "").startsWith("Phone (Twilio)"))
+    return raw;
+  if (r2.source === "webhook")
+    return {
+      ...Object.fromEntries(
+        [
+          "source",
+          "delivery_id",
+          "ts",
+          "hook_id",
+          "verdict",
+          "target_vm_id",
+          "forward_status",
+          "bytes",
+          "duration_ms",
+          "arrived"
+        ].flatMap((k2) => r2[k2] === void 0 ? [] : [[k2, r2[k2]]])
+      ),
+      hook_name: /^Phone \(Twilio\) \*{4}\d{4}$/.test(String(r2.hook_name)) ? r2.hook_name : "Phone (Twilio)",
+      ...r2.reason ? { reason: "Phone delivery refused" } : {}
+    };
+  const safe = Object.fromEntries(
+    [
+      "source",
+      "flow_id",
+      "ts",
+      "vm_id",
+      "host",
+      "port",
+      "effect",
+      "status",
+      "duration_ms",
+      "bytes_in",
+      "bytes_out"
+    ].flatMap((k2) => r2[k2] === void 0 ? [] : [[k2, r2[k2]]])
+  );
+  const resources = /* @__PURE__ */ new Set([
+    "",
+    "2010-04-01",
+    "Accounts",
+    "Calls",
+    "Calls.json"
+  ]);
+  return {
+    ...safe,
+    rule: /^phone stream: (open|close|refusal) (admission|verified|transport|completed|invalid_frame|invalid_agent_frame|backpressure|start_timeout|revoked|admission_expired|shutdown|lease_error) (inbound|outbound|unknown) (gateway|openai|codex|classic) (openai\/gpt-realtime-1\.5|gpt-realtime-1\.5|gpt-realtime|none)$/.test(
+      String(r2.rule)
+    ) ? r2.rule : /^phone: (outbound|call) \*{4}\d{4}$/.test(String(r2.rule)) ? r2.rule : "phone",
+    method: ["GET", "POST", "WS"].includes(String(r2.method)) ? r2.method : null,
+    path: r2.method === "WS" && r2.path === "/phone-stream/[stream]" ? "/phone-stream/[stream]" : r2.host === "api.twilio.com" && typeof r2.path === "string" ? r2.path.split("?")[0].split("/").map((p2) => resources.has(p2) ? p2 : "{id}").join("/") : "/hook/{id}",
+    ...r2.error ? { error: "Phone request failed" } : {}
+  };
+}
+
 // src/enc-file.ts
 import { createCipheriv, createDecipheriv, randomBytes as randomBytes2 } from "crypto";
 import { copyFileSync, existsSync, mkdirSync as mkdirSync2, readFileSync, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "fs";
@@ -29337,6 +29401,26 @@ function routingHash(r2) {
   ).digest("hex");
 }
 
+// ../phone/src/index.ts
+var PHONE_SETUP_ERRORS = [
+  "openclaw_version",
+  "voice_adapter_missing",
+  "runtime_unsupported",
+  "plugin_busy",
+  "plugin_install_failed",
+  "plugin_integrity",
+  "gateway_unavailable",
+  "model_missing",
+  "activation_timeout",
+  "listener_unavailable",
+  "agent_unavailable",
+  "routing_not_active",
+  "phone_setup_failed"
+];
+function phoneSetupErrorCode(value) {
+  return typeof value === "string" && PHONE_SETUP_ERRORS.includes(value) ? value : void 0;
+}
+
 // src/phone.ts
 var callers = external_exports.array(external_exports.string().regex(/^\+[1-9]\d{6,14}$/)).max(50);
 var targetSchema = external_exports.object({
@@ -29408,7 +29492,7 @@ var PhoneFirewall = class {
     const a2 = this.store.assignment;
     return {
       realtimeSupported: true,
-      accountSid: this.store.accountSid,
+      accountSid: this.store.accountSid ? maskTwilioAccountSids(this.store.accountSid) : null,
       accountType: this.store.accountType,
       status: this.store.token ? "connected" : "disconnected",
       numbers: this.store.numbers,
@@ -29417,6 +29501,7 @@ var PhoneFirewall = class {
         numberSid: a2.numberSid,
         number: a2.number,
         status: a2.status,
+        ...a2.status === "setup_failed" && phoneSetupErrorCode(a2.setupError) ? { setupError: phoneSetupErrorCode(a2.setupError) } : {},
         allowFrom: a2.allowFrom,
         allowAll: a2.allowAll,
         speech: a2.speech ?? null,
@@ -29673,7 +29758,7 @@ var PhoneFirewall = class {
         numbers,
         previousSid: this.store.accountSid
       };
-      summary = `Connect Twilio account ${sid}; keep its token on your firewall`;
+      summary = `Connect Twilio account ${maskTwilioAccountSids(sid)}; keep its token on your firewall`;
     } else if (p2.kind === "assign") {
       if (!this.store.token || !this.store.accountSid)
         throw new PhoneError("needs_token");
@@ -29839,7 +29924,10 @@ var PhoneFirewall = class {
   }
   async push(a2) {
     if (!this.current(a2)) return;
+    if (this.store.cleanup) await this.cleanup();
+    if (!this.current(a2)) return;
     a2.status = "pending";
+    delete a2.setupError;
     this.save();
     await this.opts.onCredentialsChanged();
     if (!this.current(a2)) return;
@@ -29858,6 +29946,7 @@ var PhoneFirewall = class {
     } catch {
       if (this.current(a2)) {
         a2.status = "setup_failed";
+        a2.setupError = "agent_unavailable";
         this.save();
         await this.opts.onCredentialsChanged();
       }
@@ -29881,6 +29970,7 @@ var PhoneFirewall = class {
         if (status.generation !== a2.generation) return;
         if (status.status === "failed") {
           a2.status = "setup_failed";
+          a2.setupError = phoneSetupErrorCode(status.error) ?? "phone_setup_failed";
           if (a2.routed) this.store.cleanup = a2;
           this.save();
           await this.opts.onCredentialsChanged();
@@ -29919,12 +30009,14 @@ var PhoneFirewall = class {
         if (checked.voice_application_sid || checked.trunk_sid || checked.voice_url !== this.url(a2) || checked.status_callback !== `${this.url(a2)}?type=status` || checked.voice_method !== "POST" || checked.status_callback_method !== "POST")
           throw new PhoneError("routing_not_active");
         a2.status = "active";
+        delete a2.setupError;
         this.save();
       });
     } catch (error62) {
       const a2 = this.store.assignment;
       if (error62 instanceof PhoneError && a2?.status === "pending") {
         a2.status = "setup_failed";
+        a2.setupError = phoneSetupErrorCode(error62.code) ?? "phone_setup_failed";
         if (a2.routed) this.store.cleanup = a2;
         this.save();
         await this.opts.onCredentialsChanged();
@@ -44671,64 +44763,6 @@ var PermissionBridge = class {
     }
   }
 };
-
-// src/phone-activity.ts
-function sanitizePhoneActivity(raw) {
-  if (!raw || typeof raw !== "object") return raw;
-  const r2 = raw;
-  if (r2.host !== "api.twilio.com" && r2.rule !== "phone" && !String(r2.hook_name ?? "").startsWith("Phone (Twilio)"))
-    return raw;
-  if (r2.source === "webhook")
-    return {
-      ...Object.fromEntries(
-        [
-          "source",
-          "delivery_id",
-          "ts",
-          "hook_id",
-          "verdict",
-          "target_vm_id",
-          "forward_status",
-          "bytes",
-          "duration_ms",
-          "arrived"
-        ].flatMap((k2) => r2[k2] === void 0 ? [] : [[k2, r2[k2]]])
-      ),
-      hook_name: /^Phone \(Twilio\) \*{4}\d{4}$/.test(String(r2.hook_name)) ? r2.hook_name : "Phone (Twilio)",
-      ...r2.reason ? { reason: "Phone delivery refused" } : {}
-    };
-  const safe = Object.fromEntries(
-    [
-      "source",
-      "flow_id",
-      "ts",
-      "vm_id",
-      "host",
-      "port",
-      "effect",
-      "status",
-      "duration_ms",
-      "bytes_in",
-      "bytes_out"
-    ].flatMap((k2) => r2[k2] === void 0 ? [] : [[k2, r2[k2]]])
-  );
-  const resources = /* @__PURE__ */ new Set([
-    "",
-    "2010-04-01",
-    "Accounts",
-    "Calls",
-    "Calls.json"
-  ]);
-  return {
-    ...safe,
-    rule: /^phone stream: (open|close|refusal) (admission|verified|transport|completed|invalid_frame|invalid_agent_frame|backpressure|start_timeout|revoked|admission_expired|shutdown|lease_error) (inbound|outbound|unknown) (gateway|openai|codex|classic) (openai\/gpt-realtime-1\.5|gpt-realtime-1\.5|gpt-realtime|none)$/.test(
-      String(r2.rule)
-    ) ? r2.rule : /^phone: (outbound|call) \*{4}\d{4}$/.test(String(r2.rule)) ? r2.rule : "phone",
-    method: ["GET", "POST", "WS"].includes(String(r2.method)) ? r2.method : null,
-    path: r2.method === "WS" && r2.path === "/phone-stream/[stream]" ? "/phone-stream/[stream]" : r2.host === "api.twilio.com" && typeof r2.path === "string" ? r2.path.split("?")[0].split("/").map((p2) => resources.has(p2) ? p2 : "{id}").join("/") : "/hook/{id}",
-    ...r2.error ? { error: "Phone request failed" } : {}
-  };
-}
 
 // src/agentmail-activity.ts
 function sanitizeAgentMailActivity(raw) {
@@ -92443,8 +92477,8 @@ import { uptime } from "os";
 import { existsSync as existsSync13, readFileSync as readFileSync18 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8f03171" : "unknown",
-  builtAt: true ? "2026-10-04T11:33:52+01:00" : "unknown"
+  commit: true ? "bbbf0f8" : "unknown",
+  builtAt: true ? "2026-10-04T14:08:01+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
