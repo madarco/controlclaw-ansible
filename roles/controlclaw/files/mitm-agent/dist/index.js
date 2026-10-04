@@ -32890,6 +32890,13 @@ var ChannelsFirewall = class {
   }
 };
 
+// src/identities.ts
+function splitIdentities(rows) {
+  const agents = rows.filter((i2) => (i2.role ?? "openclaw") === "openclaw");
+  const browserBoxes = rows.filter((i2) => (i2.role ?? "openclaw") === "openclaw" || i2.role === "gbrain");
+  return { agents, browserBoxes };
+}
+
 // src/new-agents.ts
 var NEW_AGENT_WINDOW_MS = 30 * 6e4;
 var AgentFirstSeen = class {
@@ -92067,8 +92074,8 @@ import { readFileSync as readFileSync19 } from "fs";
 import { readFileSync as readFileSync18 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "3c092fa" : "unknown",
-  builtAt: true ? "2026-10-03T21:47:29+01:00" : "unknown"
+  commit: true ? "7548675" : "unknown",
+  builtAt: true ? "2026-10-04T10:03:13+01:00" : "unknown"
 };
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
@@ -92260,6 +92267,7 @@ function die(msg) {
 var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http") || FIREWALL_URL.startsWith("http");
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 var identities = [];
+var browserIdentities = [];
 var firstSeen = new AgentFirstSeen();
 var lastProxyConfig = null;
 var channels = null;
@@ -92312,7 +92320,7 @@ async function runSync(boxKey) {
   }
   if (IDENTITIES_URL) {
     cfg.identities = await fetchIdentities(IDENTITIES_URL, getToken);
-    identities = cfg.identities.filter((i2) => (i2.role ?? "openclaw") === "openclaw");
+    ({ agents: identities, browserBoxes: browserIdentities } = splitIdentities(cfg.identities));
     firstSeen.observe(identities.map((i2) => String(i2.vm_id)));
     access?.notePins();
     if (doctorKeys) void doctorKeys.reconcile(identities.filter((i2) => i2.hostname).map((i2) => ({ vmId: String(i2.vm_id), hostname: i2.hostname })), makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), timeoutMs: 5e3 }));
@@ -92773,7 +92781,7 @@ async function main() {
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }),
         codeRoutes: () => channels?.codeRoutes() ?? [],
         channelsReady: () => channels !== null,
-        identities: () => identities,
+        identities: () => browserIdentities,
         stopped: (vmId) => kill ? kill.lockedVmIds([vmId]).includes(vmId) : false,
         hostname: () => readKeyFile2("vm_hostname"),
         saasPublicKey: () => saasPublicKeyPem,
