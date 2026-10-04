@@ -1,0 +1,42 @@
+---
+# This runs before dist-upgrade, including on boxes updated from older images.
+# containerd has its own version line; Docker's major is not a containerd version.
+- name: Pin Docker and containerd to their supported major versions
+  ansible.builtin.copy:
+    dest: /etc/apt/preferences.d/controlclaw
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      Package: docker-ce docker-ce-cli docker-ce-rootless-extras
+      Pin: version 5:{{ docker_major | default('29') }}.*
+      Pin-Priority: 990
+
+      Package: docker-ce docker-ce-cli docker-ce-rootless-extras
+      Pin: version *
+      Pin-Priority: -1
+
+      Package: containerd.io
+      Pin: version {{ containerd_major | default('2') }}.*
+      Pin-Priority: 990
+
+      Package: containerd.io
+      Pin: version *
+      Pin-Priority: -1
+
+- name: Create needrestart configuration directory
+  ansible.builtin.file:
+    path: /etc/needrestart/conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Keep security upgrades from restarting services during the day
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/controlclaw.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      $nrconf{restart} = 'l';

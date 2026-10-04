@@ -5885,7 +5885,8 @@ var UpdateService = class {
       phase,
       detail: typeof parsed.detail === "string" && parsed.detail.length > 0 ? parsed.detail : null,
       ref: typeof parsed.ref === "string" && parsed.ref.length > 0 ? parsed.ref : null,
-      at: at2
+      at: at2,
+      ...parsed.reboot === true ? { reboot: true } : {}
     };
     const running = phase === "resolving" || phase === "installing" || phase === "running";
     if (running && at2 && this.now() - Date.parse(at2) > STALE_MS) {
@@ -5897,13 +5898,20 @@ var UpdateService = class {
    * Start a run, unless one is already going. Returns as soon as it is launched — the run itself
    * takes minutes and will restart this process before it finishes.
    */
-  start() {
+  start(options = {}) {
     if (!this.pinned()) throw new Error("This agent was created before in-place updates; it has to be rebuilt instead.");
     const current = this.status();
     if (current.phase === "resolving" || current.phase === "installing" || current.phase === "running") {
       return { ok: true, status: current };
     }
-    const r2 = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", "/usr/local/bin/cc-reprovision"]);
+    const env2 = [];
+    if (options.mode === "auto") {
+      if (!Number.isSafeInteger(options.deadline) || options.deadline <= Math.floor(this.now() / 1e3)) {
+        throw new Error("The automatic update window has closed.");
+      }
+      env2.push("--setenv=CC_UPDATE_MODE=auto", `--setenv=CC_UPDATE_DEADLINE=${options.deadline}`);
+    }
+    const r2 = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", ...env2, "/usr/local/bin/cc-reprovision"]);
     if (!r2.ok) throw new Error(`The update could not be started: ${r2.error ?? "unknown error"}`);
     this.log("[update] started cc-reprovision");
     return { ok: true, status: { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(this.now()).toISOString() } };
@@ -5924,11 +5932,20 @@ async function handleUpdate(req, res, pathname, service) {
   }
   try {
     if (pathname === "/update" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, pinned: service.pinned(), ...service.status() });
+      sendJson(res, 200, { ok: true, automatic: true, pinned: service.pinned(), ...service.status() });
       return;
     }
     if (pathname === "/update" && req.method === "POST") {
-      sendJson(res, 200, service.start());
+      const body = await readJsonBody(req);
+      if (!body && Number(req.headers["content-length"] ?? 0) > 0) {
+        sendJson(res, 400, { error: "Invalid update body" });
+        return;
+      }
+      if (body && (body.mode !== void 0 && body.mode !== "auto" || body.mode === "auto" && !Number.isSafeInteger(body.deadline))) {
+        sendJson(res, 400, { error: "Invalid update mode or deadline" });
+        return;
+      }
+      sendJson(res, 200, service.start(body?.mode === "auto" ? { mode: "auto", deadline: body.deadline } : {}));
       return;
     }
     sendJson(res, 404, { error: "Not found" });
@@ -5983,7 +6000,8 @@ function doctorStatus(path = DOCTOR_KEY_FILE) {
 import { execSync } from "child_process";
 
 // src/software.ts
-import { readFileSync as readFileSync9, realpathSync } from "fs";
+import { uptime } from "os";
+import { existsSync as existsSync5, readFileSync as readFileSync9, realpathSync } from "fs";
 import { dirname as dirname4 } from "path";
 
 // src/access-state.ts
@@ -6051,9 +6069,10 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d1d459f" : "unknown",
-  builtAt: true ? "2026-10-04T11:14:48+01:00" : "unknown"
+  commit: true ? "8f03171" : "unknown",
+  builtAt: true ? "2026-10-04T11:33:52+01:00" : "unknown"
 };
+var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
   "/usr/lib/node_modules/openclaw/package.json",
@@ -6103,6 +6122,8 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
 }
 function boxSoftware(opts = {}) {
   return {
+    rebootRequired: existsSync5("/var/run/reboot-required"),
+    bootedAt: BOOTED_AT,
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
@@ -6717,7 +6738,7 @@ import { join as join7 } from "path";
 
 // src/session.ts
 import crypto3 from "crypto";
-import { existsSync as existsSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync6, readFileSync as readFileSync11, writeFileSync as writeFileSync5 } from "fs";
 import { join as join5 } from "path";
 
 // ../origin-guard/src/index.ts
@@ -6808,7 +6829,7 @@ var secretDir = null;
 function ensureSessionSecret(keysDir2) {
   secretDir = keysDir2;
   const path = join5(keysDir2, "session_secret");
-  if (!existsSync5(path)) {
+  if (!existsSync6(path)) {
     writeFileSync5(path, crypto3.randomBytes(32).toString("hex"), { mode: 384 });
     console.log("[session] generated session secret");
   }
@@ -7726,7 +7747,7 @@ async function handleAccessPush(req, res, pathname) {
 
 // src/gbrain-gate.ts
 import { createServer, request as httpRequest } from "http";
-import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync13, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync, existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync13, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname5 } from "path";
 import { networkInterfaces } from "os";
 var GATE_PORT = 3131;
@@ -7776,7 +7797,7 @@ var BrainGate = class {
   entries;
   lockState = { all: false, vmIds: [] };
   load() {
-    if (!existsSync6(this.statePath)) return [];
+    if (!existsSync7(this.statePath)) return [];
     try {
       const s2 = JSON.parse(readFileSync13(this.statePath, "utf-8"));
       const lock = parseLock(s2.lock ?? null);

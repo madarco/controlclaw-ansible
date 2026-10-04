@@ -25,8 +25,8 @@ MIN_AGE_HOURS=24
 # secret: a phase, an exit code and a task name).
 say() {
   local phase="$1" detail="${2:-}"
-  printf '{"phase":%s,"detail":%s,"ref":%s,"at":%s}\n' \
-    "$(json "$phase")" "$(json "$detail")" "$(json "${REF:-}")" "$(json "$(date -u +%FT%TZ)")" \
+  printf '{"phase":%s,"detail":%s,"ref":%s,"at":%s,"reboot":%s}\n' \
+    "$(json "$phase")" "$(json "$detail")" "$(json "${REF:-}")" "$(json "$(date -u +%FT%TZ)")" "${REBOOT:-false}" \
     > "$STATE".tmp && mv "$STATE".tmp "$STATE"
   logger -t cc-reprovision "$phase${detail:+: $detail}"
 }
@@ -69,6 +69,10 @@ esac
 
 mkdir -p "$(dirname "$STATE")"
 say resolving
+if [ "${CC_UPDATE_MODE:-}" = auto ]; then
+  [[ "${CC_UPDATE_DEADLINE:-}" =~ ^[0-9]{1,10}$ ]] || die "missing automatic update deadline"
+  [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ] || die "automatic update window closed"
+fi
 
 # --- which commit -----------------------------------------------------------------------------
 # Unless explicitly relaxed, take the newest commit on the pinned branch that is at least
@@ -80,17 +84,21 @@ say resolving
 # An empty branch means cloud-init passed no -C and cloned the repo's default. Keep it empty
 # rather than guessing "main": GitHub's commits API uses the repo's default when `sha` is omitted,
 # so the box resolves commits on the branch it actually booted from.
-# A box built from somewhere that is not GitHub — a dev pair pulling a branch a developer's own
-# machine is serving over a tunnel — has no commits API to ask, so the 24h rule cannot be applied
-# to it at all. Say so and track the branch, rather than dying on a slug that was never going to
-# parse. This is only ever reached on a box that was already built from a non-production repo,
-# which is what makes it a dev box in the first place.
+# Dev mirrors have no commits API. Manual updates retain their branch behavior; automatic
+# updates resolve the same age requirement from the mirror's Git history below.
 case "$ANSIBLE_REPO" in
   https://github.com/*) FROM_GITHUB=true ;;
   *) FROM_GITHUB=false ;;
 esac
 
-if [ "${ALLOW_UNVERIFIED:-false}" = "true" ] || [ "$FROM_GITHUB" = "false" ]; then
+if [ "${CC_UPDATE_MODE:-}" = auto ] && [ "$FROM_GITHUB" = false ]; then
+  # Dev mirrors have no GitHub API. Read the actual branch history and still enforce 24 hours.
+  history=$(mktemp -d) || die "cannot create history checkout"
+  git clone --quiet --no-checkout "$ANSIBLE_REPO" "$history" || die "cannot read update history"
+  REF=$(git -C "$history" rev-list -1 --before="${MIN_AGE_HOURS} hours ago" "origin/${ANSIBLE_BRANCH:-main}")
+  rm -rf "$history"
+  [ -n "$REF" ] || die "no update commit is old enough"
+elif [ "${CC_UPDATE_MODE:-}" != auto ] && { [ "${ALLOW_UNVERIFIED:-false}" = "true" ] || [ "$FROM_GITHUB" = "false" ]; }; then
   REF="${ANSIBLE_BRANCH:-HEAD}"
   say resolving "unverified mode: tracking $REF"
 else
@@ -226,12 +234,27 @@ ansible-galaxy collection install community.docker community.general ansible.pos
 FULL=""
 [ "$ANSIBLE_REPO" = "https://github.com/madarco/controlclaw-ansible.git" ] || FULL="--full"
 
+if [ "${CC_UPDATE_MODE:-}" = auto ]; then
+  [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ] || die "automatic update window closed before installation"
+fi
 say running "ansible-pull ${REF:0:12}"
 ansible-pull $FULL -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
 rc=$?
 
 if [ "$rc" -eq 0 ]; then
-  say done "updated to ${REF:0:12}"
+  # Package installation is allowed to finish safely if it overruns. Never initiate a late
+  # restart or reboot. The next maintenance run will finish the pending reboot.
+  if [ "${CC_UPDATE_MODE:-}" = auto ] && [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ]; then
+    needrestart -r a >> "$LOG" 2>&1 || true
+    if [ -f /var/run/reboot-required ] && [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ]; then
+      REBOOT=true say done "updated to ${REF:0:12}; rebooting"
+      systemctl reboot || die "could not reboot"
+    else
+      say done "updated to ${REF:0:12}"
+    fi
+  else
+    say done "updated to ${REF:0:12}"
+  fi
 else
   # The last complete TASK line is the most useful thing to show someone. Secrets never reach the
   # log: the extra-vars we pass hold no token, and ansible redacts no_log tasks itself.

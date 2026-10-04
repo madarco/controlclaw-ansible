@@ -5012,8 +5012,9 @@ async function requireAuth(req, res) {
 
 // src/phone-stream.ts
 var PhoneStreamRelay = class {
-  constructor(binding) {
+  constructor(binding, log = (event) => console.warn(`[phone-stream] ${event}`)) {
     this.binding = binding;
+    this.log = log;
   }
   wss = new import_websocket_server.default({
     noServer: true,
@@ -5021,14 +5022,14 @@ var PhoneStreamRelay = class {
     perMessageDeflate: false
   });
   used = /* @__PURE__ */ new Map();
-  active = null;
+  active = /* @__PURE__ */ new Set();
   async upgrade(req, socket, head) {
     const refuse = () => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     try {
-      if (req.method !== "GET" || req.url !== "/phone/stream" || this.active)
-        return refuse();
+      if (req.method !== "GET" || req.url !== "/phone/stream") return refuse();
       const auth = await verifyMitmRequest(req, "phone"), b2 = this.binding();
-      if (this.active || !auth || !b2?.placeholder || !b2.speech) return refuse();
+      if (!auth || !b2?.placeholder || !b2.speech || this.active.size >= (b2.maxConcurrentCalls ?? 1))
+        return refuse();
       const issued = auth.claims.iat, expires = auth.claims.exp, seconds = Date.now() / 1e3;
       if (typeof issued !== "number" || typeof expires !== "number" || expires - issued > 30 || expires <= issued || issued > seconds + 2 || seconds - issued > 32)
         return refuse();
@@ -5041,7 +5042,7 @@ var PhoneStreamRelay = class {
       const p2 = JSON.parse(envelope), now = Date.now();
       for (const [k2, v2] of this.used) if (v2 < now) this.used.delete(k2);
       const url3 = new URL(p2.url), origin = new URL(b2.publicUrl);
-      if (p2.generation !== b2.generation || typeof p2.ticket !== "string" || !/^[a-f0-9]{64}$/.test(p2.ticket) || !/^CA[0-9a-f]{32}$/i.test(p2.callSid) || !/^\/voice\/stream\/realtime\/[0-9a-f-]{36}$/.test(p2.path) || !Number.isFinite(p2.deadline) || p2.deadline <= now || p2.deadline > now + 3e5 || this.used.has(p2.ticket) || this.used.size >= 100 || url3.origin !== origin.origin.replace("https:", "wss:") || url3.pathname !== "/phone-stream/" + p2.ticket || url3.search || url3.hash || url3.username || url3.password)
+      if (p2.generation !== b2.generation || typeof p2.ticket !== "string" || !/^[a-f0-9]{64}$/.test(p2.ticket) || !/^CA[0-9a-f]{32}$/i.test(p2.callSid) || !/^\/voice\/stream\/realtime\/[0-9a-f-]{36}$/.test(p2.path) || !Number.isFinite(p2.deadline) || p2.deadline <= now || p2.deadline > now + (b2.maxDurationSeconds ?? 300) * 1e3 || this.used.has(p2.ticket) || this.used.size >= 100 || url3.origin !== origin.origin.replace("https:", "wss:") || url3.pathname !== "/phone-stream/" + p2.ticket || url3.search || url3.hash || url3.username || url3.password)
         return refuse();
       const expected = createHmac("sha1", b2.placeholder).update(p2.url).digest("base64");
       if (typeof p2.signature !== "string" || p2.signature.length !== expected.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(p2.signature)))
@@ -5055,9 +5056,9 @@ var PhoneStreamRelay = class {
         peer?.terminate();
         outer?.terminate();
         clearInterval(watch);
-        if (this.active === stop) this.active = null;
+        this.active.delete(stop);
       };
-      this.active = stop;
+      this.active.add(stop);
       const watch = setInterval(() => {
         const live = this.binding();
         if (Date.now() >= p2.deadline || !live?.placeholder || live.generation !== p2.generation)
@@ -5083,6 +5084,16 @@ var PhoneStreamRelay = class {
           target.send(data, { binary: false });
           if (target.bufferedAmount > 262144) stop();
         };
+        peer.on("unexpected-response", (_request, response) => {
+          this.log(`local_upgrade_refused status=${response.statusCode ?? 0}`);
+          response.resume();
+          stop();
+        });
+        peer.on("error", (error62) => {
+          this.log(
+            error62.code === "ECONNREFUSED" ? "local_listener_unavailable" : "local_transport_error"
+          );
+        });
         peer.on("open", () => {
           ws.on("message", (d2, binary) => forward(peer, d2, binary));
           ws.resume();
@@ -25559,7 +25570,8 @@ var applySchema = external_exports.union([
       maxMinutes: external_exports.literal(5),
       placeholder: external_exports.string().regex(/^cc-speech-[0-9a-f]{48}$/)
     }).strict().nullable().optional(),
-    maxDurationSeconds: external_exports.number().int().min(30).max(300).optional()
+    maxDurationSeconds: external_exports.number().int().min(60).max(3600).optional(),
+    maxConcurrentCalls: external_exports.number().int().min(1).max(5).optional()
   }).strict()
 ]);
 function parsePhoneApply(raw) {
@@ -25599,6 +25611,11 @@ function phoneConfig(input2, responseModel) {
         providers: {
           "cc-phone-voice": {
             ...input2.speech,
+            // Shared voice adapter accepts 5–60 minutes; the call deadline enforces shorter limits.
+            maxMinutes: Math.max(
+              5,
+              Math.ceil((input2.maxDurationSeconds ?? 300) / 60)
+            ),
             surface: "phone",
             interruptResponseOnInputAudio: false
           }
@@ -25615,7 +25632,7 @@ function phoneConfig(input2, responseModel) {
       responseTimeoutMs: 15e3,
       responseSystemPrompt: "You are a helpful phone assistant. Answer in one short plain sentence unless more detail is requested. Do not use markdown, formatting marks, or punctuation-only utterances. Phone callers are not authorized owners.",
       sessionScope: "per-call",
-      maxConcurrentCalls: 1,
+      maxConcurrentCalls: input2.maxConcurrentCalls ?? 1,
       maxDurationSeconds: input2.maxDurationSeconds ?? 300
     }
   };
@@ -25924,7 +25941,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID4 } from "crypto";
-import { readFileSync as readFileSync25, existsSync as existsSync17, writeFileSync as writeFileSync16, rmSync as rmSync5 } from "fs";
+import { readFileSync as readFileSync25, existsSync as existsSync18, writeFileSync as writeFileSync16, rmSync as rmSync5 } from "fs";
 
 // src/session.ts
 import crypto2 from "crypto";
@@ -27377,7 +27394,8 @@ function saasBaseUrl(keysDir2) {
 }
 
 // src/software.ts
-import { readFileSync as readFileSync7, realpathSync } from "fs";
+import { uptime } from "os";
+import { existsSync as existsSync3, readFileSync as readFileSync7, realpathSync } from "fs";
 import { dirname as dirname2 } from "path";
 
 // src/doctor.ts
@@ -27414,9 +27432,10 @@ async function installDoctorKey(pub, sig2, opts = {}) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d1d459f" : "unknown",
-  builtAt: true ? "2026-10-04T11:14:48+01:00" : "unknown"
+  commit: true ? "8f03171" : "unknown",
+  builtAt: true ? "2026-10-04T11:33:52+01:00" : "unknown"
 };
+var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var OPENCLAW_CANDIDATES = [
   "/usr/lib/node_modules/openclaw/package.json",
@@ -27466,6 +27485,8 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
 }
 function boxSoftware(opts = {}) {
   return {
+    rebootRequired: existsSync3("/var/run/reboot-required"),
+    bootedAt: BOOTED_AT,
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
@@ -27582,7 +27603,7 @@ async function reportHandleCertificate(keysDir2) {
 
 // src/keys.ts
 import crypto3 from "crypto";
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync3, existsSync as existsSync3, mkdirSync as mkdirSync2 } from "fs";
+import { readFileSync as readFileSync9, writeFileSync as writeFileSync3, existsSync as existsSync4, mkdirSync as mkdirSync2 } from "fs";
 function readFile4(path) {
   try {
     return readFileSync9(path, "utf8").trim();
@@ -27593,7 +27614,7 @@ function readFile4(path) {
 function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
-  if (existsSync3(privPath)) {
+  if (existsSync4(privPath)) {
     return readFile4(pubPath) ?? derivePublicKey(readFileSync9(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto3.generateKeyPairSync("ed25519", {
@@ -27664,7 +27685,7 @@ function sha256Hex(s2) {
 }
 
 // src/mitm-ca.ts
-import { readFileSync as readFileSync10, writeFileSync as writeFileSync4, existsSync as existsSync4 } from "fs";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync4, existsSync as existsSync5 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
 function readFile5(path) {
@@ -27707,7 +27728,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
         const cfg = await res.json();
         const mitm = cfg.mitm;
         if (mitm?.caCert && mitm.caSig) {
-          let pin = existsSync4(pinPath) ? readFile5(pinPath) : null;
+          let pin = existsSync5(pinPath) ? readFile5(pinPath) : null;
           if (!pin && mitm.pubKey) {
             pin = mitm.pubKey;
             writeFileSync4(pinPath, pin, { mode: 420 });
@@ -27964,7 +27985,7 @@ function handleStatus(res, drive2, gateway2) {
 
 // src/audit.ts
 import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname3 } from "path";
 var PAGE_LIMIT = 500;
 var MAX_PAGES = 40;
@@ -28021,7 +28042,7 @@ var AuditShipper = class {
   }
   loadCursor() {
     try {
-      if (!existsSync5(this.opts.cursorPath)) return null;
+      if (!existsSync6(this.opts.cursorPath)) return null;
       const c2 = JSON.parse(readFileSync12(this.opts.cursorPath, "utf-8"));
       if (typeof c2.sequence === "number" && typeof c2.occurredAt === "number") return { sequence: c2.sequence, occurredAt: c2.occurredAt };
     } catch {
@@ -28392,12 +28413,12 @@ var ApprovalsBridge = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync13, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync13, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname4 } from "path";
 import { randomUUID } from "crypto";
 
 // src/openclaw-allow.ts
-import { existsSync as existsSync6 } from "fs";
+import { existsSync as existsSync7 } from "fs";
 import { createRequire } from "module";
 var ENTRY_CAP = 200;
 var requireBuiltin = createRequire(import.meta.url);
@@ -28458,7 +28479,7 @@ function labelFromMeta(metaJson) {
 }
 function readAllowList(opts) {
   if (opts.channels.length === 0) return { senders: [], error: null, canonical: false };
-  if (!existsSync6(opts.dbPath)) return { senders: [], error: null, canonical: false };
+  if (!existsSync7(opts.dbPath)) return { senders: [], error: null, canonical: false };
   let db;
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
@@ -28513,7 +28534,7 @@ function readAllowList(opts) {
 }
 function readPendingPairings(opts) {
   if (opts.channels.length === 0) return { pairings: [], error: null, canonical: false };
-  if (!existsSync6(opts.dbPath)) return { pairings: [], error: null, canonical: false };
+  if (!existsSync7(opts.dbPath)) return { pairings: [], error: null, canonical: false };
   let db;
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
@@ -28708,7 +28729,7 @@ function looksBusy2(message2) {
   );
 }
 function readChannelState(path) {
-  if (!path || !existsSync7(path)) return { version: 1, seededAt: null, approved: [] };
+  if (!path || !existsSync8(path)) return { version: 1, seededAt: null, approved: [] };
   try {
     const parsed = JSON.parse(readFileSync13(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
@@ -29215,7 +29236,7 @@ var ChannelsService = class {
     this.log(`[channels] installing ${pkg}`);
     try {
       const ca2 = this.opts.mitmCaPath;
-      const env2 = ca2 && existsSync7(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
+      const env2 = ca2 && existsSync8(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
       await this.exec(this.bin(), ["plugins", "install", `npm:${pkg}`], PLUGIN_INSTALL_TIMEOUT_MS, void 0, {
         maxBuffer: PLUGIN_INSTALL_MAX_BUFFER,
         env: env2
@@ -29548,7 +29569,7 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync14, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync14, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname5 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
@@ -29586,7 +29607,7 @@ function readMemory(config2) {
   return { provider: str3(search2?.provider), model: str3(search2?.model), baseUrl: str3(remote?.baseUrl), apiKey: str3(remote?.apiKey), dreaming: dreaming !== false };
 }
 function readReindexFailure(path) {
-  if (!path || !existsSync8(path)) return null;
+  if (!path || !existsSync9(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync14(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
@@ -29734,7 +29755,7 @@ var LlmService = class {
     this.reindexing = true;
     this.writeReindexFailure("the memory index rebuild did not finish");
     const ca2 = this.opts.mitmCaPath;
-    const env2 = ca2 && existsSync8(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
+    const env2 = ca2 && existsSync9(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
     void this.exec(this.bin(), ["memory", "index", "--force"], REINDEX_TIMEOUT_MS, void 0, { env: env2 }).then(() => {
       this.writeReindexFailure(null);
       this.log("[llm] memory index rebuilt for the new embedding provider");
@@ -29968,13 +29989,13 @@ async function handleLlm(req, res, url3, service) {
 
 // src/meetings.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import { existsSync as existsSync10, readFileSync as readFileSync16, statfsSync } from "fs";
+import { existsSync as existsSync11, readFileSync as readFileSync16, statfsSync } from "fs";
 import { totalmem } from "os";
 import { join as join10 } from "path";
 
 // src/meeting-notes.ts
 import {
-  existsSync as existsSync9,
+  existsSync as existsSync10,
   mkdirSync as mkdirSync6,
   readFileSync as readFileSync15,
   renameSync as renameSync5,
@@ -30035,7 +30056,7 @@ var MeetingArchive = class {
     return join9(this.root, `${id}.json`);
   }
   deleted() {
-    if (!existsSync9(this.tombstonesPath)) return {};
+    if (!existsSync10(this.tombstonesPath)) return {};
     return JSON.parse(readFileSync15(this.tombstonesPath, "utf8"));
   }
   save(record2) {
@@ -30046,7 +30067,7 @@ var MeetingArchive = class {
   }
   list() {
     const deleted = this.deleted();
-    if (!existsSync9(this.root)) return [];
+    if (!existsSync10(this.root)) return [];
     return readdirSync2(this.root).filter((n2) => /^[a-f0-9-]{36}\.json$/.test(n2)).map(
       (n2) => JSON.parse(readFileSync15(join9(this.root, n2), "utf8"))
     ).filter((r2) => !deleted[r2.id]).sort((a2, b2) => b2.startedAt.localeCompare(a2.startedAt));
@@ -30060,7 +30081,7 @@ var MeetingArchive = class {
     atomicJson(this.tombstonesPath, deleted);
   }
   deletionPending() {
-    return existsSync9(this.tombstonesPath + ".pending");
+    return existsSync10(this.tombstonesPath + ".pending");
   }
   deletionFinished() {
     rmSync(this.tombstonesPath + ".pending", { force: true });
@@ -30071,7 +30092,7 @@ var MeetingArchive = class {
 };
 function nativeMeetingIds(stateDir) {
   const file2 = join9(stateDir, "state", "openclaw.sqlite");
-  if (!existsSync9(file2)) return [];
+  if (!existsSync10(file2)) return [];
   const { DatabaseSync } = requireBuiltin2(
     "node:sqlite"
   );
@@ -30089,7 +30110,7 @@ function nativeMeetingIds(stateDir) {
 function eraseNativeMeetings(stateDir, sessionIds) {
   if (!sessionIds.length) return;
   const file2 = join9(stateDir, "state", "openclaw.sqlite");
-  if (existsSync9(file2)) {
+  if (existsSync10(file2)) {
     const { DatabaseSync } = requireBuiltin2(
       "node:sqlite"
     );
@@ -30124,7 +30145,7 @@ function eraseNativeMeetings(stateDir, sessionIds) {
     }
   }
   const exports = join9(stateDir, "transcripts");
-  if (!existsSync9(exports)) return;
+  if (!existsSync10(exports)) return;
   for (const date5 of readdirSync2(exports, { withFileTypes: true })) {
     if (!date5.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(date5.name)) continue;
     for (const entry of readdirSync2(join9(exports, date5.name), {
@@ -30135,7 +30156,7 @@ function eraseNativeMeetings(stateDir, sessionIds) {
       if (!dir.startsWith(resolve(exports) + sep))
         throw new Error("Invalid transcript export");
       const metadata = join9(dir, "metadata.json");
-      if (!existsSync9(metadata)) continue;
+      if (!existsSync10(metadata)) continue;
       const raw = JSON.parse(readFileSync15(metadata, "utf8"));
       if (raw.sessionId && sessionIds.includes(raw.sessionId))
         rmSync(dir, { recursive: true, force: true });
@@ -30149,7 +30170,7 @@ var MeetingService = class {
     this.opts = opts;
     this.ready = opts.browser(false).then(() => opts.reserve?.(false));
     void this.ready.catch(() => void 0);
-    if (existsSync10(opts.statePath)) {
+    if (existsSync11(opts.statePath)) {
       const saved = JSON.parse(readFileSync16(opts.statePath, "utf8"));
       this.applied = saved.applied;
       this.revision = saved.revision;
@@ -30681,7 +30702,7 @@ var MeetingService = class {
   /** Restore content without rolling back the firewall's accepted meeting policy. */
   sanitizeRestoredConfig(staging) {
     const path = join10(staging, "openclaw.json");
-    if (!existsSync10(path)) return;
+    if (!existsSync11(path)) return;
     const config2 = JSON.parse(readFileSync16(path, "utf8"));
     config2.plugins ??= {};
     config2.plugins.entries ??= {};
@@ -30717,7 +30738,7 @@ var MeetingService = class {
     config2.browser.profiles ??= {};
     config2.browser.profiles["cc-meetings"] = { cdpUrl: "http://127.0.0.1:9223", attachOnly: true };
     const livePath = join10(this.opts.openclawStateDir, "openclaw.json");
-    if (existsSync10(livePath)) {
+    if (existsSync11(livePath)) {
       const live = JSON.parse(readFileSync16(livePath, "utf8"));
       if (live.plugins?.installs?.["google-meet"]) {
         config2.plugins.installs ??= {};
@@ -31147,7 +31168,7 @@ async function handleSearch(req, res, url3, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync11, mkdirSync as mkdirSync7, readFileSync as readFileSync17, renameSync as renameSync6, unlinkSync, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync12, mkdirSync as mkdirSync7, readFileSync as readFileSync17, renameSync as renameSync6, unlinkSync, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname6 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -31300,7 +31321,7 @@ var ConnectorsService = class {
   }
 };
 function readState(path) {
-  if (!existsSync11(path)) return { gateway: null, connections: [], updatedAt: "" };
+  if (!existsSync12(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
     const parsed = JSON.parse(readFileSync17(path, "utf8"));
     return {
@@ -31335,7 +31356,7 @@ function writeCliEnv(path, relayUrl, token) {
 }
 function removeFile(path) {
   try {
-    if (existsSync11(path)) unlinkSync(path);
+    if (existsSync12(path)) unlinkSync(path);
   } catch {
   }
 }
@@ -31410,7 +31431,7 @@ async function handleConnectors(req, res, url3, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync12, mkdirSync as mkdirSync8, readFileSync as readFileSync18, renameSync as renameSync7, writeFileSync as writeFileSync10 } from "fs";
+import { existsSync as existsSync13, mkdirSync as mkdirSync8, readFileSync as readFileSync18, renameSync as renameSync7, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname7 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -31640,7 +31661,7 @@ var DriveService = class {
   }
   /** Whether this box has Drive support installed at all (an older box does not). */
   supported() {
-    return existsSync12(this.applyScript);
+    return existsSync13(this.applyScript);
   }
 };
 
@@ -31688,7 +31709,7 @@ async function handleDrive(req, res, url3, service) {
 
 // src/secrets.ts
 import {
-  existsSync as existsSync13,
+  existsSync as existsSync14,
   mkdirSync as mkdirSync9,
   readFileSync as readFileSync19,
   renameSync as renameSync8,
@@ -31712,7 +31733,7 @@ var SecretsService = class {
     this.opts = opts;
   }
   apply(input2) {
-    const current = existsSync13(this.opts.envPath) ? readFileSync19(this.opts.envPath, "utf8") : "";
+    const current = existsSync14(this.opts.envPath) ? readFileSync19(this.opts.envPath, "utf8") : "";
     const unmanaged = current.split(/\r?\n/).filter(
       (line) => !/^[A-Z][A-Z0-9_]{0,63}=CC-SEC-[a-f0-9]{48}$/.test(line)
     );
@@ -31768,7 +31789,7 @@ async function handleSecrets(req, res, url3, service) {
 
 // src/agentmail.ts
 import {
-  existsSync as existsSync14,
+  existsSync as existsSync15,
   mkdirSync as mkdirSync10,
   readFileSync as readFileSync20,
   renameSync as renameSync9,
@@ -31839,7 +31860,7 @@ var AgentMailService = class {
       GATEWAY_READ_MS
     );
     if (!snapshot.hash) throw new Error("OpenClaw returned no config hash");
-    const current = existsSync14(this.opts.envPath) ? readFileSync20(this.opts.envPath, "utf8") : "";
+    const current = existsSync15(this.opts.envPath) ? readFileSync20(this.opts.envPath, "utf8") : "";
     const lines = current.split(/\r?\n/).filter(
       (line) => !/^\s*(?:export\s+)?AGENTMAIL_(?:API_KEY|WEBHOOK_SECRET)\s*=/.test(
         line
@@ -31968,7 +31989,7 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync15, mkdirSync as mkdirSync11, readFileSync as readFileSync21, renameSync as renameSync10, rmSync as rmSync2, writeFileSync as writeFileSync13 } from "fs";
+import { existsSync as existsSync16, mkdirSync as mkdirSync11, readFileSync as readFileSync21, renameSync as renameSync10, rmSync as rmSync2, writeFileSync as writeFileSync13 } from "fs";
 import { dirname as dirname10 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -32017,7 +32038,7 @@ var GoogleService = class {
   gogBin;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync15(this.gogBin);
+    return existsSync16(this.gogBin);
   }
   /**
    * Make the box match the desired state. One atomic write, or one removal.
@@ -32073,7 +32094,7 @@ var GoogleService = class {
       gogVersion: await this.version(),
       // The file, not the remembered state: this is the question the console is really asking, and
       // a state file that outlived its env file would answer it wrongly.
-      hasPlaceholder: existsSync15(this.opts.envPath),
+      hasPlaceholder: existsSync16(this.opts.envPath),
       connected: applied?.connected ?? false,
       services: applied?.services ?? [],
       projectId: applied?.projectId ?? null,
@@ -32215,7 +32236,8 @@ var UpdateService = class {
       phase,
       detail: typeof parsed.detail === "string" && parsed.detail.length > 0 ? parsed.detail : null,
       ref: typeof parsed.ref === "string" && parsed.ref.length > 0 ? parsed.ref : null,
-      at: at2
+      at: at2,
+      ...parsed.reboot === true ? { reboot: true } : {}
     };
     const running = phase === "resolving" || phase === "installing" || phase === "running";
     if (running && at2 && this.now() - Date.parse(at2) > STALE_MS) {
@@ -32227,13 +32249,20 @@ var UpdateService = class {
    * Start a run, unless one is already going. Returns as soon as it is launched — the run itself
    * takes minutes and will restart this process before it finishes.
    */
-  start() {
+  start(options = {}) {
     if (!this.pinned()) throw new Error("This agent was created before in-place updates; it has to be rebuilt instead.");
     const current = this.status();
     if (current.phase === "resolving" || current.phase === "installing" || current.phase === "running") {
       return { ok: true, status: current };
     }
-    const r2 = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", "/usr/local/bin/cc-reprovision"]);
+    const env2 = [];
+    if (options.mode === "auto") {
+      if (!Number.isSafeInteger(options.deadline) || options.deadline <= Math.floor(this.now() / 1e3)) {
+        throw new Error("The automatic update window has closed.");
+      }
+      env2.push("--setenv=CC_UPDATE_MODE=auto", `--setenv=CC_UPDATE_DEADLINE=${options.deadline}`);
+    }
+    const r2 = this.spawnImpl("sudo", ["/usr/bin/systemd-run", "--unit=cc-reprovision", "--collect", ...env2, "/usr/local/bin/cc-reprovision"]);
     if (!r2.ok) throw new Error(`The update could not be started: ${r2.error ?? "unknown error"}`);
     this.log("[update] started cc-reprovision");
     return { ok: true, status: { phase: "resolving", detail: "Starting\u2026", ref: null, at: new Date(this.now()).toISOString() } };
@@ -32254,11 +32283,20 @@ async function handleUpdate(req, res, pathname, service) {
   }
   try {
     if (pathname === "/update" && req.method === "GET") {
-      sendJson(res, 200, { ok: true, pinned: service.pinned(), ...service.status() });
+      sendJson(res, 200, { ok: true, automatic: true, pinned: service.pinned(), ...service.status() });
       return;
     }
     if (pathname === "/update" && req.method === "POST") {
-      sendJson(res, 200, service.start());
+      const body = await readJsonBody(req);
+      if (!body && Number(req.headers["content-length"] ?? 0) > 0) {
+        sendJson(res, 400, { error: "Invalid update body" });
+        return;
+      }
+      if (body && (body.mode !== void 0 && body.mode !== "auto" || body.mode === "auto" && !Number.isSafeInteger(body.deadline))) {
+        sendJson(res, 400, { error: "Invalid update mode or deadline" });
+        return;
+      }
+      sendJson(res, 200, service.start(body?.mode === "auto" ? { mode: "auto", deadline: body.deadline } : {}));
       return;
     }
     sendJson(res, 404, { error: "Not found" });
@@ -38002,7 +38040,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile5 } from "child_process";
-import { existsSync as existsSync16, mkdirSync as mkdirSync13, readFileSync as readFileSync24, rmSync as rmSync4, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync17, mkdirSync as mkdirSync13, readFileSync as readFileSync24, rmSync as rmSync4, writeFileSync as writeFileSync15 } from "fs";
 import { dirname as dirname14 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile5);
@@ -38043,7 +38081,7 @@ var GmailWatchService = class {
   unit;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync16(this.gogBin);
+    return existsSync17(this.gogBin);
   }
   /**
    * Write the watcher's configuration and (re)start it.
@@ -38405,9 +38443,9 @@ var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
-var POOL_UNCLAIMED = existsSync17("/etc/controlclaw/pool-unclaimed");
+var POOL_UNCLAIMED = existsSync18("/etc/controlclaw/pool-unclaimed");
 var poolHealthy = false;
-if (POOL_UNCLAIMED && !existsSync17(`${KEYS_DIR2}/saas_public_key.pem`)) {
+if (POOL_UNCLAIMED && !existsSync18(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
   writeFileSync16(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
@@ -38436,10 +38474,10 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   if (POOL_UNCLAIMED) {
-    for (let i2 = 0; i2 < 300 && !existsSync17(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+    for (let i2 = 0; i2 < 300 && !existsSync18(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
       await new Promise((resolve3) => setTimeout(resolve3, 1e3));
     }
-    if (!existsSync17(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    if (!existsSync18(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
     const egress = await enableTransparentEgress(KEYS_DIR2);
     if (!egress) return;
     const hostname4 = readKeyFile(KEYS_DIR2, "vm_hostname");

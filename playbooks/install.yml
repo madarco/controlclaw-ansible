@@ -93,6 +93,10 @@
         - /usr/share/keyrings/caddy-stable-archive-keyring.asc
       when: is_debian_family
 
+    - name: Apply package pins and restart policy before upgrading older boxes
+      ansible.builtin.include_tasks: ../roles/controlclaw/tasks/apt-pins.yml
+      when: is_debian_family
+
     - name: Update apt cache and upgrade all packages
       ansible.builtin.apt:
         update_cache: true

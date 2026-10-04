@@ -40,7 +40,7 @@
 # which apt resolves and plain dpkg does not — so `apt: deb:` failed on every real box with
 # "Dependency is not satisfiable: libasound2 (>= 1.0.17)" (box vnc-live-2, 2026-09-20) and the
 # browser stack never installed. Going through the repository also means Chrome gets security
-# updates from unattended-upgrades, and it matches how the role installs Caddy, Docker and Node.
+# updates during the nightly maintenance dist-upgrade. Unattended-upgrades only takes Ubuntu security pockets.
 - name: Download the Google Chrome apt repository key
   ansible.builtin.get_url:
     url: https://dl.google.com/linux/linux_signing_key.pub

@@ -407,12 +407,14 @@ luks_locked_port: 3101
 # there and the one moment support is wanted is a box that did not come up; and the OS and every
 # binary, which are public, pinned and auditable, and whose staying plain is what means a locked box
 # still boots and can be told to open itself.
+# The proxy owns its private CA directory on every boot, matching mitmbox.yml.
+# Resetting it to root:0700 here prevents the unprivileged proxy from starting after unlock.
 luks_binds: >-
   {{
     ['keys:/opt/controlclaw/keys:' ~ controlclaw_user ~ ':0750',
      'state:/opt/controlclaw/state:' ~ controlclaw_user ~ ':0750']
     + (['openclaw:' ~ controlclaw_home ~ '/.openclaw:' ~ controlclaw_user ~ ':0750'] if box_role == 'openclaw' else [])
-    + (['mitm-ca:/opt/controlclaw/mitm/ca:' ~ (controlclaw_user if ((pool_unclaimed | default(false) | bool) or (cc_prepared_pool.stat.exists | default(false))) else 'root') ~ ':0700',
+    + (['mitm-ca:/opt/controlclaw/mitm/ca:' ~ controlclaw_user ~ ':0700',
         'connector:/opt/controlclaw/connector:root:0700'] if box_role == 'mitm' else [])
     + (['gbrain:' ~ gbrain_home ~ ':' ~ gbrain_user ~ ':0750',
         'postgresql:/var/lib/postgresql:postgres:0700'] if box_role == 'gbrain' else [])
@@ -494,3 +496,8 @@ doctor_cli_pins:
     version: "0.73.1"
     url: "https://registry.npmjs.org/@mariozechner/pi-coding-agent/-/pi-coding-agent-0.73.1.tgz"
     sha512: "817421dd26999964df54c738028e7e2c66d578abf3c8eeeda25a24d272ec660abd9c68d9c7f10453734cf02faa52707836fb36aecc06e6a39580bcd092ad1f1d"
+
+# Automatic updates stay within these package lines.
+docker_major: "29"
+containerd_major: "2"
+openclaw_auto_patch: true

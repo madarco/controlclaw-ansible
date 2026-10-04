@@ -117,15 +117,39 @@
   ansible.builtin.set_fact:
     controlclaw_node_env: "{{ {'NODE_EXTRA_CA_CERTS': mitm_ca_path} if mitm_ca_installed_now.stat.exists else {} }}"
 
+- name: Install the OpenClaw patch resolver
+  ansible.builtin.copy:
+    src: cc-openclaw-patch
+    dest: /usr/local/bin/cc-openclaw-patch
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Resolve and verify the newest stable patch of the pinned OpenClaw month
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/cc-openclaw-patch
+      - "{{ openclaw_version }}"
+      - "{{ openclaw_host_sha512 }}"
+      - "{{ openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+') | default('', true) }}"
+      - "{{ 'true' if openclaw_auto_patch | default(true) | bool else 'false' }}"
+      - /opt/controlclaw/openclaw-pinned.tgz
+  register: openclaw_patch
+  changed_when: (openclaw_patch.stdout | from_json).changed
+
+- name: Use the verified OpenClaw version
+  ansible.builtin.set_fact:
+    openclaw_resolved_version: "{{ (openclaw_patch.stdout | from_json).version }}"
+
 # The installed host must match the tested plugin pin even on an older base image.
 - name: Decide whether the pinned OpenClaw needs installing
   ansible.builtin.set_fact:
     openclaw_install_wanted: >-
       {{ openclaw_installed_version.rc != 0 or
-         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_version }}
+         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_resolved_version }}
     openclaw_upgrading: >-
       {{ openclaw_installed_version.rc == 0 and
-         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_version }}
+         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_resolved_version }}
 
 # An upgrade can carry a state migration the new gateway will not run by itself (T-107). OpenClaw
 # 2026.9.7 moved the agent database from schema 23 to 24, and on a v23 database it exits
@@ -146,14 +170,6 @@
   when: openclaw_upgrading | bool
   # A base image carries the binary before it has a unit; nothing is running to stop.
   failed_when: false
-
-- name: Download the integrity-pinned OpenClaw host
-  ansible.builtin.get_url:
-    url: "https://registry.npmjs.org/openclaw/-/openclaw-{{ openclaw_version }}.tgz"
-    dest: /opt/controlclaw/openclaw-pinned.tgz
-    checksum: "sha512:{{ openclaw_host_sha512 }}"
-    mode: '0644'
-  when: openclaw_install_wanted | bool
 
 - name: Install OpenClaw globally from npm
   ansible.builtin.command:

@@ -48,9 +48,10 @@
     name:
       - unattended-upgrades
       - apt-listchanges
+      - needrestart
     state: present
     lock_timeout: 300
-  when: not cc_skip.unattended_upgrades | default(false) | bool
+
 
 - name: Configure automatic security updates
   ansible.builtin.copy:

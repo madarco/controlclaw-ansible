@@ -1,0 +1,71 @@
+#!/usr/bin/python3
+"""Resolve one stable OpenClaw month and verify its archive before installation."""
+import base64
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+import urllib.request
+
+
+def version_key(version):
+    return tuple(map(int, version.split('.'))) if re.fullmatch(r'[0-9]{4}\.[0-9]+\.[0-9]+', version) else None
+
+
+def pick_version(versions, pinned):
+    floor = version_key(pinned)
+    if not floor:
+        raise ValueError('The OpenClaw pin must be a stable version')
+    return max((v for v in versions if version_key(v) and version_key(v)[:2] == floor[:2] and version_key(v) >= floor), key=version_key, default=pinned)
+
+
+def download(version, digest, destination):
+    # Never trust a registry-supplied URL to send root to another host.
+    url = 'https://registry.npmjs.org/openclaw/-/openclaw-' + version + '.tgz'
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(destination))
+    try:
+        checksum = hashlib.sha512()
+        with os.fdopen(fd, 'wb') as out, urllib.request.urlopen(url, timeout=60) as response:
+            while chunk := response.read(1024 * 1024):
+                checksum.update(chunk)
+                out.write(chunk)
+        if checksum.hexdigest() != digest:
+            raise ValueError('OpenClaw archive integrity mismatch')
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, destination)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def main():
+    pinned, pinned_digest, installed, auto, destination = sys.argv[1:]
+    version, digest = pinned, pinned_digest
+    fallback = False
+    try:
+        if auto == 'true':
+            req = urllib.request.Request('https://registry.npmjs.org/openclaw', headers={'Accept': 'application/vnd.npm.install-v1+json'})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                versions = json.load(response)['versions']
+            version = pick_version(versions, pinned)
+            integrity = versions[version]['dist']['integrity']
+            algorithm, encoded = integrity.split('-', 1)
+            if algorithm != 'sha512':
+                raise ValueError('Expected SHA-512 integrity')
+            digest = base64.b64decode(encoded, validate=True).hex()
+            if len(digest) != 128:
+                raise ValueError('Invalid SHA-512 integrity')
+        if version != installed:
+            download(version, digest, destination)
+    except Exception:
+        fallback = True
+        version = pinned
+        if installed != pinned:
+            download(pinned, pinned_digest, destination)
+    print(json.dumps({'version': version, 'changed': version != installed, 'fallback': fallback}))
+
+
+if __name__ == '__main__':
+    main()

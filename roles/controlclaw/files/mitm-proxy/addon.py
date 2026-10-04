@@ -985,7 +985,7 @@ def phone_hook_url(value: str, hook: str) -> bool:
         pairs = parse_qsl(u.query, keep_blank_values=True, strict_parsing=True)
         if len({k for k, _ in pairs}) != len(pairs):
             return False
-        return all(v == "status" if k == "type" else k in ("callId", "turnToken") and re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", v) for k, v in pairs)
+        return all(v == "status" if k == "type" else k in ("callId", "turnToken", "ccCall") and re.fullmatch(r"[a-zA-Z0-9_-]{1,160}", v) for k, v in pairs)
     except ValueError:
         return False
 
@@ -1085,7 +1085,10 @@ def phone_authorized(flow, cred) -> bool:
                 return False
             # Always set the provider's hard duration for outbound calls.
             limit = config.get("max_duration", 300)
-            if type(limit) is not int or not 30 <= limit <= 300:
+            if type(limit) is not int:
+                return False
+            limit = max(60, min(3600, limit))
+            if not 60 <= limit <= 3600:
                 return False
             pairs = [(k, v) for k, v in pairs if k != "TimeLimit"] + [("TimeLimit", str(limit))]
             flow.request.set_text(urlencode(pairs))
@@ -1097,6 +1100,60 @@ def phone_authorized(flow, cred) -> bool:
         return True
     except (ValueError, UnicodeError, KeyError):
         return False
+
+
+def phone_admission(payload):
+    import urllib.request
+    request = urllib.request.Request("http://127.0.0.1:8791/", data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"})
+    # Never use environment proxies for the firewall-local admission service.
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=2) as response:
+        result = json.load(response)
+    if result.get("ok") is not True:
+        raise ValueError("phone admission refused")
+    return result
+
+
+async def phone_reserve(flow, cred):
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    if flow.request.method != "POST" or not flow.request.path.endswith("/Calls.json"):
+        return True
+    try:
+        result = await asyncio.to_thread(phone_admission, {"action": "reserve", "vmId": cred["vm_id"], "placeholder": cred["placeholder"]})
+        reservation = result["id"]
+        if not isinstance(reservation, str) or not re.fullmatch(r"[a-f0-9]{48}", reservation):
+            return False
+        flow.metadata["cc_phone_reservation"] = reservation
+        pairs = list(flow.request.urlencoded_form.items(multi=True))
+        updated = []
+        for key, value in pairs:
+            if key in ("Url", "StatusCallback"):
+                u = urlsplit(value)
+                query = [(k, v) for k, v in parse_qsl(u.query) if k != "ccCall"]
+                value = urlunsplit((u.scheme, u.netloc, u.path, urlencode(query + [("ccCall", reservation)]), ""))
+            updated.append((key, value))
+        flow.request.set_text(urlencode(updated))
+        return True
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def phone_settle(flow):
+    reservation = flow.metadata.get("cc_phone_reservation")
+    if not reservation:
+        return
+    try:
+        # An uncertain transport result retains its slot until the maximum call lifetime.
+        response = flow.response
+        if response is None:
+            return
+        rejected = 400 <= response.status_code < 500
+        sid = None
+        if 200 <= response.status_code < 300:
+            sid = json.loads(response.content).get("sid")
+        phone_admission({"action": "settle", "id": reservation, "sid": sid, "rejected": rejected})
+    except (OSError, ValueError, TypeError):
+        pass
 
 
 def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str, str]]:
@@ -2208,13 +2265,19 @@ def phone_lease(vm_id, lease_id=None):
         return None
     try:
         with open(PHONE_MEDIA_PATH, encoding="utf-8") as f:
-            lease = json.load(f).get(vm_id)
+            leases = json.load(f).get(vm_id)
+        if not isinstance(leases, list):
+            leases = [leases]
+        lease = next((v for v in leases if isinstance(v, dict) and
+                      (v.get("id") == lease_id if lease_id is not None else
+                       _voice_usage.get(v.get("id"), {}).get("reserved_until", 0) <= time.time() and
+                       not _voice_usage.get(v.get("id"), {}).get("active", False))), None)
         now = time.time()
         if (not isinstance(lease, dict) or lease.get("purpose") != "phone"
             or not re.fullmatch(r"[a-f0-9]{64}", lease.get("id", ""))
             or not all(type(lease.get(k)) in (int, float) for k in ("started", "expires", "deadline"))
             or not MEETING_PROXY_STARTED <= lease["started"] <= now < lease["expires"] <= min(lease["deadline"], now + 5)
-            or not lease["started"] < lease["deadline"] <= lease["started"] + 300
+            or not lease["started"] < lease["deadline"] <= lease["started"] + 3600
             or lease_id is not None and lease["id"] != lease_id):
             return None
         return lease
@@ -2234,13 +2297,14 @@ def voice_request(flow, vm_id):
     if not realtime and not speech_cred:
         return None
     purpose = "phone" if speech_cred and speech_cred.get("phone_speech") else "meeting"
+    bound = None
     if not speech_cred:
         tokens = [p.strip()[len("ai-gateway-auth."):] for p in flow.request.headers.get("sec-websocket-protocol", "").split(",") if p.strip().startswith("ai-gateway-auth.")]
         if len(tokens) == 1:
             bound = _voice_tokens.get(hashlib.sha256(tokens[0].encode()).hexdigest())
             if bound and len(bound) > 5:
                 purpose = bound[5]
-    lease = phone_lease(vm_id) if purpose == "phone" else meeting_lease(vm_id)
+    lease = phone_lease(vm_id, bound[1] if bound else None) if purpose == "phone" else meeting_lease(vm_id)
     speech = lease.get("speech") if lease else None
     if not realtime or not isinstance(speech, dict):
         return "Voice needs an active approved call"
@@ -2310,6 +2374,8 @@ def voice_request(flow, vm_id):
             usage["attempts"] += 1
             if provider == "codex" and speech_cred.get("speech_account_id"):
                 flow.request.headers["chatgpt-account-id"] = speech_cred["speech_account_id"]
+    if purpose == "phone":
+        usage["reserved_until"] = now + 60
     flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint, "purpose": purpose}
     if speech_cred:
         flow.metadata["voice_credential"] = speech_cred["placeholder"]
@@ -2318,7 +2384,11 @@ def voice_request(flow, vm_id):
 
 def voice_response(flow):
     voice = flow.metadata.get("cc_voice")
-    if not voice or not voice["mint"] or flow.response.status_code != 200:
+    if not voice or not voice["mint"]:
+        return
+    if flow.response.status_code != 200:
+        usage = _voice_usage.get(voice["lease_id"])
+        if usage: usage["reserved_until"] = 0
         return
     try:
         value = json.loads(flow.response.content)
@@ -2438,6 +2508,7 @@ def websocket_end(flow):
     usage = _voice_usage.get(voice["lease_id"])
     if usage and usage["active"] == flow.id:
         usage["active"] = False
+        usage["reserved_until"] = 0
     flow.websocket.messages.clear()
     # Ordinary HTTP activity records the upgrade; never emit provider payloads or close reasons.
 
@@ -2625,7 +2696,7 @@ async def request(flow: http.HTTPFlow) -> None:
             _log_once(flow, rec)
             return
 
-    if host.lower() == "api.twilio.com" and not phone_authorized(flow, phone_credential(flow, vm_id)):
+    if host.lower() == "api.twilio.com" and (not phone_authorized(flow, phone_credential(flow, vm_id)) or not await phone_reserve(flow, phone_credential(flow, vm_id))):
         flow.response = http.Response.make(403, '{"error":"phone_assignment_required_or_operation_refused"}', {"Content-Type": "application/json"})
         flow.metadata["cc_effect"] = "block"
         flow.metadata["cc_rule"] = "phone"
@@ -2672,7 +2743,15 @@ def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
     return rec
 
 
+_phone_settle_tasks = set()
+
+
 def response(flow: http.HTTPFlow) -> None:
+    if flow.metadata.get("cc_phone_reservation"):
+        # A slow admission listener must not stall other calls' audio forwarding.
+        task = asyncio.create_task(asyncio.to_thread(phone_settle, flow))
+        _phone_settle_tasks.add(task)
+        task.add_done_callback(_phone_settle_tasks.discard)
     voice_response(flow)
     if flow.metadata.get("cc_exit_http"):
         rec = _residential_http_record(flow)
