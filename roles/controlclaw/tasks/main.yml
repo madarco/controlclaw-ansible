@@ -85,6 +85,12 @@
   ansible.builtin.include_tasks: gbrain-packages.yml
   when: box_role == 'gbrain'
 
+# Same reason, for the firewall: the container binds /var/lib/clickclack with `chown clickclack`.
+# The pinned ClickClack binary, its account, its helper and its (disabled) unit; nothing of the org's.
+- name: Include Team chat (ClickClack, installed and not enabled)
+  ansible.builtin.include_tasks: teamchat.yml
+  when: box_role == 'mitm'
+
 # Encryption at rest, and it has to be HERE: everything below this line that writes a key writes it
 # into a path that belongs inside the container (/opt/controlclaw/keys, the agent's home, the CA), so
 # the container has to be open first. It runs after nodejs.yml because the container manager is a Node

@@ -1,0 +1,114 @@
+#!/usr/bin/python3
+"""Resolve the ClickClack release to install and lay its binary down, verified.
+
+The Ansible pin (`clickclack_version` + per-architecture sha256 in defaults/main.yml) fixes the
+major and minor version. With automatic patches on, the newest release of that same major.minor
+that is not older than the pin is taken instead, checked against the sha256sums.txt published with
+that release. Minor and major versions only move when the pin in Ansible moves. Any failure
+(GitHub unreachable, no checksum, a mismatch) falls back to the pinned release and its pinned
+checksum, which is the same contract as cc-openclaw-patch.
+
+  cc-clickclack-patch <pinned> <pinned-sha256> <arch> <installed> <auto:true|false> <libdir>
+
+Prints {"version", "binary", "changed", "fallback"}; `binary` is the versioned file under <libdir>.
+"""
+import hashlib
+import io
+import json
+import os
+import re
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+REPO = "openclaw/clickclack"
+VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def key(version):
+    return tuple(int(p) for p in version.split(".")) if VERSION.match(version or "") else None
+
+
+def pick(tags, pinned):
+    floor = key(pinned)
+    if not floor:
+        raise ValueError("the ClickClack pin must be a plain x.y.z version")
+    found = [t[1:] for t in tags if t.startswith("v") and key(t[1:]) and key(t[1:])[:2] == floor[:2] and key(t[1:]) >= floor]
+    return max(found, key=key, default=pinned)
+
+
+def fetch(url, limit):
+    # Fixed github.com URLs only: a URL out of an API answer never decides where root downloads from.
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "controlclaw-ansible"}), timeout=60) as r:
+        data = r.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("download too large")
+    return data
+
+
+def archive_name(version, arch):
+    return f"clickclack_{version}_linux_{arch}.tar.gz"
+
+
+def published_sha256(version, arch):
+    sums = fetch(f"https://github.com/{REPO}/releases/download/v{version}/sha256sums.txt", 1 << 20).decode()
+    for line in sums.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1].lstrip("*") == archive_name(version, arch) and re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+            return parts[0]
+    raise ValueError("no published checksum for this archive")
+
+
+def install(version, digest, arch, libdir):
+    """Download, verify, and extract the one binary to <libdir>/clickclack-<version>."""
+    target = os.path.join(libdir, f"clickclack-{version}")
+    if os.path.exists(target):
+        return target
+    data = fetch(f"https://github.com/{REPO}/releases/download/v{version}/{archive_name(version, arch)}", 200 << 20)
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("ClickClack archive checksum mismatch")
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        member = next((m for m in tar.getmembers() if m.isfile() and os.path.basename(m.name) == "clickclack"), None)
+        if member is None:
+            raise ValueError("no clickclack binary in the archive")
+        binary = tar.extractfile(member).read()
+    fd, tmp = tempfile.mkstemp(dir=libdir)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(binary)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return target
+
+
+def main():
+    pinned, pinned_digest, arch, installed, auto, libdir = sys.argv[1:]
+    if arch not in ("amd64", "aarch64"):
+        raise SystemExit(f"no ClickClack build for {arch}")
+    os.makedirs(libdir, mode=0o755, exist_ok=True)
+    version, fallback = pinned, False
+    try:
+        if auto == "true":
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{REPO}/releases?per_page=50",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "controlclaw-ansible"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as r:
+                releases = json.load(r)
+            tags = [x["tag_name"] for x in releases if not x.get("draft") and not x.get("prerelease") and isinstance(x.get("tag_name"), str)]
+            version = pick(tags, pinned)
+        digest = pinned_digest if version == pinned else published_sha256(version, arch)
+        binary = install(version, digest, arch, libdir)
+    except Exception as err:  # noqa: BLE001 - every failure means "use the pin"
+        print(f"cc-clickclack-patch: {err}; using the pinned {pinned}", file=sys.stderr)
+        fallback, version = True, pinned
+        binary = install(pinned, pinned_digest, arch, libdir)
+    print(json.dumps({"version": version, "binary": binary, "changed": version != installed, "fallback": fallback}))
+
+
+if __name__ == "__main__":
+    main()

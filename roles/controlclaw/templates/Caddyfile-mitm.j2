@@ -9,7 +9,7 @@
 #
 # The reachable surface of a firewall box is precisely what this file serves, so it has to stay
 # small: one path prefix, two exact POST routes that answer with a status or a redirect and never
-# a page, and a bare 404 for everything else. No admin endpoint, no file server, no directory
+# a page, Team chat behind the mitm-agent's cookie check, and a bare 404 for everything else. No admin endpoint, no file server, no directory
 # listing, no OpenClaw, no noVNC — none of those exist on this box.
 {
     email {{ caddy_acme_email }}
@@ -71,9 +71,23 @@
     }
 
 {% endif %}
-    # Everything else, including /, is a bare 404. No body: a probe learns nothing about whether
-    # this box exists, what it runs, or which hook ids are registered.
+    # Team chat's own routes: the page that opens it from the console, and Caddy's question below.
+    handle /__cc/team-chat/* {
+        request_body {
+            max_size 16KB
+        }
+        reverse_proxy 127.0.0.1:{{ ingress_port }}
+    }
+
+    # Everything else is Team chat (ClickClack, loopback {{ clickclack_port | default(3931) }}), and
+    # only for a browser the mitm-agent let in: forward_auth asks /__cc/team-chat/verify, which
+    # answers 200 for a live team chat cookie while Team chat is on, and a bare 404 otherwise — so
+    # for anyone else, including /, this is still a bare 404 with no body, and a probe learns
+    # nothing about whether this box exists or what it runs.
     handle {
-        respond 404
+        forward_auth 127.0.0.1:{{ ingress_port }} {
+            uri /__cc/team-chat/verify
+        }
+        reverse_proxy 127.0.0.1:{{ clickclack_port | default(3931) }}
     }
 }

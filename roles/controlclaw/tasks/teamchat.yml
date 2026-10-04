@@ -1,0 +1,202 @@
+---
+# Team chat on the firewall (controlclaw apps/saas/docs/features/team-chat.md): ClickClack, one Go
+# binary with SQLite, as a hardened systemd unit.
+#
+# Installed on every firewall and NOT enabled: the mitm-agent starts it (through cc-teamchat) when
+# the organization turns Team chat on, and stops it when it is turned off. Nothing here enables it,
+# so a re-run never turns on a chat nobody asked for.
+#
+# Included from main.yml BEFORE disk encryption, like gbrain-packages.yml, because the encrypted
+# container binds /var/lib/clickclack with `chown clickclack` and the account has to exist first.
+# Not gated on ci_test: the base image bakes the binary, the account, the unit and the helper.
+#
+# Updates. The version is pinned below (defaults/main.yml: clickclack_version + per-arch sha256).
+# With clickclack_auto_patch on, every run of this role — a new box, a manual Update, the nightly
+# maintenance window — installs the newest PATCH release of the pinned major.minor, checked against
+# the sha256sums.txt of that release (files/cc-clickclack-patch). Minor and major versions only
+# move when the pin here moves. A failed lookup falls back to the pinned release and checksum.
+
+- name: Team chat | the clickclack account
+  ansible.builtin.user:
+    name: clickclack
+    system: true
+    home: /var/lib/clickclack
+    shell: /usr/sbin/nologin
+    create_home: false
+    password_lock: true
+
+# On an encrypted firewall this directory is shadowed by the container's bind (luks_binds); this
+# is the plain-root mount point, and the whole data directory on an unencrypted dev box.
+- name: Team chat | data directory
+  ansible.builtin.file:
+    path: /var/lib/clickclack
+    state: directory
+    owner: clickclack
+    group: clickclack
+    mode: '0700'
+
+- name: Team chat | where the versioned binaries live
+  ansible.builtin.file:
+    path: "{{ clickclack_lib_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Team chat | the release resolver
+  ansible.builtin.copy:
+    src: cc-clickclack-patch
+    dest: /usr/local/bin/cc-clickclack-patch
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Team chat | what is installed now
+  ansible.builtin.command: /usr/local/bin/clickclack version
+  register: clickclack_installed
+  changed_when: false
+  failed_when: false
+
+- name: Team chat | resolve and verify the release (pinned minor, newest patch)
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/cc-clickclack-patch
+      - "{{ clickclack_version }}"
+      - "{{ clickclack_sha256[clickclack_arch] }}"
+      - "{{ clickclack_arch }}"
+      - "{{ clickclack_installed.stdout | default('') | regex_search('[0-9]+\\.[0-9]+\\.[0-9]+') | default('', true) }}"
+      - "{{ 'true' if clickclack_auto_patch | bool else 'false' }}"
+      - "{{ clickclack_lib_dir }}"
+  register: clickclack_patch
+  changed_when: (clickclack_patch.stdout | from_json).changed
+
+- name: Team chat | /usr/local/bin/clickclack points at that release
+  ansible.builtin.file:
+    src: "{{ (clickclack_patch.stdout | from_json).binary }}"
+    dest: /usr/local/bin/clickclack
+    state: link
+    force: true
+  register: clickclack_link
+
+- name: Team chat | the binary runs and is the release that was resolved
+  ansible.builtin.command: /usr/local/bin/clickclack version
+  register: clickclack_version_out
+  changed_when: false
+  failed_when: (clickclack_patch.stdout | from_json).version not in clickclack_version_out.stdout
+
+- name: Team chat | the root helper the mitm-agent runs
+  ansible.builtin.copy:
+    src: cc-teamchat
+    dest: /usr/local/bin/cc-teamchat
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Team chat | one sudoers line for that helper, and nothing else
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-teamchat
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      # Team chat: start/stop ClickClack and run its admin CLI as the clickclack account (tasks/teamchat.yml).
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-teamchat *
+
+# The unit. Written here so the base image carries it, never enabled. /etc/clickclack/env (the
+# public URL and the listen address, nothing secret) is written by `cc-teamchat start`, and the
+# unit refuses to start without it.
+#
+# Hardened like the Doctor runner (files/cc-doctor-run): it can write its own data directory and
+# nothing else, cannot see ControlClaw's keys, stores or the proxy's config, holds no capability,
+# and can only talk to loopback — Caddy and the chat gate reach it there, and it has no reason to
+# reach anything else.
+- name: Team chat | the service unit (not enabled)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/clickclack.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (tasks/teamchat.yml). Started and stopped by the mitm-agent.
+      [Unit]
+      Description=ClickClack (ControlClaw Team chat)
+      After=network.target
+      ConditionPathExists=/etc/clickclack/env
+
+      [Service]
+      Type=simple
+      User=clickclack
+      Group=clickclack
+      EnvironmentFile=/etc/clickclack/env
+      WorkingDirectory=/var/lib/clickclack
+      ExecStart=/usr/local/bin/clickclack serve
+      Restart=on-failure
+      RestartSec=5
+      UMask=0077
+      ProtectSystem=strict
+      ReadWritePaths=/var/lib/clickclack
+      InaccessiblePaths=/opt/controlclaw /run/mitm /etc/controlclaw /root
+      ProtectHome=yes
+      PrivateTmp=yes
+      PrivateDevices=yes
+      NoNewPrivileges=yes
+      CapabilityBoundingSet=
+      AmbientCapabilities=
+      RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+      IPAddressDeny=any
+      IPAddressAllow=localhost
+      RestrictNamespaces=yes
+      RestrictRealtime=yes
+      RestrictSUIDSGID=yes
+      LockPersonality=yes
+      MemoryDenyWriteExecute=yes
+      ProtectKernelTunables=yes
+      ProtectKernelModules=yes
+      ProtectKernelLogs=yes
+      ProtectControlGroups=yes
+      ProtectClock=yes
+      ProtectHostname=yes
+      ProtectProc=invisible
+      ProcSubset=pid
+      SystemCallArchitectures=native
+      SystemCallFilter=@system-service
+      SystemCallFilter=~@privileged @resources
+      MemoryMax=512M
+      TasksMax=128
+
+      [Install]
+      WantedBy=multi-user.target
+  register: clickclack_unit
+
+- name: Team chat | reload systemd for the unit
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: clickclack_unit.changed
+
+# Only a unit that is already running is restarted, and only when its binary or unit changed:
+# an update never starts a chat that was off, and never restarts one for nothing.
+- name: Team chat | is it running
+  ansible.builtin.command: systemctl is-active --quiet clickclack
+  register: clickclack_active
+  changed_when: false
+  failed_when: false
+
+- name: Team chat | restart it onto the new release
+  ansible.builtin.systemd:
+    name: clickclack
+    state: restarted
+  when:
+    - clickclack_active.rc == 0
+    - clickclack_link.changed or clickclack_unit.changed
+
+# The chat gate (the mitm-agent, on this box's private address): only from the org's private
+# network, like the connector gate (connector.yml). ClickClack itself is loopback only.
+- name: Team chat | allow the chat gate from the private network only
+  community.general.ufw:
+    rule: allow
+    port: "{{ teamchat_gate_port }}"
+    proto: tcp
+    src: "{{ mitm_private_subnet }}"
+    comment: "ControlClaw team chat gate (private net)"
+  when: not ci_test

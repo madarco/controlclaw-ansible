@@ -1,0 +1,192 @@
+#!/usr/bin/python3
+"""Team chat (ClickClack) on the firewall: the one root helper the mitm-agent may run.
+
+Granted by one sudoers line (tasks/teamchat.yml). Every argument is checked against a narrow pattern
+before anything runs, and the ClickClack CLI always runs as the `clickclack` account against its own
+data directory, so this cannot be turned into a way to read or write anything else on the box.
+
+  cc-teamchat start <hostname> <home-url>   write /etc/clickclack/env and start the unit
+  cc-teamchat stop                          stop the unit (the data stays on disk)
+  cc-teamchat status                        active | inactive | failed | activating ...
+  cc-teamchat bootstrap                     create the system owner, workspace and #general once,
+                                            then mint a single-use magic link for that owner
+  cc-teamchat login <workspace> <email> <name>
+                                            make sure that person is a member of the workspace,
+                                            then mint a single-use magic link for them
+
+Output is one line of JSON on stdout. Nothing printed here is a long-lived secret: a magic link is
+single use and expires in 15 minutes, and it is consumed by the mitm-agent or the browser it was
+minted for straight away.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+BIN = "/usr/local/bin/clickclack"
+DATA = "/var/lib/clickclack"
+ENV_DIR = "/etc/clickclack"
+ENV_FILE = ENV_DIR + "/env"
+UNIT = "clickclack.service"
+USER = "clickclack"
+OWNER_NAME = "ControlClaw"
+# The workspace owner is a system account, not a person. The address is never mailed (.invalid).
+OWNER_EMAIL = "owner@team-chat.controlclaw.invalid"
+
+HOSTNAME = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+HOME_URL = re.compile(r"^https://[a-z0-9.-]{1,253}(:[0-9]{1,5})?/dashboard/team-chat$")
+EMAIL = re.compile(r"^[a-z0-9._+-]{1,64}@[a-z0-9.-]{1,190}$")
+USER_ID = re.compile(r"^usr_[0-9a-z]{10,40}$")
+TOKEN = re.compile(r"^mgt_[0-9a-z]{10,60}$")
+WORKSPACE = re.compile(r"^wsp_[0-9a-z]{10,40}$")
+
+
+def fail(message, code=2):
+    print(json.dumps({"ok": False, "error": message}))
+    sys.exit(code)
+
+
+def ok(**fields):
+    print(json.dumps({"ok": True, **fields}))
+    sys.exit(0)
+
+
+def display_name(value):
+    value = value.strip()
+    if not 1 <= len(value) <= 80 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        fail("invalid name")
+    return value
+
+
+def run_cli(*args):
+    """The ClickClack CLI as its own account, on its own data."""
+    return subprocess.run(
+        ["/usr/sbin/runuser", "-u", USER, "--", BIN, *args, "--data", DATA],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"HOME": DATA, "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+        cwd=DATA,
+    )
+
+
+def cli(*args):
+    """`run_cli`, failing the helper on a non-zero exit. Returns stdout, stripped."""
+    run = run_cli(*args)
+    if run.returncode != 0:
+        # The CLI's own error line, bounded. It never contains a token: the commands that mint one
+        # only print it on success.
+        fail("clickclack: " + (run.stderr.strip().splitlines() or ["failed"])[-1][:300], 3)
+    return run.stdout.strip()
+
+
+def systemctl(*args):
+    return subprocess.run(["/usr/bin/systemctl", *args], capture_output=True, text=True, timeout=60)
+
+
+def owner():
+    """`admin bootstrap` is idempotent: it prints the first user, creating it (with the workspace and
+    #general) on an empty database."""
+    out = cli("admin", "bootstrap", "--name", OWNER_NAME, "--email", OWNER_EMAIL)
+    if not USER_ID.match(out):
+        fail("bootstrap returned no user id", 3)
+    return out
+
+
+def cmd_start(hostname, home_url):
+    if not HOSTNAME.match(hostname) or not HOME_URL.match(home_url):
+        fail("invalid hostname or home url")
+    os.makedirs(ENV_DIR, mode=0o755, exist_ok=True)
+    content = (
+        "# Written by cc-teamchat. Nothing here is secret.\n"
+        "CLICKCLACK_ADDR=127.0.0.1:3931\n"
+        f"CLICKCLACK_DATA={DATA}\n"
+        "CLICKCLACK_DEV_BOOTSTRAP=false\n"
+        "CLICKCLACK_ACCESS_LOG=errors\n"
+        "CLICKCLACK_COOKIE_NAMESPACE=teamchat\n"
+        f"CLICKCLACK_PUBLIC_URL=https://{hostname}\n"
+        f"CLICKCLACK_HOME_URL={home_url}\n"
+        "CLICKCLACK_HOME_LABEL=ControlClaw\n"
+    )
+    current = open(ENV_FILE).read() if os.path.exists(ENV_FILE) else None
+    if current != content:
+        tmp = ENV_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(content)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, ENV_FILE)
+    active = systemctl("is-active", "--quiet", UNIT).returncode == 0
+    if active and current != content:
+        run = systemctl("restart", UNIT)
+    elif not active:
+        run = systemctl("start", UNIT)
+    else:
+        ok(state="active")
+    if run.returncode != 0:
+        fail("the unit would not start: " + (run.stderr.strip()[:200] or "no reason given"), 3)
+    ok(state="active")
+
+
+def cmd_stop():
+    systemctl("stop", UNIT)
+    ok(state=systemctl("is-active", UNIT).stdout.strip() or "inactive")
+
+
+def cmd_status():
+    ok(state=systemctl("is-active", UNIT).stdout.strip() or "unknown")
+
+
+def cmd_bootstrap():
+    first = owner()
+    token = cli("admin", "magic-link", "create", "--email", OWNER_EMAIL, "--name", OWNER_NAME)
+    if not TOKEN.match(token):
+        fail("no magic link minted", 3)
+    ok(owner=first, token=token)
+
+
+def cmd_login(workspace, email, name):
+    if not WORKSPACE.match(workspace) or not EMAIL.match(email):
+        fail("invalid workspace or email")
+    name = display_name(name)
+    # Idempotent: on a set-up box this only prints the existing owner, who is the workspace owner
+    # and so may add members.
+    first = owner()
+    # Already a member is fine and changes nothing; an unknown email is created first.
+    add = run_cli("admin", "member", "add", "--workspace", workspace, "--created-by", first, "--email", email, "--role", "member")
+    if add.returncode != 0:
+        if "no user found" not in add.stderr:
+            fail("clickclack: " + (add.stderr.strip().splitlines() or ["failed"])[-1][:300], 3)
+        user = cli("admin", "user", "create", "--name", name, "--email", email, "--workspace", workspace)
+    else:
+        found = re.search(r"\buser=(usr_[0-9a-z]+)", add.stdout)
+        user = found.group(1) if found else ""
+    if not USER_ID.match(user):
+        fail("no user id for that member", 3)
+    token = cli("admin", "magic-link", "create", "--email", email, "--name", name)
+    if not TOKEN.match(token):
+        fail("no magic link minted", 3)
+    ok(token=token, user=user)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        fail("usage: cc-teamchat start|stop|status|bootstrap|login")
+    command, rest = args[0], args[1:]
+    if command == "start" and len(rest) == 2:
+        cmd_start(*rest)
+    elif command == "stop" and not rest:
+        cmd_stop()
+    elif command == "status" and not rest:
+        cmd_status()
+    elif command == "bootstrap" and not rest:
+        cmd_bootstrap()
+    elif command == "login" and len(rest) == 3:
+        cmd_login(*rest)
+    else:
+        fail("usage: cc-teamchat start|stop|status|bootstrap|login")
+
+
+if __name__ == "__main__":
+    main()

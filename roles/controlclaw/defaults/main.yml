@@ -415,7 +415,8 @@ luks_binds: >-
      'state:/opt/controlclaw/state:' ~ controlclaw_user ~ ':0750']
     + (['openclaw:' ~ controlclaw_home ~ '/.openclaw:' ~ controlclaw_user ~ ':0750'] if box_role == 'openclaw' else [])
     + (['mitm-ca:/opt/controlclaw/mitm/ca:' ~ controlclaw_user ~ ':0700',
-        'connector:/opt/controlclaw/connector:root:0700'] if box_role == 'mitm' else [])
+        'connector:/opt/controlclaw/connector:root:0700',
+        'clickclack:/var/lib/clickclack:clickclack:0700'] if box_role == 'mitm' else [])
     + (['gbrain:' ~ gbrain_home ~ ':' ~ gbrain_user ~ ':0750',
         'postgresql:/var/lib/postgresql:postgres:0700'] if box_role == 'gbrain' else [])
   }}
@@ -427,7 +428,7 @@ luks_dependent_units: >-
     (['controlclaw-agent.service', 'openclaw.service', 'browser-stream.service',
       'cc-drive@.service', 'cc-gmail-watch.service'] if box_role == 'openclaw' else [])
     + (['controlclaw-mitm-agent.service', 'controlclaw-mitmproxy.service',
-        'controlclaw-connector.service'] if box_role == 'mitm' else [])
+        'controlclaw-connector.service', 'clickclack.service'] if box_role == 'mitm' else [])
     + (['controlclaw-agent.service', 'postgresql@' ~ gbrain_pg_version ~ '-' ~ gbrain_pg_cluster ~ '.service',
         'gbrain.service'] if box_role == 'gbrain' else [])
   }}
@@ -501,3 +502,22 @@ doctor_cli_pins:
 docker_major: "29"
 containerd_major: "2"
 openclaw_auto_patch: true
+
+# Team chat on the firewall (tasks/teamchat.yml, controlclaw apps/saas/docs/features/team-chat.md).
+# ClickClack (github.com/openclaw/clickclack, MIT), pinned by version and by the sha256 of each
+# architecture's release archive (from that release's sha256sums.txt). The pin fixes the major and
+# minor version: with clickclack_auto_patch on, the newest patch release of 0.7 is installed on
+# every run of the role (a new box, an Update, the nightly maintenance window), verified against
+# its own release's checksums, and anything else falls back to this exact release. Moving to 0.8
+# or 1.x is a change to this file.
+clickclack_version: "0.7.0"
+clickclack_sha256:
+  amd64: "1a5b0d14885be75602ca213689735a90e7369019ad98e5e8af3cb501964649ee"
+  aarch64: "1e45c35739f7e3603dcaaea1924efc9400d75896e5077ab15d5a6b87d0f9994f"
+clickclack_auto_patch: true
+clickclack_arch: "{{ 'aarch64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+clickclack_lib_dir: /usr/local/lib/clickclack
+# ClickClack listens on loopback (3931; 8080 is the egress proxy). Agents reach it through the
+# mitm-agent's chat gate on the private address.
+clickclack_port: 3931
+teamchat_gate_port: 3930

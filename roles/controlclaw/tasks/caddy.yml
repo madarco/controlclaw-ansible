@@ -100,6 +100,16 @@
   changed_when: false
   when: vm_hostname is defined and box_role == 'mitm'
 
+# Team chat: everything outside the exact routes goes to ClickClack only through the mitm-agent's
+# forward_auth, so the catch-all must never reverse_proxy without it.
+- name: Check the firewall's Caddyfile puts Team chat behind its cookie check
+  ansible.builtin.shell:
+    cmd: >-
+      grep -qF 'handle /__cc/team-chat/*' /etc/caddy/Caddyfile
+      && grep -B4 -E 'reverse_proxy 127\.0\.0\.1:{{ clickclack_port | default(3931) }}' /etc/caddy/Caddyfile | grep -qF 'uri /__cc/team-chat/verify'
+  changed_when: false
+  when: vm_hostname is defined and box_role == 'mitm'
+
 # And the two Open routes, as exact paths (browser-enrollment.md §3).
 - name: Check the firewall's Caddyfile routes the two Open paths
   ansible.builtin.command:
