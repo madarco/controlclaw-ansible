@@ -122,6 +122,28 @@
       systemctl try-restart gbrain.service || true
       {% endif %}
 
+# --- Time from the firewall (controlclaw T-138). Once egress is confined to the firewall, the
+#     stock NTP servers are unreachable and the clock drifts unchecked; the firewall's phone stream
+#     tokens and call deadlines are checked against this clock. The firewall answers NTP on its
+#     private IP (mitmbox.yml); the egress rules already accept anything to that address. ---
+- name: Create the timesyncd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/timesyncd.conf.d
+    state: directory
+    mode: '0755'
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
+- name: Point timesyncd at the firewall
+  ansible.builtin.copy:
+    dest: /etc/systemd/timesyncd.conf.d/controlclaw.conf
+    mode: '0644'
+    content: |
+      # Managed by Ansible (openclaw-egress.yml). The org firewall serves NTP on the private network.
+      [Time]
+      NTP={{ mitm_box_private_ip }}
+  notify: restart timesyncd
+  when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+
 # --- Transparent egress via redsocks (app-agnostic; replaces HTTP_PROXY env) ---
 # All HTTP(S) is captured at the kernel level by an nftables REDIRECT → local redsocks, which opens
 # an explicit CONNECT to the mitm proxy. This catches apps that ignore HTTP_PROXY (Node fetch, the

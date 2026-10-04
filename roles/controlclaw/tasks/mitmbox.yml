@@ -255,6 +255,47 @@
     enabled: true
   when: not ci_test
 
+# --- Time for the private network (controlclaw T-138). An agent box's egress is confined to this
+#     box, so the stock NTP pool is unreachable from it: it synced once at boot, before the lockdown,
+#     and has drifted ever since. A drift of a second was enough to refuse every realtime phone
+#     stream. chrony replaces systemd-timesyncd here: it keeps this box's own clock from the
+#     internet as before, and also answers NTP on the private network, the way dnsmasq answers DNS.
+#     Agents point timesyncd at this box (openclaw-egress.yml). ---
+- name: Install chrony (time server for the private network)
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  when: not ci_test
+
+- name: Serve time to the private network only
+  ansible.builtin.copy:
+    dest: /etc/chrony/conf.d/controlclaw.conf
+    mode: '0644'
+    content: |
+      # ControlClaw: answer NTP from the org private subnet. UFW allows 123/udp from there only.
+      allow {{ mitm_private_subnet }}
+  notify: restart chrony
+  when: not ci_test
+
+- name: Allow NTP from the private network only
+  community.general.ufw:
+    rule: allow
+    port: '123'
+    proto: udp
+    src: "{{ mitm_private_subnet }}"
+    comment: 'ControlClaw NTP (private net)'
+  when: not ci_test
+
+- name: Enable and start chrony
+  ansible.builtin.systemd:
+    name: chrony
+    state: started
+    enabled: true
+  when: not ci_test
+
 # --- sudoers: the console's Firewall page start/stop/restart ---
 # The mitm-agent runs as the controlclaw user and shells out to `sudo systemctl <action>
 # controlclaw-mitmproxy` for the one command the control plane queues for it

@@ -32,6 +32,16 @@
     name: dnsmasq
     state: restarted
 
+- name: restart chrony
+  ansible.builtin.systemd:
+    name: chrony
+    state: restarted
+
+- name: restart timesyncd
+  ansible.builtin.systemd:
+    name: systemd-timesyncd
+    state: restarted
+
 - name: update ca certificates
   ansible.builtin.command: update-ca-certificates
   changed_when: true
