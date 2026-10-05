@@ -5819,16 +5819,30 @@ async function handlePhonePage(req, res, pathname, ctx) {
 }
 
 // ../meetings/src/index.ts
-var SPEECH_MODELS = {
-  gateway: ["openai/gpt-realtime-1.5"],
-  openai: ["gpt-realtime-1.5"],
-  codex: ["gpt-realtime"]
+var REALTIME_SUFFIX = "(?:-(?![a-z0-9.-]*(?:whisper|translate|transcribe))[a-z0-9][a-z0-9.-]{0,23})?";
+var FAMILIES = {
+  gateway: {
+    realtime: new RegExp(`^openai/gpt-realtime${REALTIME_SUFFIX}$`),
+    live: /^openai\/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/
+  },
+  openai: {
+    realtime: new RegExp(`^gpt-realtime${REALTIME_SUFFIX}$`),
+    live: /^gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/
+  },
+  // ChatGPT/Codex: exactly the model the owner approved; gpt-live did not answer there (spike).
+  codex: { realtime: /^gpt-realtime$/ }
 };
+function speechFamily(provider, model) {
+  if (typeof model !== "string" || !Object.hasOwn(FAMILIES, String(provider))) return null;
+  const families = FAMILIES[provider];
+  for (const family of ["realtime", "live"]) if (families[family]?.test(model)) return family;
+  return null;
+}
 function parseSpeechPolicy(value) {
   if (value === null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid speech settings");
   const p2 = value;
-  if (Object.keys(p2).some((k2) => !["provider", "credentialId", "model", "maxMinutes"].includes(k2)) || !Object.hasOwn(SPEECH_MODELS, p2.provider) || !SPEECH_MODELS[p2.provider].includes(p2.model) || typeof p2.credentialId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(p2.credentialId) || p2.credentialId === "included" && p2.provider !== "gateway" || !Number.isSafeInteger(p2.maxMinutes) || p2.maxMinutes < 5 || p2.maxMinutes > 60)
+  if (Object.keys(p2).some((k2) => !["provider", "credentialId", "model", "maxMinutes"].includes(k2)) || !speechFamily(p2.provider, p2.model) || typeof p2.credentialId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(p2.credentialId) || p2.credentialId === "included" && p2.provider !== "gateway" || !Number.isSafeInteger(p2.maxMinutes) || p2.maxMinutes < 5 || p2.maxMinutes > 60)
     throw new Error("Choose a supported speech model and a call limit from 5 to 60 minutes");
   return { provider: p2.provider, credentialId: p2.credentialId, model: p2.model, maxMinutes: p2.maxMinutes };
 }
@@ -28175,8 +28189,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "91da87b" : "unknown",
-  builtAt: true ? "2026-10-05T17:31:09+01:00" : "unknown"
+  commit: true ? "7ea03b6" : "unknown",
+  builtAt: true ? "2026-10-05T19:15:07+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -28226,6 +28240,16 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
   }
   return null;
 }
+var VOICE_CAPABILITIES = "/opt/controlclaw/meeting-voice/capabilities.json";
+function speechFeatures(path = VOICE_CAPABILITIES) {
+  try {
+    const families = JSON.parse(readFileSync8(path, "utf8")).speechFamilies;
+    if (!Array.isArray(families)) return [];
+    return ["realtime", "live"].filter((f2) => families.includes(f2)).map((f2) => `speech_${f2}`);
+  } catch {
+    return [];
+  }
+}
 function boxSoftware(opts = {}) {
   return {
     rebootRequired: existsSync4("/var/run/reboot-required"),
@@ -28235,7 +28259,7 @@ function boxSoftware(opts = {}) {
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
     // `console_mcp`: ControlClaw tools are in this agent's OpenClaw config (console-mcp.ts).
-    features: [...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 

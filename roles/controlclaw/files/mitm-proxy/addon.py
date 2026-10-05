@@ -2773,8 +2773,27 @@ _voice_usage = {}
 _voice_tasks = {}
 VOICE_MAX_BYTES = 512 * 1024 * 1024
 VOICE_MAX_FRAMES = 250000
-VOICE_PATHS = {"ai-gateway.vercel.sh": {"/v1/realtime/client-secrets", "/v4/ai/realtime-model"},
+VOICE_PATHS = {"ai-gateway.vercel.sh": {"/v1/realtime/client-secrets", "/v4/ai/realtime-model", "/v1/live/sessions"},
                "api.openai.com": {"/v1/realtime", "/v1/live", "/v1/live/sessions", "/v1/realtime/calls"}}
+# Speech models by protocol family (docs/plans/gpt-live-and-wake-word.md D10/D14), mirroring
+# @controlclaw/meetings speechFamily. The firewall allows whatever model the lease binds, as long
+# as it belongs to a family it knows how to police; the family decides paths and frames.
+# Transcription and translation models share the gpt-realtime prefix and are not voice models.
+_REALTIME_SUFFIX = r"(?:-(?![a-z0-9.-]*(?:whisper|translate|transcribe))[a-z0-9][a-z0-9.-]{0,23})?"
+_SPEECH_FAMILIES = {
+    "gateway": {"realtime": re.compile(r"openai/gpt-realtime" + _REALTIME_SUFFIX), "live": re.compile(r"openai/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?")},
+    "openai": {"realtime": re.compile(r"gpt-realtime" + _REALTIME_SUFFIX), "live": re.compile(r"gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?")},
+    "codex": {"realtime": re.compile(r"gpt-realtime")},
+}
+LIVE_VOICES = {"marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"}
+LIVE_MAX_APPENDS = 400
+
+
+def speech_family(provider, model):
+    families = _SPEECH_FAMILIES.get(provider) if isinstance(provider, str) else None
+    if not families or not isinstance(model, str):
+        return None
+    return next((name for name, pattern in families.items() if pattern.fullmatch(model)), None)
 
 
 PHONE_MEDIA_PATH = os.environ.get("MITM_PHONE_MEDIA_PATH", os.path.join(os.path.dirname(RULES_PATH), "phone-media.json"))
@@ -2848,7 +2867,8 @@ def voice_request(flow, vm_id):
         if sni != expected_host:
             return "Voice requires the verified provider HTTPS destination"
         flow.request.host = expected_host
-    if host != expected_host or not isinstance(model, str):
+    family = speech_family(provider, model)
+    if host != expected_host or not family:
         return "Speech provider does not match this call"
     now = time.time()
     for key, entry in list(_voice_tokens.items()):
@@ -2866,7 +2886,8 @@ def voice_request(flow, vm_id):
     if mint:
         try:
             body = json.loads(flow.request.content)
-            if flow.request.method != "POST" or not speech_cred or body != {"model": model, "expiresIn": 60}:
+            expected = {"model": model, "routeKind": "live"} if family == "live" else {"model": model, "expiresIn": 60}
+            if flow.request.method != "POST" or not speech_cred or body != expected:
                 return "Invalid realtime token request"
         except (ValueError, TypeError):
             return "Invalid realtime token request"
@@ -2876,7 +2897,9 @@ def voice_request(flow, vm_id):
             return "Only the approved voice WebSocket is allowed"
         query = dict(flow.request.query)
         if provider == "gateway":
-            if path != "/v4/ai/realtime-model" or query != {"ai-model-id": model}:
+            # gpt-live names its model in the first frame (session.start), checked frame by frame.
+            if (family == "live" and (path != "/v1/live/sessions" or query)) or \
+                    (family == "realtime" and (path != "/v4/ai/realtime-model" or query != {"ai-model-id": model})):
                 return "Realtime model does not match this call"
             protocols = [p.strip() for p in flow.request.headers.get("sec-websocket-protocol", "").split(",")]
             tokens = [p[len("ai-gateway-auth."):] for p in protocols if p.startswith("ai-gateway-auth.")]
@@ -2889,14 +2912,15 @@ def voice_request(flow, vm_id):
             flow.request.headers["sec-websocket-protocol"] = ", ".join(
                 "ai-gateway-auth." + bound[4] if p.startswith("ai-gateway-auth.") else p for p in protocols)
         else:
-            if path != "/v1/realtime" or query != {"model": model} or not speech_cred:
+            if not speech_cred or (family == "live" and (path != "/v1/live/sessions" or query)) or \
+                    (family == "realtime" and (path != "/v1/realtime" or query != {"model": model})):
                 return "Invalid provider voice request"
             usage["attempts"] += 1
             if provider == "codex" and speech_cred.get("speech_account_id"):
                 flow.request.headers["chatgpt-account-id"] = speech_cred["speech_account_id"]
     if purpose == "phone":
         usage["reserved_until"] = now + 60
-    flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint, "purpose": purpose}
+    flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint, "purpose": purpose, "family": family}
     if speech_cred:
         flow.metadata["voice_credential"] = speech_cred["placeholder"]
     return None
@@ -2923,9 +2947,51 @@ def voice_response(flow):
         flow.response = http.Response.make(502, b'{"error":"Voice token unavailable"}')
 
 
-def voice_client_event(event, provider, model):
+def live_client_event(event, model, state):
+    """gpt-live client frames (D10). `state` is per socket: whether session.start was seen, appends."""
+    kind = event.get("type")
+    if not state.get("started"):
+        # The first frame starts the session, once, with settings we can vouch for: the bound model,
+        # nothing stored, client delegation only (Responses delegation would run a backend model
+        # with arbitrary tools on this credential), 24 kHz PCM and a known voice.
+        session = event.get("session")
+        if kind != "session.start" or set(event) - {"type", "session", "event_id"} or not isinstance(session, dict):
+            return False
+        if set(session) - {"model", "store", "delegation", "audio", "instructions"} or session.get("model") != model:
+            return False
+        if session.get("store") is not False or session.get("delegation") != {"type": "client"}:
+            return False
+        instructions = session.get("instructions", "")
+        if not isinstance(instructions, str) or len(instructions) > 32000:
+            return False
+        audio = session.get("audio", {})
+        if not isinstance(audio, dict) or set(audio) - {"format", "output"} or audio.get("format", {"type": "audio/pcm", "rate": 24000}) != {"type": "audio/pcm", "rate": 24000}:
+            return False
+        output = audio.get("output", {})
+        if not isinstance(output, dict) or set(output) - {"voice"} or output.get("voice", "marin") not in LIVE_VOICES:
+            return False
+        state["started"] = True
+        return True
+    if kind == "session.input_audio.append":
+        return not set(event) - {"type", "audio", "event_id"} and isinstance(event.get("audio"), str)
+    if kind in ("session.input_audio.mute", "session.input_audio.unmute", "session.close"):
+        return not set(event) - {"type", "event_id"}
+    if kind in ("session.thinking.append", "session.commentary.append"):
+        state["appends"] = state.get("appends", 0) + 1
+        delegation = event.get("delegation_id")
+        return (not set(event) - {"type", "content", "delegation_id", "event_id"}
+                and isinstance(event.get("content"), str) and len(event["content"]) <= 4000
+                and (delegation is None or isinstance(delegation, str) and len(delegation) <= 200)
+                and state["appends"] <= LIVE_MAX_APPENDS)
+    # session.update, session.instructions.append, response.* and anything new are refused.
+    return False
+
+
+def voice_client_event(event, provider, model, family="realtime", state=None):
     if not isinstance(event, dict):
         return False
+    if family == "live":
+        return live_client_event(event, model, state if state is not None else {})
     kind = event.get("type")
     allowed = {"session-update", "input-audio-append", "input-audio-commit", "input-audio-clear",
                "conversation-item-create", "conversation-item-truncate", "response-create", "response-cancel"}
@@ -3008,7 +3074,12 @@ def websocket_message(flow):
     try:
         event = json.loads(message.content)
         if message.from_client:
-            reject |= not voice_client_event(event, voice["provider"], voice["model"])
+            reject |= not voice_client_event(event, voice["provider"], voice["model"], voice.get("family", "realtime"), voice.setdefault("live", {}))
+        elif isinstance(event, dict) and event.get("type") in ("session.usage.updated", "session.closed"):
+            # Billed seconds of a gpt-live session (cumulative): kept for its Activity record.
+            seconds = (event.get("usage") or {}).get("seconds") if isinstance(event.get("usage"), dict) else None
+            if isinstance(seconds, (int, float)) and 0 <= seconds <= 86400:
+                voice["seconds"] = max(voice.get("seconds", 0), int(seconds))
         elif isinstance(event, dict) and event.get("type") in ("response-created", "response.created") and usage:
             usage["responses"] += 1
             reject |= usage["responses"] > 120
@@ -3034,6 +3105,13 @@ def websocket_end(flow):
         usage["reserved_until"] = 0
     flow.websocket.messages.clear()
     # Ordinary HTTP activity records the upgrade; never emit provider payloads or close reasons.
+    if voice.get("family") == "live" and "seconds" in voice:
+        # gpt-live bills per connected second; the provider's own count, as metadata only.
+        rec = _base_record(flow, voice["vm_id"])
+        rec.update({"flow_id": flow.id + ":end", "host": flow.request.pretty_host, "method": "GET",
+                    "path": redact_path(flow.request.path, flow.request.pretty_host), "effect": "allow",
+                    "rule": f"{voice.get('purpose', 'meeting')}_voice: {voice['model']} {voice['seconds']} s billed"})
+        _log(rec)
 
 
 async def request(flow: http.HTTPFlow) -> None:

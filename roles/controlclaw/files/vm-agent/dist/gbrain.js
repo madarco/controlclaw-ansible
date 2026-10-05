@@ -6079,8 +6079,8 @@ function consoleMcpConfigured() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "91da87b" : "unknown",
-  builtAt: true ? "2026-10-05T17:31:09+01:00" : "unknown"
+  commit: true ? "7ea03b6" : "unknown",
+  builtAt: true ? "2026-10-05T19:15:07+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6130,6 +6130,16 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
   }
   return null;
 }
+var VOICE_CAPABILITIES = "/opt/controlclaw/meeting-voice/capabilities.json";
+function speechFeatures(path = VOICE_CAPABILITIES) {
+  try {
+    const families = JSON.parse(readFileSync9(path, "utf8")).speechFamilies;
+    if (!Array.isArray(families)) return [];
+    return ["realtime", "live"].filter((f2) => families.includes(f2)).map((f2) => `speech_${f2}`);
+  } catch {
+    return [];
+  }
+}
 function boxSoftware(opts = {}) {
   return {
     rebootRequired: existsSync5("/var/run/reboot-required"),
@@ -6139,7 +6149,7 @@ function boxSoftware(opts = {}) {
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
     // `console_mcp`: ControlClaw tools are in this agent's OpenClaw config (console-mcp.ts).
-    features: [...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 

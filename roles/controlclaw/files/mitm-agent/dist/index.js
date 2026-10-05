@@ -5466,16 +5466,30 @@ function validAudio(value) {
 }
 
 // ../meetings/src/index.ts
-var SPEECH_MODELS = {
-  gateway: ["openai/gpt-realtime-1.5"],
-  openai: ["gpt-realtime-1.5"],
-  codex: ["gpt-realtime"]
+var REALTIME_SUFFIX = "(?:-(?![a-z0-9.-]*(?:whisper|translate|transcribe))[a-z0-9][a-z0-9.-]{0,23})?";
+var FAMILIES = {
+  gateway: {
+    realtime: new RegExp(`^openai/gpt-realtime${REALTIME_SUFFIX}$`),
+    live: /^openai\/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/
+  },
+  openai: {
+    realtime: new RegExp(`^gpt-realtime${REALTIME_SUFFIX}$`),
+    live: /^gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/
+  },
+  // ChatGPT/Codex: exactly the model the owner approved; gpt-live did not answer there (spike).
+  codex: { realtime: /^gpt-realtime$/ }
 };
+function speechFamily(provider, model) {
+  if (typeof model !== "string" || !Object.hasOwn(FAMILIES, String(provider))) return null;
+  const families = FAMILIES[provider];
+  for (const family of ["realtime", "live"]) if (families[family]?.test(model)) return family;
+  return null;
+}
 function parseSpeechPolicy(value) {
   if (value === null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid speech settings");
   const p2 = value;
-  if (Object.keys(p2).some((k2) => !["provider", "credentialId", "model", "maxMinutes"].includes(k2)) || !Object.hasOwn(SPEECH_MODELS, p2.provider) || !SPEECH_MODELS[p2.provider].includes(p2.model) || typeof p2.credentialId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(p2.credentialId) || p2.credentialId === "included" && p2.provider !== "gateway" || !Number.isSafeInteger(p2.maxMinutes) || p2.maxMinutes < 5 || p2.maxMinutes > 60)
+  if (Object.keys(p2).some((k2) => !["provider", "credentialId", "model", "maxMinutes"].includes(k2)) || !speechFamily(p2.provider, p2.model) || typeof p2.credentialId !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(p2.credentialId) || p2.credentialId === "included" && p2.provider !== "gateway" || !Number.isSafeInteger(p2.maxMinutes) || p2.maxMinutes < 5 || p2.maxMinutes > 60)
     throw new Error("Choose a supported speech model and a call limit from 5 to 60 minutes");
   return { provider: p2.provider, credentialId: p2.credentialId, model: p2.model, maxMinutes: p2.maxMinutes };
 }
@@ -25182,6 +25196,12 @@ function maskTwilioAccountSids(text2) {
     (_sid, last4) => `AC\u2026${last4.toLowerCase()}`
   );
 }
+var STREAM_RULE = /^phone stream: (open|close|refusal) (admission|verified|transport|completed|invalid_frame|invalid_agent_frame|backpressure|start_timeout|revoked|admission_expired|shutdown|lease_error) (inbound|outbound|unknown) (gateway|openai|codex|classic) (\S{1,100})$/;
+function phoneStreamRule(rule) {
+  const m2 = STREAM_RULE.exec(rule);
+  if (!m2) return false;
+  return m2[4] === "classic" ? m2[5] === "none" : speechFamily(m2[4], m2[5]) !== null;
+}
 function sanitizePhoneActivity(raw) {
   if (!raw || typeof raw !== "object") return raw;
   const r2 = raw;
@@ -25230,9 +25250,7 @@ function sanitizePhoneActivity(raw) {
   ]);
   return {
     ...safe,
-    rule: /^phone stream: (open|close|refusal) (admission|verified|transport|completed|invalid_frame|invalid_agent_frame|backpressure|start_timeout|revoked|admission_expired|shutdown|lease_error) (inbound|outbound|unknown) (gateway|openai|codex|classic) (openai\/gpt-realtime-1\.5|gpt-realtime-1\.5|gpt-realtime|none)$/.test(
-      String(r2.rule)
-    ) ? r2.rule : /^phone: (outbound|call) \*{4}\d{4}$/.test(String(r2.rule)) ? r2.rule : "phone",
+    rule: phoneStreamRule(String(r2.rule)) ? r2.rule : /^phone: (outbound|call) \*{4}\d{4}$/.test(String(r2.rule)) ? r2.rule : "phone",
     method: ["GET", "POST", "WS"].includes(String(r2.method)) ? r2.method : null,
     path: r2.method === "WS" && r2.path === "/phone-stream/[stream]" ? "/phone-stream/[stream]" : r2.host === "api.twilio.com" && typeof r2.path === "string" ? r2.path.split("?")[0].split("/").map((p2) => resources.has(p2) ? p2 : "{id}").join("/") : "/hook/{id}",
     ...r2.error ? { error: "Phone request failed" } : {}
@@ -29818,7 +29836,7 @@ var PhoneFirewall = class {
           routingHash: routingHash(raw)
         }
       };
-      summary = `Assign Twilio ${n2.number} to ${target.hostname}; replace voice routing, clear it on unassign; ${allowAll ? "allow all callers" : `allow ${allowFrom.join(", ") || "no callers"}`}; chargeable calls use this account; ${speech ? `realtime audio goes to ${speech.provider} ${speech.model}, read-only agent consultation, classic fallback` : "classic speech"}; ${limits.maxConcurrentCalls} calls at once, at most ${limits.maxDurationSeconds / 60} minutes per call`;
+      summary = `Assign Twilio ${n2.number} to ${target.hostname}; replace voice routing, clear it on unassign; ${allowAll ? "allow all callers" : `allow ${allowFrom.join(", ") || "no callers"}`}; chargeable calls use this account; ${speech ? `realtime audio goes to ${speech.provider} ${speech.model}${speechFamily(speech.provider, speech.model) === "live" ? " (billed per connected second)" : ""}, read-only agent consultation, classic fallback` : "classic speech"}; ${limits.maxConcurrentCalls} calls at once, at most ${limits.maxDurationSeconds / 60} minutes per call`;
     } else if (p2.kind === "limits") {
       const a2 = this.store.assignment;
       if (!a2) throw new PhoneError("not_assigned");
@@ -39157,7 +39175,7 @@ var MeetingsFirewall = class {
       `meetings:${vmId}`,
       proposal,
       target.hostname,
-      `Enable guest Google Meet from your enrolled browser. ${policy.speech ? `Allow Bidi speech through ${policy.speech.provider}, model ${policy.speech.model}, for at most ${policy.speech.maxMinutes} minutes per call. The speech provider receives meeting audio. Meeting tools are read-only; actions need your private channel.` : "Transcript keeps microphone and camera off."} Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.`,
+      `Enable guest Google Meet from your enrolled browser. ${policy.speech ? `Allow Bidi speech through ${policy.speech.provider}, model ${policy.speech.model}, for at most ${policy.speech.maxMinutes} minutes per call.${speechFamily(policy.speech.provider, policy.speech.model) === "live" ? " This model is billed for every connected second, about $3 an hour." : ""} The speech provider receives meeting audio. Meeting tools are read-only; actions need your private channel.` : "Transcript keeps microphone and camera off."} Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.`,
       routes
     );
     return sent.ok ? {
@@ -95230,8 +95248,8 @@ import { uptime } from "os";
 import { existsSync as existsSync15, readFileSync as readFileSync20 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "91da87b" : "unknown",
-  builtAt: true ? "2026-10-05T17:31:09+01:00" : "unknown"
+  commit: true ? "7ea03b6" : "unknown",
+  builtAt: true ? "2026-10-05T19:15:07+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -96471,6 +96489,7 @@ async function main() {
           if (doctorChat && access?.ready()) features.push("doctor_chat");
           if (aiReviewHistory && access?.ready()) features.push("ai_review_history");
           if (doctorTerminal && access?.ready()) features.push("doctor_terminal");
+          features.push("speech_families");
           if (controlPlaneMcpGateUp) features.push("controlplane_mcp");
           if (teamChat?.available() && teamChatWeb && access?.ready()) features.push("team_chat");
           if (access?.ready()) features.push("open_logs");
