@@ -2537,7 +2537,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes23, createHash: createHash19 } = __require("crypto");
+    var { randomBytes: randomBytes24, createHash: createHash20 } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -3088,7 +3088,7 @@ var require_websocket = __commonJS({
         }
       }
       const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes23(16).toString("base64");
+      const key = randomBytes24(16).toString("base64");
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
@@ -3218,7 +3218,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest2 = createHash19("sha1").update(key + GUID).digest("base64");
+        const digest2 = createHash20("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest2) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3587,7 +3587,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash19 } = __require("crypto");
+    var { createHash: createHash20 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3894,7 +3894,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING2) return abortHandshake(socket, 503);
-        const digest2 = createHash19("sha1").update(key + GUID).digest("base64");
+        const digest2 = createHash20("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -29120,6 +29120,23 @@ var FIREWALL_BACKUP_FILES = [
 var EXPIRY_GRACE_MS = 24 * 60 * 60 * 1e3;
 var DAY_MS = 24 * 60 * 60 * 1e3;
 
+// src/requested-via.ts
+import { AsyncLocalStorage } from "async_hooks";
+var storage = new AsyncLocalStorage();
+function cleanClientName(value) {
+  if (typeof value !== "string") return null;
+  const clean = value.replace(/\s+/g, " ").replace(/[^\p{L}\p{N} ._-]/gu, "").replace(/ +/g, " ").trim().slice(0, 40);
+  return clean || null;
+}
+function runWithRequestedVia(payload, fn) {
+  const via = payload.requestedVia;
+  if (!via || via.kind !== "mcp") return fn();
+  return storage.run(cleanClientName(via.client) ?? "an MCP app", fn);
+}
+function currentRequestedVia() {
+  return storage.getStore() ?? null;
+}
+
 // src/consent-codes.ts
 var CODE_TTL_MS = 10 * 6e4;
 var CODE_ATTEMPTS = 5;
@@ -29138,10 +29155,12 @@ function awaitingCodeData(sent) {
     ...sent.recovery ? { recovery: sent.recovery } : {}
   };
 }
-function codeMessage(agentName, summary, code) {
+function codeMessage(agentName, summary, code, via = currentRequestedVia()) {
   const pretty = `${code.slice(0, 3)} ${code.slice(3)}`;
+  const requested = via ? `
+Requested through ${via} (MCP).` : "";
   return `ControlClaw: confirm this change to ${agentName}?
-${summary}
+${summary}${requested}
 Code: ${pretty}
 Expires in 10 minutes. If you did not ask for this, ignore it and check your ControlClaw console.`;
 }
@@ -30077,7 +30096,7 @@ var PhoneFirewall = class {
 };
 
 // src/index.ts
-import { createServer as createServer7 } from "http";
+import { createServer as createServer8 } from "http";
 import { execSync as execSync2 } from "child_process";
 import { readFileSync as readFileSync23, writeFileSync as writeFileSync16, existsSync as existsSync16, readdirSync as readdirSync5, statSync as statSync5 } from "fs";
 
@@ -32037,6 +32056,237 @@ function makeBoxTokenSigner(keysDir) {
     return new SignJWT({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
   };
 }
+function makeGateTokenSigner(keysDir) {
+  const read = (name25) => readFileSync5(`${keysDir}/${name25}`, "utf-8").trim();
+  return async (claims) => {
+    const vmId = read("vm_id");
+    const key = await importPKCS8(read("vm_private_key.pem"), "EdDSA");
+    return new SignJWT({ ...claims, vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
+  };
+}
+
+// src/controlplane-mcp-gate.ts
+import { appendFileSync as appendFileSync2 } from "fs";
+import { createHash as createHash5, randomBytes as randomBytes5 } from "crypto";
+import { createServer as createServer3 } from "http";
+
+// src/connector-gate.ts
+import { createServer as createServer2, request as httpRequest } from "http";
+var ALLOWED = [
+  /^\/mcp$/,
+  /^\/mcp\/tools$/,
+  /^\/v1\/health$/,
+  /^\/v1\/apps(\/|$)/,
+  /^\/v1\/actions(\/|$)/,
+  /^\/v1\/proxy\//
+];
+var GATEWAY_TIMEOUT_MS = 12e4;
+function gateAllows(path) {
+  return ALLOWED.some((re2) => re2.test(path));
+}
+function deny(res, status, message2) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify({ success: false, message: message2, errorCode: status === 403 ? "source_not_allowed" : "not_found" }));
+}
+function bearer(req) {
+  const header = req.headers.authorization;
+  if (!header || Array.isArray(header)) return null;
+  const m2 = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return m2 ? m2[1].trim() : null;
+}
+function sameAddress(a2, b2) {
+  const norm = (v2) => (v2 ?? "").replace(/^::ffff:/i, "").trim();
+  const left = norm(a2);
+  return left.length > 0 && left === norm(b2);
+}
+function createConnectorGate(opts) {
+  const log = opts.log ?? ((l2) => console.log(l2));
+  return createServer2((req, res) => {
+    const path = (req.url ?? "/").split("?")[0];
+    if (!gateAllows(path)) {
+      deny(res, 404, "Not found.");
+      req.resume();
+      return;
+    }
+    const token2 = bearer(req);
+    const agent = token2 ? opts.resolve(token2) : null;
+    if (agent) {
+      if (agent.privateIp && !sameAddress(req.socket.remoteAddress, agent.privateIp)) {
+        log(`[connectors] refused ${agent.vmId}'s token from ${req.socket.remoteAddress} (expected ${agent.privateIp})`);
+        deny(res, 403, "This token belongs to another agent.");
+        req.resume();
+        return;
+      }
+      if (!agent.privateIp) log(`[connectors] ${agent.vmId} has no private IP on file; allowing on the token alone`);
+    }
+    const upstream = httpRequest(
+      { host: opts.target.host, port: opts.target.port, method: req.method, path: req.url, headers: { ...req.headers, host: `${opts.target.host}:${opts.target.port}` } },
+      (up) => {
+        res.writeHead(up.statusCode ?? 502, up.headers);
+        up.pipe(res);
+      }
+    );
+    upstream.setTimeout(GATEWAY_TIMEOUT_MS, () => upstream.destroy(new Error("timeout")));
+    upstream.on("error", (err) => {
+      log(`[connectors] gate upstream failed: ${err.message}`);
+      if (!res.headersSent) deny(res, 502, "The connector runtime is not answering on this firewall.");
+      else res.end();
+    });
+    req.pipe(upstream);
+  });
+}
+
+// src/controlplane-mcp-gate.ts
+var CONTROLPLANE_MCP_GATE_PORT = 3940;
+var GATE_MAX_BODY = 256 * 1024;
+var GATE_CALLS_PER_MINUTE = 120;
+var UPSTREAM_TIMEOUT_MS = 6e4;
+var FORWARD = ["content-type", "accept", "mcp-protocol-version", "mcp-session-id", "last-event-id"];
+function createControlPlaneMcpGate(opts) {
+  const log = opts.log ?? ((l2) => console.log(l2));
+  const now2 = opts.now ?? Date.now;
+  const doFetch = opts.fetch ?? fetch;
+  const windows = /* @__PURE__ */ new Map();
+  const record2 = (fields) => {
+    if (!opts.logPath) return;
+    const rec = {
+      source: "egress",
+      flow_id: `cpm-${randomBytes5(10).toString("hex")}`,
+      ts: now2() / 1e3,
+      method: fields.method.slice(0, 16),
+      host: "controlplane-mcp",
+      path: "/mcp",
+      vm_id: fields.vmId ?? void 0,
+      effect: fields.refused ? "drop" : "allow",
+      status: fields.status,
+      bytes_in: fields.bytesIn,
+      bytes_out: fields.bytesOut,
+      duration_ms: Math.max(0, Math.round(now2() - fields.startedAt)),
+      rule: fields.refused ? `controlclaw tools: ${fields.refused}` : "controlclaw tools"
+    };
+    try {
+      appendFileSync2(opts.logPath, `${JSON.stringify(rec)}
+`);
+    } catch {
+    }
+  };
+  const overBudget = (address) => {
+    const t2 = now2();
+    const w2 = windows.get(address);
+    if (!w2 || t2 - w2.start >= 6e4) {
+      windows.set(address, { start: t2, count: 1 });
+      if (windows.size > 1e3) windows.clear();
+      return false;
+    }
+    w2.count += 1;
+    return w2.count > GATE_CALLS_PER_MINUTE;
+  };
+  const refuse = (res, status) => {
+    res.writeHead(status, { "content-length": "0" });
+    res.end();
+  };
+  return createServer3((req, res) => {
+    const startedAt = now2();
+    const method = req.method ?? "GET";
+    const address = (req.socket.remoteAddress ?? "").replace(/^::ffff:/i, "");
+    const path = (req.url ?? "/").split("?")[0];
+    if (path !== "/mcp") {
+      req.resume();
+      return refuse(res, 404);
+    }
+    const agent = opts.agents().find((a2) => a2.private_ip && sameAddress(address, a2.private_ip));
+    if (!agent) {
+      log(`[cp-mcp] refused a call from ${address}: not an agent of this organization`);
+      req.resume();
+      return refuse(res, 403);
+    }
+    const vmId = String(agent.vm_id);
+    if (opts.locked(vmId)) {
+      record2({ vmId, method, status: 403, bytesIn: 0, bytesOut: 0, startedAt, refused: "emergency stop" });
+      req.resume();
+      return refuse(res, 403);
+    }
+    if (method !== "POST") {
+      req.resume();
+      res.writeHead(405, { allow: "POST", "content-length": "0" });
+      return res.end();
+    }
+    if (overBudget(address)) {
+      record2({ vmId, method, status: 429, bytesIn: 0, bytesOut: 0, startedAt, refused: "too many calls" });
+      req.resume();
+      return refuse(res, 429);
+    }
+    if (Number(req.headers["content-length"] ?? 0) > GATE_MAX_BODY) {
+      record2({ vmId, method, status: 413, bytesIn: 0, bytesOut: 0, startedAt, refused: "too large" });
+      req.resume();
+      return refuse(res, 413);
+    }
+    const chunks = [];
+    let size = 0;
+    let aborted2 = false;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > GATE_MAX_BODY) {
+        if (aborted2) return;
+        aborted2 = true;
+        record2({ vmId, method, status: 413, bytesIn: size, bytesOut: 0, startedAt, refused: "too large" });
+        req.pause();
+        res.writeHead(413, { "content-length": "0", connection: "close" });
+        res.end(() => req.destroy());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (aborted2) return;
+      const body = Buffer.concat(chunks);
+      void (async () => {
+        try {
+          const token2 = await opts.sign({
+            purpose: "agent-mcp",
+            agentVmId: vmId,
+            bodySha256: createHash5("sha256").update(body).digest("hex"),
+            jti: randomBytes5(12).toString("hex")
+          });
+          const headers = { authorization: `Bearer ${token2}` };
+          for (const name25 of FORWARD) {
+            const v2 = req.headers[name25];
+            if (typeof v2 === "string") headers[name25] = v2;
+          }
+          const upstream = await doFetch(opts.targetUrl, {
+            method: "POST",
+            headers,
+            body,
+            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+            redirect: "manual"
+          });
+          const out = Buffer.from(await upstream.arrayBuffer());
+          const answer = { "content-length": String(out.length) };
+          for (const name25 of ["content-type", "mcp-session-id", "mcp-protocol-version", "www-authenticate"]) {
+            const v2 = upstream.headers.get(name25);
+            if (v2) answer[name25] = v2;
+          }
+          res.writeHead(upstream.status, answer);
+          res.end(out);
+          record2({ vmId, method, status: upstream.status, bytesIn: body.length, bytesOut: out.length, startedAt });
+        } catch (err) {
+          log(`[cp-mcp] upstream failed for ${vmId}: ${err.message}`);
+          record2({ vmId, method, status: 502, bytesIn: body.length, bytesOut: 0, startedAt });
+          if (!res.headersSent) refuse(res, 502);
+          else res.end();
+        }
+      })();
+    });
+  });
+}
+function controlPlaneMcpUrl(firewallUrl, override) {
+  if (override) return override;
+  try {
+    return `${new URL(firewallUrl).origin}/api/mcp/agent`;
+  } catch {
+    return null;
+  }
+}
 
 // src/firewall-control.ts
 import { execSync } from "child_process";
@@ -32116,7 +32366,7 @@ var FirewallControl = class {
     this.log(`[firewall] ${command.action} (command ${command.id})`);
     try {
       rememberEncryptedSecrets(command.payload);
-      const outcome = await handler(command.payload);
+      const outcome = await runWithRequestedVia(command.payload, () => handler(command.payload));
       return { command_id: command.id, ...outcome, message: outcome.message ?? "" };
     } catch (err) {
       const message2 = (err.message ?? "command failed").slice(0, 500);
@@ -33257,7 +33507,7 @@ var AgentFirstSeen = class {
 };
 
 // src/drive.ts
-import { randomBytes as randomBytes6 } from "crypto";
+import { randomBytes as randomBytes7 } from "crypto";
 
 // src/drive-store.ts
 function isServiceAccountSecret(s2) {
@@ -33288,7 +33538,7 @@ function saveDriveStore(path, store, boxKeyB64, ids2) {
 }
 
 // src/google-tokens.ts
-import { createHash as createHash5, randomBytes as randomBytes5 } from "crypto";
+import { createHash as createHash6, randomBytes as randomBytes6 } from "crypto";
 var GOOGLE_TIMEOUT_MS = 3e4;
 var GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 var GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -33442,12 +33692,12 @@ function scopesFor(opts) {
   return [...out];
 }
 function makePkce() {
-  const verifier = randomBytes5(48).toString("base64url");
-  const challenge = createHash5("sha256").update(verifier).digest("base64url");
+  const verifier = randomBytes6(48).toString("base64url");
+  const challenge = createHash6("sha256").update(verifier).digest("base64url");
   return { verifier, challenge };
 }
 function makeState() {
-  return randomBytes5(24).toString("base64url");
+  return randomBytes6(24).toString("base64url");
 }
 function authorizeUrl(opts) {
   const url2 = new URL(GOOGLE_AUTH_ENDPOINT);
@@ -33779,8 +34029,8 @@ function whyWritesFail(kind, refusal, accountLabel) {
   if (refusal === "rate_limited" || refusal === "other") return "";
   const who2 = accountLabel ?? (kind === "service_account" ? "the service account" : "your Google account");
   if (kind === "service_account") {
-    const storage = "A service account has no storage of its own, so it can only write to a folder on a shared drive, or with domain-wide delegation.";
-    return refusal === "storage_quota" ? `${storage} Mount it read-only instead.` : `Share the folder with ${who2} as Editor. ${storage} Otherwise mount it read-only.`;
+    const storage2 = "A service account has no storage of its own, so it can only write to a folder on a shared drive, or with domain-wide delegation.";
+    return refusal === "storage_quota" ? `${storage2} Mount it read-only instead.` : `Share the folder with ${who2} as Editor. ${storage2} Otherwise mount it read-only.`;
   }
   if (refusal === "storage_quota") {
     return "That is Google's storage-quota rule, which means the token is not acting as an account that owns storage. Mount it read-only instead.";
@@ -34032,7 +34282,7 @@ var DriveFirewall = class {
   agentOf(ref) {
     let a2 = this.store.agents[ref.vmId];
     if (!a2) {
-      a2 = { name: ref.name, hostname: ref.hostname, placeholder: `CC-DRIVE-${randomBytes6(12).toString("hex")}` };
+      a2 = { name: ref.name, hostname: ref.hostname, placeholder: `CC-DRIVE-${randomBytes7(12).toString("hex")}` };
       this.store.agents[ref.vmId] = a2;
     }
     if (ref.name) a2.name = ref.name;
@@ -34485,7 +34735,7 @@ var DriveFirewall = class {
 };
 
 // src/secrets.ts
-import { randomBytes as randomBytes7 } from "crypto";
+import { randomBytes as randomBytes8 } from "crypto";
 
 // src/secrets-schema.ts
 var secretName = external_exports.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).refine(
@@ -34735,7 +34985,7 @@ var SecretsFirewall = class {
       const placeholders = {};
       for (const id of input2.vmIds) {
         affected.add(id);
-        placeholders[id] = old?.placeholders[id] ?? `CC-SEC-${randomBytes7(24).toString("hex")}`;
+        placeholders[id] = old?.placeholders[id] ?? `CC-SEC-${randomBytes8(24).toString("hex")}`;
       }
       this.store.entries[input2.name] = {
         ...secretSpec.parse(input2),
@@ -34757,7 +35007,7 @@ var SecretsFirewall = class {
 };
 
 // src/agentmail.ts
-import { randomBytes as randomBytes8 } from "crypto";
+import { randomBytes as randomBytes9 } from "crypto";
 
 // src/agentmail-api.ts
 var AgentMailError = class extends Error {
@@ -35111,7 +35361,7 @@ var AgentMailFirewall = class {
       i2.key = minted.api_key;
       i2.keyId = minted.api_key_id;
     }
-    i2.placeholder ??= `CC-AMAIL-${randomBytes8(16).toString("hex")}`;
+    i2.placeholder ??= `CC-AMAIL-${randomBytes9(16).toString("hex")}`;
     i2.status = "pending";
     this.save();
     await this.opts.onCredentialsChanged();
@@ -35410,10 +35660,10 @@ var AgentMailFirewall = class {
 };
 
 // src/email-rules.ts
-import { createHash as createHash6, randomBytes as randomBytes9 } from "crypto";
+import { createHash as createHash7, randomBytes as randomBytes10 } from "crypto";
 import { existsSync as existsSync5, readFileSync as readFileSync7, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "fs";
 import { basename, dirname as dirname4, join } from "path";
-import { createServer as createServer2 } from "http";
+import { createServer as createServer4 } from "http";
 
 // src/email-rules-schema.ts
 var mailboxRef = external_exports.string().max(300).regex(/^(?:agentmail|gmail):[^\s@]+@[^\s@]+$/).transform((s2) => s2.toLowerCase());
@@ -35769,9 +36019,9 @@ function recipientScope(mailbox, recipient, n2 = 0) {
 }
 var STALE_ASK_MS = HOUR;
 function permissionIdFor(scope) {
-  return "perm_" + createHash6("sha256").update(scope, "utf8").digest("hex").slice(0, 32);
+  return "perm_" + createHash7("sha256").update(scope, "utf8").digest("hex").slice(0, 32);
 }
-var hashMailbox = (m2) => createHash6("sha256").update(m2).digest("hex").slice(0, 24);
+var hashMailbox = (m2) => createHash7("sha256").update(m2).digest("hex").slice(0, 24);
 var addr = external_exports.unknown();
 var reserveInput = external_exports.object({
   action: external_exports.literal("email.reserve"),
@@ -36147,7 +36397,7 @@ var EmailRulesFirewall = class {
     const all = [...sent, ...pending];
     if (all.filter((t2) => now2 - t2 < HOUR).length >= rules.outbound.perHour) return { decision: "block", reason: "hourly_limit" };
     if (all.length >= rules.outbound.perDay) return { decision: "block", reason: "daily_limit" };
-    const id = randomBytes9(24).toString("hex");
+    const id = randomBytes10(24).toString("hex");
     this.reservations.set(id, { mailbox: key, at: now2, ...draft ? { draft } : {} });
     return { decision: "allow", id };
   }
@@ -36191,7 +36441,7 @@ var EmailRulesFirewall = class {
   }
 };
 function emailAdmission(rules, port = 8792) {
-  const server = createServer2(async (req, res) => {
+  const server = createServer4(async (req, res) => {
     try {
       if (req.method !== "POST" || req.url !== "/") throw new Error();
       let body = "";
@@ -36478,7 +36728,7 @@ var GrantStore = class {
 };
 
 // src/google.ts
-import { randomBytes as randomBytes10 } from "crypto";
+import { randomBytes as randomBytes11 } from "crypto";
 
 // src/google-store.ts
 function isGoogleAudience(v2) {
@@ -36701,7 +36951,7 @@ var GoogleFirewall = class {
   agentOf(ref) {
     let a2 = this.store.agents[ref.vmId];
     if (!a2) {
-      a2 = { name: ref.name, hostname: ref.hostname, placeholder: `CC-GOOG-${randomBytes10(12).toString("hex")}`, granted: false };
+      a2 = { name: ref.name, hostname: ref.hostname, placeholder: `CC-GOOG-${randomBytes11(12).toString("hex")}`, granted: false };
       this.store.agents[ref.vmId] = a2;
     }
     if (ref.name) a2.name = ref.name;
@@ -37216,11 +37466,11 @@ var GoogleFirewall = class {
 };
 
 // src/webhooks.ts
-import { randomBytes as randomBytes11 } from "crypto";
+import { randomBytes as randomBytes12 } from "crypto";
 
 // src/ingress.ts
 import { createHmac as createHmac2, timingSafeEqual as timingSafeEqual3 } from "crypto";
-import { appendFileSync as appendFileSync2 } from "fs";
+import { appendFileSync as appendFileSync3 } from "fs";
 var INGRESS_PATH_PREFIX = "/hook/";
 var INGRESS_DEFAULT_BODY_BYTES = 256 * 1024;
 var INGRESS_MAX_BODY_BYTES = 1024 * 1024;
@@ -37614,7 +37864,7 @@ var IngressRoutes = class {
     this.log(`[ingress] ${rec.verdict} ${rec.hook_name || rec.hook_id || "(unknown)"}${rec.reason ? `: ${rec.reason}` : ""}`);
     if (!this.opts.logPath) return;
     try {
-      appendFileSync2(this.opts.logPath, `${JSON.stringify(rec)}
+      appendFileSync3(this.opts.logPath, `${JSON.stringify(rec)}
 `);
     } catch (error62) {
       this.log(`[ingress] could not record that delivery: ${error62.message}`);
@@ -38808,7 +39058,7 @@ var LlmFirewall = class {
 };
 
 // src/meetings.ts
-import { randomBytes as randomBytes12, timingSafeEqual as timingSafeEqual4 } from "crypto";
+import { randomBytes as randomBytes13, timingSafeEqual as timingSafeEqual4 } from "crypto";
 import { mkdirSync as mkdirSync5, renameSync as renameSync6, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname7 } from "path";
 var MeetingsFirewall = class {
@@ -38943,10 +39193,10 @@ var MeetingsFirewall = class {
     this.entries[p2.vmId] = {
       policy: p2.policy,
       revision: p2.baseRevision + 1,
-      token: sameAccess ? previous.token : randomBytes12(32).toString("hex"),
+      token: sameAccess ? previous.token : randomBytes13(32).toString("hex"),
       hostname: target.hostname,
       applied: false,
-      voicePlaceholder: sameAccess ? previous.voicePlaceholder : `cc-speech-${randomBytes12(24).toString("hex")}`
+      voicePlaceholder: sameAccess ? previous.voicePlaceholder : `cc-speech-${randomBytes13(24).toString("hex")}`
     };
     if (!sameAccess) this.leases.delete(p2.vmId);
     this.save();
@@ -39069,7 +39319,7 @@ var MeetingsFirewall = class {
       if (lease && lease.expires > now2)
         return reply(409, { error: "A call is already active" });
       lease = {
-        id: randomBytes12(16).toString("hex"),
+        id: randomBytes13(16).toString("hex"),
         started: now2,
         expires: now2 + MEDIA_TTL_SECONDS,
         deadline: now2 + (found[1].policy.speech ? found[1].policy.speech.maxMinutes * 60 : MEDIA_MAX_SECONDS),
@@ -39938,7 +40188,7 @@ var KillFirewall = class {
 };
 
 // src/access.ts
-import { createHash as createHash7, randomBytes as randomBytes13, timingSafeEqual as timingSafeEqual5 } from "crypto";
+import { createHash as createHash8, randomBytes as randomBytes14, timingSafeEqual as timingSafeEqual5 } from "crypto";
 
 // src/access-store.ts
 function aad10(ids2) {
@@ -40002,10 +40252,10 @@ function firewallNext(next) {
   return next === "doctor" || next === "doctor-chat" || next === "team-chat" || next === "ai-review";
 }
 function sha2562(s2) {
-  return createHash7("sha256").update(s2).digest("hex");
+  return createHash8("sha256").update(s2).digest("hex");
 }
 function token(bytes) {
-  return randomBytes13(bytes).toString("base64url");
+  return randomBytes14(bytes).toString("base64url");
 }
 function sameHash(a2, b2) {
   const left = Buffer.from(a2);
@@ -40556,7 +40806,7 @@ function redirect(res, location, cookies = []) {
 }
 
 // src/doctor-key.ts
-import { createHash as createHash8 } from "crypto";
+import { createHash as createHash9 } from "crypto";
 import { execFileSync } from "child_process";
 import { mkdtempSync, readFileSync as readFileSync10, rmSync as rmSync2 } from "fs";
 import { tmpdir } from "os";
@@ -40616,7 +40866,7 @@ var DoctorKeyStore = class {
   }
 };
 function fingerprint2(pub) {
-  return `SHA256:${createHash8("sha256").update(Buffer.from(pub.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
+  return `SHA256:${createHash9("sha256").update(Buffer.from(pub.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
 }
 function generateKey() {
   const dir = mkdtempSync(join4(process.platform === "linux" ? "/dev/shm" : tmpdir(), "cc-doctor-key-"));
@@ -40769,13 +41019,13 @@ var DoctorStream = class {
 };
 
 // src/doctor-gateway.ts
-import { createHash as createHash9, randomBytes as randomBytes14, timingSafeEqual as timingSafeEqual6 } from "crypto";
-import { createServer as createServer3 } from "http";
+import { createHash as createHash10, randomBytes as randomBytes15, timingSafeEqual as timingSafeEqual6 } from "crypto";
+import { createServer as createServer5 } from "http";
 import { once } from "events";
 var PATHS = /* @__PURE__ */ new Set(["/v1/messages", "/v1/messages/count_tokens", "/v1/responses", "/v1/chat/completions"]);
 var ROUTING_FIELDS = ["providerOptions", "provider_options", "gateway", "models", "routing"];
 var MAX_BODY = 8 * 1024 * 1024;
-var digest = (value) => createHash9("sha256").update(value).digest();
+var digest = (value) => createHash10("sha256").update(value).digest();
 var DoctorGateway = class {
   constructor(opts) {
     this.opts = opts;
@@ -40783,9 +41033,9 @@ var DoctorGateway = class {
     this.server.requestTimeout = 6e4;
     this.server.keepAliveTimeout = 5e3;
   }
-  token = randomBytes14(32).toString("base64url");
+  token = randomBytes15(32).toString("base64url");
   requests = /* @__PURE__ */ new Set();
-  server = createServer3({ maxHeaderSize: 16384 }, (req, res) => {
+  server = createServer5({ maxHeaderSize: 16384 }, (req, res) => {
     void this.handle(req, res).catch(() => {
       if (!res.headersSent) this.reject(res, 502);
       else res.destroy();
@@ -41332,7 +41582,7 @@ var DoctorStore = class {
 };
 
 // src/doctor-chat.ts
-import { createHash as createHash10, randomBytes as randomBytes15 } from "crypto";
+import { createHash as createHash11, randomBytes as randomBytes16 } from "crypto";
 
 // src/transcript-page.ts
 var TRANSCRIPT_CSS = `:root{color-scheme:light dark;--bg:#f7f7f2;--panel:#fff;--ink:#202620;--muted:#667066;--line:#dce1d8;--accent:#285d46}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 ui-sans-serif,system-ui,sans-serif}main{max-width:900px;margin:0 auto;padding:32px 24px}header{border-top:3px solid var(--accent);padding:20px 0;display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}h1{font-size:28px;letter-spacing:-1px;margin:0}.eyebrow,summary,.status{font:12px/1.5 ui-monospace,monospace;color:var(--muted)}.eyebrow{letter-spacing:2px;text-transform:uppercase}.note{color:var(--muted);font-size:13px;margin:0 0 24px}button{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:9px 14px;color:var(--ink);font:inherit;cursor:pointer}button:disabled{opacity:.5;cursor:default}button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}.actions{display:flex;flex-wrap:wrap;gap:8px}#events{border:1px solid var(--line);border-radius:10px;background:var(--panel);padding:24px;min-height:200px}.event{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 24px}.user{background:var(--bg);padding:16px;border-radius:8px;margin-left:10%}.status{border-left:2px solid var(--accent);padding-left:12px}.label{font:11px ui-monospace,monospace;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:8px}details{border:1px solid var(--line);border-radius:6px;margin-bottom:16px;min-width:0}summary{padding:12px;cursor:pointer}pre{font:12px/1.7 ui-monospace,monospace;margin:0;border-top:1px solid var(--line);padding:16px;max-height:320px;overflow:auto}#error{color:#b04030;overflow-wrap:anywhere}#empty{color:var(--muted)}[hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--bg:#141a17;--panel:#1c231f;--ink:#e4eae4;--muted:#a1afa4;--line:#354338;--accent:#428361}}`;
@@ -41469,7 +41719,7 @@ el("delete").onclick = async () => {
 // src/doctor-chat.ts
 var ROOT = "/__cc/doctor/chat";
 var COOKIE = "__Secure-cc_doctor_chat";
-var hash2 = (value) => createHash10("sha256").update(value).digest("hex");
+var hash2 = (value) => createHash11("sha256").update(value).digest("hex");
 var HEADERS2 = { "cache-control": "no-store", "referrer-policy": "same-origin", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" };
 function send(res, status, text2 = "", type = "text/plain") {
   res.writeHead(status, { ...HEADERS2, "content-type": `${type}; charset=utf-8` });
@@ -41507,7 +41757,7 @@ var DoctorChat = class {
       if (!identity || !record2 || record2.vmId !== identity.vmId) return send(res, 403, REFUSED, "text/html");
       for (const [key, grant2] of this.grants) if (grant2.expiresAt <= this.now()) this.grants.delete(key);
       if (this.grants.size >= 1e3) return send(res, 429);
-      const token2 = randomBytes15(32).toString("base64url");
+      const token2 = randomBytes16(32).toString("base64url");
       this.grants.set(hash2(token2), { ...identity, expiresAt: Math.min(record2.retainUntil, this.now() + 2 * 60 * 6e4) });
       res.writeHead(303, { ...HEADERS2, location: `${ROOT}/`, "set-cookie": `${COOKIE}=${token2}; Path=${ROOT}; Secure; HttpOnly; SameSite=Strict; Max-Age=7200` });
       res.end();
@@ -41581,7 +41831,7 @@ var DoctorChat = class {
 var OPEN_JS = 'const intent=new URLSearchParams(location.hash.slice(1)).get("i");history.replaceState(null,"",location.pathname);if(!intent){document.getElementById("status").textContent="Open Doctor chat from the console."}else{const form=document.createElement("form");form.method="POST";form.action="/__cc/doctor/chat/open";const input=document.createElement("input");input.type="hidden";input.name="intent";input.value=intent;form.append(input);document.body.append(form);form.submit()}';
 
 // src/doctor-terminal.ts
-import { createHash as createHash11, randomBytes as randomBytes16 } from "crypto";
+import { createHash as createHash12, randomBytes as randomBytes17 } from "crypto";
 import { spawn as spawn2 } from "child_process";
 import "fs";
 var assets = {
@@ -41808,7 +42058,7 @@ var assets = {
 ` : readFileSync11(new URL("./doctor-vendor/xterm.css", import.meta.url), "utf8") }
 };
 var COOKIE2 = "__Secure-cc_doctor";
-var hash3 = (s2) => createHash11("sha256").update(s2).digest("hex");
+var hash3 = (s2) => createHash12("sha256").update(s2).digest("hex");
 var DoctorTerminal = class {
   constructor(opts) {
     this.opts = opts;
@@ -41841,7 +42091,7 @@ var DoctorTerminal = class {
       const active = identity && this.opts.active(identity.sessionId);
       if (!identity || !active || active.vmId !== identity.vmId || active.expiresAt <= this.now()) return page(res, REFUSED_HTML, 403);
       await this.opts.terminal(identity.sessionId);
-      const token2 = randomBytes16(32).toString("base64url");
+      const token2 = randomBytes17(32).toString("base64url");
       for (const [key, grant] of this.grants) if (grant.expiresAt <= this.now() || grant.sessionId === identity.sessionId) this.grants.delete(key);
       this.grants.set(hash3(token2), { ...identity, expiresAt: active.expiresAt });
       res.writeHead(303, { ...HEADERS3, location: "/__cc/doctor/", "set-cookie": `${COOKIE2}=${token2}; Path=/__cc/doctor; Secure; HttpOnly; SameSite=Strict; Max-Age=${Math.max(1, Math.floor((active.expiresAt - this.now()) / 1e3))}` });
@@ -42283,7 +42533,7 @@ var BrainFirewall = class {
 };
 
 // src/exit.ts
-import { createHmac as createHmac3, randomBytes as randomBytes17 } from "crypto";
+import { createHmac as createHmac3, randomBytes as randomBytes18 } from "crypto";
 
 // src/exit-check.ts
 import { connect as tcpConnect } from "net";
@@ -42814,7 +43064,7 @@ var ExitFirewall = class {
     if (p2.country !== void 0) this.store.country = p2.country;
     if (p2.capBytes !== void 0) this.store.capBytes = p2.capBytes;
     else if (!previous) this.store.capBytes = DEFAULT_CAP_BYTES;
-    this.store.stickySalt = randomBytes17(32).toString("hex");
+    this.store.stickySalt = randomBytes18(32).toString("hex");
     this.store.lastCheck = null;
     this.save();
     await this.opts.onExitChanged?.();
@@ -43610,74 +43860,8 @@ function writeState(path, state) {
   renameSync7(tmp, path);
 }
 
-// src/connector-gate.ts
-import { createServer as createServer4, request as httpRequest } from "http";
-var ALLOWED = [
-  /^\/mcp$/,
-  /^\/mcp\/tools$/,
-  /^\/v1\/health$/,
-  /^\/v1\/apps(\/|$)/,
-  /^\/v1\/actions(\/|$)/,
-  /^\/v1\/proxy\//
-];
-var GATEWAY_TIMEOUT_MS = 12e4;
-function gateAllows(path) {
-  return ALLOWED.some((re2) => re2.test(path));
-}
-function deny(res, status, message2) {
-  res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify({ success: false, message: message2, errorCode: status === 403 ? "source_not_allowed" : "not_found" }));
-}
-function bearer(req) {
-  const header = req.headers.authorization;
-  if (!header || Array.isArray(header)) return null;
-  const m2 = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return m2 ? m2[1].trim() : null;
-}
-function sameAddress(a2, b2) {
-  const norm = (v2) => (v2 ?? "").replace(/^::ffff:/i, "").trim();
-  const left = norm(a2);
-  return left.length > 0 && left === norm(b2);
-}
-function createConnectorGate(opts) {
-  const log = opts.log ?? ((l2) => console.log(l2));
-  return createServer4((req, res) => {
-    const path = (req.url ?? "/").split("?")[0];
-    if (!gateAllows(path)) {
-      deny(res, 404, "Not found.");
-      req.resume();
-      return;
-    }
-    const token2 = bearer(req);
-    const agent = token2 ? opts.resolve(token2) : null;
-    if (agent) {
-      if (agent.privateIp && !sameAddress(req.socket.remoteAddress, agent.privateIp)) {
-        log(`[connectors] refused ${agent.vmId}'s token from ${req.socket.remoteAddress} (expected ${agent.privateIp})`);
-        deny(res, 403, "This token belongs to another agent.");
-        req.resume();
-        return;
-      }
-      if (!agent.privateIp) log(`[connectors] ${agent.vmId} has no private IP on file; allowing on the token alone`);
-    }
-    const upstream = httpRequest(
-      { host: opts.target.host, port: opts.target.port, method: req.method, path: req.url, headers: { ...req.headers, host: `${opts.target.host}:${opts.target.port}` } },
-      (up) => {
-        res.writeHead(up.statusCode ?? 502, up.headers);
-        up.pipe(res);
-      }
-    );
-    upstream.setTimeout(GATEWAY_TIMEOUT_MS, () => upstream.destroy(new Error("timeout")));
-    upstream.on("error", (err) => {
-      log(`[connectors] gate upstream failed: ${err.message}`);
-      if (!res.headersSent) deny(res, 502, "The connector runtime is not answering on this firewall.");
-      else res.end();
-    });
-    req.pipe(upstream);
-  });
-}
-
 // src/teamchat.ts
-import { createHash as createHash12, randomBytes as randomBytes18, timingSafeEqual as timingSafeEqual7 } from "crypto";
+import { createHash as createHash13, randomBytes as randomBytes19, timingSafeEqual as timingSafeEqual7 } from "crypto";
 
 // src/teamchat-api.ts
 var TeamChatApiError = class extends Error {
@@ -43790,7 +43974,7 @@ function str14(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
 function sha2563(s2) {
-  return createHash12("sha256").update(s2).digest("hex");
+  return createHash13("sha256").update(s2).digest("hex");
 }
 function aad14(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:teamchat`;
@@ -44146,7 +44330,7 @@ var TeamChatFirewall = class {
         handle: bot.handle,
         botUserId: bot.botUserId,
         token: bot.token,
-        placeholder: `cctc_${randomBytes18(32).toString("base64url")}`,
+        placeholder: `cctc_${randomBytes19(32).toString("base64url")}`,
         pushed: null,
         status: "connecting",
         error: null,
@@ -44284,7 +44468,7 @@ var TeamChatFirewall = class {
     const display = (person.name?.trim() || person.email?.split("@")[0] || "Team member").slice(0, 80);
     const login = await this.opts.helper.login(this.store.workspaceId, personEmail(this.opts.ids.orgId, person.userId), display);
     await this.withOwner((s2) => this.opts.api.setRole(s2, this.store.workspaceId, login.user, person.canWrite ? "moderator" : "member"));
-    const cookie = randomBytes18(32).toString("base64url");
+    const cookie = randomBytes19(32).toString("base64url");
     this.pruneGrants();
     this.store.grants.push({ hash: sha2563(cookie), userId: person.userId, deviceId: person.deviceId, expiresAt: this.now() + TEAMCHAT_GRANT_MS });
     if (this.store.grants.length > MAX_GRANTS) this.store.grants = this.store.grants.slice(-MAX_GRANTS);
@@ -44354,11 +44538,11 @@ function makeTeamChatHelper(opts) {
 }
 
 // src/teamchat-gate.ts
-import { appendFileSync as appendFileSync3 } from "fs";
-import { createServer as createServer5, request as httpRequest2 } from "http";
-import { randomBytes as randomBytes19 } from "crypto";
-var GATE_MAX_BODY = 70 * 1024 * 1024;
-var UPSTREAM_TIMEOUT_MS = 12e4;
+import { appendFileSync as appendFileSync4 } from "fs";
+import { createServer as createServer6, request as httpRequest2 } from "http";
+import { randomBytes as randomBytes20 } from "crypto";
+var GATE_MAX_BODY2 = 70 * 1024 * 1024;
+var UPSTREAM_TIMEOUT_MS2 = 12e4;
 var DROP = /* @__PURE__ */ new Set(["authorization", "cookie", "host", "x-clickclack-user", "cf-access-jwt-assertion", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "proxy-authorization"]);
 function gateAllows2(path) {
   return /^\/api\//.test(path) && !/^\/api\/(auth|bot-setup-codes|me\/push)(\/|$)/.test(path);
@@ -44389,7 +44573,7 @@ function createTeamChatGate(opts) {
     if (!opts.logPath) return;
     const rec = {
       source: "egress",
-      flow_id: `tc-${randomBytes19(10).toString("hex")}`,
+      flow_id: `tc-${randomBytes20(10).toString("hex")}`,
       ts: now2() / 1e3,
       method: fields.method.slice(0, 16),
       host: "team-chat",
@@ -44403,7 +44587,7 @@ function createTeamChatGate(opts) {
       rule: fields.refused ? `team chat: ${fields.refused}` : "team chat"
     };
     try {
-      appendFileSync3(opts.logPath, `${JSON.stringify(rec)}
+      appendFileSync4(opts.logPath, `${JSON.stringify(rec)}
 `);
     } catch {
     }
@@ -44421,7 +44605,7 @@ function createTeamChatGate(opts) {
     if (opts.locked(who2.vmId)) return { status: 403, why: "emergency stop", vmId: who2.vmId };
     return { who: who2 };
   };
-  const server = createServer5((req, res) => {
+  const server = createServer6((req, res) => {
     const startedAt = now2();
     const path = req.url ?? "/";
     const verdict = admit(req);
@@ -44434,7 +44618,7 @@ function createTeamChatGate(opts) {
     }
     const { who: who2 } = verdict;
     const declared = Number(req.headers["content-length"] ?? 0);
-    if (declared > GATE_MAX_BODY) {
+    if (declared > GATE_MAX_BODY2) {
       record2({ vmId: who2.vmId, method: req.method ?? "POST", path, status: 413, bytesIn: 0, bytesOut: 0, startedAt, refused: "too large" });
       res.writeHead(413, { "content-length": "0" });
       res.end();
@@ -44454,7 +44638,7 @@ function createTeamChatGate(opts) {
         up.on("end", () => record2({ vmId: who2.vmId, method: req.method ?? "GET", path, status: up.statusCode ?? 502, bytesIn, bytesOut, startedAt }));
       }
     );
-    upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => upstream.destroy(new Error("timeout")));
+    upstream.setTimeout(UPSTREAM_TIMEOUT_MS2, () => upstream.destroy(new Error("timeout")));
     upstream.on("error", (err) => {
       log(`[teamchat] gate upstream failed: ${err.message}`);
       record2({ vmId: who2.vmId, method: req.method ?? "GET", path, status: 502, bytesIn, bytesOut, startedAt });
@@ -44465,7 +44649,7 @@ function createTeamChatGate(opts) {
     });
     req.on("data", (chunk) => {
       bytesIn += chunk.length;
-      if (bytesIn > GATE_MAX_BODY) {
+      if (bytesIn > GATE_MAX_BODY2) {
         upstream.destroy(new Error("body over the cap"));
         req.destroy();
       }
@@ -46641,7 +46825,7 @@ var SshFirewall = class {
 };
 
 // src/ssh-local.ts
-import { createHash as createHash13 } from "crypto";
+import { createHash as createHash14 } from "crypto";
 import { execFile as execFile2 } from "child_process";
 import { mkdirSync as mkdirSync9, mkdtempSync as mkdtempSync2, readFileSync as readFileSync15, rmSync as rmSync4, writeFileSync as writeFileSync12 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
@@ -46654,7 +46838,7 @@ var SUPPORT_USER = "ccsupport";
 var MARK = "controlclaw-rescue";
 function fingerprintOf(publicKey) {
   const blob = publicKey.trim().split(/\s+/)[1] ?? "";
-  return `SHA256:${createHash13("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
+  return `SHA256:${createHash14("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
 }
 var defaultRun = (file2, args, timeoutMs, stdin) => new Promise((resolve2, reject) => {
   const child = execFile2(file2, args, { timeout: timeoutMs }, (err, stdout) => err ? reject(err) : resolve2(String(stdout ?? "")));
@@ -46749,7 +46933,7 @@ var SshLocal = class {
 };
 
 // src/ssh-logins.ts
-import { createHash as createHash14 } from "crypto";
+import { createHash as createHash15 } from "crypto";
 import { execFile as execFile3 } from "child_process";
 var POLL_TIMEOUT_MS = 15e3;
 var MAX_PER_TICK = 50;
@@ -46803,7 +46987,7 @@ var SshLoginWatcher = class {
         source: "ssh_login",
         // The line itself is the identity of the session: same second, same port, same key means
         // the same login. The journal cursor already stops the common repeat; this stops the rest.
-        login_id: createHash14("sha256").update(line).digest("hex").slice(0, 32),
+        login_id: createHash15("sha256").update(line).digest("hex").slice(0, 32),
         // The journal's own stamp, so a backlog shipped after a restart does not land as "now"
         // and sort wrongly against the grant it belongs to.
         ts: parsed.at !== null ? Math.round(parsed.at / 1e3) : tickTs,
@@ -93708,7 +93892,7 @@ var AiClient = class {
 };
 
 // src/ai/review.ts
-import { createHash as createHash15, randomBytes as randomBytes20 } from "crypto";
+import { createHash as createHash16, randomBytes as randomBytes21 } from "crypto";
 import { existsSync as existsSync12, mkdirSync as mkdirSync12, readFileSync as readFileSync18, renameSync as renameSync11, writeFileSync as writeFileSync15 } from "fs";
 import { basename as basename7, dirname as dirname12, join as join10 } from "path";
 
@@ -93846,7 +94030,7 @@ function hostsByCount(records) {
   return [...n2.entries()].sort((a2, b2) => b2[1] - a2[1]).map(([h2]) => h2);
 }
 function findingId(parts) {
-  return createHash15("sha256").update(parts.join("|")).digest("hex").slice(0, 32);
+  return createHash16("sha256").update(parts.join("|")).digest("hex").slice(0, 32);
 }
 function explanationPrompt(state, category, severity, host2, owner) {
   return [
@@ -93883,7 +94067,7 @@ ${owner}` : "No owner instructions for the review.");
   t2.add("tool_call", describeQuestions(questions), "Questions");
   const id = findingId([kind, vmId, ...idParts]);
   const finish = (outcome, extra = {}) => {
-    trace?.record({ runId: outcome === "finding" ? id : randomBytes20(16).toString("hex"), vmId, kind, at: now2, provider: settings?.provider ?? null, model: settings?.model ?? null, outcome, ...extra, events: t2.events });
+    trace?.record({ runId: outcome === "finding" ? id : randomBytes21(16).toString("hex"), vmId, kind, at: now2, provider: settings?.provider ?? null, model: settings?.model ?? null, outcome, ...extra, events: t2.events });
   };
   const out = await client.evaluateWithReason(state, questions, { timeoutMs: EVALUATE_TIMEOUT_MS, maxRetries: 1 });
   if (!("result" in out)) {
@@ -94114,8 +94298,8 @@ function makeFindingsPoster(activityUrl, getToken2, fetchImpl = fetch) {
 }
 
 // src/ai/judge.ts
-import { createHash as createHash16 } from "crypto";
-import { createServer as createServer6 } from "http";
+import { createHash as createHash17 } from "crypto";
+import { createServer as createServer7 } from "http";
 
 // src/ai/settings.ts
 var AI_PROVIDERS = ["openai", "anthropic", "google", "vercel_gateway", "controlclaw_included"];
@@ -94209,9 +94393,9 @@ var AiJudge = class {
   }
   key(req) {
     const settings = this.opts.client.settings();
-    const org = createHash16("sha256").update(this.orgText() ?? "").digest("hex");
+    const org = createHash17("sha256").update(this.orgText() ?? "").digest("hex");
     const parts = [settings?.provider, settings?.model, org, req.mode, req.policy ?? "", req.rule, req.method, req.host, pathTemplate(req.path), req.body_start ?? ""];
-    return createHash16("sha256").update(parts.join("|")).digest("hex");
+    return createHash17("sha256").update(parts.join("|")).digest("hex");
   }
   state(req) {
     return {
@@ -94291,7 +94475,7 @@ var AiJudge = class {
   }
 };
 function startJudgeServer(judge2, port, host2 = "127.0.0.1") {
-  const server = createServer6((req, res) => {
+  const server = createServer7((req, res) => {
     const send5 = (status, body) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
@@ -94445,13 +94629,13 @@ var AiReviewTraceStore = class {
 };
 
 // src/ai-review-history.ts
-import { createHash as createHash17, randomBytes as randomBytes21 } from "crypto";
+import { createHash as createHash18, randomBytes as randomBytes22 } from "crypto";
 var AI_REVIEW_ROOT = "/__cc/doctor/ai-review";
 var COOKIE4 = "__Secure-cc_ai_review";
 var AGENT = /^[A-Za-z0-9_-]{1,80}$/;
 var agentRoot = (vmId) => `${AI_REVIEW_ROOT}/a/${vmId}`;
 var GRANT_MS = 2 * 60 * 6e4;
-var hash4 = (value) => createHash17("sha256").update(value).digest("hex");
+var hash4 = (value) => createHash18("sha256").update(value).digest("hex");
 var HEADERS5 = {
   "cache-control": "no-store",
   "referrer-policy": "same-origin",
@@ -94498,7 +94682,7 @@ var AiReviewHistory = class {
       if (!identity) return send4(res, 403, REFUSED3, "text/html");
       for (const [key, grant2] of this.grants) if (grant2.expiresAt <= this.now()) this.grants.delete(key);
       if (this.grants.size >= 1e3) return send4(res, 429);
-      const token2 = randomBytes21(32).toString("base64url");
+      const token2 = randomBytes22(32).toString("base64url");
       this.grants.set(hash4(token2), { vmId: identity.vmId, userId: identity.userId, deviceId: identity.deviceId, expiresAt: this.now() + GRANT_MS });
       const home = agentRoot(identity.vmId);
       res.writeHead(303, { ...HEADERS5, location: `${home}/`, "set-cookie": `${COOKIE4}=${token2}; Path=${home}; Secure; HttpOnly; SameSite=Strict; Max-Age=${GRANT_MS / 1e3}` });
@@ -94612,7 +94796,7 @@ load(false).then(() => { const id = fromHash(); if (id) show(id); });
 import { createWriteStream, existsSync as existsSync13, mkdirSync as mkdirSync14, readdirSync as readdirSync4, rmSync as rmSync5, statSync as statSync4 } from "fs";
 import { createReadStream } from "fs";
 import { join as join12 } from "path";
-import { randomBytes as randomBytes22 } from "crypto";
+import { randomBytes as randomBytes23 } from "crypto";
 var RECOVERY_RATE_PER_MINUTE = 10;
 var RECOVERY_BAD_SIGNATURES = 5;
 var RECOVERY_LOCKOUT_MS = 15 * 6e4;
@@ -94763,7 +94947,7 @@ var RecoveryRoutes = class {
       } catch {
       }
     }
-    return join12(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes22(6).toString("hex")}`);
+    return join12(this.opts.staging.dir, `cc-recovery-${this.now()}-${randomBytes23(6).toString("hex")}`);
   }
   async read(req, spillPath) {
     const hasher = await createRecoveryBodyHasher();
@@ -94946,7 +95130,7 @@ var RecoveryRoutes = class {
     if (!this.opts.staging.baseUrl) {
       throw new Error("This firewall has no private address to serve the archive from, so pass --archive-url with somewhere the agent box can fetch it.");
     }
-    const token2 = randomBytes22(32).toString("hex");
+    const token2 = randomBytes23(32).toString("hex");
     this.staged.set(token2, { path: tailPath, bytes: statSync4(tailPath).size, at: this.now() });
     return { url: `${this.opts.staging.baseUrl}${RECOVERY_PATH_PREFIX}staged/${token2}`, token: token2 };
   }
@@ -94966,7 +95150,7 @@ function write(sink, chunk) {
 
 // src/recovery-tls.ts
 import { execFileSync as execFileSync2 } from "child_process";
-import { createHash as createHash18 } from "crypto";
+import { createHash as createHash19 } from "crypto";
 import { chmodSync as chmodSync2, existsSync as existsSync14, mkdirSync as mkdirSync15, readFileSync as readFileSync19 } from "fs";
 import { createServer as createNetServer } from "net";
 import { createServer as createHttpsServer } from "https";
@@ -95011,7 +95195,7 @@ function loadOrCreateRecoveryTls(dir, subject, log = console.log) {
 function certFingerprint(certPem) {
   const body = certPem.replace(/-----BEGIN CERTIFICATE-----/g, "").replace(/-----END CERTIFICATE-----/g, "").replace(/\s+/g, "");
   const der = Buffer.from(body, "base64");
-  const hex4 = createHash18("sha256").update(der).digest("hex").toUpperCase();
+  const hex4 = createHash19("sha256").update(der).digest("hex").toUpperCase();
   return `sha256:${(hex4.match(/.{2}/g) ?? []).join(":")}`;
 }
 var TLS_HANDSHAKE = 22;
@@ -95046,8 +95230,8 @@ import { uptime } from "os";
 import { existsSync as existsSync15, readFileSync as readFileSync20 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "a57ce0e" : "unknown",
-  builtAt: true ? "2026-10-05T12:01:33+01:00" : "unknown"
+  commit: true ? "04563c9" : "unknown",
+  builtAt: true ? "2026-10-05T14:46:16+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -95205,6 +95389,8 @@ var CONNECTOR_GATE_PORT = parseInt(process.env.CONNECTOR_GATE_PORT ?? "3900", 10
 var CONNECTOR_GATE_BIND = process.env.CONNECTOR_GATE_BIND ?? process.env.PRIVATE_IP ?? "";
 var TEAMCHAT_URL = process.env.TEAMCHAT_URL ?? `http://127.0.0.1:${TEAMCHAT_PORT}`;
 var TEAMCHAT_GATE = parseInt(process.env.TEAMCHAT_GATE_PORT ?? String(TEAMCHAT_GATE_PORT), 10);
+var CONTROLPLANE_MCP_GATE = parseInt(process.env.CONTROLPLANE_MCP_GATE_PORT ?? String(CONTROLPLANE_MCP_GATE_PORT), 10);
+var controlPlaneMcpGateUp = false;
 var TEAMCHAT_STORE_PATH = process.env.TEAMCHAT_STORE_PATH ?? "/opt/controlclaw/state/teamchat.enc";
 var CONNECTOR_RUNS_STATE_PATH = process.env.CONNECTOR_RUNS_STATE_PATH ?? "/opt/controlclaw/state/connector-runs.json";
 var CONNECTOR_RUNS_POLL_MS = parseInt(process.env.CONNECTOR_RUNS_POLL_MS ?? "30000", 10);
@@ -95429,7 +95615,7 @@ async function main() {
     };
     refresh();
     setInterval(refresh, 2e3);
-    createServer7((req, res) => {
+    createServer8((req, res) => {
       res.writeHead(req.method === "GET" && req.url === "/health" ? 200 : 503, { "content-type": "application/json" });
       res.end(JSON.stringify({ unclaimed: true }));
     }).listen(PORT, "127.0.0.1");
@@ -96103,7 +96289,7 @@ async function main() {
     },
     certFingerprint: () => recoveryTls.fingerprint
   }) : null;
-  const server = createServer7(async (req, res) => {
+  const server = createServer8(async (req, res) => {
     const url2 = new URL(req.url ?? "/", `http://localhost:${PORT}`);
     if (recovery && req.method === "GET" && recovery.serveStaged(url2.pathname, res)) return;
     if (RecoveryRoutes.owns(url2.pathname)) {
@@ -96285,6 +96471,7 @@ async function main() {
           if (doctorChat && access?.ready()) features.push("doctor_chat");
           if (aiReviewHistory && access?.ready()) features.push("ai_review_history");
           if (doctorTerminal && access?.ready()) features.push("doctor_terminal");
+          if (controlPlaneMcpGateUp) features.push("controlplane_mcp");
           if (teamChat?.available() && teamChatWeb && access?.ready()) features.push("team_chat");
           if (access?.ready()) features.push("open_logs");
           if (access?.ready()) features.push("open_whatsapp");
@@ -96363,6 +96550,27 @@ async function main() {
       });
       gate.on("error", (e) => console.error("[teamchat] gate:", e.message));
       gate.listen(TEAMCHAT_GATE, CONNECTOR_GATE_BIND, () => console.log(`[mitm-agent] team chat gate listening on ${CONNECTOR_GATE_BIND}:${TEAMCHAT_GATE}`));
+    }
+    const cpMcpUrl = controlPlaneMcpUrl(FIREWALL_URL, process.env.CONTROLPLANE_MCP_URL);
+    if (CONNECTOR_GATE_BIND && usesHttp && cpMcpUrl) {
+      const sign = makeGateTokenSigner(KEYS_DIR2);
+      const gate = createControlPlaneMcpGate({
+        targetUrl: cpMcpUrl,
+        agents: () => identities,
+        locked: (vmId) => kill ? kill.lockedVmIds([vmId]).includes(vmId) : false,
+        sign,
+        logPath: TRAFFIC_LOG_PATH || void 0
+      });
+      gate.on("error", (e) => {
+        controlPlaneMcpGateUp = false;
+        console.error("[cp-mcp] gate:", e.message);
+      });
+      gate.listen(CONTROLPLANE_MCP_GATE, CONNECTOR_GATE_BIND, () => {
+        controlPlaneMcpGateUp = true;
+        console.log(`[mitm-agent] ControlClaw tools gate listening on ${CONNECTOR_GATE_BIND}:${CONTROLPLANE_MCP_GATE} -> ${cpMcpUrl}`);
+      });
+    } else {
+      console.log("[mitm-agent] ControlClaw tools gate off (no private address or no control plane URL)");
     }
     if (channels) {
       const ch = channels;
@@ -96457,7 +96665,7 @@ function startIngress() {
       };
     }
   });
-  const server = createServer7((req, res) => {
+  const server = createServer8((req, res) => {
     const url2 = new URL(req.url ?? "/", `http://localhost:${INGRESS_PORT}`);
     if (aiReviewHistory && ownsAiReviewPath(url2.pathname)) {
       void aiReviewHistory.handle(req, res, url2.pathname, url2.searchParams).catch(() => {

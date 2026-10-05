@@ -521,3 +521,6 @@ clickclack_lib_dir: /usr/local/lib/clickclack
 # mitm-agent's chat gate on the private address.
 clickclack_port: 3931
 teamchat_gate_port: 3930
+# ControlClaw tools for agents (controlclaw docs/plans/controlplane-mcp.md §5): the mitm-agent's
+# gate on the private address that signs each agent's call to the control plane's agent MCP.
+controlplane_mcp_gate_port: 3940

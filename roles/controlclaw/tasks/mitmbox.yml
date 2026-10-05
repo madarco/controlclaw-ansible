@@ -464,6 +464,18 @@
     comment: 'ControlClaw mitm proxy (private net)'
   when: not ci_test
 
+# ControlClaw tools for agents: the agents dial the mitm-agent's gate on this box's private address,
+# which signs each call for the agent it came from (controlclaw docs/plans/controlplane-mcp.md §5).
+# Only from the org's private network, like the proxy and the chat gate.
+- name: Allow the ControlClaw tools gate from the private network only
+  community.general.ufw:
+    rule: allow
+    port: "{{ controlplane_mcp_gate_port }}"
+    proto: tcp
+    src: "{{ mitm_private_subnet }}"
+    comment: 'ControlClaw tools gate (private net)'
+  when: not ci_test
+
 - name: Allow mitm-agent control port in UFW
   community.general.ufw:
     rule: allow
