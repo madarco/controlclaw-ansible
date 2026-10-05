@@ -4,11 +4,11 @@ import {LiveBridge, liveModel} from '../roles/controlclaw/files/meeting-voice/li
 import {PhoneLiveBridge} from '../roles/controlclaw/files/meeting-voice/phone.js';
 import * as codecs from './fixtures/phone-codecs.mjs';
 function fixture(surface, Bridge = LiveBridge){
- const audio=[],sent=[],tools=[],transcripts=[],closed=[];
- const req={providerConfig:{provider:'gateway',model:'openai/gpt-live-1',surface},onAudio:b=>audio.push(b),onToolCall:t=>tools.push(t),onTranscript:(...x)=>transcripts.push(x),onClose:r=>closed.push(r),onClearAudio:()=>{}};
+ const audio=[],meta=[],sent=[],tools=[],transcripts=[],closed=[];
+ const req={providerConfig:{provider:'gateway',model:'openai/gpt-live-1',surface},onAudio:(b,m)=>{audio.push(b);meta.push(m);},onToolCall:t=>tools.push(t),onTranscript:(...x)=>transcripts.push(x),onClose:r=>closed.push(r),onClearAudio:()=>{}};
  const bridge=new Bridge(req,{codecs,metric:()=>{}});
  bridge.ws={readyState:1,bufferedAmount:0,send:s=>sent.push(JSON.parse(s)),terminate:()=>{}};bridge.ready=true;
- return {bridge,audio,sent,tools,transcripts,closed,appends:()=>sent.filter(e=>e.type.endsWith('.append')&&e.type!=='session.input_audio.append')};
+ return {bridge,audio,meta,sent,tools,transcripts,closed,appends:()=>sent.filter(e=>e.type.endsWith('.append')&&e.type!=='session.input_audio.append')};
 }
 const said=(f,role,text)=>f.bridge.event({type:role==='user'?'session.input_transcript.delta':'session.output_transcript.delta',delta:text});
 test('only gpt-live models of the provider, and a session start the firewall accepts',()=>{
@@ -106,4 +106,10 @@ test('the same answer twice within a minute is passed quietly, not read out agai
  f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
  f.bridge.submitToolResult('d1',{text:'Lemon shortbread.'});f.bridge.submitToolResult('d2',{text:'Lemon shortbread.'});
  const d2=f.appends().find(e=>e.delegation_id==='d2');assert.equal(d2.type,'session.thinking.append');assert.match(d2.content,/Already given/);f.bridge.close();
+});
+test('output audio carries an item id, so the phone pacer marks playback; a pause starts a new item',t=>{
+ const f=fixture('phone',PhoneLiveBridge);let clock=1_000_000;t.mock.method(Date,'now',()=>clock);
+ const out=()=>f.bridge.event({type:'session.output_audio.delta',delta:Buffer.alloc(4800).toString('base64')});
+ out();clock+=100;out();clock+=2000;out();
+ const ids=f.meta.map(m=>m?.itemId);assert.ok(ids.every(Boolean));assert.equal(ids[0],ids[1]);assert.notEqual(ids[1],ids[2]);f.bridge.close();
 });

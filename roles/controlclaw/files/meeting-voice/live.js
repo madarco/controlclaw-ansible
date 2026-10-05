@@ -29,7 +29,7 @@ export class LiveBridge {
     this.heard = []; this.said = []; this.inputText = ''; this.outputText = '';
     // Lookups by delegation id (queued or running), the one running, and the ids already answered.
     this.jobs = new Map(); this.running = null; this.finished = new Set(); this.latestDelegation = null;
-    this.eventId = 0;
+    this.eventId = 0; this.outputItems = 0;
   }
   metric(phase, extra = {}) { (this.deps.metric ?? (m => console.info(JSON.stringify(m))))({ event: this.phone ? 'cc.phone.voice' : 'cc.meeting.voice', family: 'live', phase, at: Date.now(), ...extra }); }
   async connect() {
@@ -86,7 +86,13 @@ export class LiveBridge {
       case 'session.output_audio.delta': {
         if (typeof e.delta !== 'string' || e.delta.length > 256000) { this.fail(); return; }
         const audio = Buffer.from(e.delta, 'base64');
-        if (audio.length) this.req.onAudio(audio, {});
+        // The phone pacer only marks playback (and the firewall's relay only lets audio run 2 s ahead
+        // of what Twilio has played) for audio that belongs to an item. gpt-live has no response
+        // items, so each stretch of output after a pause of a second or more gets its own id.
+        const now = Date.now();
+        if (!this.outputItem || now - (this.lastOutputAt ?? 0) > 1000) this.outputItem = `live_out_${++this.outputItems}`;
+        this.lastOutputAt = now;
+        if (audio.length) this.req.onAudio(audio, { itemId: this.outputItem });
         return;
       }
       case 'session.input_transcript.delta': this.fragment('user', e.delta); return;
