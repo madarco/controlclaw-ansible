@@ -6066,11 +6066,21 @@ function prune(revoked, now) {
   return out;
 }
 
+// src/budgets.ts
+var APPLY_RECORD_TTL_MS = 10 * 6e4;
+var SERVICE_ACTION_MS = 3e4;
+
+// src/console-mcp.ts
+var configured = false;
+function consoleMcpConfigured() {
+  return configured;
+}
+
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "04563c9" : "unknown",
-  builtAt: true ? "2026-10-05T14:46:16+01:00" : "unknown"
+  commit: true ? "12e2c6c" : "unknown",
+  builtAt: true ? "2026-10-05T16:02:53+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6128,13 +6138,10 @@ function boxSoftware(opts = {}) {
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
-    features: [...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    // `console_mcp`: ControlClaw tools are in this agent's OpenClaw config (console-mcp.ts).
+    features: [...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
-
-// src/budgets.ts
-var APPLY_RECORD_TTL_MS = 10 * 6e4;
-var SERVICE_ACTION_MS = 3e4;
 
 // src/openclaw-state.ts
 var CRASH_WINDOW_MS = 12e4;

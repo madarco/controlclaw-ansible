@@ -26681,7 +26681,7 @@ var PhoneService = class {
     }
     this.opts.restartService();
     const until = Date.now() + 3e5;
-    let configured = false;
+    let configured2 = false;
     while (Date.now() < until) {
       try {
         if (client.whenConnected) await client.whenConnected(5e3);
@@ -26689,7 +26689,7 @@ var PhoneService = class {
         const e = live.config?.plugins?.entries?.["voice-call"];
         if (configActive(live) && (input2.placeholder ? phoneConfigMatches(e, entry) : e?.enabled === false)) {
           if (!input2.placeholder) return;
-          configured = true;
+          configured2 = true;
           const ready = this.opts.probe ? await this.opts.probe() : await probePhone(
             input2
           );
@@ -26700,7 +26700,7 @@ var PhoneService = class {
       await new Promise((resolve3) => setTimeout(resolve3, 2e3));
     }
     throw new PhoneSetupError(
-      configured ? "listener_unavailable" : "activation_timeout"
+      configured2 ? "listener_unavailable" : "activation_timeout"
     );
   }
 };
@@ -28053,11 +28053,63 @@ async function installDoctorKey(pub, sig2, opts = {}) {
   return `SHA256:${createHash6("sha256").update(Buffer.from(pub.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
 }
 
+// src/console-mcp.ts
+var CONSOLE_MCP_NAME = "controlclaw-console";
+var CONSOLE_MCP_PORT = 3940;
+var PRIVATE_IPV4 = /^10\.(?:\d{1,3}\.){2}\d{1,3}$/;
+var configured = false;
+function consoleMcpConfigured() {
+  return configured;
+}
+function consoleMcpUrl(firewallPrivateIp) {
+  const ip = firewallPrivateIp?.trim() ?? "";
+  return PRIVATE_IPV4.test(ip) ? `http://${ip}:${CONSOLE_MCP_PORT}/mcp` : null;
+}
+var ConsoleMcpService = class {
+  constructor(client, firewallPrivateIp, log = (l2) => console.log(l2)) {
+    this.client = client;
+    this.firewallPrivateIp = firewallPrivateIp;
+    this.log = log;
+  }
+  running = null;
+  /** Make sure the entry is there. Never throws; one run at a time. */
+  ensure() {
+    this.running ??= this.run().finally(() => {
+      this.running = null;
+    });
+    return this.running;
+  }
+  async run() {
+    const url3 = consoleMcpUrl(this.firewallPrivateIp());
+    if (!url3) return;
+    const gw = this.client();
+    if (!gw || !gw.connected) return;
+    try {
+      const snapshot = await gw.call(
+        "config.get",
+        {},
+        GATEWAY_READ_MS
+      );
+      const current = snapshot.parsed?.mcp?.servers?.[CONSOLE_MCP_NAME];
+      if (current?.url === url3 && current?.transport === "streamable-http") {
+        configured = true;
+        return;
+      }
+      const hash2 = typeof snapshot.hash === "string" && snapshot.hash ? snapshot.hash : void 0;
+      await patchConfig(gw, { mcp: { servers: { [CONSOLE_MCP_NAME]: { url: url3, transport: "streamable-http" } } } }, { baseHash: hash2, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
+      configured = true;
+      this.log(`[console-mcp] ControlClaw tools added to OpenClaw (${url3})`);
+    } catch (err) {
+      this.log(`[console-mcp] could not write the ControlClaw tools entry: ${err.message}`);
+    }
+  }
+};
+
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "04563c9" : "unknown",
-  builtAt: true ? "2026-10-05T14:46:16+01:00" : "unknown"
+  commit: true ? "12e2c6c" : "unknown",
+  builtAt: true ? "2026-10-05T16:02:53+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -28115,7 +28167,8 @@ function boxSoftware(opts = {}) {
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
-    features: [...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    // `console_mcp`: ControlClaw tools are in this agent's OpenClaw config (console-mcp.ts).
+    features: [...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -29747,8 +29800,8 @@ var ChannelsService = class {
       }
     }
     const wa2 = this.whatsappLogin();
-    const configured = CHANNEL_TYPES.filter((t2) => channels2[t2]?.configured);
-    const read = await this.pairingsRead(configured);
+    const configured2 = CHANNEL_TYPES.filter((t2) => channels2[t2]?.configured);
+    const read = await this.pairingsRead(configured2);
     return { channels: channels2, pairings: read.pairings, pairingsError: read.error, whatsappLogin: wa2.state === "idle" ? null : { state: wa2.state } };
   }
   /**
@@ -30492,7 +30545,7 @@ var LlmService = class {
   /** What the box has right now, from the config and `models.authStatus`. No secrets. */
   async status() {
     const { config: config2 } = await this.config();
-    const configured = readMemory(config2);
+    const configured2 = readMemory(config2);
     const agents = config2.agents;
     const model = agents?.defaults?.model;
     const providers = /* @__PURE__ */ new Set();
@@ -30529,9 +30582,9 @@ var LlmService = class {
       // A rebuild in flight is not a healthy index yet, and reporting it as one would tell the
       // control plane to stop watching. It reads as an error until the run lands.
       memory: {
-        provider: configured.provider,
-        model: configured.model,
-        dreaming: configured.dreaming,
+        provider: configured2.provider,
+        model: configured2.model,
+        dreaming: configured2.dreaming,
         indexError: this.reindexing ? "the memory index is being rebuilt" : this.reindexFailed
       }
     };
@@ -31930,16 +31983,16 @@ var ConnectorsService = class {
     await patchConfig(this.gateway(), { mcpServers: { [MCP_SERVER_NAME]: entry } }, { baseHash: hash2, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
   }
   async status() {
-    let configured = false;
+    let configured2 = false;
     try {
       const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
       const config2 = snapshot.parsed ?? snapshot.config ?? {};
-      configured = !!config2.mcpServers?.[MCP_SERVER_NAME];
+      configured2 = !!config2.mcpServers?.[MCP_SERVER_NAME];
     } catch (err) {
       this.log(`[connectors] could not read the OpenClaw config: ${err.message}`);
     }
     return {
-      configured,
+      configured: configured2,
       relayUrl: this.relayUrl,
       gatewayReachable: this.gatewayReachable,
       connections: this.state.connections,
@@ -39644,4 +39697,10 @@ server.listen(PORT, BIND, () => {
   gmailWatch = gmailService.supported() ? gmailService : null;
   if (!gmailWatch) console.log("[gmail-watch] gog is not on this box: Gmail push is off until it is re-provisioned");
   client?.onConnected(() => void channels?.reconcile());
+  if (process.env.CC_SERVICE !== "gbrain") {
+    const consoleMcp = new ConsoleMcpService(() => client ?? null, () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip"));
+    client?.onConnected(() => void consoleMcp.ensure());
+    setInterval(() => void consoleMcp.ensure(), 15 * 6e4).unref();
+    void consoleMcp.ensure();
+  }
 });
