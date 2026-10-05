@@ -40,7 +40,7 @@ test('a lookup that never answers is reported failed after 30 s, never left open
  const f=fixture('meeting');f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
  t.mock.timers.tick(30000);
  const spoken=f.appends().filter(e=>e.type==='session.commentary.append');
- assert.equal(spoken.length,1);assert.match(spoken[0].content,/technical failure/);assert.equal(f.bridge.pending.size,0);f.bridge.close();
+ assert.equal(spoken.length,1);assert.match(spoken[0].content,/technical failure/);assert.equal(f.bridge.jobs.size,0);f.bridge.close();
 });
 test('lookups run one at a time; a second waits its turn, an overtaken answer is given quietly',()=>{
  const f=fixture('meeting');
@@ -51,10 +51,11 @@ test('lookups run one at a time; a second waits its turn, an overtaken answer is
  assert.equal(f.tools.length,2);assert.equal(f.tools[1].callId,'d2');
  f.bridge.submitToolResult('d2',{text:'second'});
  assert.equal(f.appends().find(e=>e.delegation_id==='d2').type,'session.commentary.append');
- // d3 runs, d4 and d5 wait, d6 is told to ask again.
+ // d3 runs, d4 and d5 wait, d6 is told aloud to ask again, and d5 stays the newest.
  for(const id of ['d3','d4','d5','d6'])f.bridge.event({type:'session.delegation.created',delegation:{id}});
- assert.equal(f.tools.length,3);assert.deepEqual(f.bridge.queue.map(q=>q.id),['d4','d5']);
- assert.match(f.appends().find(e=>e.delegation_id==='d6').content,/Too many lookups/);f.bridge.close();
+ assert.equal(f.tools.length,3);assert.deepEqual([...f.bridge.jobs.keys()],['d3','d4','d5']);
+ const refused=f.appends().find(e=>e.delegation_id==='d6');assert.equal(refused.type,'session.commentary.append');assert.match(refused.content,/Too many lookups/);
+ assert.equal(f.bridge.latestDelegation,'d5');f.bridge.close();
 });
 test('audio flows both ways, transcripts are reported per turn, and close asks for final usage',async t=>{
  t.mock.timers.enable({apis:['setTimeout']});
@@ -76,4 +77,33 @@ test('phone: greeting once as spoken commentary, mu-law in and out, no realtime 
  const pcm=Buffer.from(f.sent.at(-1).audio,'base64');assert.ok(pcm.length>800&&pcm.length<=960&&pcm.length%2===0,String(pcm.length));
  f.bridge.event({type:'session.output_audio.delta',delta:Buffer.alloc(4800).toString('base64')});assert.ok(f.audio.length>=1);
  const before=f.sent.length;f.bridge.handleBargeIn();assert.equal(f.sent.length,before);f.bridge.close();
+});
+test('timers start when a lookup arrives, a timed-out consult does not overlap the next, a repeated id is answered once',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture('meeting');let finish;
+ f.bridge.req.onToolCall=t2=>{f.tools.push(t2);return new Promise(r=>{finish=r;});};
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
+ // d2 waits behind d1, but its own 30 s already run.
+ t.mock.timers.tick(30000);
+ assert.deepEqual(f.appends().filter(e=>e.type==='session.thinking.append'||e.type==='session.commentary.append').filter(e=>/technical failure/.test(e.content)).map(e=>e.delegation_id).sort(),['d1','d2']);
+ assert.equal(f.tools.length,1,'d2 does not start while d1 is still running');
+ finish();await Promise.resolve();await Promise.resolve();
+ assert.equal(f.tools.length,1,'a timed-out waiting lookup is not started later');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ assert.equal(f.tools.length,1,'an answered id is not looked up again');f.bridge.close();
+});
+test('a late result after the consult promise settles is still delivered, and refused commands do not end the session',async()=>{
+ const f=fixture('phone');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});await Promise.resolve();await Promise.resolve();
+ f.bridge.submitToolResult('d1',{text:'Late but here.'});
+ assert.match(f.appends().find(e=>e.delegation_id==='d1').content,/Late but here/);
+ assert.ok(f.sent.every(e=>typeof e.event_id==='string'));
+ f.bridge.event({type:'error',error:{code:'invalid_delegation',client_event_id:'cc_3'}});assert.equal(f.bridge.closed,false);
+ f.bridge.event({type:'error',error:{code:'server_error'}});assert.equal(f.bridge.closed,true);
+});
+test('the same answer twice within a minute is passed quietly, not read out again',()=>{
+ const f=fixture('phone');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
+ f.bridge.submitToolResult('d1',{text:'Lemon shortbread.'});f.bridge.submitToolResult('d2',{text:'Lemon shortbread.'});
+ const d2=f.appends().find(e=>e.delegation_id==='d2');assert.equal(d2.type,'session.thinking.append');assert.match(d2.content,/Already given/);f.bridge.close();
 });
