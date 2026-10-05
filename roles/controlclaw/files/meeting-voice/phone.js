@@ -1,7 +1,8 @@
 import { VoiceBridge } from './voice.js';
+import { LiveBridge } from './live.js';
 
-/** The provider contract receives and emits mu-law. The common bridge uses PCM24. */
-export class PhoneVoiceBridge extends VoiceBridge {
+/** The provider contract receives and emits mu-law. Both bridges use PCM24. */
+const phoneBridge = (Base) => class extends Base {
   constructor(req, deps) {
     const codecs = deps.codecs;
     let bridge;
@@ -33,6 +34,8 @@ export class PhoneVoiceBridge extends VoiceBridge {
     super.sendAudio(this.input.process(this.codecs.mulawToPcm(muLaw)));
   }
   handleBargeIn() {
+    // gpt-live handles being talked over itself; there is no response to truncate.
+    if (this instanceof LiveBridge) return super.handleBargeIn();
     // Snapshot before clear: discarded marks cannot become played audio.
     const played=this.req.getPlaybackState?.() ?? [];
     super.handleBargeIn();
@@ -42,4 +45,6 @@ export class PhoneVoiceBridge extends VoiceBridge {
       this.send(this.gateway?{type:'conversation-item-truncate',itemId:p.itemId,contentIndex:0,audioEndMs:ms}:{type:'conversation.item.truncate',item_id:p.itemId,content_index:0,audio_end_ms:ms});
     }
   }
-}
+};
+export const PhoneVoiceBridge = phoneBridge(VoiceBridge);
+export const PhoneLiveBridge = phoneBridge(LiveBridge);
