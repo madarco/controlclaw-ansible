@@ -5493,6 +5493,75 @@ function parseSpeechPolicy(value) {
     throw new Error("Choose a supported speech model and a call limit from 5 to 60 minutes");
   return { provider: p2.provider, credentialId: p2.credentialId, model: p2.model, maxMinutes: p2.maxMinutes };
 }
+var COMMON_WORDS = /* @__PURE__ */ new Set([
+  "hey",
+  "hi",
+  "hello",
+  "ok",
+  "okay",
+  "yes",
+  "yeah",
+  "no",
+  "stop",
+  "thanks",
+  "thank",
+  "please",
+  "the",
+  "and",
+  "but",
+  "so",
+  "well",
+  "right",
+  "sure",
+  "sorry",
+  "what",
+  "why",
+  "how",
+  "who",
+  "can",
+  "could",
+  "would",
+  "will",
+  "just",
+  "now",
+  "here",
+  "there",
+  "this",
+  "that",
+  "you",
+  "we",
+  "they",
+  "agent",
+  "assistant",
+  "computer",
+  "everyone",
+  "guys",
+  "team"
+]);
+function wakeWordProblem(word) {
+  if (typeof word !== "string") return "Enter a name";
+  const w2 = word.trim().replace(/\s+/g, " ");
+  if (w2.length < 3 || w2.length > 32) return "Use 3 to 32 characters";
+  if (!/^[\p{L}\p{N}][\p{L}\p{N} '’-]*$/u.test(w2)) return "Use letters, numbers, spaces, hyphens or apostrophes";
+  if ((w2.match(new RegExp("\\p{L}", "gu")) ?? []).length < 3) return "Use at least 3 letters";
+  if (w2.split(" ").length > 3) return "Use at most 3 words";
+  if (w2.split(/[ -]/).every((part) => COMMON_WORDS.has(part.toLowerCase()))) return "Too common: people say it all the time";
+  return null;
+}
+function parseWakePolicy(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid wake words");
+  const p2 = value;
+  if (Object.keys(p2).some((k2) => !["enabled", "words"].includes(k2)) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.words))
+    throw new Error("Invalid wake words");
+  const words = p2.words.map((w2) => typeof w2 === "string" ? w2.trim().replace(/\s+/g, " ") : w2);
+  if (words.length < 1 || words.length > 5) throw new Error("Use one to five names");
+  for (const w2 of words) {
+    const problem = wakeWordProblem(w2);
+    if (problem) throw new Error(`${String(w2).slice(0, 32)}: ${problem}`);
+  }
+  if (new Set(words.map((w2) => String(w2).toLowerCase())).size !== words.length) throw new Error("Each name only once");
+  return { enabled: p2.enabled, words };
+}
 var MEDIA_MAX_SECONDS = 4 * 60 * 60;
 var MEDIA_MAX_BYTES = 512 * 1024 * 1024;
 var MEDIA_TTL_SECONDS = 30;
@@ -5502,7 +5571,7 @@ function parseMeetingPolicy(value) {
     throw new Error("Invalid meetings settings");
   const p2 = value;
   if (Object.keys(p2).some(
-    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech"].includes(
+    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake"].includes(
       k2
     )
   ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser")
@@ -5514,7 +5583,8 @@ function parseMeetingPolicy(value) {
     platforms: ["google-meet"],
     defaultMode: p2.defaultMode,
     invokers: "owner-browser",
-    speech
+    speech,
+    ...p2.wake === void 0 ? {} : { wake: parseWakePolicy(p2.wake) }
   };
 }
 
@@ -29541,6 +29611,7 @@ var PhoneFirewall = class {
         allowFrom: a2.allowFrom,
         allowAll: a2.allowAll,
         speech: a2.speech ?? null,
+        ...a2.wake ? { wake: a2.wake } : {},
         ...phoneLimits(a2)
       } : null,
       cleanupPending: !!this.store.cleanup
@@ -29827,6 +29898,7 @@ var PhoneFirewall = class {
           allowAll,
           speech,
           ...limits,
+          ...p2.wake == null ? {} : { wake: parseWakePolicy(p2.wake) },
           voicePlaceholder: `cc-speech-${randomBytes3(24).toString("hex")}`,
           generation: randomBytes3(16).toString("hex"),
           placeholder: `CC-TWILIO-${randomBytes3(16).toString("hex")}`,
@@ -29868,6 +29940,13 @@ var PhoneFirewall = class {
         await this.apply(proposal);
         return { status: "applied" };
       }
+    } else if (p2.kind === "wake") {
+      const a2 = this.store.assignment;
+      if (!a2) throw new PhoneError("not_assigned");
+      proposal = { changeId, kind: "wake", generation: a2.generation, wake: parseWakePolicy(p2.wake) };
+      summary = `Change wake words for Twilio ${a2.number}: ${proposal.wake.enabled ? `answer only when called ${proposal.wake.words.join(" or ")}` : "answer every turn"}`;
+      await this.apply(proposal);
+      return { status: "applied", message: summary };
     } else throw new PhoneError("invalid_input");
     if (!this.opts.channelsReady())
       throw new PhoneError("channels_unavailable");
@@ -29948,6 +30027,8 @@ var PhoneFirewall = class {
         if (JSON.stringify(phoneLimits(a2)) !== p2.previous)
           throw new PhoneError("stale_proposal");
         Object.assign(a2, phoneLimits(p2));
+      } else if (p2.kind === "wake") {
+        a2.wake = p2.wake;
       } else {
         a2.allowAll = p2.allowAll;
         a2.allowFrom = p2.allowFrom;
@@ -29977,7 +30058,8 @@ var PhoneFirewall = class {
         allowFrom: a2.allowFrom,
         allowAll: a2.allowAll,
         speech: a2.speech ? { ...a2.speech, placeholder: a2.voicePlaceholder } : null,
-        ...phoneLimits(a2)
+        ...phoneLimits(a2),
+        ...a2.wake ? { wake: a2.wake } : {}
       });
     } catch {
       if (this.current(a2)) {
@@ -39159,6 +39241,10 @@ var MeetingsFirewall = class {
       baseRevision: revision
     };
     if (!policy.enabled) {
+      this.codes.drop(`meetings:${vmId}`);
+      return this.apply(proposal);
+    }
+    if (current?.policy.enabled && JSON.stringify(current.policy.speech ?? null) === JSON.stringify(policy.speech ?? null)) {
       this.codes.drop(`meetings:${vmId}`);
       return this.apply(proposal);
     }
@@ -95248,8 +95334,8 @@ import { uptime } from "os";
 import { existsSync as existsSync15, readFileSync as readFileSync20 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7ea03b6" : "unknown",
-  builtAt: true ? "2026-10-05T19:15:07+01:00" : "unknown"
+  commit: true ? "339fb59" : "unknown",
+  builtAt: true ? "2026-10-05T23:45:15+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -96490,6 +96576,7 @@ async function main() {
           if (aiReviewHistory && access?.ready()) features.push("ai_review_history");
           if (doctorTerminal && access?.ready()) features.push("doctor_terminal");
           features.push("speech_families");
+          features.push("speech_wake");
           if (controlPlaneMcpGateUp) features.push("controlplane_mcp");
           if (teamChat?.available() && teamChatWeb && access?.ready()) features.push("team_chat");
           if (access?.ready()) features.push("open_logs");

@@ -6079,8 +6079,8 @@ function consoleMcpConfigured() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7ea03b6" : "unknown",
-  builtAt: true ? "2026-10-05T19:15:07+01:00" : "unknown"
+  commit: true ? "339fb59" : "unknown",
+  builtAt: true ? "2026-10-05T23:45:15+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6133,9 +6133,12 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
 var VOICE_CAPABILITIES = "/opt/controlclaw/meeting-voice/capabilities.json";
 function speechFeatures(path = VOICE_CAPABILITIES) {
   try {
-    const families = JSON.parse(readFileSync9(path, "utf8")).speechFamilies;
-    if (!Array.isArray(families)) return [];
-    return ["realtime", "live"].filter((f2) => families.includes(f2)).map((f2) => `speech_${f2}`);
+    const caps = JSON.parse(readFileSync9(path, "utf8"));
+    const families = Array.isArray(caps.speechFamilies) ? caps.speechFamilies : [];
+    return [
+      ...["realtime", "live"].filter((f2) => families.includes(f2)).map((f2) => `speech_${f2}`),
+      ...caps.wakeWords === true ? ["speech_wake"] : []
+    ];
   } catch {
     return [];
   }
