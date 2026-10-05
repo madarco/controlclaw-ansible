@@ -37,13 +37,13 @@ test('a lookup is built from what was heard, answered aloud once, and survives t
 });
 test('a lookup that never answers is reported failed after 30 s, never left open',t=>{
  t.mock.timers.enable({apis:['setTimeout']});
- const f=fixture('meeting');f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
  t.mock.timers.tick(30000);
  const spoken=f.appends().filter(e=>e.type==='session.commentary.append');
  assert.equal(spoken.length,1);assert.match(spoken[0].content,/technical failure/);assert.equal(f.bridge.jobs.size,0);f.bridge.close();
 });
 test('lookups run one at a time; a second waits its turn, an overtaken answer is given quietly',()=>{
- const f=fixture('meeting');
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});
  f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
  assert.equal(f.tools.length,1);
  f.bridge.submitToolResult('d1',{text:'first'});
@@ -113,16 +113,31 @@ test('output audio carries an item id, so the phone pacer marks playback; a paus
  out();clock+=100;out();clock+=2000;out();
  const ids=f.meta.map(m=>m?.itemId);assert.ok(ids.every(Boolean));assert.equal(ids[0],ids[1]);assert.notEqual(ids[1],ids[2]);f.bridge.close();
 });
-test('wake word on: only what follows an addressed request is played, with the configured names',t=>{
+test('wake word on: only what follows an addressed request is played; long answers and addressed lookups are not cut',t=>{
  let clock=1_000_000;t.mock.method(Date,'now',()=>clock);
  const f=fixture('meeting',LiveBridge,{enabled:true,words:['Jarvis','Maria Rossi']});
  assert.match(f.bridge.session().instructions,/Jarvis or Maria Rossi/);
- const out=()=>f.bridge.event({type:'session.output_audio.delta',delta:Buffer.alloc(480).toString('base64')});
+ const loud=Buffer.alloc(480);for(let i=0;i<loud.length;i+=2)loud.writeInt16LE(i%4?3000:-3000,i);
+ const out=(b=Buffer.alloc(480))=>f.bridge.event({type:'session.output_audio.delta',delta:b.toString('base64')});
  said(f,'user','I think the launch should move. ');out();assert.equal(f.audio.length,0,'nobody addressed it');
- clock+=1000;said(f,'user','Hey Jarvis, what is ');said(f,'user','seven times six?');out();assert.equal(f.audio.length,1);
- clock+=16000;out();assert.equal(f.audio.length,1,'the addressed window has passed');
- f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.submitToolResult('d1',{text:'42'});out();assert.equal(f.audio.length,2,'a lookup answer is played');
+ said(f,'assistant','I could help with that.');assert.equal(f.bridge.said.length,0,'unplayed speech is not kept as context');
+ clock+=1000;said(f,'user','Hey Jarvis, what is ');clock+=1500;said(f,'user','seven times six?');out();assert.equal(f.audio.length,1);
+ // A long answer: audible output keeps the floor past the 15 s window.
+ for(let i=0;i<20;i++){clock+=1000;out(loud);}assert.equal(f.audio.length,21);
+ clock+=16000;out();assert.equal(f.audio.length,21,'quiet and past the window: muted');
+ // A lookup nobody asked for by name is answered quietly and does not open the floor.
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.submitToolResult('d1',{text:'42'});
+ assert.equal(f.appends().find(e=>e.delegation_id==='d1').type,'session.thinking.append');out();assert.equal(f.audio.length,21);
+ // An addressed one is answered aloud, even after a slow lookup.
+ clock+=1000;said(f,'user','Maria Rossi, check the notes');f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
+ clock+=25000;f.bridge.submitToolResult('d2',{text:'Lemon shortbread.'});
+ assert.equal(f.appends().find(e=>e.delegation_id==='d2').type,'session.commentary.append');out();assert.equal(f.audio.length,22);
  f.bridge.close();
+});
+test('phone with wake words on still greets aloud',t=>{
+ let clock=2_000_000;t.mock.method(Date,'now',()=>clock);
+ const f=fixture('phone',LiveBridge,{enabled:true,words:['Jarvis']});f.bridge.triggerGreeting();
+ f.bridge.event({type:'session.output_audio.delta',delta:Buffer.alloc(480).toString('base64')});assert.equal(f.audio.length,1);f.bridge.close();
 });
 test('phone: wake word off by default, on when the owner turns it on',()=>{
  assert.equal(fixture('phone').bridge.wakeRequired,false);

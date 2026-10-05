@@ -2,15 +2,17 @@
 // agent when it opens with one of its names, optionally after a greeting ("hey", "ok") or a filler
 // or two ("sorry, ControlClaw"). A name in the middle of a sentence does not count.
 //
-// Speech recognition spells names loosely ("Control Clone", "control-claw"), so a name matches when
-// its letters are the same with spaces and punctuation ignored, within a small edit distance for
-// longer names, or with the same consonants for names of six or more consonants.
+// Speech recognition spells names loosely ("Control Claw", "control-claw"), so a name matches when
+// its letters are the same with spaces and punctuation ignored, or one letter off for names of six
+// or more letters (two for twelve or more). Known misspellings of the default name, which the old
+// fixed pattern accepted, are listed outright rather than allowed by a looser rule that would also
+// catch ordinary words ("control call", "control clear").
 export const DEFAULT_WAKE_WORDS = ['ControlClaw'];
 const GREETINGS = new Set(['hey', 'hi', 'hello', 'ok', 'okay']);
 const FILLERS = new Set(['so', 'um', 'uh', 'erm', 'sorry', 'excuse', 'me', 'and', 'oh', 'well', 'yes', 'yeah']);
 const tokens = text => String(text ?? '').normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 const key = text => tokens(text).join('');
-const consonants = k => k[0] + k.slice(1).replace(/[aeiouy]/g, '');
+const ALIASES = { controlclaw: ['controlclone', 'controlcloak', 'controlcloud', 'controlclub', 'controlclaws'] };
 function distance(a, b) {
   if (Math.abs(a.length - b.length) > 2) return 3;
   let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
@@ -22,16 +24,15 @@ function distance(a, b) {
   return prev[b.length];
 }
 function close(heard, name) {
-  if (heard === name.key) return true;
+  if (heard === name.key || name.aliases.includes(heard)) return true;
   const d = distance(heard, name.key);
-  if ((name.key.length >= 6 && d <= 1) || (name.key.length >= 10 && d <= 2)) return true;
-  return name.consonants.length >= 6 && distance(consonants(heard), name.consonants) <= 1 && Math.abs(heard.length - name.key.length) <= 3;
+  return (name.key.length >= 6 && d <= 1) || (name.key.length >= 12 && d <= 2);
 }
 export function createWakeMatcher(words = DEFAULT_WAKE_WORDS) {
   const names = (Array.isArray(words) && words.length ? words : DEFAULT_WAKE_WORDS)
     .map(word => ({ word: String(word), key: key(word), parts: tokens(word).length }))
     .filter(n => n.key.length >= 3)
-    .map(n => ({ ...n, consonants: consonants(n.key) }));
+    .map(n => ({ ...n, aliases: ALIASES[n.key] ?? [] }));
   return {
     names: names.map(n => n.word),
     /** The name the text opens with, and what follows it; null when not addressed. */
