@@ -972,14 +972,14 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
-async function verifyMitmRequest(req, purpose = "channels") {
+async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
   if (!mitmPinnedKey && mitmPinnedKeyLoader) mitmPinnedKey = mitmPinnedKeyLoader();
   if (!mitmPinnedKey) return null;
   try {
     const key = await importSPKI(mitmPinnedKey, "EdDSA");
-    const { payload } = await jwtVerify(authHeader.slice(7), key, { algorithms: ["EdDSA"] });
+    const { payload } = await jwtVerify(authHeader.slice(7), key, { algorithms: ["EdDSA"], clockTolerance: opts.clockToleranceS ?? 0 });
     const p2 = payload;
     if (p2.purpose !== purpose || typeof p2.vmId !== "string") return null;
     if (ownVmId && p2.vmId !== ownVmId) return null;
@@ -6069,8 +6069,8 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "280a844" : "unknown",
-  builtAt: true ? "2026-10-04T15:12:10+01:00" : "unknown"
+  commit: true ? "d9a40c8" : "unknown",
+  builtAt: true ? "2026-10-05T03:45:48+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

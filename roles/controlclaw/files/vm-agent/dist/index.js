@@ -4956,14 +4956,14 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
-async function verifyMitmRequest(req, purpose = "channels") {
+async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
   if (!mitmPinnedKey && mitmPinnedKeyLoader) mitmPinnedKey = mitmPinnedKeyLoader();
   if (!mitmPinnedKey) return null;
   try {
     const key = await importSPKI(mitmPinnedKey, "EdDSA");
-    const { payload } = await jwtVerify(authHeader.slice(7), key, { algorithms: ["EdDSA"] });
+    const { payload } = await jwtVerify(authHeader.slice(7), key, { algorithms: ["EdDSA"], clockTolerance: opts.clockToleranceS ?? 0 });
     const p2 = payload;
     if (p2.purpose !== purpose || typeof p2.vmId !== "string") return null;
     if (ownVmId && p2.vmId !== ownVmId) return null;
@@ -5011,6 +5011,14 @@ async function requireAuth(req, res) {
 }
 
 // src/phone-stream.ts
+var RELAY_CLOSE = {
+  listenerUnavailable: 4010,
+  transport: 4011,
+  timeout: 4012,
+  localClosed: 4013,
+  refused: (status) => status >= 100 && status <= 599 ? 4e3 + status : 4011
+};
+var MAX_CLOCK_SKEW_MS = 12e4;
 var PhoneStreamRelay = class {
   constructor(binding, log = (event) => console.warn(`[phone-stream] ${event}`)) {
     this.binding = binding;
@@ -5023,31 +5031,56 @@ var PhoneStreamRelay = class {
   });
   used = /* @__PURE__ */ new Map();
   active = /* @__PURE__ */ new Set();
+  refusals = [];
   async upgrade(req, socket, head) {
-    const refuse = () => socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    const refuse = (reason) => {
+      const now = Date.now();
+      this.refusals = this.refusals.filter((t2) => t2 > now - 6e4);
+      if (this.refusals.length < 30) {
+        this.refusals.push(now);
+        this.log(`refused reason=${reason}`);
+      }
+      socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    };
     try {
-      if (req.method !== "GET" || req.url !== "/phone/stream") return refuse();
-      const auth = await verifyMitmRequest(req, "phone"), b2 = this.binding();
-      if (!auth || !b2?.placeholder || !b2.speech || this.active.size >= (b2.maxConcurrentCalls ?? 1))
-        return refuse();
-      const issued = auth.claims.iat, expires = auth.claims.exp, seconds = Date.now() / 1e3;
-      if (typeof issued !== "number" || typeof expires !== "number" || expires - issued > 30 || expires <= issued || issued > seconds + 2 || seconds - issued > 32)
-        return refuse();
+      if (req.method !== "GET" || req.url !== "/phone/stream")
+        return refuse("route");
+      const auth = await verifyMitmRequest(req, "phone", {
+        clockToleranceS: MAX_CLOCK_SKEW_MS / 1e3
+      }), b2 = this.binding();
+      if (!auth) return refuse("token");
+      if (!b2?.placeholder || !b2.speech) return refuse("not_assigned");
+      if (this.active.size >= (b2.maxConcurrentCalls ?? 1))
+        return refuse("concurrency");
+      const issued = auth.claims.iat, expires = auth.claims.exp, now = Date.now();
+      if (typeof issued !== "number" || typeof expires !== "number" || expires - issued > 30 || expires <= issued)
+        return refuse("token_lifetime");
+      const skew = issued * 1e3 - now;
+      if (Math.abs(skew) > MAX_CLOCK_SKEW_MS) return refuse("clock_skew");
       const raw = req.headers["x-cc-phone-stream"];
       if (typeof raw !== "string" || raw.length > 4096 || !/^[a-zA-Z0-9_-]+$/.test(raw))
-        return refuse();
+        return refuse("envelope");
       const envelope = Buffer.from(raw, "base64url").toString("utf8");
       const digest = createHash("sha256").update(envelope + "\n" + req.headers["sec-websocket-key"]).digest("hex");
-      if (auth.claims.phoneStream !== digest) return refuse();
-      const p2 = JSON.parse(envelope), now = Date.now();
+      if (auth.claims.phoneStream !== digest) return refuse("envelope_digest");
+      const p2 = JSON.parse(envelope);
       for (const [k2, v2] of this.used) if (v2 < now) this.used.delete(k2);
       const url3 = new URL(p2.url), origin = new URL(b2.publicUrl);
-      if (p2.generation !== b2.generation || typeof p2.ticket !== "string" || !/^[a-f0-9]{64}$/.test(p2.ticket) || !/^CA[0-9a-f]{32}$/i.test(p2.callSid) || !/^\/voice\/stream\/realtime\/[0-9a-f-]{36}$/.test(p2.path) || !Number.isFinite(p2.deadline) || p2.deadline <= now || p2.deadline > now + (b2.maxDurationSeconds ?? 300) * 1e3 || this.used.has(p2.ticket) || this.used.size >= 100 || url3.origin !== origin.origin.replace("https:", "wss:") || url3.pathname !== "/phone-stream/" + p2.ticket || url3.search || url3.hash || url3.username || url3.password)
-        return refuse();
+      if (p2.generation !== b2.generation) return refuse("generation");
+      if (typeof p2.ticket !== "string" || !/^[a-f0-9]{64}$/.test(p2.ticket) || !/^CA[0-9a-f]{32}$/i.test(p2.callSid) || !/^\/voice\/stream\/realtime\/[0-9a-f-]{36}$/.test(p2.path) || url3.origin !== origin.origin.replace("https:", "wss:") || url3.pathname !== "/phone-stream/" + p2.ticket || url3.search || url3.hash || url3.username || url3.password)
+        return refuse("envelope_fields");
+      const deadline = Number(p2.deadline) - skew;
+      if (!Number.isFinite(deadline) || deadline <= now || deadline > now + (b2.maxDurationSeconds ?? 300) * 1e3 + 1e3)
+        return refuse("deadline");
+      if (this.used.has(p2.ticket) || this.used.size >= 100)
+        return refuse("ticket_used");
       const expected = createHmac("sha1", b2.placeholder).update(p2.url).digest("base64");
       if (typeof p2.signature !== "string" || p2.signature.length !== expected.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(p2.signature)))
-        return refuse();
-      this.used.set(p2.ticket, p2.deadline);
+        return refuse("signature");
+      this.used.set(
+        p2.ticket,
+        Math.max(deadline, now + 3e4 + MAX_CLOCK_SKEW_MS * 2)
+      );
       let peer, outer;
       let closed = false;
       const stop = () => {
@@ -5061,7 +5094,7 @@ var PhoneStreamRelay = class {
       this.active.add(stop);
       const watch = setInterval(() => {
         const live = this.binding();
-        if (Date.now() >= p2.deadline || !live?.placeholder || live.generation !== p2.generation)
+        if (Date.now() >= deadline || !live?.placeholder || live.generation !== p2.generation)
           stop();
       }, 500);
       watch.unref();
@@ -5084,28 +5117,38 @@ var PhoneStreamRelay = class {
           target.send(data, { binary: false });
           if (target.bufferedAmount > 262144) stop();
         };
+        let reason;
+        const endLocal = () => {
+          if (closed) return;
+          if (ws.readyState !== import_websocket.default.OPEN) return stop();
+          ws.close(reason ?? RELAY_CLOSE.localClosed);
+          setTimeout(stop, 1e3).unref();
+        };
         peer.on("unexpected-response", (_request, response) => {
           this.log(`local_upgrade_refused status=${response.statusCode ?? 0}`);
+          reason = RELAY_CLOSE.refused(response.statusCode ?? 0);
           response.resume();
-          stop();
+          endLocal();
         });
         peer.on("error", (error62) => {
+          const timedOut = /timed out/i.test(error62.message);
           this.log(
-            error62.code === "ECONNREFUSED" ? "local_listener_unavailable" : "local_transport_error"
+            error62.code === "ECONNREFUSED" ? "local_listener_unavailable" : timedOut ? "local_upgrade_timeout" : "local_transport_error"
           );
+          reason ??= error62.code === "ECONNREFUSED" ? RELAY_CLOSE.listenerUnavailable : timedOut ? RELAY_CLOSE.timeout : RELAY_CLOSE.transport;
+          endLocal();
         });
         peer.on("open", () => {
           ws.on("message", (d2, binary) => forward(peer, d2, binary));
           ws.resume();
         });
         peer.on("message", (d2, binary) => forward(ws, d2, binary));
-        for (const s2 of [peer, ws]) {
-          s2.on("close", stop);
-          s2.on("error", stop);
-        }
+        peer.on("close", endLocal);
+        ws.on("close", stop);
+        ws.on("error", stop);
       });
     } catch {
-      refuse();
+      refuse("error");
     }
   }
 };
@@ -24955,6 +24998,53 @@ var PHONE_REALTIME_COMPAT = [
   }
 ];
 
+// src/phone-reply-compat.ts
+var PHONE_NO_REPLY_TEXT = "Sorry, I could not get an answer in time. Please ask again.";
+var PHONE_REPLY_DEADLINE_MS = 26e3;
+var PHONE_REPLY_COMPAT = [
+  {
+    file: "runtime-entry-BNOQRXii.mjs",
+    before: "aa0e18119e8e22857e850ba3c07c4c37ea789d52004b16af1d58115bd846b94b",
+    after: "5c9aed4c9cd6fe491625d42b6f99474d7cc5d1f63da94494dd3ed7d8acca8f4b",
+    changes: [
+      [
+        "		try {\n			const { generateVoiceResponse } = await loadResponseGeneratorModule();",
+        `		let controlClawApologized = false;
+		const controlClawNoReply = () => {
+			if (controlClawApologized) return false;
+			controlClawApologized = true;
+			return speakResponse(${JSON.stringify(PHONE_NO_REPLY_TEXT)}).catch(() => false);
+		};
+		try {
+			const { generateVoiceResponse } = await loadResponseGeneratorModule();`
+      ],
+      [
+        "			const result = await generateVoiceResponse({",
+        "			let controlClawTimer;\n			const result = await Promise.race([generateVoiceResponse({"
+      ],
+      [
+        "				onEarlyText: speakResponse\n			});\n			if (result.error) {\n				this.logger.error(`Response generation error: ${result.error}`);\n				return;\n			}\n			if (result.text && !result.deliveredEarly) await speakResponse(result.text);\n		} catch (err) {\n			this.logger.error(`Auto-response error: ${String(err)}`);\n		}",
+        `				onEarlyText: speakResponse
+			}), new Promise((resolve) => {
+				controlClawTimer = setTimeout(() => resolve({ text: null, deliveredEarly: false, error: "reply deadline exceeded" }), ${PHONE_REPLY_DEADLINE_MS});
+				controlClawTimer.unref?.();
+			})]).finally(() => clearTimeout(controlClawTimer));
+			if (result.error) {
+				this.logger.error(\`Response generation error: \${result.error}\`);
+				await controlClawNoReply();
+				return;
+			}
+			if (result.text && !result.deliveredEarly) await speakResponse(result.text);
+			else if (!result.deliveredEarly) await controlClawNoReply();
+		} catch (err) {
+			this.logger.error(\`Auto-response error: \${String(err)}\`);
+			await controlClawNoReply();
+		}`
+      ]
+    ]
+  }
+];
+
 // src/phone-compat.ts
 var PHONE_COMPAT = [
   {
@@ -25061,7 +25151,7 @@ function patchPhoneStages(source, steps) {
   return source;
 }
 async function patchPhonePlugin(installPath) {
-  const patches = [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT];
+  const patches = [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT, ...PHONE_REPLY_COMPAT];
   const files2 = await Promise.all(
     [...new Set(patches.map((p2) => p2.file))].map(async (name) => {
       const path = join2(installPath, "dist", ".setup", name);
@@ -25711,7 +25801,8 @@ function phoneConfig(input2, responseModel) {
       agentId: "main",
       responseModel,
       inboundGreeting: "Hello! How can I help you today?",
-      responseTimeoutMs: 15e3,
+      // Below the reply deadline in phone-reply-compat.ts, which is below the 30 s wait pause.
+      responseTimeoutMs: 24e3,
       responseSystemPrompt: "You are a helpful phone assistant. Answer in one short plain sentence unless more detail is requested. Do not use markdown, formatting marks, or punctuation-only utterances. Phone callers are not authorized owners.",
       sessionScope: "per-call",
       maxConcurrentCalls: input2.maxConcurrentCalls ?? 1,
@@ -27529,8 +27620,8 @@ async function installDoctorKey(pub, sig2, opts = {}) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "280a844" : "unknown",
-  builtAt: true ? "2026-10-04T15:12:10+01:00" : "unknown"
+  commit: true ? "d9a40c8" : "unknown",
+  builtAt: true ? "2026-10-05T03:45:48+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

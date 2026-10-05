@@ -5303,12 +5303,11 @@ var PhoneStreams = class {
               for (const text2 of pending) send5(peer, text2);
               pending.length = 0;
               pendingBytes = 0;
-            }).catch(
-              (error62) => finish(
-                "transport",
-                /^agent_http_\d{3}$/.test(error62.message) ? error62.message : "agent_connect"
-              )
-            );
+            }).catch((error62) => {
+              const detail = /^agent_http_\d{3}$/.test(error62.message) ? error62.message : "agent_connect";
+              console.warn(`[phone] agent stream failed: ${detail}`);
+              finish("transport", detail);
+            });
           } else {
             if (!start || e.streamSid !== c2.streamSid || !["media", "mark", "dtmf", "stop"].includes(e.event))
               throw new Error();
@@ -93910,8 +93909,8 @@ import { uptime } from "os";
 import { existsSync as existsSync13, readFileSync as readFileSync18 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "6d60701" : "unknown",
-  builtAt: true ? "2026-10-04T21:57:45+01:00" : "unknown"
+  commit: true ? "d9a40c8" : "unknown",
+  builtAt: true ? "2026-10-05T03:45:48+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
