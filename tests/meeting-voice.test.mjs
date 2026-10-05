@@ -192,3 +192,11 @@ test('every gpt-realtime model of a provider is accepted, transcription models a
  assert.equal(realtimeModel('openai','gpt-realtime-mini'),true);assert.equal(realtimeModel('openai','openai/gpt-realtime-2'),false);
  assert.equal(realtimeModel('codex','gpt-realtime'),true);assert.equal(realtimeModel('codex','gpt-realtime-2'),false);
 });
+test('custom wake names address the bot; with the wake word off every turn gets a response',()=>{
+ const make=wake=>{const audio=[],sent=[];const bridge=new VoiceBridge({providerConfig:{provider:'gateway',model:'openai/gpt-realtime-1.5',wake},onAudio:b=>audio.push(b),onClearAudio:()=>{},onToolCall:()=>{},onTranscript:()=>{}},{});bridge.ws={readyState:1,bufferedAmount:0,send:s=>sent.push(JSON.parse(s)),terminate:()=>{}};bridge.ready=true;return {bridge,sent};};
+ const f=make({enabled:true,words:['Jarvis']});
+ f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, say hello.'});assert.equal(f.bridge.allowed,false,'the old default name no longer addresses it');
+ f.bridge.event({type:'input-transcription-completed',transcript:'Hey Jarvis, say hello.'});assert.equal(f.bridge.allowed,true);f.bridge.close();
+ const g=make({enabled:false,words:['Jarvis']});
+ g.bridge.event({type:'input-transcription-completed',transcript:'What is on the agenda?'});assert.equal(g.bridge.allowed,true);assert.ok(g.sent.some(e=>e.type==='response-create'));g.bridge.close();
+});

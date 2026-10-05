@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {LiveBridge, liveModel} from '../roles/controlclaw/files/meeting-voice/live.js';
 import {PhoneLiveBridge} from '../roles/controlclaw/files/meeting-voice/phone.js';
 import * as codecs from './fixtures/phone-codecs.mjs';
-function fixture(surface, Bridge = LiveBridge){
+function fixture(surface, Bridge = LiveBridge, wake){
  const audio=[],meta=[],sent=[],tools=[],transcripts=[],closed=[];
- const req={providerConfig:{provider:'gateway',model:'openai/gpt-live-1',surface},onAudio:(b,m)=>{audio.push(b);meta.push(m);},onToolCall:t=>tools.push(t),onTranscript:(...x)=>transcripts.push(x),onClose:r=>closed.push(r),onClearAudio:()=>{}};
+ const req={providerConfig:{provider:'gateway',model:'openai/gpt-live-1',surface,...(wake?{wake}:{})},onAudio:(b,m)=>{audio.push(b);meta.push(m);},onToolCall:t=>tools.push(t),onTranscript:(...x)=>transcripts.push(x),onClose:r=>closed.push(r),onClearAudio:()=>{}};
  const bridge=new Bridge(req,{codecs,metric:()=>{}});
  bridge.ws={readyState:1,bufferedAmount:0,send:s=>sent.push(JSON.parse(s)),terminate:()=>{}};bridge.ready=true;
  return {bridge,audio,meta,sent,tools,transcripts,closed,appends:()=>sent.filter(e=>e.type.endsWith('.append')&&e.type!=='session.input_audio.append')};
@@ -59,7 +59,7 @@ test('lookups run one at a time; a second waits its turn, an overtaken answer is
 });
 test('audio flows both ways, transcripts are reported per turn, and close asks for final usage',async t=>{
  t.mock.timers.enable({apis:['setTimeout']});
- const f=fixture('meeting');f.bridge.sendAudio(Buffer.alloc(960));
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});f.bridge.sendAudio(Buffer.alloc(960));
  assert.equal(f.sent.at(-1).type,'session.input_audio.append');
  f.bridge.event({type:'session.output_audio.delta',delta:Buffer.alloc(480).toString('base64')});assert.equal(f.audio.length,1);
  said(f,'user','What is ');said(f,'user','seven times six?');t.mock.timers.tick(1200);
@@ -112,4 +112,21 @@ test('output audio carries an item id, so the phone pacer marks playback; a paus
  const out=()=>f.bridge.event({type:'session.output_audio.delta',delta:Buffer.alloc(4800).toString('base64')});
  out();clock+=100;out();clock+=2000;out();
  const ids=f.meta.map(m=>m?.itemId);assert.ok(ids.every(Boolean));assert.equal(ids[0],ids[1]);assert.notEqual(ids[1],ids[2]);f.bridge.close();
+});
+test('wake word on: only what follows an addressed request is played, with the configured names',t=>{
+ let clock=1_000_000;t.mock.method(Date,'now',()=>clock);
+ const f=fixture('meeting',LiveBridge,{enabled:true,words:['Jarvis','Maria Rossi']});
+ assert.match(f.bridge.session().instructions,/Jarvis or Maria Rossi/);
+ const out=()=>f.bridge.event({type:'session.output_audio.delta',delta:Buffer.alloc(480).toString('base64')});
+ said(f,'user','I think the launch should move. ');out();assert.equal(f.audio.length,0,'nobody addressed it');
+ clock+=1000;said(f,'user','Hey Jarvis, what is ');said(f,'user','seven times six?');out();assert.equal(f.audio.length,1);
+ clock+=16000;out();assert.equal(f.audio.length,1,'the addressed window has passed');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.submitToolResult('d1',{text:'42'});out();assert.equal(f.audio.length,2,'a lookup answer is played');
+ f.bridge.close();
+});
+test('phone: wake word off by default, on when the owner turns it on',()=>{
+ assert.equal(fixture('phone').bridge.wakeRequired,false);
+ assert.equal(fixture('phone',LiveBridge,{enabled:true,words:['Jarvis']}).bridge.wakeRequired,true);
+ assert.equal(fixture('meeting').bridge.wakeRequired,true);
+ assert.equal(fixture('meeting',LiveBridge,{enabled:false,words:['Jarvis']}).bridge.wakeRequired,false);
 });

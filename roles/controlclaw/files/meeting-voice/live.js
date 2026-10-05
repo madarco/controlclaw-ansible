@@ -6,12 +6,16 @@
 // `session.commentary.append` (spoken). Every lookup gets exactly one final answer, and talking
 // over the model never cancels one. No provider payloads, transcripts, credentials or audio are
 // logged here.
+import { createWakeMatcher, nameList } from './wake.js';
 const LIVE = { gateway: /^openai\/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/, openai: /^gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/ };
 export const liveModel = (provider, model) => typeof model === 'string' && !!LIVE[provider]?.test(model);
 const MAX_LOOKUPS = 24;
 const LOOKUP_TIMEOUT = 30000;
 const STILL_CHECKING_AFTER = 8000;
 const QUESTION_WINDOW = 45000;
+// With the wake word on, the model may speak for this long after someone addressed it by name
+// (or after a lookup answer it was given); anything else it says is not played.
+const ADDRESSED_WINDOW = 15000;
 const MAX_QUEUED = 2;
 // Appends are capped at 500 tokens by the provider; stay well under it.
 const MAX_APPEND_CHARS = 1800;
@@ -23,10 +27,14 @@ export class LiveBridge {
   constructor(req, deps) {
     this.req = req; this.deps = deps; this.config = req.providerConfig; this.phone = this.config.surface === 'phone';
     this.gateway = this.config.provider === 'gateway';
+    // Wake words (D4/D5): meetings on unless turned off, phone off unless turned on.
+    this.wake = createWakeMatcher(this.config.wake?.words);
+    this.wakeRequired = this.phone ? this.config.wake?.enabled === true : this.config.wake?.enabled !== false;
+    this.addressedAt = 0;
     this.closed = false; this.ready = false; this.lastSpeech = Date.now(); this.lookups = 0;
     this.supportsToolResultContinuation = false;
     // Transcript fragments with their arrival time, for building a delegated question.
-    this.heard = []; this.said = []; this.inputText = ''; this.outputText = '';
+    this.heard = []; this.said = []; this.inputText = ''; this.outputText = ''; this.request = '';
     // Lookups by delegation id (queued or running), the one running, and the ids already answered.
     this.jobs = new Map(); this.running = null; this.finished = new Set(); this.latestDelegation = null;
     this.eventId = 0; this.outputItems = 0;
@@ -64,7 +72,11 @@ export class LiveBridge {
     this.deadline.unref?.(); this.idle.unref?.();
   }
   session() {
-    const instructions = (this.phone ? PHONE : SYSTEM) + '\n' + (this.req.instructions ?? '').slice(0, 8000);
+    const names = nameList(this.wake.names);
+    const addressing = this.wakeRequired
+      ? `Speak only when someone's request starts with one of your names: ${names}. Otherwise stay silent, even if you could help.`
+      : this.phone ? '' : `Your names are ${names}.`;
+    const instructions = (this.phone ? PHONE : SYSTEM) + `\n${addressing}\nNever say your own names.\n` + (this.req.instructions ?? '').slice(0, 8000);
     // Exactly what the firewall's session.start check allows: no storage, client delegation only.
     return { model: this.config.model, store: false, delegation: { type: 'client' }, audio: { format: { type: 'audio/pcm', rate: 24000 }, output: { voice: 'marin' } }, instructions };
   }
@@ -92,6 +104,8 @@ export class LiveBridge {
         const now = Date.now();
         if (!this.outputItem || now - (this.lastOutputAt ?? 0) > 1000) this.outputItem = `live_out_${++this.outputItems}`;
         this.lastOutputAt = now;
+        // Wake word on: what the model says when nobody addressed it is not played.
+        if (this.wakeRequired && now - this.addressedAt > ADDRESSED_WINDOW) return;
         if (audio.length) this.req.onAudio(audio, { itemId: this.outputItem });
         return;
       }
@@ -116,7 +130,13 @@ export class LiveBridge {
     if (typeof delta !== 'string' || !delta) return;
     const now = Date.now(), list = role === 'user' ? this.heard : this.said;
     list.push({ at: now, text: delta }); while (list.length && now - list[0].at > 120000) list.shift();
-    if (role === 'user') { this.lastSpeech = now; this.inputText += delta; } else this.outputText += delta;
+    if (role === 'user') {
+      // A pause between heard fragments starts a new request: the name must open that one.
+      if (now - (this.lastHeardAt ?? 0) > 700) this.request = '';
+      this.lastHeardAt = now; this.request += delta;
+      this.lastSpeech = now; this.inputText += delta;
+      if (this.wake.match(this.request)) this.addressedAt = now;
+    } else this.outputText += delta;
     clearTimeout(this[role + 'Flush']);
     this[role + 'Flush'] = setTimeout(() => {
       const text = (role === 'user' ? this.inputText : this.outputText).trim().slice(0, 8000);
@@ -207,6 +227,8 @@ export class LiveBridge {
   /** A delegation turned away (limits) is answered aloud at once and never becomes the newest lookup. */
   refuse(id, text) { this.final(id, text, true); }
   final(id, text, spoken) {
+    // A lookup someone asked for by name is answered aloud even after the addressed window.
+    if (spoken) this.addressedAt = Date.now();
     if (text.length > MAX_APPEND_CHARS) text = text.slice(0, MAX_APPEND_CHARS) + ' (truncated)';
     this.finished.add(id); if (this.finished.size > 100) this.finished.delete(this.finished.values().next().value);
     this.append(spoken ? 'session.commentary.append' : 'session.thinking.append', id, text);

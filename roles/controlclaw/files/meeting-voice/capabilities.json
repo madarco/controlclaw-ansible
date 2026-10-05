@@ -1,3 +1,4 @@
 {
-  "speechFamilies": ["realtime", "live"]
+  "speechFamilies": ["realtime", "live"],
+  "wakeWords": true
 }
