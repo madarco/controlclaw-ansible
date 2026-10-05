@@ -1,6 +1,12 @@
 // No provider payloads, transcripts, credentials or audio are logged here.
 const WAKE = /^\s*(?:(?:hey|hi|okay|ok)\s+)?control[\s-]*cl(?:aw|one|oak|oud|ub)\b/i;
 const STOP = /^[\s,.:;!?-]*(?:please\s+)?stop(?:\s+(?:speaking|talking))?(?:\s+now)?(?:\s+please)?[\s.!?]*$/i;
+// The gpt-realtime family, by provider: one protocol, token-billed (gpt-realtime-1.5, -2, -2.1, -mini, …).
+// Transcription and translation models share the prefix and are not voice models. ChatGPT/Codex
+// offers exactly gpt-realtime. Mirrors @controlclaw/meetings speechFamily and the firewall.
+const REALTIME_SUFFIX = '(?:-(?!whisper|translate|transcribe)[a-z0-9][a-z0-9.-]{0,23})?';
+const REALTIME = { gateway: new RegExp(`^openai/gpt-realtime${REALTIME_SUFFIX}$`), openai: new RegExp(`^gpt-realtime${REALTIME_SUFFIX}$`), codex: /^gpt-realtime$/ };
+export const realtimeModel = (provider, model) => typeof model === 'string' && !!REALTIME[provider]?.test(model);
 const MAX_TOOL_CALLS = 24;
 const TOOL_TIMEOUT = 30000;
 const words = text => String(text).normalize('NFKC').toLowerCase().replace(/control[\s-]*cl(?:aw|one|oak|oud|ub)/g,'controlclaw').match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -19,8 +25,7 @@ export class VoiceBridge {
   async connect() {
     if(this.closed)throw new Error('Voice session closed');
     const c=this.config;
-    const models={gateway:['openai/gpt-realtime-1.5'],openai:['gpt-realtime-1.5'],codex:['gpt-realtime']};
-    if(!models[c.provider]?.includes(c.model)||!/^cc-speech-[a-f0-9]{48}$/.test(c.placeholder)||!Number.isInteger(c.maxMinutes)||c.maxMinutes<5||c.maxMinutes>60)throw new Error('Invalid voice binding');
+    if(!realtimeModel(c.provider,c.model)||!/^cc-speech-[a-f0-9]{48}$/.test(c.placeholder)||!Number.isInteger(c.maxMinutes)||c.maxMinutes<5||c.maxMinutes>60)throw new Error('Invalid voice binding');
     this.abort=new AbortController();
     let url,protocols,headers;
     if(this.gateway){

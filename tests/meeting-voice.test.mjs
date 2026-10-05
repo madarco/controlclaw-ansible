@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {VoiceBridge} from '../roles/controlclaw/files/meeting-voice/voice.js';
+import {VoiceBridge, realtimeModel} from '../roles/controlclaw/files/meeting-voice/voice.js';
 function fixture(){
  const audio=[],tools=[],sent=[],transcripts=[];let cleared=0;
  const bridge=new VoiceBridge({providerConfig:{provider:'gateway',model:'openai/gpt-realtime-1.5'},onAudio:b=>audio.push(b),onClearAudio:()=>cleared++,onToolCall:t=>tools.push(t),onTranscript:(...x)=>transcripts.push(x)},{});
@@ -185,4 +185,10 @@ test('stop while response creation is in flight cannot schedule a replacement',(
 test('a stop followed by a new spoken request still allows the requested response',()=>{
  const f=fixture();f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, stop. Say only done.'});
  assert.equal(f.bridge.allowed,true);assert.equal(f.sent.at(-1).type,'response-create');f.bridge.close();
+});
+test('every gpt-realtime model of a provider is accepted, transcription models and other families are not',()=>{
+ for(const m of ['openai/gpt-realtime-1.5','openai/gpt-realtime-2','openai/gpt-realtime-2.1','openai/gpt-realtime-mini','openai/gpt-realtime'])assert.equal(realtimeModel('gateway',m),true,m);
+ for(const m of ['openai/gpt-realtime-whisper','openai/gpt-realtime-translate','openai/gpt-live-1','google/gemini-3.8-live','gpt-realtime-2','openai/gpt-realtime-2;x'])assert.equal(realtimeModel('gateway',m),false,m);
+ assert.equal(realtimeModel('openai','gpt-realtime-mini'),true);assert.equal(realtimeModel('openai','openai/gpt-realtime-2'),false);
+ assert.equal(realtimeModel('codex','gpt-realtime'),true);assert.equal(realtimeModel('codex','gpt-realtime-2'),false);
 });
