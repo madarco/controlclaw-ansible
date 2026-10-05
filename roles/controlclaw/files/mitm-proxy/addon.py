@@ -1026,6 +1026,522 @@ def phone_twiml_allowed(xml: str, hook: str) -> bool:
         return False
 
 
+# ----- email rules (docs/plans/email-rules.md) --------------------------------------------------
+#
+# The proxy holds no email rule. For every AgentMail or Gmail send it works out WHAT is being sent
+# where (metadata only: recipients, ids, the RFC 822 header block, never a body) and asks the
+# firewall agent on 127.0.0.1:8792, which allows and counts, blocks, or asks the owner. For every
+# AgentMail message or thread it is about to show an agent, it asks the same listener whether to
+# keep it, blank its preview, or hide it. Anything that fails, fails closed.
+
+EMAIL_ADMISSION_URL = os.environ.get("MITM_EMAIL_ADMISSION_URL", "http://127.0.0.1:8792/")
+AGENTMAIL_API = "api.agentmail.to"
+AGENTMAIL_WS = "ws.agentmail.to"
+_EMAIL_REASONS = {
+    "sending_off": "Email sending is turned off for this mailbox.",
+    "not_allowed": "This recipient is not on the allowed list for this mailbox.",
+    "hourly_limit": "This mailbox has reached its hourly sending limit.",
+    "daily_limit": "This mailbox has reached its daily sending limit.",
+    "too_many_recipients": "Too many recipients in one message.",
+    "no_recipients": "The message has no recipients.",
+    "unreadable_recipients": "The firewall could not read the recipients of this message.",
+    "lookup_failed": "The firewall could not check this message. Try again.",
+    "headers_refused": "Custom headers may only be X-* headers, In-Reply-To or References.",
+    "unknown_write": "This AgentMail operation is not allowed from an agent.",
+    "forwarding_refused": "Agents may not set up forwarding, delegates or send-as addresses.",
+    "unsupported_upload": "Send the message with a plain or multipart upload.",
+    "held_back": "This message was held back by your organization's email rules.",
+    "draft_busy": "This draft is being sent. Wait for that to finish before changing it.",
+    "scheduled_send": "Scheduled sending is not allowed from an agent. Send the message when it should go.",
+    "thread_attachment": "Read attachments through the message they belong to.",
+    "email_rules_unavailable": "Email rules are unavailable on the firewall, so email is refused.",
+}
+_AM_SEND = re.compile(r"^/v0/inboxes/([^/]+)/messages/send$")
+_AM_MSG_OP = re.compile(r"^/v0/inboxes/([^/]+)/messages/([^/]+)/(reply|reply-all|forward)$")
+_AM_DRAFT_SEND = re.compile(r"^/v0/inboxes/([^/]+)/drafts/([^/]+)/send$")
+_AM_DRAFT_WRITE = [("POST", re.compile(r"^/v0/inboxes/[^/]+/drafts$")),
+                   ("PATCH", re.compile(r"^/v0/inboxes/[^/]+/drafts/[^/]+$")),
+                   ("PUT", re.compile(r"^/v0/inboxes/[^/]+/drafts/[^/]+$"))]
+_AM_SAFE_WRITES = [("DELETE", re.compile(r"^/v0/inboxes/[^/]+/drafts/[^/]+$")),
+                   ("PATCH", re.compile(r"^/v0/inboxes/[^/]+/messages/[^/]+$")),
+                   ("PATCH", re.compile(r"^/v0/inboxes/[^/]+/threads/[^/]+$"))]
+_AM_ATTACHMENT = re.compile(r"^/v0/inboxes/([^/]+)/messages/([^/]+)/(?:attachments/[^/]+|raw)$")
+_AM_THREAD_ATTACHMENT = re.compile(r"^/v0/(?:inboxes/[^/]+/)?threads/[^/]+/attachments(?:/|$)")
+_AM_HEADER_OK = re.compile(r"^(?:X-[A-Za-z0-9-]{1,64}|In-Reply-To|References)$", re.I)
+_GM_SEND = re.compile(r"^/(upload/)?gmail/v1/users/[^/]+/(messages|drafts)/send$")
+_GM_IMPORT = re.compile(r"^/(?:upload/)?gmail/v1/users/[^/]+/messages/(?:import|insert)$")
+_GM_SETTINGS = re.compile(r"^/gmail/v1/users/[^/]+/settings/(forwardingAddresses|autoForwarding|delegates|sendAs|filters)(?:/|$)")
+_HIDDEN_FIELDS = ("text", "html", "extracted_text", "extracted_html", "preview", "subject")
+
+
+def email_admission(payload: dict[str, Any], timeout: float = 20) -> dict[str, Any]:
+    request = urllib.request.Request(EMAIL_ADMISSION_URL, data=json.dumps(payload).encode(),
+                                     headers={"Content-Type": "application/json"})
+    # Never use environment proxies for the firewall-local admission service.
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout) as response:
+        result = json.load(response)
+    if result.get("ok") is not True:
+        raise ValueError("email admission refused")
+    return result
+
+
+def is_googleapis(host: str) -> bool:
+    host = host.lower()
+    return host == "googleapis.com" or host.endswith(".googleapis.com")
+
+
+def _json_body(flow: http.HTTPFlow) -> dict[str, Any] | None:
+    raw = flow.request.raw_content or b""
+    if len(raw) > 40 * 1024 * 1024:
+        return None
+    try:
+        body = json.loads(flow.request.get_content() or b"{}")
+    except (ValueError, UnicodeError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+_HEADER_LIMIT = 262144
+
+
+def _header_block(message: bytes) -> str | None:
+    """The header block of an RFC 822 message, without its body. Never the body. None when the
+    headers do not end within the limit: a recipient past it would go unchecked."""
+    end = re.search(rb"\r?\n\r?\n", message[:_HEADER_LIMIT])
+    if end:
+        head = message[:end.start()]
+    elif len(message) <= _HEADER_LIMIT:
+        head = message  # headers only, no body
+    else:
+        return None
+    return head.decode("utf-8", errors="replace")
+
+
+def _b64url(value: Any) -> bytes | None:
+    if not isinstance(value, str) or len(value) > 50 * 1024 * 1024:
+        return None
+    try:
+        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except (ValueError, TypeError):
+        return None
+
+
+def _multipart_message(flow: http.HTTPFlow) -> bytes | None:
+    """The message/rfc822 part of a Gmail multipart upload."""
+    import email.parser
+    import email.policy
+    ctype = flow.request.headers.get("content-type", "")
+    if not ctype.lower().startswith("multipart/"):
+        return None
+    try:
+        parsed = email.parser.BytesParser(policy=email.policy.compat32).parsebytes(
+            b"Content-Type: " + ctype.encode("latin-1") + b"\r\n\r\n" + (flow.request.get_content() or b""))
+    except (ValueError, UnicodeError):
+        return None
+    if not parsed.is_multipart():
+        return None
+    parts = [p for p in parsed.get_payload() if p.get_content_type() == "message/rfc822"]
+    if len(parts) != 1:
+        return None
+    payload = parts[0].get_payload(decode=False)
+    if isinstance(payload, list):  # compat32 parses an rfc822 part into a nested message
+        return payload[0].as_bytes() if payload else None
+    return payload.encode("latin-1", errors="replace") if isinstance(payload, str) else None
+
+
+def email_send_request(flow: http.HTTPFlow, vm_id: str | None) -> dict[str, Any] | str | None:
+    """
+    What a send looks like to the email rules: a reserve payload, a refusal reason (str), or None
+    when the request is not an email send at all.
+    """
+    from urllib.parse import unquote
+    host = flow.request.pretty_host.lower()
+    method = flow.request.method.upper()
+    path = flow.request.path.split("?", 1)[0]
+    if host == AGENTMAIL_API and method in ("POST", "PUT", "PATCH", "DELETE"):
+        m_send, m_op, m_draft = _AM_SEND.match(path), _AM_MSG_OP.match(path), _AM_DRAFT_SEND.match(path)
+        drafting = any(m == method and r.match(path) for m, r in _AM_DRAFT_WRITE)
+        if not (m_send or m_op or m_draft):
+            if any(m == method and r.match(path) for m, r in _AM_SAFE_WRITES):
+                return None
+            if not drafting:
+                return "unknown_write"
+        body = _json_body(flow) if method != "DELETE" else {}
+        if body is None:
+            return "unreadable_recipients"
+        headers = body.get("headers")
+        if headers is not None and (not isinstance(headers, dict) or not all(isinstance(k, str) and _AM_HEADER_OK.match(k) for k in headers)):
+            return "headers_refused"
+        if drafting:
+            # A draft that sends itself later would skip every check made at send time.
+            if any("send_at" in k.lower() or "sendat" in k.lower() or "schedul" in k.lower() for k in body):
+                return "scheduled_send"
+            m_edit = re.match(r"^/v0/inboxes/([^/]+)/drafts/([^/]+)$", path)
+            if m_edit:
+                return {"action": "email.draft_write", "provider": "agentmail", "inboxId": unquote(m_edit.group(1)), "draftId": unquote(m_edit.group(2))}
+            return None  # Recipients are checked when the draft is sent, from the draft itself.
+        payload: dict[str, Any] = {"action": "email.reserve", "vmId": vm_id or "", "provider": "agentmail",
+                                   "to": body.get("to"), "cc": body.get("cc"), "bcc": body.get("bcc")}
+        if m_send:
+            payload.update(inboxId=unquote(m_send.group(1)), op="send")
+        elif m_op:
+            payload.update(inboxId=unquote(m_op.group(1)), messageId=unquote(m_op.group(2)),
+                           op={"reply": "reply", "reply-all": "reply_all", "forward": "forward"}[m_op.group(3)])
+            if m_op.group(3) == "reply" and body.get("reply_all") is True:
+                payload["op"] = "reply_all"
+        else:
+            payload.update(inboxId=unquote(m_draft.group(1)), draftId=unquote(m_draft.group(2)), op="draft_send")
+        return payload
+    if not is_googleapis(host):
+        return None
+    # Match on the path Google acts on: decoded, slashes collapsed, no trailing slash.
+    path = re.sub(r"/+", "/", unquote(path))
+    if len(path) > 1:
+        path = path.rstrip("/")
+    if path.startswith("/batch/gmail/") or (path.startswith("/batch") and b"/gmail/v1/" in (flow.request.get_content() or b"")):
+        return "unsupported_upload"
+    if method != "GET" and _GM_IMPORT.match(path):
+        return "unknown_write"
+    settings = _GM_SETTINGS.match(path)
+    if settings and method != "GET":
+        if settings.group(1) != "filters":
+            return "forwarding_refused"
+        body = _json_body(flow)
+        if method == "POST" and (body is None or (body.get("action") or {}).get("forward")):
+            return "forwarding_refused"
+        return None
+    m_gdraft = re.match(r"^/(?:upload/)?gmail/v1/users/[^/]+/drafts/([^/]+)$", path)
+    if m_gdraft and method in ("PUT", "PATCH", "DELETE"):
+        return {"action": "email.draft_write", "provider": "gmail", "draftId": m_gdraft.group(1)}
+    m = _GM_SEND.match(path)
+    if not m or method != "POST":
+        return None
+    upload, kind = bool(m.group(1)), m.group(2)
+    payload = {"action": "email.reserve", "vmId": vm_id or "", "provider": "gmail",
+               "op": "send" if kind == "messages" else "draft_send"}
+    if upload:
+        if kind == "drafts":
+            return "unsupported_upload"
+        upload_type = flow.request.query.get("uploadType", "")
+        if upload_type == "media":
+            message = flow.request.get_content() or b""
+        elif upload_type == "multipart":
+            message = _multipart_message(flow)
+        else:
+            return "unsupported_upload"
+        if not message:
+            return "unreadable_recipients"
+        payload["head"] = _header_block(message)
+        return payload if payload["head"] is not None else "unreadable_recipients"
+    body = _json_body(flow)
+    if body is None:
+        return "unreadable_recipients"
+    if kind == "messages":
+        message = _b64url(body.get("raw"))
+        if not message:
+            return "unreadable_recipients"
+        payload["head"] = _header_block(message)
+        return payload if payload["head"] is not None else "unreadable_recipients"
+    inner = body.get("message") if isinstance(body.get("message"), dict) else {}
+    if inner.get("raw") is not None:
+        message = _b64url(inner.get("raw"))
+        if not message:
+            return "unreadable_recipients"
+        payload["head"] = _header_block(message)
+        if payload["head"] is None:
+            return "unreadable_recipients"
+    elif isinstance(body.get("id"), str):
+        payload["draftId"] = body["id"]
+    else:
+        return "unreadable_recipients"
+    return payload
+
+
+def _email_refuse(flow: http.HTTPFlow, reason: str) -> None:
+    flow.response = http.Response.make(
+        403, json.dumps({"error": "email_refused", "reason": reason, "message": _EMAIL_REASONS.get(reason, "Email refused by the firewall.")}),
+        {"Content-Type": "application/json"})
+    flow.metadata["cc_effect"] = "block"
+    flow.metadata["cc_rule"] = "email"
+    rec = _http_record(flow, "block")
+    rec.update({"status": 403, "email_reason": reason})
+    _log_once(flow, rec)
+
+
+async def email_outbound(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    """True when the request may go on (counted if it is a send); False when a response was set."""
+    try:
+        request = email_send_request(flow, vm_id)
+    except Exception:  # noqa: BLE001 — anything unexpected about a send refuses it
+        request = "unreadable_recipients"
+    if request is None:
+        return True
+    if isinstance(request, str):
+        _email_refuse(flow, request)
+        return False
+    try:
+        result = await asyncio.to_thread(email_admission, request)
+    except (OSError, ValueError):
+        _email_refuse(flow, "email_rules_unavailable")
+        return False
+    if request.get("action") == "email.draft_write":
+        if result.get("draftOk") is True:
+            return True
+        _email_refuse(flow, "draft_busy")
+        return False
+    decision = result.get("decision")
+    if decision == "allow" and isinstance(result.get("id"), str) and re.fullmatch(r"[a-f0-9]{48}", result["id"]):
+        flow.metadata["cc_email_reservation"] = result["id"]
+        return True
+    if decision == "ask" and isinstance(result.get("asks"), list) and result["asks"]:
+        asks = [a for a in result["asks"] if isinstance(a, dict) and isinstance(a.get("scope"), str) and isinstance(a.get("summary"), str)]
+        pids = []
+        for ask in asks[:20]:
+            pid = permission_id_for(ask["scope"])
+            pids.append(pid)
+            record_pending(pid, {"permission_id": pid, "scope": ask["scope"], "summary": ask["summary"][:300],
+                                 "kind": "email_recipient", "host": flow.request.pretty_host, "method": flow.request.method,
+                                 "path": redact_path(flow.request.path, flow.request.pretty_host)})
+        flow.response = http.Response.make(
+            PERMISSION_STATUS,
+            json.dumps({"permission_id": pids[0] if pids else None, "permission_ids": pids, "reason": "email_recipient_needs_approval",
+                        "summary": "; ".join(a["summary"] for a in asks[:20]),
+                        "message": "The owner has been asked to approve this recipient. Tell the person, and send again once it is approved.",
+                        "expires_at": int(time.time()) + PERMISSION_TTL}),
+            {"Content-Type": "application/json"})
+        flow.metadata["cc_effect"] = "require_permission"
+        flow.metadata["cc_rule"] = "email"
+        rec = _http_record(flow, "require_permission")
+        rec.update({"permission_id": pids[0] if pids else None, "status": PERMISSION_STATUS})
+        _log_once(flow, rec)
+        return False
+    _email_refuse(flow, str(result.get("reason") or "not_allowed"))
+    return False
+
+
+def email_settle(flow: http.HTTPFlow) -> None:
+    reservation = flow.metadata.get("cc_email_reservation")
+    if not reservation:
+        return
+    try:
+        response = flow.response
+        rejected = response is not None and 400 <= response.status_code < 500
+        email_admission({"action": "email.settle", "id": reservation, "rejected": rejected}, timeout=5)
+    except (OSError, ValueError):
+        pass  # An unsettled reservation counts after ten minutes (EmailRulesFirewall.sweep).
+
+
+async def agentmail_attachment_allowed(flow: http.HTTPFlow) -> bool:
+    """Attachment and raw reads carry no message, so the firewall checks the message they belong to."""
+    from urllib.parse import unquote
+    if flow.request.pretty_host.lower() != AGENTMAIL_API or flow.request.method.upper() != "GET":
+        return True
+    path = flow.request.path.split("?", 1)[0]
+    if _AM_THREAD_ATTACHMENT.match(path):
+        return False  # Read attachments through their message, which the firewall can check.
+    m = _AM_ATTACHMENT.match(path)
+    if not m:
+        return True
+    try:
+        result = await asyncio.to_thread(email_admission, {"action": "email.inbound", "provider": "agentmail", "inboxId": unquote(m.group(1)),
+                                                           "items": [{"kind": "ref", "message_id": unquote(m.group(2))}]})
+        return (result.get("actions") or [{}])[0].get("action") == "keep"
+    except (OSError, ValueError, IndexError, AttributeError):
+        return False
+
+
+def _is_message(d: Any) -> bool:
+    return isinstance(d, dict) and isinstance(d.get("message_id"), str) and isinstance(d.get("inbox_id"), str) and "thread_id" in d
+
+
+def _is_thread(d: Any) -> bool:
+    return isinstance(d, dict) and isinstance(d.get("thread_id"), str) and isinstance(d.get("inbox_id"), str) and "message_id" not in d
+
+
+def _hide_message(m: dict[str, Any]) -> None:
+    """Mark a message the agent asked for by id as blocked, and empty everything it says."""
+    labels = m.get("labels") if isinstance(m.get("labels"), list) else []
+    m["labels"] = labels + (["blocked"] if "blocked" not in labels else [])
+    for field in _HIDDEN_FIELDS:
+        if field in m:
+            m[field] = ""
+    for field in ("attachments", "headers", "authentication_results"):
+        if field in m:
+            m[field] = [] if field == "attachments" else {}
+
+
+def agentmail_filter(doc: Any, decide) -> Any:
+    """
+    Apply the firewall's keep/strip/hide answer to an AgentMail JSON response. `decide(items)`
+    takes [(inbox_id, item)] and returns one action per item. A message asked for by id is kept
+    but marked blocked and emptied (the channel then settles it for good); list and thread
+    members are dropped.
+    """
+    targets: list[tuple[str, dict[str, Any], dict[str, Any]]] = []  # (inbox, item, original)
+
+    def message_item(m: dict[str, Any]) -> dict[str, Any]:
+        return {"kind": "message", **{k: v for k, v in m.items() if k in ("message_id", "from", "labels", "authentication_results", "headers", "text", "html", "extracted_text", "extracted_html")}}
+
+    def collect(container: list[Any]) -> None:
+        for item in container:
+            if _is_message(item):
+                targets.append((item["inbox_id"], message_item(item), item))
+            elif _is_thread(item):
+                if isinstance(item.get("messages"), list):
+                    collect(item["messages"])
+                targets.append((item["inbox_id"], {"kind": "thread", "senders": item.get("senders"), "labels": item.get("labels")}, item))
+
+    if _is_message(doc) or _is_thread(doc):
+        collect([doc])
+    elif isinstance(doc, dict):
+        for key in ("messages", "threads"):
+            if isinstance(doc.get(key), list):
+                collect(doc[key])
+    if not targets:
+        return doc
+    actions = decide([(inbox, item) for inbox, item, _ in targets])
+    verdict = {id(orig): (a.get("action") if isinstance(a, dict) else "hide") for (_, _, orig), a in zip(targets, actions)}
+
+    def prune(container: list[Any]) -> list[Any]:
+        kept = []
+        for item in container:
+            act = verdict.get(id(item), "keep")
+            if _is_thread(item) and isinstance(item.get("messages"), list):
+                item["messages"] = prune(item["messages"])
+                if not item["messages"] and act != "hide":
+                    item["subject"] = ""
+            if act == "hide":
+                continue
+            if act == "strip" or _is_thread(item):
+                if "preview" in item:
+                    item["preview"] = ""
+            kept.append(item)
+        return kept
+
+    if _is_message(doc):
+        if verdict.get(id(doc)) == "hide":
+            _hide_message(doc)
+        elif verdict.get(id(doc)) == "strip" and "preview" in doc:
+            doc["preview"] = ""
+        return doc
+    if _is_thread(doc):
+        pruned = prune([doc])
+        if not pruned:
+            doc["messages"] = []
+            for field in ("preview", "subject"):
+                if field in doc:
+                    doc[field] = ""
+        return doc
+    for key in ("messages", "threads"):
+        if isinstance(doc.get(key), list):
+            before = len(doc[key])
+            doc[key] = prune(doc[key])
+            if isinstance(doc.get("count"), int):
+                doc["count"] = max(0, doc["count"] - (before - len(doc[key])))
+    return doc
+
+
+def _decide_via_admission(items: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """One admission call per inbox. Fails closed: no answer hides everything."""
+    by_inbox: dict[str, list[int]] = {}
+    for i, (inbox, _) in enumerate(items):
+        by_inbox.setdefault(inbox, []).append(i)
+    out: list[dict[str, Any]] = [{"action": "hide"}] * len(items)
+    for inbox, idx in by_inbox.items():
+        for chunk in (idx[i:i + 200] for i in range(0, len(idx), 200)):
+            try:
+                result = email_admission({"action": "email.inbound", "provider": "agentmail", "inboxId": inbox,
+                                          "items": [items[i][1] for i in chunk]}, timeout=5)
+                acts = result.get("actions")
+                if isinstance(acts, list) and len(acts) == len(chunk):
+                    for i, a in zip(chunk, acts):
+                        out[i] = a if isinstance(a, dict) else {"action": "hide"}
+            except (OSError, ValueError):
+                pass
+    return out
+
+
+def agentmail_response(flow: http.HTTPFlow) -> None:
+    """Filter what an AgentMail API response shows the agent, before it leaves the firewall."""
+    if flow.request.pretty_host.lower() != AGENTMAIL_API or flow.response is None or not (200 <= flow.response.status_code < 300):
+        return
+    if "json" not in flow.response.headers.get("content-type", "").lower():
+        return
+    try:
+        doc = json.loads(flow.response.get_content() or b"null")
+    except (ValueError, UnicodeError):
+        flow.response = http.Response.make(502, '{"error":"unreadable_response"}', {"Content-Type": "application/json"})
+        return
+    filtered = agentmail_filter(doc, _decide_via_admission)
+    flow.response.set_content(json.dumps(filtered).encode())
+
+
+def _agentmail_ws_decide(message) -> bool:
+    """Whether one server-to-client frame may reach the agent. Blocking: run it off the event loop."""
+    if message.from_client:
+        return True
+    try:
+        event = json.loads(message.content)
+    except (ValueError, TypeError, UnicodeError):
+        return False
+    if not isinstance(event, dict) or event.get("type") != "event":
+        return True
+    kind = str(event.get("event_type") or event.get("eventType") or "")
+    if not kind.startswith("message.received"):
+        return True
+    msg = event.get("message")
+    if kind != "message.received" or not _is_message(msg):
+        return False
+    return _decide_via_admission([(msg["inbox_id"], {"kind": "message", **msg})])[0].get("action") == "keep"
+
+
+_email_tasks: set = set()
+
+
+def _off_loop(flow, work) -> bool:
+    """
+    Pause `flow`, run the blocking `work()` in a thread, resume. Returns False when there is no
+    running event loop (a direct call from a test), so the caller runs `work()` itself. The admission
+    answer can take a moment; holding the event loop for it would stall every agent's traffic.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    flow.intercept()
+
+    async def run():
+        try:
+            await asyncio.to_thread(work)
+        finally:
+            flow.resume()
+
+    task = loop.create_task(run())
+    _email_tasks.add(task)
+    task.add_done_callback(_email_tasks.discard)
+    return True
+
+
+def agentmail_ws_message(flow) -> None:
+    """A received-mail event over AgentMail's WebSocket reaches the agent only if the rules keep it."""
+    if not flow.websocket or not flow.websocket.messages:
+        return
+    message = flow.websocket.messages[-1]
+
+    def work():
+        try:
+            if not _agentmail_ws_decide(message):
+                message.drop()
+        except Exception:  # noqa: BLE001 — anything unexpected drops the frame
+            message.drop()
+        finally:
+            # Never keep mail content on the flow.
+            flow.websocket.messages.clear()
+
+    if not _off_loop(flow, work):
+        work()
+
+
 def phone_credential(flow, vm_id):
     if flow.request.pretty_host.lower() != "api.twilio.com":
         return None
@@ -2476,6 +2992,9 @@ def websocket_start(flow):
 
 
 def websocket_message(flow):
+    if flow.request.pretty_host.lower() == AGENTMAIL_WS:
+        agentmail_ws_message(flow)
+        return
     voice = flow.metadata.get("cc_voice")
     if not voice or not flow.websocket.messages:
         return
@@ -2700,6 +3219,13 @@ async def request(flow: http.HTTPFlow) -> None:
             _log_once(flow, rec)
             return
 
+    if host.lower() in (AGENTMAIL_API, AGENTMAIL_WS) or is_googleapis(host):
+        if not await agentmail_attachment_allowed(flow):
+            _email_refuse(flow, "thread_attachment" if _AM_THREAD_ATTACHMENT.match(flow.request.path.split("?", 1)[0]) else "held_back")
+            return
+        if not await email_outbound(flow, vm_id):
+            return
+
     if host.lower() == "api.twilio.com" and (not phone_authorized(flow, phone_credential(flow, vm_id)) or not await phone_reserve(flow, phone_credential(flow, vm_id))):
         flow.response = http.Response.make(403, '{"error":"phone_assignment_required_or_operation_refused"}', {"Content-Type": "application/json"})
         flow.metadata["cc_effect"] = "block"
@@ -2751,6 +3277,12 @@ _phone_settle_tasks = set()
 
 
 def response(flow: http.HTTPFlow) -> None:
+    if flow.metadata.get("cc_email_reservation"):
+        task = asyncio.create_task(asyncio.to_thread(email_settle, flow))
+        _phone_settle_tasks.add(task)
+        task.add_done_callback(_phone_settle_tasks.discard)
+    if flow.request.pretty_host.lower() == AGENTMAIL_API and not _off_loop(flow, lambda: agentmail_response(flow)):
+        agentmail_response(flow)
     if flow.metadata.get("cc_phone_reservation"):
         # A slow admission listener must not stall other calls' audio forwarding.
         task = asyncio.create_task(asyncio.to_thread(phone_settle, flow))

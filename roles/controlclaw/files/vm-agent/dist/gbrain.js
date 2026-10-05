@@ -1010,7 +1010,7 @@ async function verifyFirewallTicket(token, vmId, purpose) {
       c: p2.c,
       deviceId: p2.deviceId,
       canWrite: p2.canWrite === true,
-      ...p2.next === "files" || p2.next === "logs" || (p2.next === "whatsapp" || p2.next === "meetings") ? { next: p2.next } : {}
+      ...p2.next === "files" || p2.next === "logs" || (p2.next === "whatsapp" || p2.next === "meetings" || p2.next === "phone") ? { next: p2.next } : {}
     };
   } catch {
     return null;
@@ -6069,8 +6069,8 @@ function prune(revoked, now) {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d9a40c8" : "unknown",
-  builtAt: true ? "2026-10-05T03:45:48+01:00" : "unknown"
+  commit: true ? "a57ce0e" : "unknown",
+  builtAt: true ? "2026-10-05T12:01:33+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6128,7 +6128,7 @@ function boxSoftware(opts = {}) {
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
-    features: [...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -6338,6 +6338,7 @@ var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token
 var MIN_SECRET_LENGTH = 8;
 var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
 var BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
+var PHONE_RE = /\+\d{7,15}\b/g;
 var secrets = [];
 function escapeRegExp(s2) {
   return s2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -6364,6 +6365,7 @@ function redact(text) {
   if (secretRe) out = out.replace(secretRe, "[redacted]");
   out = out.replace(PARAM_RE, (_m, k2) => `${k2}=[redacted]`);
   out = out.replace(BEARER_RE, "Bearer [redacted]");
+  out = out.replace(PHONE_RE, (m2) => `+\u2026${m2.slice(-4)}`);
   return out;
 }
 
@@ -6558,6 +6560,67 @@ function mapJournalRecord(raw) {
   }
   return null;
 }
+var AGENT_PHONE_RE = /^\[phone(?:-stream)?\] /;
+function mapAgentPhoneRecord(raw) {
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const message2 = typeof rec.MESSAGE === "string" ? rec.MESSAGE : null;
+  if (!message2 || !AGENT_PHONE_RE.test(message2)) return null;
+  const ts = Number(rec.__REALTIME_TIMESTAMP);
+  const time = Number.isFinite(ts) ? new Date(ts / 1e3).toISOString() : (/* @__PURE__ */ new Date()).toISOString();
+  const level = /fail|refus|error|unavailable|timeout/i.test(message2) ? "warn" : "info";
+  return { time, level, subsystem: "vm-agent/phone", message: redact(message2) };
+}
+var AGENT_UNIT = "controlclaw-agent";
+async function readAgentPhoneJournal() {
+  if (SERVICE2 !== "openclaw") return [];
+  try {
+    const { stdout } = await run(
+      "sudo",
+      // -n: never wait for a password; the role's sudoers line allows `journalctl -u controlclaw-agent *`.
+      ["-n", "journalctl", "-u", AGENT_UNIT, "-n", String(JOURNAL_LINES * 4), "-o", "json", "--no-pager"],
+      SNAPSHOT_TIMEOUT_MS
+    );
+    return stdout.split("\n").flatMap((line) => {
+      const mapped = line.trim() ? mapAgentPhoneRecord(line) : null;
+      return mapped ? [mapped] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+function followAgentPhoneJournal(onLine) {
+  if (SERVICE2 !== "openclaw") return () => {
+  };
+  const child = spawn2("sudo", ["-n", "journalctl", "-u", AGENT_UNIT, "-f", "-n", "0", "-o", "json", "--no-pager"], {
+    stdio: ["ignore", "pipe", "ignore"],
+    detached: true
+  });
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk.toString("utf-8");
+    let idx;
+    while ((idx = buffer.indexOf("\n")) >= 0) {
+      const mapped = mapAgentPhoneRecord(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 1);
+      if (mapped) onLine(mapped);
+    }
+  });
+  child.on("error", () => {
+  });
+  return () => {
+    if (child.exitCode !== null || child.pid === void 0) return;
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch {
+      child.kill("SIGTERM");
+    }
+  };
+}
 async function readJournal() {
   const { stdout } = await run(
     "sudo",
@@ -6606,13 +6669,14 @@ function parseLines(url2) {
 async function handleLogs(url2, res) {
   const lines = parseLines(url2);
   const fromFile = readFileTail(lines);
-  const [gateway, journal, service] = await Promise.all([
+  const [gateway, journal, service, phone] = await Promise.all([
     fromFile ? Promise.resolve({ lines: fromFile.lines, warning: null }) : readCliSnapshot(lines),
     readJournal(),
-    readServiceState()
+    readServiceState(),
+    readAgentPhoneJournal()
   ]);
   const ts = (l2) => Date.parse(l2.time) || 0;
-  const merged = [...gateway.lines, ...journal].sort((a2, b2) => ts(a2) - ts(b2)).slice(-lines);
+  const merged = [...gateway.lines, ...journal, ...phone].sort((a2, b2) => ts(a2) - ts(b2)).slice(-lines);
   res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
   res.end(JSON.stringify({ service, lines: merged, ...gateway.warning ? { warning: gateway.warning } : {} }));
 }
@@ -6649,6 +6713,7 @@ async function handleLogStream(req, res) {
     cleanup();
   }, LOGS_STREAM_MAX_MS);
   let stopFollow = null;
+  const stopPhone = followAgentPhoneJournal((line) => event(null, line));
   function cleanup() {
     if (closed) return;
     closed = true;
@@ -6656,6 +6721,7 @@ async function handleLogStream(req, res) {
     clearInterval(servicePoll);
     clearTimeout(stop);
     stopFollow?.();
+    stopPhone();
     try {
       res.end();
     } catch {
@@ -7172,7 +7238,7 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.view === 'files' || d.view === 'logs' || d.view === 'whatsapp' || d.view === 'meetings') { $('h').textContent = d.view === 'files' ? 'Opening files' : d.view === 'logs' ? 'Opening logs' : d.view === 'meetings' ? 'Opening meetings' : 'Opening WhatsApp'; step(3); location.replace(d.next); return; }
+  if (d.view === 'files' || d.view === 'logs' || d.view === 'whatsapp' || d.view === 'meetings' || d.view === 'phone') { $('h').textContent = d.view === 'files' ? 'Opening files' : d.view === 'logs' ? 'Opening logs' : d.view === 'meetings' ? 'Opening meetings' : d.view === 'phone' ? 'Opening call history' : 'Opening WhatsApp'; step(3); location.replace(d.next); return; }
   if (d.view === 'direct') { step(3); location.replace(d.next); return; }
   if (d.paired === false) { notPaired(d.next, d.pairError); return; }
   await wait(450);
@@ -7203,6 +7269,12 @@ var DENIED_WHATSAPP_PAGE = shell(
   "This code is private",
   `<h1>This code is private</h1>
 <p class="note">Only an owner or admin can link WhatsApp. Open it from the Channels page of your ControlClaw console.</p>
+<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+);
+var DENIED_PHONE_PAGE = shell(
+  "These calls are private",
+  `<h1>These calls are private</h1>
+<p class="note">Open Call history from the Phone page of your ControlClaw console. If you were signed in, your session has expired: open it again.</p>
 <a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
 );
 var DENIED_LOGS_PAGE = shell(
@@ -7601,7 +7673,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    if (payload.next === "files" || payload.next === "logs" || payload.next === "whatsapp" || payload.next === "meetings") {
+    if (payload.next === "files" || payload.next === "logs" || payload.next === "whatsapp" || payload.next === "meetings" || payload.next === "phone") {
       const session2 = await issueSession(vmId, claims);
       json(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
