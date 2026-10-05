@@ -165,6 +165,9 @@ test('a second lookup while one is pending gets a busy answer instead of ending 
  const f=fixture();f.bridge.allowed=true;f.bridge.event(tool);f.bridge.event({...tool,callId:'c2'});
  assert.equal(f.bridge.closed,false);assert.equal(f.tools.length,1);
  const busy=f.sent.find(e=>e.item?.callId==='c2');assert.equal(JSON.parse(busy.item.output).status,'busy');
+ // Busy answers do not use up the session's lookup limit.
+ for(let i=0;i<30;i++)f.bridge.event({...tool,callId:'x'+i});
+ assert.equal(f.bridge.closed,false);assert.equal(f.tools.length,1);
  f.bridge.submitToolResult('c1',{text:'first'});assert.ok(f.sent.some(e=>e.item?.callId==='c1'));f.bridge.close();
 });
 test('a lookup that never answers gets a timeout output even after an interruption',t=>{

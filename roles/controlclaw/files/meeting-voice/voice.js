@@ -144,12 +144,13 @@ export class VoiceBridge {
     else if(e.type==='error'&&!['response_cancel_not_active'].includes(e.code??e.error?.code))this.fail();
   }
   delegate(e){
-    if(!this.allowed||e.name!=='ask_agent'||++this.callCount>MAX_TOOL_CALLS){this.fail();return;}
+    if(!this.allowed||e.name!=='ask_agent'){this.fail();return;}
     if(typeof e.callId!=='string'||e.callId.length>200||typeof e.arguments!=='string'||e.arguments.length>24576){this.fail();return;}
     let args;try{args=JSON.parse(e.arguments);}catch{this.fail();return;}
     if(!args||typeof args.question!=='string'||args.question.length>3000||args.context!==undefined&&(typeof args.context!=='string'||args.context.length>1000)||Object.keys(args).some(k=>!['question','context'].includes(k))){this.fail();return;}
     // One lookup at a time. A second request is answered, not fatal: the first one's answer is still coming.
-    if(this.calls.size){this.toolOutput(e.callId,{status:'busy',message:'Another lookup is still running. Its answer will be given when it arrives. Do not start another lookup for it.'});this.continueAfterTool();return;}
+    if(this.calls.size){this.toolOutput(e.callId,{status:'busy',message:'Only one lookup can run at a time and one is still running. Ask this again after the current one answers.'});this.continueAfterTool();return;}
+    if(++this.callCount>MAX_TOOL_CALLS){this.fail();return;}
     const timer=setTimeout(()=>{if(!this.closed)this.submitToolResult(e.callId,{error:'Main-agent lookup timed out'});},TOOL_TIMEOUT);
     this.calls.set(e.callId,{timer});
     this.phoneMetric('delegate_start');console.info(JSON.stringify({event:'cc.meeting.voice.ask_agent',phase:'start'}));
