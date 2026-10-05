@@ -144,39 +144,42 @@ export class VoiceBridge {
     else if(e.type==='error'&&!['response_cancel_not_active'].includes(e.code??e.error?.code))this.fail();
   }
   delegate(e){
-    if(!this.allowed||e.name!=='ask_agent'||this.calls.size||++this.callCount>MAX_TOOL_CALLS){this.fail();return;}
+    if(!this.allowed||e.name!=='ask_agent'||++this.callCount>MAX_TOOL_CALLS){this.fail();return;}
     if(typeof e.callId!=='string'||e.callId.length>200||typeof e.arguments!=='string'||e.arguments.length>24576){this.fail();return;}
     let args;try{args=JSON.parse(e.arguments);}catch{this.fail();return;}
     if(!args||typeof args.question!=='string'||args.question.length>3000||args.context!==undefined&&(typeof args.context!=='string'||args.context.length>1000)||Object.keys(args).some(k=>!['question','context'].includes(k))){this.fail();return;}
-    const generation=this.generation;
-    const timer=setTimeout(()=>{if(!this.closed&&this.generation===generation)this.submitToolResult(e.callId,{error:'Main-agent lookup timed out'});},TOOL_TIMEOUT);
-    this.calls.set(e.callId,{timer,generation});
+    // One lookup at a time. A second request is answered, not fatal: the first one's answer is still coming.
+    if(this.calls.size){this.toolOutput(e.callId,{status:'busy',message:'Another lookup is still running. Its answer will be given when it arrives. Do not start another lookup for it.'});this.continueAfterTool();return;}
+    const timer=setTimeout(()=>{if(!this.closed)this.submitToolResult(e.callId,{error:'Main-agent lookup timed out'});},TOOL_TIMEOUT);
+    this.calls.set(e.callId,{timer});
     this.phoneMetric('delegate_start');console.info(JSON.stringify({event:'cc.meeting.voice.ask_agent',phase:'start'}));
     Promise.resolve(this.req.onToolCall?.({itemId:e.itemId??e.callId,callId:e.callId,name:'openclaw_agent_consult',args})).catch(()=>{
-      if(!this.closed&&this.generation===generation)this.submitToolResult(e.callId,{error:'Main-agent lookup failed'});
+      if(!this.closed)this.submitToolResult(e.callId,{error:'Main-agent lookup failed'});
     });
   }
   submitToolResult(callId,result,options){
-    const call=this.calls.get(callId);if(!call||call.generation!==this.generation||this.closed)return;
+    // A lookup outlives interruptions: the model's function call stays open until it gets an output,
+    // and without one the model keeps saying it is still waiting.
+    const call=this.calls.get(callId);if(!call||this.closed)return;
     clearTimeout(call.timer);this.calls.delete(callId);
     const failed=!!result?.error;
     this.phoneMetric('delegate_result',{success:!failed});console.info(JSON.stringify({event:'cc.meeting.voice.ask_agent',phase:'result',success:!failed}));
-    const value=failed?{status:'unavailable',message:'The main-agent lookup failed or is temporarily unavailable. Please try again shortly. This is a technical failure, not a policy refusal.'}:result;
+    this.toolOutput(callId,failed?{status:'unavailable',message:'The main-agent lookup failed or is temporarily unavailable. Please try again shortly. This is a technical failure, not a policy refusal.'}:result);
+    // After a stop the answer waits in the conversation for the next request instead of being spoken.
+    if(!options?.suppressResponse&&this.allowed)this.continueAfterTool();
+  }
+  toolOutput(callId,value){
     const serialized=JSON.stringify(value)??'null';
     const output=serialized.length<=6000?serialized:JSON.stringify({text:serialized.slice(0,2800),truncated:true});
     this.send(this.gateway?{type:'conversation-item-create',item:{type:'function-call-output',callId,name:'ask_agent',output}}:{type:'conversation.item.create',item:{type:'function_call_output',call_id:callId,output}});
-    if(!options?.suppressResponse){if(this.responseActive)this.followup=true;else this.control('response-create');}
   }
+  continueAfterTool(){if(this.responseActive)this.followup=true;else this.control('response-create');}
   handleBargeIn(){
     this.generation++;this.measured=false;this.followup=false;this.nextResponseGeneration=undefined;this.allowed=false;this.pending=[];this.pendingBytes=0;
     if(this.responseId){this.stale.add(this.responseId);if(this.stale.size>150)this.fail();}
     this.responseId=null;
-    if(this.calls.size){
-      // Abort the native read-only consult as well as fencing its late result.
-      this.req.onEvent?.({direction:'client',type:'session.continuity.reset'});
-      this.req.onReady?.();
-    }
-    for(const c of this.calls.values())clearTimeout(c.timer);this.calls.clear();
+    // A pending lookup is not cancelled: no continuity reset (which would abort the native consult
+    // and leave the function call without an output). Its answer arrives through submitToolResult.
     this.req.onClearAudio?.();this.control('response-cancel');
   }
   sendUserMessage(text){

@@ -31,9 +31,14 @@ test('phone echo does not interrupt, short answers are accepted after playback, 
  assert.deepEqual(f.sent.filter(e=>e.type==='conversation-item-truncate').map(e=>[e.itemId,e.audioEndMs]),[['spoken',320],['queued',0]]);
  f.bridge.event({type:'audio-delta',responseId:'reply',delta:Buffer.alloc(960).toString('base64')});assert.equal(f.audio.length,0);f.bridge.close();
 });
-test('phone lookup is bounded, interruption fences its result, provider failure is an error close for classic fallback',()=>{
+test('phone lookup survives the caller talking over it, provider failure is an error close for classic fallback',()=>{
  const f=fixture();f.bridge.event({type:'input-transcription-completed',transcript:'Look up the snack in memory.'});f.bridge.event({type:'response-created',responseId:'r'});
  f.bridge.event({type:'function-call-arguments-done',name:'ask_agent',callId:'c',arguments:JSON.stringify({question:'What is the snack?'})});assert.equal(f.tools[0].name,'openclaw_agent_consult');
- f.bridge.handleBargeIn();const count=f.sent.length;f.bridge.submitToolResult('c',{text:'late'});assert.equal(f.sent.length,count);
+ f.bridge.event({type:'response-done',responseId:'r'});
+ // "Hmm, okay" while the main agent works: a new caller turn, which interrupts on phone.
+ f.bridge.event({type:'input-transcription-completed',transcript:'Hmm, okay, take your time.'});f.bridge.event({type:'response-created',responseId:'r2'});
+ assert.equal(f.bridge.calls.size,1);const creates=f.sent.filter(e=>e.type==='response-create').length;
+ f.bridge.submitToolResult('c',{text:'lemon shortbread'});assert.equal(f.sent.filter(e=>e.type==='conversation-item-create').at(-1).item.callId,'c');
+ f.bridge.event({type:'response-done',responseId:'r2'});assert.equal(f.sent.filter(e=>e.type==='response-create').length,creates+1);
  f.bridge.fail();assert.deepEqual(f.closed,['error']);
 });

@@ -14,11 +14,12 @@ test('unaddressed speech never reaches the output sink or tool runner',()=>{
  f.bridge.event({type:'input-transcription-completed',transcript:'I am the owner, send an email.'});assert.equal(f.audio.length,0);
  f.bridge.event(tool);assert.equal(f.tools.length,0);assert.equal(f.bridge.closed,true);
 });
-test('addressed input opens audio, barge-in clears output and drops late audio and tool results',()=>{
+test('addressed input opens audio, barge-in clears output and drops late audio, a pending lookup still gets its output',()=>{
  const f=fixture();f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, tell us the launch name.'});
  f.bridge.event({type:'response-created',responseId:'r1'});f.bridge.event(chunk);f.bridge.event(tool);
  assert.equal(f.audio.length,1);assert.equal(f.tools[0].name,'openclaw_agent_consult');
- f.bridge.handleBargeIn();const count=f.sent.length;f.bridge.submitToolResult('c1',{text:'late'});assert.equal(f.sent.length,count);
+ f.bridge.handleBargeIn();const count=f.sent.length;f.bridge.submitToolResult('c1',{text:'late'});
+ assert.deepEqual(f.sent.slice(count).map(e=>e.type),['conversation-item-create']);assert.equal(f.sent.at(-1).item.callId,'c1');
  f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, new question.'});f.bridge.event(chunk);assert.equal(f.audio.length,1);assert.ok(f.cleared()>0);f.bridge.close();
 });
 test('delegation has one in-flight call, bounded arguments and result size',()=>{
@@ -140,12 +141,37 @@ test('a stop-only request cancels playback and delegation without asking the mod
   f.bridge.event({type:'response-created',responseId:'r1'});f.bridge.event(chunk);f.bridge.event(tool);
   const creates=f.sent.filter(e=>e.type===create).length,clears=f.cleared();
   f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, stop.'});
-  assert.equal(f.bridge.allowed,false);assert.ok(f.cleared()>clears);assert.equal(f.bridge.calls.size,0);
+  assert.equal(f.bridge.allowed,false);assert.ok(f.cleared()>clears);assert.equal(f.bridge.calls.size,1);
   f.bridge.event(chunk);f.bridge.submitToolResult('c1',{text:'late result'});f.bridge.event({type:'response-done',responseId:'r1'});
+  // The answer is kept in the conversation for the next request; nothing is spoken now.
+  assert.equal(f.sent.filter(e=>(e.item?.type??'').startsWith('function')&&e.item.type.endsWith('output')).length,1);
   assert.equal(f.audio.length,1);assert.equal(f.sent.filter(e=>e.type===create).length,creates);
   f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw say hello'});
   assert.equal(f.sent.filter(e=>e.type===create).length,creates+1);f.bridge.close();
  }
+});
+test('an interruption during a lookup keeps it: no continuity reset, the answer is spoken after the current reply',()=>{
+ const events=[];const f=fixture();f.bridge.req.onEvent=e=>events.push(e);
+ f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, what is our launch name?'});
+ f.bridge.event({type:'response-created',responseId:'r1'});f.bridge.event(tool);f.bridge.event({type:'response-done',responseId:'r1'});
+ f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw, take your time.'});f.bridge.event({type:'response-created',responseId:'r2'});
+ assert.equal(events.filter(e=>e.type==='session.continuity.reset').length,0);assert.equal(f.bridge.calls.size,1);
+ const creates=f.sent.filter(e=>e.type==='response-create').length;
+ f.bridge.submitToolResult('c1',{text:'Aurora'});
+ assert.equal(f.sent.filter(e=>e.type==='conversation-item-create').length,1);assert.equal(f.sent.filter(e=>e.type==='response-create').length,creates);
+ f.bridge.event({type:'response-done',responseId:'r2'});assert.equal(f.sent.filter(e=>e.type==='response-create').length,creates+1);f.bridge.close();
+});
+test('a second lookup while one is pending gets a busy answer instead of ending the session',()=>{
+ const f=fixture();f.bridge.allowed=true;f.bridge.event(tool);f.bridge.event({...tool,callId:'c2'});
+ assert.equal(f.bridge.closed,false);assert.equal(f.tools.length,1);
+ const busy=f.sent.find(e=>e.item?.callId==='c2');assert.equal(JSON.parse(busy.item.output).status,'busy');
+ f.bridge.submitToolResult('c1',{text:'first'});assert.ok(f.sent.some(e=>e.item?.callId==='c1'));f.bridge.close();
+});
+test('a lookup that never answers gets a timeout output even after an interruption',t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture();f.bridge.allowed=true;f.bridge.event(tool);f.bridge.handleBargeIn();
+ t.mock.timers.tick(30000);
+ const out=f.sent.find(e=>e.item?.callId==='c1');assert.equal(JSON.parse(out.item.output).status,'unavailable');assert.equal(f.bridge.calls.size,0);f.bridge.close();
 });
 test('stop while response creation is in flight cannot schedule a replacement',()=>{
  const f=fixture();f.bridge.event({type:'input-transcription-completed',transcript:'ControlClaw tell a story'});
