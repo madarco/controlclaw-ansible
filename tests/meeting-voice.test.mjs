@@ -188,7 +188,7 @@ test('a stop followed by a new spoken request still allows the requested respons
 });
 test('every gpt-realtime model of a provider is accepted, transcription models and other families are not',()=>{
  for(const m of ['openai/gpt-realtime-1.5','openai/gpt-realtime-2','openai/gpt-realtime-2.1','openai/gpt-realtime-mini','openai/gpt-realtime'])assert.equal(realtimeModel('gateway',m),true,m);
- for(const m of ['openai/gpt-realtime-whisper','openai/gpt-realtime-translate','openai/gpt-live-1','google/gemini-3.8-live','gpt-realtime-2','openai/gpt-realtime-2;x'])assert.equal(realtimeModel('gateway',m),false,m);
+ for(const m of ['openai/gpt-realtime-mini-transcribe','openai/gpt-realtime-2-translate','openai/gpt-realtime-whisper','openai/gpt-realtime-translate','openai/gpt-live-1','google/gemini-3.8-live','gpt-realtime-2','openai/gpt-realtime-2;x'])assert.equal(realtimeModel('gateway',m),false,m);
  assert.equal(realtimeModel('openai','gpt-realtime-mini'),true);assert.equal(realtimeModel('openai','openai/gpt-realtime-2'),false);
  assert.equal(realtimeModel('codex','gpt-realtime'),true);assert.equal(realtimeModel('codex','gpt-realtime-2'),false);
 });

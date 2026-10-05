@@ -4,7 +4,7 @@ const STOP = /^[\s,.:;!?-]*(?:please\s+)?stop(?:\s+(?:speaking|talking))?(?:\s+n
 // The gpt-realtime family, by provider: one protocol, token-billed (gpt-realtime-1.5, -2, -2.1, -mini, …).
 // Transcription and translation models share the prefix and are not voice models. ChatGPT/Codex
 // offers exactly gpt-realtime. Mirrors @controlclaw/meetings speechFamily and the firewall.
-const REALTIME_SUFFIX = '(?:-(?!whisper|translate|transcribe)[a-z0-9][a-z0-9.-]{0,23})?';
+const REALTIME_SUFFIX = '(?:-(?![a-z0-9.-]*(?:whisper|translate|transcribe))[a-z0-9][a-z0-9.-]{0,23})?';
 const REALTIME = { gateway: new RegExp(`^openai/gpt-realtime${REALTIME_SUFFIX}$`), openai: new RegExp(`^gpt-realtime${REALTIME_SUFFIX}$`), codex: /^gpt-realtime$/ };
 export const realtimeModel = (provider, model) => typeof model === 'string' && !!REALTIME[provider]?.test(model);
 const MAX_TOOL_CALLS = 24;
