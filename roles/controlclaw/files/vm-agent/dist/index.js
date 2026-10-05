@@ -26336,6 +26336,57 @@ var ConfigActivation = class {
   }
 };
 
+// src/settle.ts
+var UPDATE_WINDOW_MS = 15 * 6e4;
+var MAX_WAIT_MS = 45 * 6e4;
+var POLL_MS = 5e3;
+var GATEWAY_MS = 12e4;
+var RETRY_DELAY_MS = 6e4;
+var RETRY_ATTEMPTS = 3;
+var SupersededError = class extends Error {
+  constructor() {
+    super("Replaced by newer settings");
+  }
+};
+var defaultSleep = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
+function updateRunning(status) {
+  return status.phase === "resolving" || status.phase === "installing" || status.phase === "running";
+}
+function inUpdateWindow(status, now) {
+  if (updateRunning(status)) return true;
+  if (status.phase !== "done" && status.phase !== "failed") return false;
+  const at2 = status.at ? Date.parse(status.at) : NaN;
+  return Number.isFinite(at2) && now - at2 < UPDATE_WINDOW_MS;
+}
+async function waitUntilSettled(opts, maxWaitMs = MAX_WAIT_MS) {
+  const now = opts.now ?? Date.now;
+  const sleep6 = opts.sleep ?? defaultSleep;
+  const end = now() + maxWaitMs;
+  while (updateRunning(opts.update()) && now() < end) {
+    if (opts.superseded?.()) throw new SupersededError();
+    await sleep6(Math.min(POLL_MS, Math.max(1, end - now())));
+  }
+  if (updateRunning(opts.update())) return false;
+  await opts.gatewayReady?.(Math.min(GATEWAY_MS, Math.max(1e3, end - now()))).catch(() => false);
+  return true;
+}
+async function applyAfterUpdate(apply, opts) {
+  const now = opts.now ?? Date.now;
+  const sleep6 = opts.sleep ?? defaultSleep;
+  if (updateRunning(opts.update())) await waitUntilSettled(opts);
+  for (let attempt = 1; ; attempt++) {
+    if (opts.superseded?.()) throw new SupersededError();
+    try {
+      return await apply();
+    } catch (error62) {
+      if (attempt > RETRY_ATTEMPTS || !opts.transient(error62) || opts.superseded?.() || !inUpdateWindow(opts.update(), now())) throw error62;
+      opts.onRetry?.(attempt);
+      await waitUntilSettled(opts);
+      await sleep6(RETRY_DELAY_MS);
+    }
+  }
+}
+
 // src/phone.ts
 var PHONE_PACKAGE = "@openclaw/voice-call@2026.9.7";
 var PHONE_INTEGRITY = "sha512-3UGgi96z4Q1MBu29MffT6NVRg7mYPVIUVN8wuCmEtdw7UeeLVQ4bNpvHEvysVtAqUNvPEWGbniJfjfu595cEOw==";
@@ -26468,6 +26519,13 @@ async function probePhone(input2) {
   const body = await response.text();
   return response.status === 200 && /<Response[\s/>]/.test(body);
 }
+var TRANSIENT_SETUP_ERRORS = /* @__PURE__ */ new Set([
+  "plugin_busy",
+  "plugin_install_failed",
+  "gateway_unavailable",
+  "activation_timeout",
+  "listener_unavailable"
+]);
 var PhoneService = class {
   constructor(opts) {
     this.opts = opts;
@@ -26494,7 +26552,16 @@ var PhoneService = class {
     };
     this.last = record2;
     this.lastInput = encoded;
-    const run3 = this.serial.then(() => this.apply(input2));
+    const settle2 = this.opts.settle;
+    const run3 = this.serial.then(
+      () => settle2 ? applyAfterUpdate(() => this.apply(input2), {
+        ...settle2,
+        // A newer apply must not queue behind this one's wait and retries.
+        superseded: () => this.lastInput !== encoded,
+        transient: (error62) => error62 instanceof PhoneSetupError && TRANSIENT_SETUP_ERRORS.has(error62.code),
+        onRetry: (attempt) => console.warn(`[phone] setup failed during an agent update; retry ${attempt} after it settles`)
+      }) : this.apply(input2)
+    );
     this.serial = run3.catch(() => {
     });
     void run3.then(
@@ -28108,8 +28175,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "12e2c6c" : "unknown",
-  builtAt: true ? "2026-10-05T16:02:53+01:00" : "unknown"
+  commit: true ? "91da87b" : "unknown",
+  builtAt: true ? "2026-10-05T17:31:09+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -30901,6 +30968,9 @@ function eraseNativeMeetings(stateDir, sessionIds) {
 }
 
 // src/meetings.ts
+var MEETINGS_UPDATE_WAIT_MS = 45e3;
+var MeetingSettingsError = class extends Error {
+};
 var MeetingService = class {
   constructor(opts) {
     this.opts = opts;
@@ -30957,12 +31027,26 @@ var MeetingService = class {
       retention: "Keep until deleted"
     };
   }
-  apply(raw) {
+  async apply(raw) {
+    const settle2 = this.opts.settle;
+    if (settle2 && updateRunning(settle2.update())) {
+      this.parseApply(raw);
+      if (!await waitUntilSettled(settle2, MEETINGS_UPDATE_WAIT_MS))
+        throw new MeetingSettingsError("The agent is updating. Save the meetings settings again when the update finishes.");
+    }
     const next = this.applyChain.then(() => this.applyNow(raw));
     this.applyChain = next.catch(() => void 0);
     return next;
   }
-  async applyNow(raw) {
+  /** Validate a signed apply without side effects. Throws MeetingSettingsError. */
+  parseApply(raw) {
+    try {
+      return this.checkApply(raw);
+    } catch (error62) {
+      throw new MeetingSettingsError(error62 instanceof Error ? error62.message : "Invalid meetings apply");
+    }
+  }
+  checkApply(raw) {
     if (Object.keys(raw).some(
       (k2) => !["vmId", "revision", "policy", "media", "speech"].includes(k2)
     ) || raw.vmId !== this.opts.vmId || !Number.isSafeInteger(raw.revision) || Number(raw.revision) < 1)
@@ -30986,9 +31070,15 @@ var MeetingService = class {
       throw new Error("Stale settings revision");
     if (input2.revision === this.applied?.revision && JSON.stringify(input2) !== JSON.stringify(this.applied))
       throw new Error("Settings revision conflict");
-    if (input2.revision === this.applied?.revision) return this.metadata();
-    if (policy.enabled && !this.metadata().supported)
+    if (input2.revision !== this.applied?.revision && input2.policy.enabled && !this.metadata().supported)
       throw new Error("Meetings require Standard or larger");
+    return input2;
+  }
+  async applyNow(raw) {
+    const input2 = this.parseApply(raw);
+    const { policy, media } = input2;
+    const speech = input2.speech;
+    if (input2.revision === this.applied?.revision) return this.metadata();
     if (this.applied && this.applied.policy.enabled === policy.enabled && JSON.stringify(this.applied.speech ?? null) === JSON.stringify(speech ?? null) && this.applied.media.token === media.token && this.applied.media.origin === media.origin) {
       this.applied = input2;
       this.save();
@@ -39632,6 +39722,10 @@ server.listen(PORT, BIND, () => {
   const channelsForQr = channels;
   setWhatsappLoginProvider(() => channelsForQr.whatsappLogin());
   llm = new LlmService({ client, restartService: () => runAction("restart"), statePath: `${STATE_DIR}/memory-index.json`, mitmCaPath: `${KEYS_DIR2}/mitm-ca.crt` });
+  const settleAfterUpdate = {
+    update: () => update.status(),
+    gatewayReady: async (timeoutMs) => client?.whenConnected ? client.whenConnected(timeoutMs) : true
+  };
   if (client) meetings = new MeetingService({
     vmId: readKeyFile(KEYS_DIR2, "vm_id") ?? "",
     statePath: `${STATE_DIR}/meetings.json`,
@@ -39660,12 +39754,14 @@ server.listen(PORT, BIND, () => {
       else rmSync5(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
     },
     summarize: summarizeMeeting,
-    service: (action) => runAction(action)
+    service: (action) => runAction(action),
+    settle: settleAfterUpdate
   });
   phone = new PhoneService({
     client,
     restartService: () => runAction("restart"),
-    onActive: (note) => phoneCallLog.settings(note)
+    onActive: (note) => phoneCallLog.settings(note),
+    settle: settleAfterUpdate
   });
   agentmail = new AgentMailService({ client, envPath: "/home/controlclaw/.openclaw/.env", restartService: () => runAction("restart") });
   gmailWake = new GmailWakeService({ client, restartService: () => runAction("restart"), statePath: `${STATE_DIR}/openclaw-hooks.json`, gatewayPort: GATEWAY_PORT });

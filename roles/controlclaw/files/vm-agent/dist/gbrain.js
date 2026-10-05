@@ -6079,8 +6079,8 @@ function consoleMcpConfigured() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "12e2c6c" : "unknown",
-  builtAt: true ? "2026-10-05T16:02:53+01:00" : "unknown"
+  commit: true ? "91da87b" : "unknown",
+  builtAt: true ? "2026-10-05T17:31:09+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
