@@ -23,6 +23,8 @@ const MAX_QUEUE_BYTES = 30 * 24000 * 2;
 // session closes when the detector says the utterance ended without a name.
 const TIMING = { idle: 20000, maxSession: 5 * 60000, confirm: 15000, startGap: 5000, retry: 2500, tick: 1000 };
 const MAX_SESSIONS = 40;
+// "<name>, stop" as the voice model transcribed it: a second check, for when cc-wake missed "stop".
+const STOP = /^(?:please\s+)?stop(?:\s+(?:it|now|speaking|talking|reading))*(?:\s+please)?$/i;
 // Sessions opened early on a partial result and never confirmed: they cost a token mint, not money.
 const OPENS_PER_SESSION = 6;
 const REPLAY_CHUNK = 9600; // 200 ms
@@ -48,7 +50,8 @@ export function resampler() {
 export class WakeSessionBridge {
   constructor(req, deps) {
     this.req = req; this.deps = deps; this.config = req.providerConfig;
-    this.names = createWakeMatcher(this.config.wake?.words).names;
+    this.matcher = createWakeMatcher(this.config.wake?.words);
+    this.names = this.matcher.names;
     this.maxSessions = Math.min(MAX_SESSIONS, Number(this.config.wakeSessions) || 0);
     this.ring = []; this.ringBytes = 0; this.toDetector = resampler();
     this.session = null; this.opens = 0; this.sessions = 0; this.lastStart = 0;
@@ -145,7 +148,11 @@ export class WakeSessionBridge {
       onReady: () => {},
       // gpt-live streams output continuously, silence included: only audible speech keeps it open.
       onAudio: (audio, meta) => { if (audible(audio)) entry.lastActivity = Date.now(); this.req.onAudio(audio, meta); },
-      onTranscript: (role, text, final) => { if (role === 'assistant') entry.lastActivity = Date.now(); this.req.onTranscript?.(role, text, final); },
+      onTranscript: (role, text, final) => {
+        if (role === 'assistant') entry.lastActivity = Date.now();
+        else if (STOP.test(this.matcher.match(text)?.rest ?? '') && this.session === entry && entry.confirmed) { this.metric('wake_stop', { from: 'transcript' }); this.endSession('stop'); }
+        this.req.onTranscript?.(role, text, final);
+      },
       onToolCall: (call) => { entry.lastActivity = Date.now(); return this.req.onToolCall?.(call); },
       onClearAudio: () => this.req.onClearAudio?.(),
       onError: () => {},

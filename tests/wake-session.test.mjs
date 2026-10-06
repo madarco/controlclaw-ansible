@@ -261,3 +261,19 @@ test('a name heard as the session is about to close for quiet keeps it open for 
   assert.equal(f.out.mints, 1);
   f.bridge.close();
 });
+
+test('"<name>, stop" in the session transcript ends it even when the detector missed "stop"', async () => {
+  const f = fixture({ timing: { idle: 5000 } });
+  await f.bridge.connect();
+  for (let i = 0; i < 10; i++) f.bridge.sendAudio(pcm(100));
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await until(() => f.bridge.session?.ready);
+  const ws = f.ws.all[0];
+  ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: 'Jarvis, what did we decide?' }));
+  await wait(1300);
+  assert.ok(f.bridge.session, 'an ordinary follow-up keeps it');
+  ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: 'Jarvis, stop.' }));
+  await until(() => f.bridge.session === null, 2000);
+  assert.ok(ws.sent.some(e => e.type === 'session.close'));
+  f.bridge.close();
+});
