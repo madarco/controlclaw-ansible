@@ -106,6 +106,63 @@
     mode: '0755'
   notify: restart openclaw
 
+# cc-wake (meeting-voice/cc-wake.py) loads these. Not fatal: without them a wake-mode meeting falls
+# back to one transcript-gated session, and the agent does not report local listening.
+- name: Meetings | install local wake-name listening
+  block:
+    - name: Meetings | create the wake listener directory
+      ansible.builtin.file:
+        path: /opt/controlclaw/cc-wake
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Meetings | download the pinned Vosk wheel
+      ansible.builtin.get_url:
+        url: "{{ cc_wake_vosk_wheels[cc_wake_arch].url }}"
+        dest: /opt/controlclaw/cc-wake/vosk.whl
+        checksum: "sha256:{{ cc_wake_vosk_wheels[cc_wake_arch].sha256 }}"
+        mode: '0644'
+
+    - name: Meetings | unpack the Vosk library from the wheel
+      ansible.builtin.command:
+        argv: [unzip, -o, -j, /opt/controlclaw/cc-wake/vosk.whl, vosk/libvosk.so, -d, /opt/controlclaw/cc-wake]
+        creates: /opt/controlclaw/cc-wake/libvosk.so
+
+    - name: Meetings | download the wake model
+      ansible.builtin.get_url:
+        url: "https://alphacephei.com/vosk/models/{{ cc_wake_model }}.zip"
+        dest: "/opt/controlclaw/cc-wake/{{ cc_wake_model }}.zip"
+        checksum: "sha256:{{ cc_wake_model_sha256 }}"
+        mode: '0644'
+
+    - name: Meetings | unpack the wake model
+      ansible.builtin.command:
+        argv: [unzip, -o, -q, "/opt/controlclaw/cc-wake/{{ cc_wake_model }}.zip", -d, /opt/controlclaw/cc-wake]
+        creates: "/opt/controlclaw/cc-wake/{{ cc_wake_model }}/conf/model.conf"
+
+    - name: Meetings | point cc-wake at the model
+      ansible.builtin.file:
+        src: "/opt/controlclaw/cc-wake/{{ cc_wake_model }}"
+        dest: /opt/controlclaw/cc-wake/model
+        state: link
+        force: true
+
+    - name: Meetings | check that the wake listener loads
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, /opt/controlclaw/meeting-voice/cc-wake.py, --check, ControlClaw]
+      register: cc_wake_check
+      changed_when: false
+      failed_when: "'control claw' not in cc_wake_check.stdout"
+  rescue:
+    - name: Meetings | continue without local wake-name listening
+      ansible.builtin.file:
+        path: /opt/controlclaw/cc-wake/model
+        state: absent
+  vars:
+    cc_wake_arch: "{{ 'aarch64' if ansible_architecture in ['aarch64', 'arm64'] else 'x86_64' }}"
+
 - name: Meetings | provision an ephemeral guest browser unit
   ansible.builtin.copy:
     dest: /etc/systemd/user/cc-meeting-browser.service

@@ -7,6 +7,7 @@
 // over the model never cancels one. No provider payloads, transcripts, credentials or audio are
 // logged here.
 import { createWakeMatcher, nameList } from './wake.js';
+import { voiceRecord } from './record.js';
 const LIVE = { gateway: /^openai\/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/, openai: /^gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/ };
 export const liveModel = (provider, model) => typeof model === 'string' && !!LIVE[provider]?.test(model);
 const MAX_LOOKUPS = 24;
@@ -46,6 +47,7 @@ export class LiveBridge {
     // Lookups by delegation id (queued or running), the one running, and the ids already answered.
     this.jobs = new Map(); this.running = null; this.finished = new Set(); this.latestDelegation = null;
     this.eventId = 0; this.outputItems = 0;
+    this.record = deps.record ?? voiceRecord(this.config.surface);
   }
   metric(phase, extra = {}) { (this.deps.metric ?? (m => console.info(JSON.stringify(m))))({ event: this.phone ? 'cc.phone.voice' : 'cc.meeting.voice', family: 'live', phase, at: Date.now(), ...extra }); }
   async connect() {
@@ -69,11 +71,13 @@ export class LiveBridge {
       ws.on('open', () => this.send({ type: 'session.start', session: this.session() }));
       ws.on('message', data => {
         let event; try { event = JSON.parse(data); } catch { this.fail(); return; }
-        if (event.type === 'session.started' && !this.ready) { this.ready = true; clearTimeout(timeout); resolve(); this.metric('ready'); this.req.onReady?.(); }
+        // Billed seconds still arrive after we asked to close (session.closed carries the final count).
+        if ((event?.type === 'session.usage.updated' || event?.type === 'session.closed') && Number.isFinite(event.usage?.seconds)) this.seconds = Math.max(this.seconds ?? 0, event.usage.seconds);
+        if (event.type === 'session.started' && !this.ready) { this.ready = true; this.startedAt = Date.now(); clearTimeout(timeout); resolve(); this.metric('ready'); this.req.onReady?.(); }
         this.event(event);
       });
       ws.on('error', () => { clearTimeout(timeout); reject(new Error('Voice transport failed')); this.fail(); });
-      ws.on('close', () => { clearTimeout(timeout); if (!this.ready) reject(new Error('Voice session refused')); if (!this.closed) this.fail(); });
+      ws.on('close', () => { clearTimeout(timeout); this.flushUsage(); if (!this.ready) reject(new Error('Voice session refused')); if (!this.closed) this.fail(); });
     });
     this.deadline = setTimeout(() => this.fail(), c.maxMinutes * 60000);
     this.idle = setInterval(() => { if (Date.now() - this.lastSpeech > 300000) this.fail(); }, 1000);
@@ -81,7 +85,9 @@ export class LiveBridge {
   }
   session() {
     const names = nameList(this.wake.names);
-    const addressing = this.wakeRequired
+    const addressing = this.config.woken
+      ? `You were connected because someone in the meeting seemed to call you by one of your names (${names}); the audio you hear first is what they said. If it is a request to you, answer it. If they only mentioned the name while talking to someone else, say nothing. Follow-ups need no name while the conversation with you goes on. When people go back to talking among themselves, stay silent.`
+      : this.wakeRequired
       ? `Speak only when someone's request starts with one of your names: ${names}. Otherwise stay silent, even if you could help.`
       : this.phone ? '' : `Your names are ${names}.`;
     const instructions = (this.phone ? PHONE : SYSTEM) + `\n${addressing}\nNever say your own names.\n` + (this.req.instructions ?? '').slice(0, 8000);
@@ -98,6 +104,14 @@ export class LiveBridge {
     if (this.ws?.bufferedAmount > 48000) return;
     let energy = 0; for (let i = 0; i < audio.length; i += 2) energy += Math.abs(audio.readInt16LE(i));
     if (audio.length && energy / (audio.length / 2) > 450) this.lastSpeech = Date.now();
+    this.send({ type: 'session.input_audio.append', audio: audio.toString('base64') });
+  }
+  /** Room on the socket for more replayed audio (wake mode sends the last seconds before the name). */
+  canSend() { return this.ready && !this.closed && (this.ws?.bufferedAmount ?? 0) < 48000; }
+  /** Audio that must not be dropped as backlog: the replayed request. Callers pace it with canSend(). */
+  appendAudio(audio) {
+    if (!this.ready || this.closed || !Buffer.isBuffer(audio) || audio.length % 2 || audio.length > 48000) return;
+    this.lastSpeech = Date.now();
     this.send({ type: 'session.input_audio.append', audio: audio.toString('base64') });
   }
   event(e) {
@@ -121,12 +135,9 @@ export class LiveBridge {
       case 'session.input_transcript.delta': this.fragment('user', e.delta); return;
       case 'session.output_transcript.delta': if (this.mayTalk(Date.now())) this.fragment('assistant', e.delta); return;
       case 'session.delegation.created': this.delegate(e.delegation); return;
-      case 'session.usage.updated': case 'session.closed': {
-        const seconds = e.usage?.seconds;
-        if (Number.isFinite(seconds)) this.seconds = seconds;
+      case 'session.usage.updated': case 'session.closed':
         if (e.type === 'session.closed') this.close('completed');
         return;
-      }
       case 'error':
         // A refused command (a late append, etc.) does not end the session; a startup or session error does.
         if (e.error?.client_event_id) { this.metric('command_refused', { code: String(e.error.code ?? '').slice(0, 60) }); return; }
@@ -155,7 +166,7 @@ export class LiveBridge {
     this[role + 'Flush'] = setTimeout(() => {
       const text = (role === 'user' ? this.inputText : this.outputText).trim().slice(0, 8000);
       if (role === 'user') this.inputText = ''; else this.outputText = '';
-      if (text && !this.closed) this.req.onTranscript?.(role, text, true);
+      if (text && !this.closed) { this.req.onTranscript?.(role, text, true); this.record.line(role, text); }
     }, 1200);
     this[role + 'Flush'].unref?.();
   }
@@ -264,6 +275,12 @@ export class LiveBridge {
   acknowledgeMark() {}
   isConnected() { return this.ready && !this.closed; }
   fail() { if (this.closed) return; this.close(this.phone ? 'error' : 'completed'); this.req.onError?.(new Error('Meeting voice stopped. Check speech credit, call limits and provider availability.')); }
+  /** Once per session: the provider's billed seconds, or the connected time if it never said. */
+  flushUsage() {
+    if (this.usageWritten || !this.startedAt) return;
+    this.usageWritten = true;
+    this.record.usage(Number.isFinite(this.seconds) ? this.seconds : (Date.now() - this.startedAt) / 1000, 'live', this.startedAt);
+  }
   close(reason = 'completed') {
     if (this.closed) return; this.closed = true; this.ready = false;
     this.abort?.abort(); clearTimeout(this.deadline); clearInterval(this.idle);
@@ -273,7 +290,7 @@ export class LiveBridge {
     if (Number.isFinite(this.seconds)) this.metric('closed', { seconds: this.seconds });
     // Ask for a graceful close (final usage), then drop the socket shortly after.
     if (this.ws?.readyState === 1) { try { this.ws.send(JSON.stringify({ type: 'session.close', event_id: `cc_${++this.eventId}` })); } catch { /* closing anyway */ } }
-    const ws = this.ws; const end = setTimeout(() => ws?.terminate(), 1500); end.unref?.();
+    const ws = this.ws; const end = setTimeout(() => { this.flushUsage(); ws?.terminate(); }, 1500); end.unref?.();
     this.req.onClearAudio?.(); this.req.onClose?.(reason);
   }
 }

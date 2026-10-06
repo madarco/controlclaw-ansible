@@ -1,3 +1,4 @@
+import './fixtures/home.mjs';
 import {execFileSync} from 'node:child_process';
 import {runInNewContext} from 'node:vm';
 import {fileURLToPath} from 'node:url';

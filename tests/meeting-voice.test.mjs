@@ -1,3 +1,4 @@
+import './fixtures/home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {VoiceBridge, realtimeModel} from '../roles/controlclaw/files/meeting-voice/voice.js';

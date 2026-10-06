@@ -2,6 +2,8 @@ import { createRequire } from 'node:module';
 import { VoiceBridge } from './voice.js';
 import { LiveBridge, liveModel } from './live.js';
 import { PhoneVoiceBridge, PhoneLiveBridge } from './phone.js';
+import { WakeSessionBridge } from './wake-session.js';
+import { meetingWakeSessions } from './record.js';
 const require = createRequire('/usr/lib/node_modules/openclaw/package.json');
 const WebSocket = require('ws');
 const codecs = require('openclaw/plugin-sdk/realtime-voice-provider');
@@ -14,8 +16,15 @@ export default {
       capabilities: { transports: ['gateway-relay'], inputAudioFormats: [format], outputAudioFormats: [format], supportsBargeIn: true, supportsToolCalls: true },
       resolveConfig: ({rawConfig}) => rawConfig,
       isConfigured: ({providerConfig:c}) => !!c?.placeholder && !!c?.model,
-      // gpt-live speaks its own protocol (live.js); every gpt-realtime model uses voice.js.
-      createBridge: req => liveModel(req.providerConfig?.provider, req.providerConfig?.model) ? new LiveBridge(req, { WebSocket }) : new VoiceBridge(req, { WebSocket }),
+      // gpt-live speaks its own protocol (live.js); every gpt-realtime model uses voice.js. With the
+      // wake word on, gpt-live listens on the box and opens a session per request, when this
+      // meeting's firewall lease allows several (meetingWakeSessions).
+      createBridge: req => {
+        const c = req.providerConfig;
+        if (!liveModel(c?.provider, c?.model)) return new VoiceBridge(req, { WebSocket });
+        const sessions = c.wake?.enabled !== false ? meetingWakeSessions() : 0;
+        return sessions ? new WakeSessionBridge({ ...req, providerConfig: { ...c, wakeSessions: sessions } }, { WebSocket }) : new LiveBridge(req, { WebSocket });
+      },
     });
     api.registerRealtimeVoiceProvider({
       id: 'cc-phone-voice', label: 'Phone speech',

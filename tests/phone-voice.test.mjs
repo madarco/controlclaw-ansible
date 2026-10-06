@@ -1,3 +1,4 @@
+import './fixtures/home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PhoneVoiceBridge} from '../roles/controlclaw/files/meeting-voice/phone.js';

@@ -1,4 +1,5 @@
 {
   "speechFamilies": ["realtime", "live"],
-  "wakeWords": true
+  "wakeWords": true,
+  "wakeLocal": true
 }

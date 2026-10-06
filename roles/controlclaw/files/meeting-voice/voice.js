@@ -1,5 +1,6 @@
 // No provider payloads, transcripts, credentials or audio are logged here.
 import { createWakeMatcher, nameList } from './wake.js';
+import { voiceRecord } from './record.js';
 const STOP = /^[\s,.:;!?-]*(?:please\s+)?stop(?:\s+(?:speaking|talking))?(?:\s+now)?(?:\s+please)?[\s.!?]*$/i;
 // The gpt-realtime family, by provider: one protocol, token-billed (gpt-realtime-1.5, -2, -2.1, -mini, …).
 // Transcription and translation models share the prefix and are not voice models. ChatGPT/Codex
@@ -24,6 +25,7 @@ export class VoiceBridge {
     this.responseId=null;this.stale=new Set();this.inputBytes=0;this.outputBytes=0;
     this.supportsToolResultContinuation=false;
     this.recentOutput=[];this.outputText='';this.inputTurns=new Map();this.inputSequence=0;this.addressedSequence=0;
+    this.record=deps.record??voiceRecord(this.config.surface);
   }
   phoneMetric(phase,extra={}) { if(this.phone)(this.deps.metric??(m=>console.info(JSON.stringify(m))))({event:'cc.phone.voice',phase,at:Date.now(),turn:this.inputSequence,...extra}); }
   async connect() {
@@ -44,7 +46,7 @@ export class VoiceBridge {
     await new Promise((resolve,reject)=>{
       const ws=this.ws=new this.deps.WebSocket(url,protocols,{headers,maxPayload:512*1024});
       const timeout=setTimeout(()=>{this.fail();reject(new Error('Voice setup timed out'));},15000);
-      const ready=()=>{if(this.closed||this.ready)return;this.ready=true;clearTimeout(timeout);resolve();this.phoneMetric("ready");this.req.onReady?.();};
+      const ready=()=>{if(this.closed||this.ready)return;this.ready=true;this.startedAt=Date.now();clearTimeout(timeout);resolve();this.phoneMetric("ready");this.req.onReady?.();};
       ws.on('open',()=>this.configure());
       ws.on('message',data=>{try{const event=this.normalize(JSON.parse(data));if(event.type==='session-updated')ready();this.event(event);}catch{this.fail();}});
       ws.on('error',()=>{clearTimeout(timeout);reject(new Error('Voice transport failed'));this.fail();});
@@ -113,7 +115,7 @@ export class VoiceBridge {
       this.phoneMetric('transcript_ready');
       const text=String(e.transcript??'').slice(0,8000);
       if(this.isEcho(text))return;
-      this.req.onTranscript?.('user',text,true);
+      this.req.onTranscript?.('user',text,true);this.record.line('user',text);
       const addressed=this.wake.match(text);
       if(this.wakeRequired&&!addressed)return;
       this.addressedSequence=turn.sequence;this.turnStartedAt=turn.at;this.phoneMetric('turn_accepted');
@@ -152,7 +154,7 @@ export class VoiceBridge {
       if(this.allowed){if(!this.measured){this.measured=true;this.phoneMetric('first_audio');const metric={event:'cc.meeting.voice.first_audio',provider:this.config.provider,model:this.config.model,latencyMs:Math.max(0,Date.now()-(this.turnStartedAt??this.lastSpeech))};(this.deps.metric??(m=>console.info(JSON.stringify(m))))(metric);}this.req.onAudio(audio,{itemId:e.itemId});}
       else {this.pendingBytes+=audio.length;if(this.pendingBytes>192000){this.pending=[];this.control('response-cancel');}else this.pending.push(audio);}
     }else if(e.type==='audio-transcript-delta'&&this.allowed){this.rememberOutput(String(e.delta??''),true);}
-    else if(e.type==='audio-transcript-done'&&this.allowed){const text=String(e.transcript??'').slice(0,8000);this.rememberOutput(text);this.req.onTranscript?.('assistant',text,true);}
+    else if(e.type==='audio-transcript-done'&&this.allowed){const text=String(e.transcript??'').slice(0,8000);this.rememberOutput(text);this.req.onTranscript?.('assistant',text,true);this.record.line('assistant',text);}
     else if(e.type==='function-call-arguments-done')this.delegate(e);
     else if(e.type==='error'&&!['response_cancel_not_active'].includes(e.code??e.error?.code))this.fail();
   }
@@ -232,6 +234,8 @@ export class VoiceBridge {
   fail(){if(this.closed)return;this.close(this.phone?'error':'completed');this.req.onError?.(new Error('Meeting voice stopped. Check speech credit, call limits and provider availability.'));}
   close(reason='completed'){
     if(this.closed)return;this.closed=true;this.ready=false;this.generation++;
+    // Token-billed: the connected time, for the voice minutes shown next to the meeting or call.
+    if(this.startedAt)this.record.usage((Date.now()-this.startedAt)/1000,'realtime',this.startedAt);
     this.abort?.abort();clearTimeout(this.deadline);clearInterval(this.idle);
     for(const c of this.calls.values())clearTimeout(c.timer);this.calls.clear();
     this.pending=[];this.pendingBytes=0;this.req.onClearAudio?.();

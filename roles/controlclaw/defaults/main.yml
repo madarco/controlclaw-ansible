@@ -335,6 +335,9 @@ agent_update_hosts:
   - registry.npmjs.org
   # AgentMail plugin registry and tarball
   - clawhub.ai
+  # openclaw-meetings.yml: cc-wake, the Vosk library (PyPI wheel) and its model
+  - files.pythonhosted.org
+  - alphacephei.com
 
 # App integrations: the OpenConnector runtime on the firewall (tasks/connector.yml). Version and
 # digest must match apps/saas/app/(integrations)/lib/connector-catalog.ts in the control plane.
@@ -477,6 +480,20 @@ agentmail_cli_arches:
 # Compatible host and official Google Meet plugin, reviewed 2026-10-02.
 openclaw_version: "2026.9.7"
 openclaw_meet_version: "2026.9.7"
+
+# Local wake-name listening for meetings (cc-wake, controlclaw docs/plans/gpt-live-and-wake-word.md
+# D6): libvosk.so from the pinned Vosk wheel (the Python package around it is not installed) and
+# the small English model. Both Apache 2.0, both checked by SHA-256. A box that cannot fetch them
+# (an Update behind a firewall that predates these hosts) keeps meetings working without it.
+cc_wake_vosk_wheels:
+  x86_64:
+    url: "https://files.pythonhosted.org/packages/fc/ca/83398cfcd557360a3d7b2d732aee1c5f6999f68618d1645f38d53e14c9ff/vosk-0.3.45-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.whl"
+    sha256: "25e025093c4399d7278f543568ed8cc5460ac3a4bf48c23673ace1e25d26619f"
+  aarch64:
+    url: "https://files.pythonhosted.org/packages/a4/23/3130a69fa0bf4f5566a52e415c18cd854bf561547bb6505666a6eb1bb625/vosk-0.3.45-py3-none-manylinux2014_aarch64.whl"
+    sha256: "54efb47dd890e544e9e20f0316413acec7f8680d04ec095c6140ab4e70262704"
+cc_wake_model: vosk-model-small-en-us-0.15
+cc_wake_model_sha256: "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
 openclaw_host_sha512: "ffc3762e77d31503ef9d98b38bca8a4857e72d068fbd21b709be31a35615edbe09858894738dd9351a57274d5b5a084b2b41339371d57a8fc3187708450c1158"
 openclaw_meet_sha512: "92692214bca4fa925a8170d8b97e3423082dbc4c64048070030303d8e5ca48abf5c4af934481e537522519c5fd8301f73036a0aa4aaaf59a7cb295b0fd6b4918"
 
