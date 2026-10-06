@@ -5493,6 +5493,8 @@ function parseSpeechPolicy(value) {
     throw new Error("Choose a supported speech model and a call limit from 5 to 60 minutes");
   return { provider: p2.provider, credentialId: p2.credentialId, model: p2.model, maxMinutes: p2.maxMinutes };
 }
+var DEFAULT_WAKE_WORDS = ["ControlClaw"];
+var MEETING_WAKE_DEFAULT = { enabled: true, words: DEFAULT_WAKE_WORDS };
 var COMMON_WORDS = /* @__PURE__ */ new Set([
   "hey",
   "hi",
@@ -5561,6 +5563,10 @@ function parseWakePolicy(value) {
   }
   if (new Set(words.map((w2) => String(w2).toLowerCase())).size !== words.length) throw new Error("Each name only once");
   return { enabled: p2.enabled, words };
+}
+var WAKE_SESSIONS = 40;
+function wakeSessions(policy) {
+  return policy.enabled && policy.speech && speechFamily(policy.speech.provider, policy.speech.model) === "live" && (policy.wake ?? MEETING_WAKE_DEFAULT).enabled ? WAKE_SESSIONS : 0;
 }
 var MEDIA_MAX_SECONDS = 4 * 60 * 60;
 var MEDIA_MAX_BYTES = 512 * 1024 * 1024;
@@ -39261,7 +39267,7 @@ var MeetingsFirewall = class {
       `meetings:${vmId}`,
       proposal,
       target.hostname,
-      `Enable guest Google Meet from your enrolled browser. ${policy.speech ? `Allow Bidi speech through ${policy.speech.provider}, model ${policy.speech.model}, for at most ${policy.speech.maxMinutes} minutes per call.${speechFamily(policy.speech.provider, policy.speech.model) === "live" ? " This model is billed for every connected second, about $3 an hour." : ""} The speech provider receives meeting audio. Meeting tools are read-only; actions need your private channel.` : "Transcript keeps microphone and camera off."} Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.`,
+      `Enable guest Google Meet from your enrolled browser. ${policy.speech ? `Allow Bidi speech through ${policy.speech.provider}, model ${policy.speech.model}, for at most ${policy.speech.maxMinutes} minutes per call.${speechFamily(policy.speech.provider, policy.speech.model) === "live" ? wakeSessions(policy) ? " This model is billed for every connected second, about $3 an hour; with the wake word on, the agent listens on its own box and connects only when called by name." : " This model is billed for every connected second, about $3 an hour." : ""} The speech provider receives meeting audio. Meeting tools are read-only; actions need your private channel.` : "Transcript keeps microphone and camera off."} Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.`,
       routes
     );
     return sent.ok ? {
@@ -39427,7 +39433,9 @@ var MeetingsFirewall = class {
         started: now2,
         expires: now2 + MEDIA_TTL_SECONDS,
         deadline: now2 + (found[1].policy.speech ? found[1].policy.speech.maxMinutes * 60 : MEDIA_MAX_SECONDS),
-        max_bytes: MEDIA_MAX_BYTES
+        max_bytes: MEDIA_MAX_BYTES,
+        // The agent opens a voice session per request; the proxy allows that many (wakeSessions).
+        ...wakeSessions(found[1].policy) ? { wake_sessions: wakeSessions(found[1].policy) } : {}
       };
       this.leases.set(vmId, lease);
     } else {
@@ -95334,8 +95342,8 @@ import { uptime } from "os";
 import { existsSync as existsSync15, readFileSync as readFileSync20 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "339fb59" : "unknown",
-  builtAt: true ? "2026-10-05T23:45:15+01:00" : "unknown"
+  commit: true ? "683193a" : "unknown",
+  builtAt: true ? "2026-10-06T14:06:39+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -96577,6 +96585,7 @@ async function main() {
           if (doctorTerminal && access?.ready()) features.push("doctor_terminal");
           features.push("speech_families");
           features.push("speech_wake");
+          features.push("speech_wake_sessions");
           if (controlPlaneMcpGateUp) features.push("controlplane_mcp");
           if (teamChat?.available() && teamChatWeb && access?.ready()) features.push("team_chat");
           if (access?.ready()) features.push("open_logs");

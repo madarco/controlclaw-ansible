@@ -2787,6 +2787,19 @@ _SPEECH_FAMILIES = {
 }
 LIVE_VOICES = {"marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"}
 LIVE_MAX_APPENDS = 400
+# Meetings in wake mode (controlclaw docs/plans/gpt-live-and-wake-word.md, D7/D10): the agent opens a
+# gpt-live session per request, and the mitm-agent marks such a meeting lease with `wake_sessions`
+# (at most 40). Then: still one socket at a time; at most `wake_sessions` sockets that carry audio;
+# up to six token mints per session, since a session opened early on a half-heard name and never
+# given audio costs a mint but is not billed; and one start per 2 s.
+WAKE_MAX_SESSIONS = 40
+WAKE_OPENS_PER_SESSION = 6
+WAKE_START_GAP = 2
+
+
+def wake_sessions(lease, family, purpose):
+    n = lease.get("wake_sessions")
+    return n if purpose == "meeting" and family == "live" and type(n) is int and 1 < n <= WAKE_MAX_SESSIONS else 0
 
 
 def speech_family(provider, model):
@@ -2881,8 +2894,11 @@ def voice_request(flow, vm_id):
     if usage["bytes"] >= VOICE_MAX_BYTES or usage["responses"] >= 120 or usage["active"]:
         return "Voice call limit reached"
     mint = provider == "gateway" and path == "/v1/realtime/client-secrets"
-    if (mint or provider != "gateway") and usage["attempts"] >= 4:
+    wake = wake_sessions(lease, family, purpose)
+    if (mint or provider != "gateway") and usage["attempts"] >= (wake * WAKE_OPENS_PER_SESSION if wake else 4):
         return "Voice call limit reached"
+    if wake and (mint or provider != "gateway") and now - usage.get("last_start", 0) < WAKE_START_GAP:
+        return "Voice sessions are starting too fast"
     if mint:
         try:
             body = json.loads(flow.request.content)
@@ -2892,6 +2908,7 @@ def voice_request(flow, vm_id):
         except (ValueError, TypeError):
             return "Invalid realtime token request"
         usage["attempts"] += 1
+        usage["last_start"] = now
     else:
         if flow.request.method != "GET" or flow.request.headers.get("upgrade", "").lower() != "websocket":
             return "Only the approved voice WebSocket is allowed"
@@ -2916,11 +2933,12 @@ def voice_request(flow, vm_id):
                     (family == "realtime" and (path != "/v1/realtime" or query != {"model": model})):
                 return "Invalid provider voice request"
             usage["attempts"] += 1
+            usage["last_start"] = now
             if provider == "codex" and speech_cred.get("speech_account_id"):
                 flow.request.headers["chatgpt-account-id"] = speech_cred["speech_account_id"]
     if purpose == "phone":
         usage["reserved_until"] = now + 60
-    flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint, "purpose": purpose, "family": family}
+    flow.metadata["cc_voice"] = {"vm_id": vm_id, "lease_id": lease["id"], "model": model, "provider": provider, "mint": mint, "purpose": purpose, "family": family, "wake": wake}
     if speech_cred:
         flow.metadata["voice_credential"] = speech_cred["placeholder"]
     return None
@@ -3074,7 +3092,13 @@ def websocket_message(flow):
     try:
         event = json.loads(message.content)
         if message.from_client:
-            reject |= not voice_client_event(event, voice["provider"], voice["model"], voice.get("family", "realtime"), voice.setdefault("live", {}))
+            state = voice.setdefault("live", {})
+            reject |= not voice_client_event(event, voice["provider"], voice["model"], voice.get("family", "realtime"), state)
+            if voice.get("wake") and usage and event.get("type") == "session.input_audio.append" and not state.get("audio"):
+                # This session is being given meeting audio: it counts against the meeting's sessions.
+                state["audio"] = True
+                usage["audio_sockets"] = usage.get("audio_sockets", 0) + 1
+                reject |= usage["audio_sockets"] > voice["wake"]
         elif isinstance(event, dict) and event.get("type") in ("session.usage.updated", "session.closed"):
             # Billed seconds of a gpt-live session (cumulative): kept for its Activity record.
             seconds = (event.get("usage") or {}).get("seconds") if isinstance(event.get("usage"), dict) else None
