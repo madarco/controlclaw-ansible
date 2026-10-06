@@ -26953,7 +26953,12 @@ var PhoneService = class {
           baseHash: snapshot.hash,
           timeoutMs: CONFIG_PATCH_RESTART_MS,
           readTimeoutMs: GATEWAY_READ_MS,
-          replacePaths: ["plugins.entries.voice-call.config.allowFrom"]
+          // OpenClaw refuses a patch that drops array entries unless the path is named: removing a
+          // caller, or a wake name, would otherwise leave the old settings in place.
+          replacePaths: [
+            "plugins.entries.voice-call.config.allowFrom",
+            "plugins.entries.voice-call.config.realtime.providers.cc-phone-voice.wake.words"
+          ]
         }
       );
     } catch {
@@ -28387,8 +28392,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "683193a" : "unknown",
-  builtAt: true ? "2026-10-06T14:06:39+01:00" : "unknown"
+  commit: true ? "5cedeac" : "unknown",
+  builtAt: true ? "2026-10-06T17:19:31+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -28462,7 +28467,9 @@ function boxSoftware(opts = {}) {
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
     // `console_mcp`: ControlClaw tools are in this agent's OpenClaw config (console-mcp.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
+    // speech model and wake words of an assigned number in place (T-phonevoice).
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -31937,9 +31944,9 @@ const node = (tag, text) => { const e = document.createElement(tag); e.textConte
 async function refresh() {
   try {
     const response = await fetch('/__cc/meetings/state', { cache:'no-store' });
-    if (!response.ok) throw new Error('Open Meetings again from your console to sign in.');
+    if (!response.ok) throw new Error('Press Meeting controls again on this agent’s Meetings tab in your console to sign in.');
     state = await response.json();
-    el('status').textContent = state.active ? 'Meeting ' + state.active.state + '. ' + (state.active.error || '') : state.enabled ? 'Ready to join. One meeting at a time.' : 'Enable Meetings in this agent’s console settings first.';
+    el('status').textContent = state.active ? 'Meeting ' + state.active.state + '. ' + (state.active.error || '') : state.enabled ? 'Ready to join. One meeting at a time.' : 'Turn on meetings in this agent’s Meetings tab in your console first.';
     const modes=state.supportedModes||['transcript'];
     const chosen=el('mode').value;el('mode').replaceChildren(...modes.map(m=>{const o=node('option',m==='bidi'?'Bidi · realtime conversation':'Transcript');o.value=m;return o;}));
     el('mode').value=initialized&&modes.includes(chosen)?chosen:state.defaultMode;initialized=true;
@@ -32027,7 +32034,7 @@ async function handleMeetings(req, res, url3, service, context) {
   const session = await readSession(req.headers.cookie, context.vmId);
   if (!session?.deviceId || !session.canWrite)
     return sendJson(res, 403, {
-      error: "Open Meetings from the console with an enrolled owner browser."
+      error: "Press Meeting controls on the agent\u2019s Meetings tab in the console, from an enrolled owner browser."
     });
   if (!service) return sendJson(res, 503, { error: "Meetings unavailable" });
   if (path === "/__cc/meetings" && req.method === "GET") {

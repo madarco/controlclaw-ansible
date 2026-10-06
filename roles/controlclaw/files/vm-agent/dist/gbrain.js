@@ -6090,8 +6090,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "683193a" : "unknown",
-  builtAt: true ? "2026-10-06T14:06:39+01:00" : "unknown"
+  commit: true ? "5cedeac" : "unknown",
+  builtAt: true ? "2026-10-06T17:19:31+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6165,7 +6165,9 @@ function boxSoftware(opts = {}) {
     openclaw: readOpenClawVersion(opts.openclawCandidates),
     // A brain serves neither page; it only signs its admin in through the firewall.
     // `console_mcp`: ControlClaw tools are in this agent's OpenClaw config (console-mcp.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page"], ...firewallOrigin() ? ["open_v1"] : []]
+    // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
+    // speech model and wake words of an assigned number in place (T-phonevoice).
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 

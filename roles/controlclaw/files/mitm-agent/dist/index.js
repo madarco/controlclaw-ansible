@@ -4990,7 +4990,7 @@ var PhoneStreams = class {
   }
   current(c2) {
     const b2 = this.opts.binding();
-    return !!b2 && b2.generation === c2.binding.generation && b2.placeholder === c2.binding.placeholder && b2.token === c2.binding.token && b2.hostname === c2.binding.hostname && b2.callerPolicy === c2.binding.callerPolicy && b2.speechRevision === c2.binding.speechRevision && this.now() < Math.min(
+    return !!b2 && b2.generation === c2.binding.generation && b2.placeholder === c2.binding.placeholder && b2.token === c2.binding.token && b2.hostname === c2.binding.hostname && b2.callerPolicy === c2.binding.callerPolicy && b2.speechRevision === c2.binding.speechRevision && b2.voicePlaceholder === c2.binding.voicePlaceholder && this.now() < Math.min(
       c2.deadline,
       c2.startedAt + phoneLimits(b2).maxDurationSeconds * 1e3
     );
@@ -29540,6 +29540,10 @@ var targetSchema = external_exports.object({
   hostname: external_exports.string().regex(/^[a-z0-9][a-z0-9.-]{0,250}$/),
   name: external_exports.string().min(1).max(100)
 });
+var sameSpeech = (a2, b2) => (a2 ?? null) === (b2 ?? null) || !!a2 && !!b2 && a2.provider === b2.provider && a2.credentialId === b2.credentialId && a2.model === b2.model && a2.maxMinutes === b2.maxMinutes;
+var voiceState = (a2) => JSON.stringify([a2.speech ?? null, phoneLimits(a2), a2.wake ?? null]);
+var speechLine = (s2) => s2 ? `realtime audio goes to ${s2.provider} ${s2.model}${speechFamily(s2.provider, s2.model) === "live" ? " (billed per connected second)" : ""}, read-only agent consultation, classic fallback` : "classic speech";
+var wakeLine = (w2) => w2.enabled ? `answer only when called ${w2.words.join(" or ")}` : "answer every turn";
 var PhoneFirewall = class {
   constructor(opts) {
     this.opts = opts;
@@ -29857,6 +29861,7 @@ var PhoneFirewall = class {
     if (this.store.completed.includes(changeId)) return { status: "applied" };
     let proposal;
     let summary;
+    let raisesLimits = false;
     if (p2.kind === "connect") {
       const sid = external_exports.string().regex(/^AC[0-9a-f]{32}$/i).parse(p2.accountSid), token2 = external_exports.string().regex(/^[0-9a-f]{32}$/i).parse(p2.authToken);
       if (this.store.accountSid && this.store.accountSid !== sid)
@@ -29914,7 +29919,7 @@ var PhoneFirewall = class {
           routingHash: routingHash(raw)
         }
       };
-      summary = `Assign Twilio ${n2.number} to ${target.hostname}; replace voice routing, clear it on unassign; ${allowAll ? "allow all callers" : `allow ${allowFrom.join(", ") || "no callers"}`}; chargeable calls use this account; ${speech ? `realtime audio goes to ${speech.provider} ${speech.model}${speechFamily(speech.provider, speech.model) === "live" ? " (billed per connected second)" : ""}, read-only agent consultation, classic fallback` : "classic speech"}; ${limits.maxConcurrentCalls} calls at once, at most ${limits.maxDurationSeconds / 60} minutes per call`;
+      summary = `Assign Twilio ${n2.number} to ${target.hostname}; replace voice routing, clear it on unassign; ${allowAll ? "allow all callers" : `allow ${allowFrom.join(", ") || "no callers"}`}; chargeable calls use this account; ${speechLine(speech)}; ${limits.maxConcurrentCalls} calls at once, at most ${limits.maxDurationSeconds / 60} minutes per call`;
     } else if (p2.kind === "limits") {
       const a2 = this.store.assignment;
       if (!a2) throw new PhoneError("not_assigned");
@@ -29953,13 +29958,44 @@ var PhoneFirewall = class {
       summary = `Change wake words for Twilio ${a2.number}: ${proposal.wake.enabled ? `answer only when called ${proposal.wake.words.join(" or ")}` : "answer every turn"}`;
       await this.apply(proposal);
       return { status: "applied", message: summary };
+    } else if (p2.kind === "voice") {
+      const a2 = this.store.assignment;
+      if (!a2) throw new PhoneError("not_assigned");
+      const speech = p2.speech == null ? null : parseSpeechPolicy(p2.speech);
+      if (speech && (speech.maxMinutes !== 5 || !this.opts.speechCredential?.(speech)))
+        throw new PhoneError("speech_unavailable");
+      const wake = p2.wake == null ? void 0 : parseWakePolicy(p2.wake);
+      const before = phoneLimits(a2), limits = phoneLimits(p2);
+      const rebind = !!speech && !sameSpeech(a2.speech, speech);
+      raisesLimits = limits.maxDurationSeconds > before.maxDurationSeconds || limits.maxConcurrentCalls > before.maxConcurrentCalls;
+      proposal = {
+        changeId,
+        kind: "voice",
+        generation: a2.generation,
+        speech,
+        ...rebind ? { voicePlaceholder: `cc-speech-${randomBytes3(24).toString("hex")}` } : {},
+        ...wake ? { wake } : {},
+        ...limits,
+        previous: voiceState(a2)
+      };
+      const changes = [
+        ...sameSpeech(a2.speech, speech) ? [] : [`${speechLine(speech)} (was ${a2.speech ? `${a2.speech.provider} ${a2.speech.model}` : "classic speech"})`],
+        ...wake && JSON.stringify(wake) !== JSON.stringify(a2.wake ?? null) ? [wakeLine(wake)] : [],
+        ...limits.maxDurationSeconds !== before.maxDurationSeconds ? [`${limits.maxDurationSeconds / 60} minutes per call (was ${before.maxDurationSeconds / 60})`] : [],
+        ...limits.maxConcurrentCalls !== before.maxConcurrentCalls ? [`${limits.maxConcurrentCalls} calls at once (was ${before.maxConcurrentCalls})`] : []
+      ];
+      summary = `Change voice settings for Twilio ${a2.number}: ${changes.join("; ") || "no changes"}${raisesLimits ? "; chargeable calls use this account" : ""}; saving re-applies the phone plugin and ends calls in progress`;
+      if (!rebind && !raisesLimits) {
+        await this.apply(proposal);
+        return { status: "applied", message: summary };
+      }
     } else throw new PhoneError("invalid_input");
     if (!this.opts.channelsReady())
       throw new PhoneError("channels_unavailable");
     const routes = await this.opts.codeRoutes();
     if (epoch2 !== this.epoch) throw new PhoneError("stale_proposal");
     if (!routes.length) {
-      if (proposal.kind === "limits" || proposal.kind === "assign" && (phoneLimits(proposal.assignment).maxDurationSeconds > 300 || phoneLimits(proposal.assignment).maxConcurrentCalls > 1))
+      if (proposal.kind === "limits" || raisesLimits || proposal.kind === "assign" && (phoneLimits(proposal.assignment).maxDurationSeconds > 300 || phoneLimits(proposal.assignment).maxConcurrentCalls > 1))
         throw new PhoneError("code_delivery_failed");
       await this.apply(proposal);
       return {
@@ -30035,6 +30071,16 @@ var PhoneFirewall = class {
         Object.assign(a2, phoneLimits(p2));
       } else if (p2.kind === "wake") {
         a2.wake = p2.wake;
+      } else if (p2.kind === "voice") {
+        if (voiceState(a2) !== p2.previous)
+          throw new PhoneError("stale_proposal");
+        if (p2.speech && !this.opts.speechCredential?.(p2.speech))
+          throw new PhoneError("speech_unavailable");
+        a2.speech = p2.speech;
+        if (!p2.speech) delete a2.voicePlaceholder;
+        else if (p2.voicePlaceholder) a2.voicePlaceholder = p2.voicePlaceholder;
+        if (p2.wake) a2.wake = p2.wake;
+        Object.assign(a2, phoneLimits(p2));
       } else {
         a2.allowAll = p2.allowAll;
         a2.allowFrom = p2.allowFrom;
@@ -95342,8 +95388,8 @@ import { uptime } from "os";
 import { existsSync as existsSync15, readFileSync as readFileSync20 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "683193a" : "unknown",
-  builtAt: true ? "2026-10-06T14:06:39+01:00" : "unknown"
+  commit: true ? "5cedeac" : "unknown",
+  builtAt: true ? "2026-10-06T17:19:31+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -96586,6 +96632,7 @@ async function main() {
           features.push("speech_families");
           features.push("speech_wake");
           features.push("speech_wake_sessions");
+          features.push("phone_voice_edit");
           if (controlPlaneMcpGateUp) features.push("controlplane_mcp");
           if (teamChat?.available() && teamChatWeb && access?.ready()) features.push("team_chat");
           if (access?.ready()) features.push("open_logs");
