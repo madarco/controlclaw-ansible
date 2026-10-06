@@ -12,7 +12,7 @@
 // (live.js with the wake word on), as before this mode existed.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { LiveBridge } from './live.js';
+import { LiveBridge, audible } from './live.js';
 import { createWakeMatcher } from './wake.js';
 const DETECTOR = fileURLToPath(new URL('./cc-wake.py', import.meta.url));
 const RING_BYTES = 10 * 24000 * 2;
@@ -141,7 +141,8 @@ export class WakeSessionBridge {
       ...this.req,
       providerConfig: { ...this.config, wake: { enabled: false, words: this.names }, woken: true },
       onReady: () => {},
-      onAudio: (audio, meta) => { entry.lastActivity = Date.now(); this.req.onAudio(audio, meta); },
+      // gpt-live streams output continuously, silence included: only audible speech keeps it open.
+      onAudio: (audio, meta) => { if (audible(audio)) entry.lastActivity = Date.now(); this.req.onAudio(audio, meta); },
       onTranscript: (role, text, final) => { if (role === 'assistant') entry.lastActivity = Date.now(); this.req.onTranscript?.(role, text, final); },
       onToolCall: (call) => { entry.lastActivity = Date.now(); return this.req.onToolCall?.(call); },
       onClearAudio: () => this.req.onClearAudio?.(),

@@ -234,3 +234,16 @@ test('closed while the detector is still loading: no fallback session, nothing r
   await assert.rejects(connecting, /closed/);
   assert.equal(f.out.mints, 0); assert.equal(f.out.ready, 0);
 });
+
+test('the silence gpt-live streams between answers does not keep a session open', async () => {
+  const f = fixture();
+  await f.bridge.connect();
+  for (let i = 0; i < 10; i++) f.bridge.sendAudio(pcm(100));
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await until(() => f.bridge.session?.ready);
+  const ws = f.ws.all[0];
+  const silence = setInterval(() => ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.alloc(4800).toString('base64') })), 20);
+  try { await until(() => f.bridge.session === null, 1500); } finally { clearInterval(silence); }
+  assert.ok(f.out.audio.length > 0, 'the silence still reaches the meeting');
+  f.bridge.close();
+});
