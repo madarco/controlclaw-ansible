@@ -122,8 +122,10 @@ export class WakeSessionBridge {
     if (event.type !== 'wake') return;
     this.metric('wake_heard');
     if (this.session?.confirmed) {
-      // A name while the agent is talking to someone is ignored, except "<name>, stop".
+      // A name while the agent is talking to someone opens nothing new, but it is a follow-up: the
+      // session stays open for it (it may have been about to close for quiet). "<name>, stop" ends it.
       if (event.stop) { this.metric('wake_stop'); this.endSession('stop'); }
+      else this.session.lastActivity = Date.now();
       return;
     }
     if (event.stop) { if (this.session) this.endSession('stop'); return; }

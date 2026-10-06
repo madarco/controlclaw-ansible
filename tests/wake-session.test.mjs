@@ -247,3 +247,17 @@ test('the silence gpt-live streams between answers does not keep a session open'
   assert.ok(f.out.audio.length > 0, 'the silence still reaches the meeting');
   f.bridge.close();
 });
+
+test('a name heard as the session is about to close for quiet keeps it open for the request', async () => {
+  const f = fixture({ timing: { idle: 300 } });
+  await f.bridge.connect();
+  for (let i = 0; i < 10; i++) f.bridge.sendAudio(pcm(100));
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await until(() => f.bridge.session?.ready);
+  await wait(250);
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await wait(200);
+  assert.ok(f.bridge.session, 'still open 450 ms in, with a 300 ms quiet limit');
+  assert.equal(f.out.mints, 1);
+  f.bridge.close();
+});
