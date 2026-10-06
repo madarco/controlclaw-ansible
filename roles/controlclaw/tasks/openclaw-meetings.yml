@@ -121,14 +121,22 @@
     - name: Meetings | download the pinned Vosk wheel
       ansible.builtin.get_url:
         url: "{{ cc_wake_vosk_wheels[cc_wake_arch].url }}"
-        dest: /opt/controlclaw/cc-wake/vosk.whl
+        dest: "/opt/controlclaw/cc-wake/vosk-{{ cc_wake_wheel_id }}.whl"
         checksum: "sha256:{{ cc_wake_vosk_wheels[cc_wake_arch].sha256 }}"
         mode: '0644'
 
+    # Unpacked per wheel, so a new pin replaces the library rather than keeping the old one.
     - name: Meetings | unpack the Vosk library from the wheel
       ansible.builtin.command:
-        argv: [unzip, -o, -j, /opt/controlclaw/cc-wake/vosk.whl, vosk/libvosk.so, -d, /opt/controlclaw/cc-wake]
-        creates: /opt/controlclaw/cc-wake/libvosk.so
+        argv: [unzip, -o, -j, "/opt/controlclaw/cc-wake/vosk-{{ cc_wake_wheel_id }}.whl", vosk/libvosk.so, -d, "/opt/controlclaw/cc-wake/vosk-{{ cc_wake_wheel_id }}"]
+        creates: "/opt/controlclaw/cc-wake/vosk-{{ cc_wake_wheel_id }}/libvosk.so"
+
+    - name: Meetings | point cc-wake at the library
+      ansible.builtin.file:
+        src: "/opt/controlclaw/cc-wake/vosk-{{ cc_wake_wheel_id }}/libvosk.so"
+        dest: /opt/controlclaw/cc-wake/libvosk.so
+        state: link
+        force: true
 
     - name: Meetings | download the wake model
       ansible.builtin.get_url:
@@ -162,6 +170,7 @@
         state: absent
   vars:
     cc_wake_arch: "{{ 'aarch64' if ansible_architecture in ['aarch64', 'arm64'] else 'x86_64' }}"
+    cc_wake_wheel_id: "{{ cc_wake_vosk_wheels[cc_wake_arch].sha256[:12] }}"
 
 - name: Meetings | provision an ephemeral guest browser unit
   ansible.builtin.copy:

@@ -33,6 +33,6 @@ export function voiceRecord(surface, dir = DIR()) {
     /** A finished provider session: `seconds` billed (live) or connected (realtime). */
     usage(seconds, family, startedAt) { if (Number.isFinite(seconds) && seconds >= 0) write({ kind: 'usage', family, seconds: Math.round(seconds), startedAt: new Date(startedAt).toISOString() }); },
     /** A finished line of the conversation; phone history already has its own transcript. */
-    line(role, text) { if (surface !== 'phone' && typeof text === 'string' && text.trim()) write({ kind: 'line', role: role === 'assistant' ? 'assistant' : 'user', text: text.trim().slice(0, 4000) }); },
+    line(role, text, startedAt) { if (surface !== 'phone' && typeof text === 'string' && text.trim()) write({ kind: 'line', role: role === 'assistant' ? 'assistant' : 'user', text: text.trim().slice(0, 4000), ...(Number.isFinite(startedAt) ? { at: new Date(startedAt).toISOString() } : {}) }); },
   };
 }

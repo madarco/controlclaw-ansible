@@ -69,17 +69,17 @@ test('nobody calls it: the detector hears everything, no session is opened, noth
 test('a partial opens a silent session early; the confirmed name replays the last seconds, then live audio follows', async () => {
   const f = fixture();
   await f.bridge.connect();
-  for (let i = 0; i < 100; i++) f.bridge.sendAudio(pcm(100)); // 10 s: only the last 8 s are kept
+  for (let i = 0; i < 120; i++) f.bridge.sendAudio(pcm(100)); // 12 s: only the last 10 s are kept
   f.child().say({ type: 'partial', name: 'Jarvis' });
   await until(() => f.bridge.session?.ready);
   const ws = f.ws.all[0];
   assert.equal(f.out.mints, 1); assert.equal(f.ws.audio(ws), 0, 'an unconfirmed session gets no audio');
   assert.match(ws.sent[0].session.instructions, /seemed to call you by one of your names \(Jarvis or Maria Rossi\)/);
   f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.93, stop: false });
-  await until(() => f.ws.audio(ws) >= 8 * 48000);
-  assert.equal(f.ws.audio(ws), 8 * 48000);
+  await until(() => f.ws.audio(ws) >= 10 * 48000);
+  assert.equal(f.ws.audio(ws), 10 * 48000);
   f.bridge.sendAudio(pcm(100));
-  await until(() => f.ws.audio(ws) === 8 * 48000 + 4800);
+  await until(() => f.ws.audio(ws) === 10 * 48000 + 4800);
   // The model answers; its audio goes to the meeting.
   ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: pcm(100).toString('base64') }));
   assert.equal(f.out.audio.length, 1);
@@ -89,6 +89,7 @@ test('a partial opens a silent session early; the confirmed name replays the las
 test('names heard during a session open nothing new; "<name>, stop" ends it; quiet ends it too', async () => {
   const f = fixture();
   await f.bridge.connect();
+  for (let i = 0; i < 10; i++) f.bridge.sendAudio(pcm(100));
   f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
   await until(() => f.bridge.session?.ready);
   f.child().say({ type: 'partial', name: 'Maria Rossi' });
@@ -98,8 +99,9 @@ test('names heard during a session open nothing new; "<name>, stop" ends it; qui
   f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: true });
   assert.equal(f.bridge.session, null);
   assert.ok(f.ws.all[0].sent.some(e => e.type === 'session.close'));
-  await until(() => f.lines.length === 1);
-  assert.deepEqual(f.lines[0], { kind: 'usage', seconds: 21, family: 'live' });
+  // Usage is written as the session closes (connected time, as billed), before the provider's final count.
+  assert.equal(f.lines.length, 1);
+  assert.equal(f.lines[0].kind, 'usage'); assert.equal(f.lines[0].family, 'live'); assert.ok(f.lines[0].seconds >= 0 && f.lines[0].seconds < 5);
   // A new request opens a new session, which closes itself after the quiet time.
   f.child().say({ type: 'wake', name: 'Maria Rossi', conf: 0.9, stop: false });
   await until(() => f.bridge.session?.ready);
@@ -110,21 +112,25 @@ test('names heard during a session open nothing new; "<name>, stop" ends it; qui
   f.bridge.close();
 });
 
-test('an unconfirmed early session closes unused; a running lookup keeps a quiet session open', async () => {
+test('an early session closes when the utterance ends without a name, or after the safety time; a running lookup keeps a quiet session open', async () => {
   const f = fixture();
   await f.bridge.connect();
   f.child().say({ type: 'partial', name: 'Jarvis' });
   await until(() => f.bridge.session?.ready);
+  f.child().say({ type: 'end', pos: 3 });
+  assert.equal(f.bridge.session, null);
+  f.child().say({ type: 'partial', name: 'Jarvis' });
+  await until(() => f.bridge.session?.ready);
   await until(() => f.bridge.session === null, 1000);
-  assert.equal(f.ws.audio(f.ws.all[0]), 0);
+  assert.equal(f.ws.audio(f.ws.all[0]) + f.ws.audio(f.ws.all[1]), 0);
   f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
   await until(() => f.bridge.session?.ready);
-  f.ws.all[1].emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd1' } }));
+  f.ws.all[2].emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd1' } }));
   assert.equal(f.out.tools.length, 1);
   await wait(400);
   assert.ok(f.bridge.session, 'still open while the lookup runs');
   f.bridge.submitToolResult('d1', { text: 'Lemon shortbread.' });
-  assert.ok(f.ws.all[1].sent.some(e => e.type === 'session.commentary.append' && /Lemon/.test(e.content)));
+  assert.ok(f.ws.all[2].sent.some(e => e.type === 'session.commentary.append' && /Lemon/.test(e.content)));
   await until(() => f.bridge.session === null, 1000);
   f.bridge.close();
 });
@@ -175,4 +181,56 @@ test('the meeting allowance comes from the firewall lease the vm-agent wrote, an
   for (const bad of [{ wakeSessions: 41, at: new Date().toISOString() }, { wakeSessions: 1, at: new Date().toISOString() }, { wakeSessions: 40, at: new Date(Date.now() - 6 * 3600000).toISOString() }, { wakeSessions: '40', at: new Date().toISOString() }]) {
     writeFileSync(join(dir, 'lease.json'), JSON.stringify(bad)); assert.equal(meetingWakeSessions(dir), 0, JSON.stringify(bad));
   }
+});
+
+test('a session opened early and never given audio records no voice minutes', async () => {
+  const f = fixture();
+  await f.bridge.connect();
+  // The fake provider reports 0 billed seconds when asked to close; with no audio that is not a session.
+  f.child().say({ type: 'partial', name: 'Jarvis' });
+  await until(() => f.bridge.session?.ready);
+  const ws = f.ws.all[0];
+  ws.send = (s) => { const e = JSON.parse(s); ws.sent.push(e); if (e.type === 'session.close') setImmediate(() => ws.emit('message', JSON.stringify({ type: 'session.closed', usage: { seconds: 0 } }))); };
+  await until(() => f.bridge.session === null, 1000);
+  await wait(30);
+  assert.deepEqual(f.lines, []);
+  f.bridge.close();
+});
+
+test('a long request: the name confirmed long after the partial still gets the same session and the whole request', async () => {
+  const f = fixture({ timing: { confirm: 15000, startGap: 5000 } });
+  await f.bridge.connect();
+  f.child().say({ type: 'partial', name: 'Jarvis' });
+  await until(() => f.bridge.session?.ready);
+  for (let i = 0; i < 60; i++) f.bridge.sendAudio(pcm(100)); // 6 s of request before Vosk's final
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  assert.equal(f.out.mints, 1);
+  await until(() => f.ws.audio(f.ws.all[0]) === 60 * 4800);
+  f.bridge.close();
+});
+
+test('"<name>, stop" then a new request at once: the refused open is retried with the request kept', async () => {
+  const f = fixture({ timing: { startGap: 5000, retry: 50 } });
+  await f.bridge.connect();
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await until(() => f.bridge.session?.ready);
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: true });
+  // The firewall still holds the stopped socket: the next mint is refused once.
+  const fetch = f.bridge.deps.fetch; let refused = false;
+  f.bridge.deps.fetch = async (...a) => { if (!refused) { refused = true; f.out.mints++; return { ok: false }; } return fetch(...a); };
+  f.child().say({ type: 'partial', name: 'Maria Rossi' });
+  for (let i = 0; i < 20; i++) f.bridge.sendAudio(pcm(100));
+  f.child().say({ type: 'wake', name: 'Maria Rossi', conf: 0.9, stop: false });
+  await until(() => f.bridge.session?.ready && f.ws.audio(f.ws.all.at(-1)) >= 20 * 4800, 2000);
+  assert.equal(f.bridge.sessions, 2, 'a retried request counts once');
+  f.bridge.close();
+});
+
+test('closed while the detector is still loading: no fallback session, nothing ready', async () => {
+  const f = fixture();
+  const connecting = f.bridge.connect();
+  f.bridge.close();
+  f.child().emit('exit', 1);
+  await assert.rejects(connecting, /closed/);
+  assert.equal(f.out.mints, 0); assert.equal(f.out.ready, 0);
 });

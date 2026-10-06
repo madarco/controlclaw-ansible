@@ -79,6 +79,7 @@ export class LiveBridge {
       ws.on('error', () => { clearTimeout(timeout); reject(new Error('Voice transport failed')); this.fail(); });
       ws.on('close', () => { clearTimeout(timeout); this.flushUsage(); if (!this.ready) reject(new Error('Voice session refused')); if (!this.closed) this.fail(); });
     });
+    if (this.closed) return; // closed while connecting: no timers to leak
     this.deadline = setTimeout(() => this.fail(), c.maxMinutes * 60000);
     this.idle = setInterval(() => { if (Date.now() - this.lastSpeech > 300000) this.fail(); }, 1000);
     this.deadline.unref?.(); this.idle.unref?.();
@@ -104,6 +105,7 @@ export class LiveBridge {
     if (this.ws?.bufferedAmount > 48000) return;
     let energy = 0; for (let i = 0; i < audio.length; i += 2) energy += Math.abs(audio.readInt16LE(i));
     if (audio.length && energy / (audio.length / 2) > 450) this.lastSpeech = Date.now();
+    this.audioSent = true;
     this.send({ type: 'session.input_audio.append', audio: audio.toString('base64') });
   }
   /** Room on the socket for more replayed audio (wake mode sends the last seconds before the name). */
@@ -111,7 +113,7 @@ export class LiveBridge {
   /** Audio that must not be dropped as backlog: the replayed request. Callers pace it with canSend(). */
   appendAudio(audio) {
     if (!this.ready || this.closed || !Buffer.isBuffer(audio) || audio.length % 2 || audio.length > 48000) return;
-    this.lastSpeech = Date.now();
+    this.lastSpeech = Date.now(); this.audioSent = true;
     this.send({ type: 'session.input_audio.append', audio: audio.toString('base64') });
   }
   event(e) {
@@ -162,13 +164,20 @@ export class LiveBridge {
       this.lastSpeech = now; this.inputText += delta;
       if (continuing || this.wake.match(this.request)) this.addressedAt = now;
     } else this.outputText += delta;
+    this[role + 'Since'] ??= now;
     clearTimeout(this[role + 'Flush']);
-    this[role + 'Flush'] = setTimeout(() => {
-      const text = (role === 'user' ? this.inputText : this.outputText).trim().slice(0, 8000);
-      if (role === 'user') this.inputText = ''; else this.outputText = '';
-      if (text && !this.closed) { this.req.onTranscript?.(role, text, true); this.record.line(role, text); }
-    }, 1200);
+    this[role + 'Flush'] = setTimeout(() => this.flushLine(role, true), 1200);
     this[role + 'Flush'].unref?.();
+  }
+  /** A finished line: to OpenClaw while the session runs, and to the record, timed from its start. */
+  flushLine(role, report) {
+    const text = (role === 'user' ? this.inputText : this.outputText).trim().slice(0, 8000);
+    const since = this[role + 'Since'];
+    if (role === 'user') this.inputText = ''; else this.outputText = '';
+    this[role + 'Since'] = undefined;
+    if (!text) return;
+    if (report && !this.closed) this.req.onTranscript?.(role, text, true);
+    this.record.line(role, text, since);
   }
   /** The question for a delegation: what was heard since the last one (at most 45 s), plus what the model said just before. */
   question() {
@@ -275,16 +284,28 @@ export class LiveBridge {
   acknowledgeMark() {}
   isConnected() { return this.ready && !this.closed; }
   fail() { if (this.closed) return; this.close(this.phone ? 'error' : 'completed'); this.req.onError?.(new Error('Meeting voice stopped. Check speech credit, call limits and provider availability.')); }
-  /** Once per session: the provider's billed seconds, or the connected time if it never said. */
+  /**
+   * Once per session: the provider's billed seconds, or the connected time if it never said. A
+   * session that never got audio (opened early in wake mode, then not needed) is not billed and is
+   * not recorded unless the provider reports seconds for it.
+   */
   flushUsage() {
     if (this.usageWritten || !this.startedAt) return;
     this.usageWritten = true;
-    this.record.usage(Number.isFinite(this.seconds) ? this.seconds : (Date.now() - this.startedAt) / 1000, 'live', this.startedAt);
+    // Written when the session closes, so it is in the log before the meeting is wrapped up. The
+    // final session.closed count may come later; billing is per connected second, which the
+    // connected time matches.
+    const connected = (Date.now() - this.startedAt) / 1000;
+    if (this.audioSent) this.record.usage(Math.max(this.seconds ?? 0, connected), 'live', this.startedAt);
+    else if (this.seconds > 0) this.record.usage(this.seconds, 'live', this.startedAt);
   }
   close(reason = 'completed') {
     if (this.closed) return; this.closed = true; this.ready = false;
     this.abort?.abort(); clearTimeout(this.deadline); clearInterval(this.idle);
     clearTimeout(this.userFlush); clearTimeout(this.assistantFlush);
+    // A line cut off by "stop", the time limit or the end of the meeting is still kept.
+    this.flushLine('user', false); this.flushLine('assistant', false);
+    this.flushUsage();
     for (const j of this.jobs.values()) { clearTimeout(j.still); clearTimeout(j.timer); }
     this.jobs.clear(); this.running = null;
     if (Number.isFinite(this.seconds)) this.metric('closed', { seconds: this.seconds });

@@ -7,7 +7,9 @@ docs/plans/gpt-live-and-wake-word.md, D5/D6).
 
 Events: {"type": "ready"}; {"type": "partial", "name", "pos"} when an utterance seems to open
 with a name (used to open the voice session early); {"type": "wake", "name", "conf", "stop", "pos"}
-when the final result confirms it. `pos` is the seconds of audio heard so far.
+when the final result confirms it; {"type": "end", "pos"} when a final result has no name (what
+was said is over, so a session opened early on a partial can close). `pos` is the seconds of
+audio heard so far.
 
 A name counts only at the start of what someone says: after at most half a second of other speech
 ("hey", "sorry"), or right after a pause (Vosk sometimes joins a new sentence to the one before
@@ -148,6 +150,9 @@ def main(argv):
                 if conf >= MIN_CONF:
                     emit({'type': 'wake', 'name': name, 'conf': round(conf, 2),
                           'stop': tokens[start + size:start + size + 1] == [STOP], 'pos': pos})
+                    continue
+            if result:
+                emit({'type': 'end', 'pos': pos})
         elif not partial:
             text = json.loads(lib.vosk_recognizer_partial_result(rec) or b'{}').get('partial', '')
             found = opens_with(text, phrases)

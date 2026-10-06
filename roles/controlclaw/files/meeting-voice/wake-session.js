@@ -1,8 +1,9 @@
 // Meetings in wake mode on gpt-live (controlclaw docs/plans/gpt-live-and-wake-word.md, D6/D7).
 // The agent listens on the box with cc-wake (Vosk) and keeps no gpt-live session open while
 // nobody calls it. When an utterance seems to open with one of its names, a session is opened
-// with no audio (an idle session is not billed). When the detector confirms the name, the last
-// 8 s of meeting audio (the name and the request) are replayed into it, then live audio follows.
+// with no audio (an idle session is not billed), and closed again if what was said ends without
+// a confirmed name. When the detector confirms the name, the last 10 s of meeting audio (the name
+// and the request) are replayed into it, then live audio follows.
 // The session closes after 20 s with no answer and no lookup running, after 5 minutes, or on
 // "<name>, stop". Names heard while a session is open are ignored, so the agent's own voice
 // coming back from someone's speaker cannot open a second one.
@@ -14,9 +15,13 @@ import { fileURLToPath } from 'node:url';
 import { LiveBridge } from './live.js';
 import { createWakeMatcher } from './wake.js';
 const DETECTOR = fileURLToPath(new URL('./cc-wake.py', import.meta.url));
-const RING_BYTES = 8 * 24000 * 2;
-// Timings (D7); tests shorten them through deps.timing.
-const TIMING = { idle: 20000, maxSession: 5 * 60000, confirm: 4000, startGap: 5000, retry: 2500, tick: 1000 };
+const RING_BYTES = 10 * 24000 * 2;
+// Audio waiting for a session that is still connecting; beyond this, new audio is dropped, never
+// the start of the request.
+const MAX_QUEUE_BYTES = 30 * 24000 * 2;
+// Timings (D7); tests shorten them through deps.timing. `confirm` is only a safety net: an early
+// session closes when the detector says the utterance ended without a name.
+const TIMING = { idle: 20000, maxSession: 5 * 60000, confirm: 15000, startGap: 5000, retry: 2500, tick: 1000 };
 const MAX_SESSIONS = 40;
 // Sessions opened early on a partial result and never confirmed: they cost a token mint, not money.
 const OPENS_PER_SESSION = 6;
@@ -46,7 +51,9 @@ export class WakeSessionBridge {
     this.names = createWakeMatcher(this.config.wake?.words).names;
     this.maxSessions = Math.min(MAX_SESSIONS, Number(this.config.wakeSessions) || 0);
     this.ring = []; this.ringBytes = 0; this.toDetector = resampler();
-    this.session = null; this.opens = 0; this.sessions = 0; this.lastStart = 0; this.queue = [];
+    this.session = null; this.opens = 0; this.sessions = 0; this.lastStart = 0;
+    // Audio for the confirmed request (replay, then live), kept while a retry reconnects.
+    this.queue = []; this.queueBytes = 0; this.holding = false;
     this.closed = false; this.ready = false;
     this.supportsToolResultContinuation = false;
     this.t = { ...TIMING, ...deps.timing };
@@ -56,11 +63,13 @@ export class WakeSessionBridge {
     if (this.closed) throw new Error('Voice session closed');
     try { await this.startDetector(); }
     catch {
+      if (this.closed) throw new Error('Voice session closed');
       // No local listening: one session for the meeting, gated by the transcript (PR 4 behaviour).
       this.metric('detector_unavailable');
       this.fallback = new LiveBridge(this.req, this.deps);
       return this.fallback.connect();
     }
+    if (this.closed) { try { this.detector?.kill(); } catch { /* gone */ } throw new Error('Voice session closed'); }
     this.ready = true;
     this.timer = setInterval(() => this.tick(), this.t.tick); this.timer.unref?.();
     this.req.onReady?.();
@@ -99,11 +108,17 @@ export class WakeSessionBridge {
     const stdin = this.detector?.stdin;
     // A detector that falls behind skips audio rather than queueing it.
     if (stdin?.writable && stdin.writableLength < 64000) stdin.write(this.toDetector(audio));
-    if (this.session?.confirmed) { this.queue.push(audio); this.pump(); }
+    if (this.session?.confirmed || this.holding) { this.enqueue(audio); this.pump(); }
+  }
+  enqueue(audio) {
+    if (this.queueBytes + audio.length > MAX_QUEUE_BYTES) return;
+    this.queue.push(audio); this.queueBytes += audio.length;
   }
   detected(event) {
     if (this.closed || !event) return;
-    if (event.type === 'partial') { if (!this.session) this.open(event.name, false); return; }
+    if (event.type === 'partial') { if (!this.session && !this.holding) this.open(event.name, false); return; }
+    // What was said is over and opened with no name: an early session is not needed.
+    if (event.type === 'end') { if (this.session && !this.session.confirmed) this.endSession('unconfirmed'); return; }
     if (event.type !== 'wake') return;
     this.metric('wake_heard');
     if (this.session?.confirmed) {
@@ -113,12 +128,13 @@ export class WakeSessionBridge {
     }
     if (event.stop) { if (this.session) this.endSession('stop'); return; }
     if (this.session) this.confirm();
-    else this.open(event.name, true);
+    else if (!this.holding) this.open(event.name, true, true);
   }
-  open(name, confirmed, retry = false) {
+  /** `immediate`: a confirmed name, which the client never holds back (the firewall still paces starts). */
+  open(name, confirmed, immediate = false, retry = false) {
     const now = Date.now();
     if (this.sessions >= this.maxSessions || this.opens >= this.maxSessions * OPENS_PER_SESSION ||
-        (!retry && now - this.lastStart < this.t.startGap)) { this.metric('wake_skipped'); return; }
+        (!immediate && now - this.lastStart < this.t.startGap)) { this.metric('wake_skipped'); this.holding = false; return; }
     this.opens++; this.lastStart = now;
     const entry = { confirmed: false, openedAt: now, lastActivity: now, ready: false };
     const bridge = entry.bridge = new LiveBridge({
@@ -142,9 +158,13 @@ export class WakeSessionBridge {
       this.metric('session_failed');
       if (this.session !== entry) return;
       this.session = null;
+      if (!entry.confirmed) { this.lastStart = 0; return; }
       // The previous session's socket may still be closing (the firewall allows one at a time):
-      // a confirmed request gets one more try.
-      if (entry.confirmed && !retry) { const t = setTimeout(() => { if (!this.session && !this.closed) this.open(name, true, true); }, this.t.retry); t.unref?.(); }
+      // a confirmed request gets one more try, with its audio kept meanwhile.
+      this.sessions--;
+      if (retry) { this.dropQueue(); return; }
+      this.holding = true;
+      const t = setTimeout(() => { if (!this.closed && !this.session && this.holding) this.open(name, true, true, true); }, this.t.retry); t.unref?.();
     });
     if (confirmed) this.confirm();
   }
@@ -155,8 +175,10 @@ export class WakeSessionBridge {
     this.sessions++;
     entry.confirmed = true; entry.lastActivity = Date.now(); entry.confirmedAt = Date.now();
     this.metric('session_confirmed');
-    // The name and the request, already spoken: replay them first, then live audio.
-    this.queue = this.ring.slice();
+    // The name and the request, already spoken: replay them first, then live audio. A retry keeps
+    // what the failed attempt had gathered.
+    if (!this.holding) { this.queue = this.ring.slice(); this.queueBytes = this.ringBytes; }
+    this.holding = false;
     if (entry.ready) this.replay(entry);
   }
   replay(entry) { if (entry.confirmed && this.session === entry) this.pump(); }
@@ -168,9 +190,9 @@ export class WakeSessionBridge {
     while (this.queue.length && entry.bridge.canSend()) {
       let chunk = this.queue.shift();
       if (chunk.length > REPLAY_CHUNK) { this.queue.unshift(chunk.subarray(REPLAY_CHUNK)); chunk = chunk.subarray(0, REPLAY_CHUNK); }
+      this.queueBytes -= chunk.length;
       entry.bridge.appendAudio(chunk);
     }
-    if (this.queue.length > 400) this.queue.splice(0, this.queue.length - 400);
     if (this.queue.length) { this.pumpTimer = setTimeout(() => this.pump(), 20); this.pumpTimer.unref?.(); }
   }
   tick() {
@@ -183,10 +205,11 @@ export class WakeSessionBridge {
   }
   endSession(reason) {
     const entry = this.session; if (!entry) return;
-    this.session = null; this.queue = []; clearTimeout(this.pumpTimer);
+    this.session = null; this.dropQueue();
     this.metric('session_closed', { reason });
     entry.bridge.close('completed');
   }
+  dropQueue() { this.queue = []; this.queueBytes = 0; this.holding = false; clearTimeout(this.pumpTimer); }
   submitToolResult(callId, result) { (this.fallback ?? this.session?.bridge)?.submitToolResult(callId, result); }
   handleBargeIn() { this.fallback?.handleBargeIn(); }
   sendUserMessage() {}
