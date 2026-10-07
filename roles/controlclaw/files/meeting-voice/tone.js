@@ -16,7 +16,10 @@ export function tone(freqs) {
   });
   return out;
 }
-/** Rising: the agent heard its name and is listening. */
-export const WAKE_TONE = tone([660, 880]);
+/**
+ * Rising: the agent heard its name and is listening. A short silence follows, so an answer that
+ * starts at once is queued after the beep instead of running into it (seen on the real Meet).
+ */
+export const WAKE_TONE = Buffer.concat([tone([660, 880]), Buffer.alloc(RATE / 5 * 2)]);
 /** Falling: the agent stopped listening. */
 export const STOP_TONE = tone([880, 660]);
