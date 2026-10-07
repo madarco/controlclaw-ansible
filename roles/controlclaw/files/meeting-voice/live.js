@@ -299,7 +299,7 @@ export class LiveBridge {
   }
   append(type, delegationId, content) { this.send({ type, delegation_id: delegationId, content }); }
   /** Quiet context for the whole session (lines of the meeting heard since it opened). */
-  appendContext(text) { if (text) this.append('session.thinking.append', null, text.slice(-4000)); }
+  appendContext(text) { if (text) this.append('session.thinking.append', null, text.slice(-MAX_APPEND_CHARS)); }
   /** A cue into the call: its own output item, so the phone pacer marks it like speech. */
   tone(pcm) { if (!this.closed) this.req.onAudio(pcm, { itemId: `cc_tone_${++this.outputItems}` }); }
   // The model handles being talked over itself; lookups keep running (D2). Nothing to cancel here.

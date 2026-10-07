@@ -421,3 +421,61 @@ test('the woken session gets the meeting so far from the captions, and lines tha
   assert.doesNotMatch(extra.content, /Alice/);
   f.bridge.close();
 });
+
+test('after a lookup the session stays open until the model has spoken the result', async () => {
+  const f = await woken({ timing: { doneQuiet: 300, doneUser: 200, idle: 20000 } });
+  hear(f.ws, 'Jarvis, what did we decide on Tuesday?');
+  await wait(50);
+  speak(f.ws, 'Let me check that.');
+  await wait(350);
+  delegate(f.ws, 'd1');
+  assert.equal(f.out.tools.length, 1);
+  await wait(700); // the lookup takes a while
+  f.bridge.submitToolResult('d1', { text: 'Ship on Thursday.' });
+  await wait(600);
+  assert.ok(f.bridge.session, 'the result has not been spoken yet');
+  speak(f.ws, 'You decided to ship on Thursday.');
+  await until(() => f.bridge.session === null, 1500);
+  assert.deepEqual(f.ends, ['done']);
+  f.bridge.close();
+});
+
+test('a lookup announced in other words, or followed by "okay, thanks", or after a question back, is still a lookup', async () => {
+  for (const [said, between] of [['Sure, I am looking up the weather in Rome.', ''], ['Pulling that up now.', ''], ['Let me check that.', 'Okay, thanks.'], ['Which calendar do you mean?', '']]) {
+    const f = await woken({ timing: { doneQuiet: 5000, idle: 5000 } });
+    hear(f.ws, 'Jarvis, what is on the agenda?');
+    await wait(20);
+    speak(f.ws, said);
+    if (between) { await wait(50); hear(f.ws, between); }
+    await wait(350);
+    delegate(f.ws, 'd1');
+    assert.equal(f.out.tools.length, 1, said);
+    assert.equal(f.metrics.find(m => m.phase === 'delegation').verdict, 'lookup', said);
+    f.bridge.close();
+  }
+});
+
+test('a named follow-up right after an answer is a new request, not the end of the session', async () => {
+  const f = await woken({ timing: { doneQuiet: 300, doneUser: 200, idle: 5000 } });
+  hear(f.ws, 'Jarvis, what time is it?');
+  speak(f.ws, 'It is ten.');
+  await wait(100);
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await wait(600);
+  assert.ok(f.bridge.session, 'waiting for the answer to the follow-up');
+  speak(f.ws, 'Tomorrow is Thursday.');
+  await until(() => f.bridge.session === null, 1500);
+  f.bridge.close();
+});
+
+test('a retried open plays one rising tone; a retry that fails too ends with the falling tone', async () => {
+  const f = fixture({ timing: { retry: 20 } });
+  f.bridge.deps.fetch = async () => { f.out.mints++; return { ok: false }; };
+  await f.bridge.connect();
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await until(() => f.out.mints === 2);
+  await wait(50);
+  assert.equal(f.out.tones.length, 2, 'one rising, one falling');
+  assert.deepEqual(f.ends, ['failed']);
+  f.bridge.close();
+});
