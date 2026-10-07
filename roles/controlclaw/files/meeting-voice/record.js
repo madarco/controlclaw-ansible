@@ -20,6 +20,42 @@ export function meetingWakeSessions(dir = DIR()) {
     return Number.isInteger(n) && n > 1 && n <= 40 && Date.now() - at < 5 * 3600000 ? n : 0;
   } catch { return 0; }
 }
+/** The tail of a JSON-lines file, parsed; at most `max` bytes. */
+function tail(file, max = 1024 * 1024) {
+  try {
+    const size = statSync(file).size;
+    const text = readFileSync(file).subarray(Math.max(0, size - max)).toString('utf8');
+    return text.split('\n').slice(size > max ? 1 : 0).flatMap(l => { try { return [JSON.parse(l)]; } catch { return []; } });
+  } catch { return []; }
+}
+const clock = at => { const d = new Date(at); return Number.isFinite(d.getTime()) ? d.toISOString().slice(11, 16) : '--:--'; };
+/**
+ * The meeting so far (meet-wake-improvements.md, 2), oldest first: the captions the vm-agent writes
+ * to captions.jsonl (`{at, speaker, text}`, speaker names from Meet), and the agent's own lines from
+ * meeting.jsonl. Without captions (the host turned them off), what the agent heard in its sessions
+ * stands in. One "[hh:mm] Speaker: text" line each; `name` labels the agent's lines.
+ */
+export function meetingTranscript(name, dir = DIR()) {
+  const captions = tail(join(dir, 'captions.jsonl')).filter(c => typeof c?.text === 'string' && typeof c.at === 'string')
+    .map(c => ({ at: c.at, speaker: typeof c.speaker === 'string' && c.speaker ? c.speaker.slice(0, 80) : 'Someone', text: c.text }));
+  const voice = tail(join(dir, 'meeting.jsonl')).filter(l => l?.kind === 'line' && typeof l.text === 'string' && typeof l.at === 'string');
+  const own = voice.filter(l => l.role === 'assistant').map(l => ({ at: l.at, speaker: name, text: l.text }));
+  const heard = captions.length ? [] : voice.filter(l => l.role === 'user').map(l => ({ at: l.at, speaker: 'Someone', text: l.text }));
+  return [...captions, ...own, ...heard].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    .map(l => `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`).join('\n');
+}
+/** At most `max` characters: the start and the end, with a marker between. */
+export function clip(text, max) {
+  if (text.length <= max) return text;
+  const half = Math.floor((max - 40) / 2);
+  return `${text.slice(0, half)}\n[… earlier part of the meeting left out …]\n${text.slice(-half)}`;
+}
+/** Only the end, cut at a line start. */
+export function lastPart(text, max) {
+  if (text.length <= max) return text;
+  const cut = text.slice(-max); const nl = cut.indexOf('\n');
+  return nl >= 0 ? cut.slice(nl + 1) : cut;
+}
 export function voiceRecord(surface, dir = DIR()) {
   const file = join(dir, `${surface === 'phone' ? 'phone' : 'meeting'}.jsonl`);
   const write = (entry) => {
@@ -33,6 +69,8 @@ export function voiceRecord(surface, dir = DIR()) {
     /** A finished provider session: `seconds` billed (live) or connected (realtime). */
     usage(seconds, family, startedAt) { if (Number.isFinite(seconds) && seconds >= 0) write({ kind: 'usage', family, seconds: Math.round(seconds), startedAt: new Date(startedAt).toISOString() }); },
     /** A finished line of the conversation; phone history already has its own transcript. */
+    /** How a woken meeting session ended: end_session (the model), done, idle, stop or limit. */
+    end(reason) { if (surface !== 'phone' && /^[a-z_]{1,20}$/.test(reason)) write({ kind: 'session', reason }); },
     line(role, text, startedAt) { if (surface !== 'phone' && typeof text === 'string' && text.trim()) write({ kind: 'line', role: role === 'assistant' ? 'assistant' : 'user', text: text.trim().slice(0, 4000), ...(Number.isFinite(startedAt) ? { at: new Date(startedAt).toISOString() } : {}) }); },
   };
 }

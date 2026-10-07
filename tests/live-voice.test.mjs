@@ -5,11 +5,11 @@ import {LiveBridge, liveModel} from '../roles/controlclaw/files/meeting-voice/li
 import {PhoneLiveBridge} from '../roles/controlclaw/files/meeting-voice/phone.js';
 import * as codecs from './fixtures/phone-codecs.mjs';
 function fixture(surface, Bridge = LiveBridge, wake){
- const audio=[],meta=[],sent=[],tools=[],transcripts=[],closed=[];
- const req={providerConfig:{provider:'gateway',model:'openai/gpt-live-1',surface,...(wake?{wake}:{})},onAudio:(b,m)=>{audio.push(b);meta.push(m);},onToolCall:t=>tools.push(t),onTranscript:(...x)=>transcripts.push(x),onClose:r=>closed.push(r),onClearAudio:()=>{}};
+ const audio=[],meta=[],sent=[],tools=[],transcripts=[],closed=[],tones=[];
+ const req={providerConfig:{provider:'gateway',model:'openai/gpt-live-1',surface,...(wake?{wake}:{})},onAudio:(b,m)=>{if(m?.itemId?.startsWith('cc_tone_')){tones.push(b);return;}audio.push(b);meta.push(m);},onToolCall:t=>tools.push(t),onTranscript:(...x)=>transcripts.push(x),onClose:r=>closed.push(r),onClearAudio:()=>{}};
  const bridge=new Bridge(req,{codecs,metric:()=>{}});
  bridge.ws={readyState:1,bufferedAmount:0,send:s=>sent.push(JSON.parse(s)),terminate:()=>{}};bridge.ready=true;
- return {bridge,audio,meta,sent,tools,transcripts,closed,appends:()=>sent.filter(e=>e.type.endsWith('.append')&&e.type!=='session.input_audio.append')};
+ return {bridge,audio,meta,sent,tools,transcripts,closed,tones,appends:()=>sent.filter(e=>e.type.endsWith('.append')&&e.type!=='session.input_audio.append')};
 }
 const said=(f,role,text)=>f.bridge.event({type:role==='user'?'session.input_transcript.delta':'session.output_transcript.delta',delta:text});
 test('only gpt-live models of the provider, and a session start the firewall accepts',()=>{
@@ -145,4 +145,30 @@ test('phone: wake word off by default, on when the owner turns it on',()=>{
  assert.equal(fixture('phone',LiveBridge,{enabled:true,words:['Jarvis']}).bridge.wakeRequired,true);
  assert.equal(fixture('meeting').bridge.wakeRequired,true);
  assert.equal(fixture('meeting',LiveBridge,{enabled:false,words:['Jarvis']}).bridge.wakeRequired,false);
+});
+
+test('a meeting lookup gets the whole meeting so far as context; a phone lookup does not',async()=>{
+ const {mkdtempSync,writeFileSync}=await import('node:fs');const {join}=await import('node:path');
+ const dir=mkdtempSync(join(process.env.HOME,'ctx-'));
+ const lines=[];for(let i=0;i<400;i++)lines.push(JSON.stringify({at:new Date(Date.now()-(400-i)*10000).toISOString(),speaker:i%2?'Alice':'Bob',text:i===3?'The launch moved to Thursday.':`Point number ${i} about the roadmap and the budget.`}));
+ writeFileSync(join(dir,'captions.jsonl'),lines.join('\n')+'\n');
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['Jarvis']});f.bridge.deps.voiceDir=dir;
+ said(f,'user','Jarvis, when is the launch?');f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ const ctx=f.tools[0].args.context;
+ assert.match(ctx,/The meeting so far[\s\S]*Alice: The launch moved to Thursday\./,'the start of the meeting');
+ assert.match(ctx,/Point number 399/,'and its end');assert.ok(ctx.length<=41000);
+ assert.match(f.tools[0].args.question,/when is the launch/);f.bridge.close();
+ const p=fixture('phone');p.bridge.deps.voiceDir=dir;said(p,'user','check my notes');p.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
+ assert.doesNotMatch(p.tools[0].args.context??'',/meeting so far/);p.bridge.close();
+});
+test('phone with wake words on: a tone when a request to the agent starts, another when its turn is over',t=>{
+ let clock=3_000_000;t.mock.method(Date,'now',()=>clock);
+ const f=fixture('phone',PhoneLiveBridge,{enabled:true,words:['Jarvis']});
+ said(f,'user','I was telling my wife about it. ');assert.equal(f.tones.length,0);
+ clock+=1000;said(f,'user','Jarvis, what time is it?');assert.equal(f.tones.length,1);
+ clock+=1000;said(f,'user','and the date?');assert.equal(f.tones.length,1,'one tone per turn');
+ clock+=5000;f.bridge.watch();assert.equal(f.tones.length,1,'still its turn');
+ clock+=16000;f.bridge.watch();assert.equal(f.tones.length,2);f.bridge.watch();assert.equal(f.tones.length,2);
+ assert.ok(f.tones.every(b=>b.length>0),'tones reach the call as mu-law');f.bridge.close();
+ const off=fixture('phone',PhoneLiveBridge);said(off,'user','Jarvis, hello');assert.equal(off.tones.length,0,'no tones without the wake word');off.bridge.close();
 });

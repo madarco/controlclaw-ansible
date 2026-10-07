@@ -7,7 +7,8 @@ docs/plans/gpt-live-and-wake-word.md, D5/D6).
 
 Events: {"type": "ready"}; {"type": "partial", "name", "pos"} when an utterance seems to open
 with a name (used to open the voice session early); {"type": "wake", "name", "conf", "stop", "pos"}
-when the final result confirms it; {"type": "end", "pos"} when a final result has no name (what
+when the final result confirms it, with `start`, where the name began (Vosk's word times count
+from the start of the stream, as `pos` does); {"type": "end", "pos"} when a final result has no name (what
 was said is over, so a session opened early on a partial can close). `pos` is the seconds of
 audio heard so far.
 
@@ -149,7 +150,8 @@ def main(argv):
                 conf = min(w.get('conf', 0) for w in result[start:start + size])
                 if conf >= MIN_CONF:
                     emit({'type': 'wake', 'name': name, 'conf': round(conf, 2),
-                          'stop': tokens[start + size:start + size + 1] == [STOP], 'pos': pos})
+                          'stop': tokens[start + size:start + size + 1] == [STOP], 'pos': pos,
+                          'start': round(result[start].get('start', 0), 2)})
                     continue
             if result:
                 emit({'type': 'end', 'pos': pos})

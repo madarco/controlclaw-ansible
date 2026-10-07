@@ -48,5 +48,30 @@ class CcWake(unittest.TestCase):
         self.assertIsNone(w.opens_with('stop jarvis', PHRASES))
 
 
+    def test_a_confirmed_name_says_where_it_began(self):
+        """The adapter replays the request from the name, however long Vosk took to confirm it."""
+        import io, json, sys
+        from unittest import mock
+        final = json.dumps({'result': words(('[unk]', 10.0, 11.0), ('jarvis', 11.6, 12.0), ('[unk]', 12.0, 30.0))}).encode()
+
+        class Lib(FakeLib):
+            calls = 0
+            def vosk_recognizer_new_grm(self, *a): return 1
+            def vosk_recognizer_set_words(self, *a): pass
+            def vosk_recognizer_accept_waveform(self, rec, pcm, n):
+                Lib.calls += 1
+                return Lib.calls == 3
+            def vosk_recognizer_result(self, rec): return final
+            def vosk_recognizer_partial_result(self, rec): return b'{"partial": ""}'
+        out = io.StringIO()
+        stdin = mock.Mock(); stdin.buffer = io.BytesIO(b'\0' * w.CHUNK * 3)
+        with mock.patch.object(w, 'load', return_value=(Lib(), None)), mock.patch.object(sys, 'stdin', stdin), mock.patch('sys.stdout', out):
+            w.main(['cc-wake', 'Jarvis'])
+        events = [json.loads(l) for l in out.getvalue().splitlines()]
+        self.assertEqual(events[0], {'type': 'ready'})
+        self.assertEqual(events[1]['type'], 'wake')
+        self.assertEqual(events[1]['start'], 11.6)
+
+
 if __name__ == '__main__':
     unittest.main()
