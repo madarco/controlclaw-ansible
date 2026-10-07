@@ -28395,8 +28395,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7f1f58c" : "unknown",
-  builtAt: true ? "2026-10-07T13:04:59+01:00" : "unknown"
+  commit: true ? "a2b70ae" : "unknown",
+  builtAt: true ? "2026-10-07T15:47:03+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -31034,7 +31034,7 @@ import { totalmem } from "os";
 import { join as join15 } from "path";
 
 // src/meeting-captions.ts
-import { appendFileSync, mkdirSync as mkdirSync8, rmSync as rmSync2, writeFileSync as writeFileSync10 } from "fs";
+import { appendFileSync, mkdirSync as mkdirSync8, renameSync as renameSync7, rmSync as rmSync2, writeFileSync as writeFileSync10 } from "fs";
 import { join as join13 } from "path";
 var BINDING = "__ccCap";
 var MAX_TEXT = 2e4;
@@ -31326,12 +31326,32 @@ var CaptionContext = class {
   constructor(dir) {
     this.dir = dir;
   }
+  live = /* @__PURE__ */ new Map();
   get file() {
     return join13(this.dir, "captions.jsonl");
+  }
+  get liveFile() {
+    return join13(this.dir, "captions-live.json");
   }
   start() {
     mkdirSync8(this.dir, { recursive: true, mode: 448 });
     writeFileSync10(this.file, "", { mode: 384 });
+    this.live.clear();
+    this.writeLive();
+  }
+  /** Rows from the caption observer, as they come. */
+  rows(events) {
+    const final = [];
+    for (const e of events) {
+      if (e.self) continue;
+      const row = { at: new Date(e.at).toISOString(), speaker: e.speaker || "Unknown speaker", text: e.text };
+      if (e.final) {
+        this.live.delete(e.id);
+        final.push(row);
+      } else this.live.set(e.id, row);
+    }
+    this.add(final);
+    this.writeLive();
   }
   add(lines) {
     if (!lines.length) return;
@@ -31340,8 +31360,17 @@ var CaptionContext = class {
     } catch {
     }
   }
+  writeLive() {
+    try {
+      writeFileSync10(`${this.liveFile}.tmp`, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), rows: [...this.live.values()].slice(-20) }), { mode: 384 });
+      renameSync7(`${this.liveFile}.tmp`, this.liveFile);
+    } catch {
+    }
+  }
   end() {
+    this.live.clear();
     rmSync2(this.file, { force: true });
+    rmSync2(this.liveFile, { force: true });
   }
 };
 
@@ -31350,7 +31379,7 @@ import {
   existsSync as existsSync12,
   mkdirSync as mkdirSync9,
   readFileSync as readFileSync16,
-  renameSync as renameSync7,
+  renameSync as renameSync8,
   rmSync as rmSync3,
   writeFileSync as writeFileSync11,
   readdirSync as readdirSync2
@@ -31395,7 +31424,7 @@ function cleanCaptions(input2) {
 }
 function atomicJson(path, value) {
   writeFileSync11(`${path}.tmp`, JSON.stringify(value), { mode: 384 });
-  renameSync7(`${path}.tmp`, path);
+  renameSync8(`${path}.tmp`, path);
 }
 var MeetingArchive = class {
   constructor(root, tombstonesPath) {
@@ -31897,12 +31926,11 @@ var MeetingService = class {
   /**
    * Rows from the caption observer: each speaker block is one line, updated in place as Meet adds
    * words (same source id, higher revision). The agent's own captioned speech ("You") is left out;
-   * its words come from the voice log. Final lines also go to captions.jsonl for the voice adapter.
+   * its words come from the voice log.
    */
   mergeTap(runtime, sessionId) {
     const rows = runtime.tapRows ?? [];
     runtime.tapRows = [];
-    const final = [];
     for (const row of rows) {
       if (row.self) continue;
       const id = `${sessionId}:cc:${row.id}`;
@@ -31912,9 +31940,7 @@ var MeetingService = class {
         runtime.record.transcript.push(caption);
         runtime.captions = (runtime.captions ?? 0) + 1;
       } else if ((runtime.record.transcript[at2].source?.revision ?? -1) < row.rev) runtime.record.transcript[at2] = caption;
-      if (row.final) final.push(caption);
     }
-    this.captionContext.add(final.map((c2) => ({ at: c2.at, speaker: c2.speaker, text: c2.text })));
     if (!rows.length) return;
     runtime.record.transcript = cleanCaptions(byTime(runtime.record.transcript));
     this.opts.archive.save(runtime.record);
@@ -31923,6 +31949,7 @@ var MeetingService = class {
   async tapCaptions(runtime) {
     if (runtime.tap?.attached() || runtime.closing) return;
     runtime.tap ??= (this.opts.captionTap ?? ((url3, onCaptions) => new CaptionTap({ url: url3, onCaptions })))(runtime.url, (events) => {
+      this.captionContext.rows(events);
       (runtime.tapRows ??= []).push(...events);
       if (runtime.tapRows.length > 5e3) runtime.tapRows.splice(0, runtime.tapRows.length - 5e3);
     });
@@ -32659,7 +32686,7 @@ async function handleSearch(req, res, url3, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync14, mkdirSync as mkdirSync10, readFileSync as readFileSync18, renameSync as renameSync8, unlinkSync, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync14, mkdirSync as mkdirSync10, readFileSync as readFileSync18, renameSync as renameSync9, unlinkSync, writeFileSync as writeFileSync12 } from "fs";
 import { dirname as dirname7 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -32828,7 +32855,7 @@ function writeState(path, state) {
   mkdirSync10(dirname7(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync12(tmp, JSON.stringify(state), { mode: 384 });
-  renameSync8(tmp, path);
+  renameSync9(tmp, path);
 }
 function cliEnvContents(relayUrl, token) {
   return [
@@ -32843,7 +32870,7 @@ function writeCliEnv(path, relayUrl, token) {
   mkdirSync10(dirname7(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync12(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
-  renameSync8(tmp, path);
+  renameSync9(tmp, path);
 }
 function removeFile(path) {
   try {
@@ -32922,7 +32949,7 @@ async function handleConnectors(req, res, url3, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync15, mkdirSync as mkdirSync11, readFileSync as readFileSync19, renameSync as renameSync9, writeFileSync as writeFileSync13 } from "fs";
+import { existsSync as existsSync15, mkdirSync as mkdirSync11, readFileSync as readFileSync19, renameSync as renameSync10, writeFileSync as writeFileSync13 } from "fs";
 import { dirname as dirname8 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -32977,7 +33004,7 @@ function writeAtomic(path, body, mode) {
   mkdirSync11(dirname8(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync13(tmp, body, { mode });
-  renameSync9(tmp, path);
+  renameSync10(tmp, path);
 }
 var DriveService = class {
   constructor(opts) {
@@ -33203,7 +33230,7 @@ import {
   existsSync as existsSync16,
   mkdirSync as mkdirSync12,
   readFileSync as readFileSync20,
-  renameSync as renameSync10,
+  renameSync as renameSync11,
   writeFileSync as writeFileSync14
 } from "fs";
 import { dirname as dirname9 } from "path";
@@ -33244,7 +33271,7 @@ var SecretsService = class {
       mkdirSync12(dirname9(this.opts.envPath), { recursive: true });
       const tmp = `${this.opts.envPath}.secrets.tmp`;
       writeFileSync14(tmp, next, { mode: 384 });
-      renameSync10(tmp, this.opts.envPath);
+      renameSync11(tmp, this.opts.envPath);
     }
     if (!this.opts.restartService().ok)
       throw new Error("Could not restart OpenClaw");
@@ -33283,7 +33310,7 @@ import {
   existsSync as existsSync17,
   mkdirSync as mkdirSync13,
   readFileSync as readFileSync21,
-  renameSync as renameSync11,
+  renameSync as renameSync12,
   writeFileSync as writeFileSync15
 } from "fs";
 import { dirname as dirname10 } from "path";
@@ -33367,7 +33394,7 @@ var AgentMailService = class {
 `, {
       mode: 384
     });
-    renameSync11(tmp, this.opts.envPath);
+    renameSync12(tmp, this.opts.envPath);
     let patchError;
     try {
       await patchConfig(
@@ -33483,7 +33510,7 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync18, mkdirSync as mkdirSync14, readFileSync as readFileSync22, renameSync as renameSync12, rmSync as rmSync4, writeFileSync as writeFileSync16 } from "fs";
+import { existsSync as existsSync18, mkdirSync as mkdirSync14, readFileSync as readFileSync22, renameSync as renameSync13, rmSync as rmSync4, writeFileSync as writeFileSync16 } from "fs";
 import { dirname as dirname11 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -33515,7 +33542,7 @@ function writeAtomic2(path, body, mode) {
   mkdirSync14(dirname11(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync16(tmp, body, { mode });
-  renameSync12(tmp, path);
+  renameSync13(tmp, path);
 }
 function envValue(value) {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -39670,7 +39697,7 @@ var GmailWatchService = class {
 
 // src/gmail-wake.ts
 import { randomBytes as randomBytes3 } from "crypto";
-import { existsSync as existsSync20, readFileSync as readFileSync26, renameSync as renameSync13, writeFileSync as writeFileSync19 } from "fs";
+import { existsSync as existsSync20, readFileSync as readFileSync26, renameSync as renameSync14, writeFileSync as writeFileSync19 } from "fs";
 var gmailWakeInput = external_exports.object({
   messageId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   threadId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -39720,7 +39747,7 @@ var GmailWakeService = class {
       const token = state?.token ?? randomBytes3(32).toString("hex");
       const tmp = `${this.opts.statePath}.tmp`;
       writeFileSync19(tmp, JSON.stringify({ token }), { mode: 384 });
-      renameSync13(tmp, this.opts.statePath);
+      renameSync14(tmp, this.opts.statePath);
       await patchConfig(client, { hooks: { enabled: true, token, path: "/hooks", allowRequestSessionKey: false } }, {
         timeoutMs: CONFIG_PATCH_RESTART_MS,
         readTimeoutMs: GATEWAY_READ_MS
