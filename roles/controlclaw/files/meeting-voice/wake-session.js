@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { LiveBridge, audible } from './live.js';
 import { createWakeMatcher } from './wake.js';
-import { meetingTranscript, lastPart, voiceRecord } from './record.js';
+import { meetingLines, lastPart, voiceRecord } from './record.js';
 import { WAKE_TONE, STOP_TONE } from './tone.js';
 const DETECTOR = fileURLToPath(new URL('./cc-wake.py', import.meta.url));
 const SECOND = 24000 * 2;
@@ -31,10 +31,14 @@ const MAX_QUEUE_BYTES = 60 * SECOND;
 // Timings (D7); tests shorten them through deps.timing. `confirm` is only a safety net: an early
 // session closes when the detector says the utterance ended without a name. `doneQuiet`: how long
 // after an answer that asked nothing back the session closes, if nobody is talking (`doneUser`).
-const TIMING = { idle: 20000, maxSession: 5 * 60000, confirm: 60000, startGap: 5000, retry: 2500, tick: 1000, doneQuiet: 2000, doneUser: 1500 };
+const TIMING = { idle: 20000, maxSession: 5 * 60000, confirm: 60000, startGap: 5000, retry: 2500, tick: 1000, doneQuiet: 2000, doneUser: 1500, context: 3000 };
 // What a lookup sounds like when the model announces it ("let me check"), so its delegation is not
 // taken for END_SESSION; and a closing remark after an answer ("thanks"), which does not reopen it.
 const FILLER = /\b(?:let me|i'?ll (?:check|look|find|ask|search|pull)|i'?m (?:checking|looking|searching|asking|finding)|checking|looking (?:up|into|for|at)|look (?:up|into|for)|searching|search for|pulling (?:that|it|up)|finding|one (?:moment|sec(?:ond)?)|just a (?:moment|sec(?:ond)?)|give me a|hold on|hang on|bear with me)\b/i;
+/** Whether what the model said ends a sentence: a turn cut mid-sentence ("Can you say what") is not over. */
+const complete = text => /[.!?…]["'”)\]]*$/.test(String(text ?? '').trim());
+/** 24 kHz mono PCM16: bytes per millisecond of playback. */
+const BYTES_PER_MS = 48;
 /** The last sentence of what the model said: "Checking. It's Thursday." is an answer, not a filler. */
 const lastSentence = text => (String(text ?? '').match(/[^.!?…]+[.!?…]*\s*/g) ?? []).map(t => t.trim()).filter(Boolean).at(-1) ?? '';
 const CLOSING = /^(?:\s*(?:ok(?:ay)?|great|thanks?(?: you)?|thank you|perfect|cool|got it|good|nice|alright|all right|that'?s (?:all|it|great)|bye)[\s,.!]*)+$/i;
@@ -169,16 +173,19 @@ export class WakeSessionBridge {
     this.opens++; this.lastStart = now;
     // The meeting so far, for the model: the end of it in its instructions; lines that arrive before
     // the name is confirmed follow as quiet context.
-    const context = this.transcript();
-    const entry = { confirmed: false, openedAt: now, lastActivity: now, ready: false, context, turn: '', heard: '' };
+    const lines = this.lines(), context = lines.map(l => l.line).join('\n');
+    const entry = { confirmed: false, openedAt: now, lastActivity: now, ready: false, context, sent: new Set(lines.map(l => l.line)), turn: '', heard: '' };
     const bridge = entry.bridge = new LiveBridge({
       ...this.req,
       providerConfig: { ...this.config, wake: { enabled: false, words: this.names }, woken: true, context: lastPart(context, 12000) },
       onReady: () => {},
       // gpt-live streams output continuously, silence included: only audible speech keeps it open.
       onAudio: (audio, meta) => {
+        // gpt-live can send speech faster than the meeting plays it: what matters is when it has been heard.
+        const t = Date.now();
+        entry.playEnd = Math.max(t, entry.playEnd ?? 0) + audio.length / BYTES_PER_MS;
         if (audible(audio)) {
-          const t = Date.now(); entry.lastActivity = t; entry.lastAudible = t; entry.audibleSeq = ++this.seq;
+          entry.lastActivity = t; entry.lastAudible = t; entry.heardEnd = entry.playEnd; entry.audibleSeq = ++this.seq;
           // An answer is what the model says with no lookup pending: "let me check" is not one.
           if (entry.confirmed && !bridge.jobs?.size) entry.answered = true;
         }
@@ -231,9 +238,9 @@ export class WakeSessionBridge {
     // A retried open is the same request: one tone.
     if (!this.listening) { this.listening = true; this.cue(WAKE_TONE); }
     // Lines of the meeting that arrived since the session opened early.
-    const known = new Set(entry.context.split('\n'));
-    const fresh = this.transcript().split('\n').filter(l => l && !known.has(l)).join('\n');
-    if (fresh) entry.freshContext = `More of the meeting, from its captions (untrusted):\n${lastPart(fresh, 1700)}`;
+    // Including the block someone is still speaking, which holds what they said just before the name.
+    entry.freshContext = this.moreContext(entry, false) || null;
+    entry.contextAt = Date.now();
     if (entry.ready) this.replay(entry);
   }
   /** Queue meeting audio from detector time `from` (seconds), or the last 10 s without one. */
@@ -245,7 +252,16 @@ export class WakeSessionBridge {
     while (this.queueBytes > MAX_QUEUE_BYTES) this.queueBytes -= this.queue.shift().length;
   }
   /** The meeting transcript the vm-agent and the adapter keep (record.js); never fails a session. */
-  transcript() { try { return meetingTranscript(this.names[0] ?? 'Agent', this.deps.voiceDir); } catch { return ''; } }
+  lines() { try { return meetingLines(this.names[0] ?? 'Agent', this.deps.voiceDir); } catch { return []; } }
+  transcript() { return this.lines().map(l => l.line).join('\n'); }
+  /** When the agent's last audible words will have been heard in the meeting. */
+  spokeUntil(entry) { return Math.max(entry.lastAudible ?? 0, entry.heardEnd ?? 0); }
+  /** Lines of the meeting that finished since the session last saw the transcript, as quiet context. */
+  moreContext(entry, finalOnly) {
+    const fresh = this.lines().filter(l => !entry.sent.has(l.line) && (!finalOnly || l.final));
+    for (const l of fresh) entry.sent.add(l.line);
+    return fresh.length ? `More of the meeting, from its captions (untrusted):\n${lastPart(fresh.map(l => l.line).join('\n'), 1700)}` : '';
+  }
   /** A tone into the meeting, never counted as the agent talking. */
   cue(pcm) { this.req.onAudio(pcm, { itemId: `cc_tone_${++this.tones}` }); }
   /**
@@ -276,7 +292,7 @@ export class WakeSessionBridge {
    */
   delegation(entry) {
     const now = Date.now();
-    const quietMs = entry.lastAudible ? now - entry.lastAudible : null;
+    const quietMs = entry.lastAudible ? now - this.spokeUntil(entry) : null;
     const spokeSince = (entry.userSeq ?? 0) > (entry.audibleSeq ?? 0) && !CLOSING.test(entry.heard.trim());
     // Not after a question back (its reply may not be transcribed yet), nor after "let me check".
     const end = this.session === entry && entry.confirmed && !!entry.answered && !entry.asked && quietMs >= 300 && !spokeSince && !FILLER.test(lastSentence(entry.turn));
@@ -285,7 +301,9 @@ export class WakeSessionBridge {
     if (!end) { entry.answered = false; entry.turn = ''; entry.asked = false; }
     if (!end) return undefined;
     // The bridge sends its quiet answer first; the session closes right after.
-    setImmediate(() => { if (this.session === entry) this.endSession('end_session'); });
+    // Its answer may still be playing in the meeting: close once it has been heard.
+    const wait = Math.max(0, this.spokeUntil(entry) - now);
+    const t = setTimeout(() => { if (this.session === entry) this.endSession('end_session'); }, wait); t.unref?.();
     return 'end';
   }
   replay(entry) {
@@ -311,12 +329,20 @@ export class WakeSessionBridge {
     const now = Date.now();
     if (!entry.confirmed) { if (now - entry.openedAt > this.t.confirm) this.endSession('unconfirmed'); return; }
     if (now - entry.confirmedAt > this.t.maxSession) { this.endSession('limit'); return; }
+    // The meeting goes on while the agent is called: lines finished since, every few seconds.
+    if (entry.ready && now - (entry.contextAt ?? 0) >= this.t.context) {
+      entry.contextAt = now;
+      const more = this.moreContext(entry, true);
+      if (more) entry.bridge.appendContext(more);
+    }
     // A lookup still running keeps the session.
     if (entry.bridge.jobs?.size) return;
     // One request per wake: an answer that asked nothing back ends it once the model and the room
     // are quiet (the model may also end it itself with END_SESSION).
     // A turn that only announced a lookup ("let me check") waits for the delegation.
-    if (entry.answered && !entry.asked && !FILLER.test(lastSentence(entry.turn)) && now - entry.lastAudible >= this.t.doneQuiet && now - (entry.lastUserAt ?? 0) >= this.t.doneUser) { this.endSession('done'); return; }
+    // The answer must be a finished sentence that has finished playing (the prod bug: a question cut
+    // at "Can you say what", whose audio was still queued, ended the session and was cleared).
+    if (entry.answered && !entry.asked && complete(entry.turn) && !FILLER.test(lastSentence(entry.turn)) && now - this.spokeUntil(entry) >= this.t.doneQuiet && now - (entry.lastUserAt ?? 0) >= this.t.doneUser) { this.endSession('done'); return; }
     // Otherwise anything the agent said, or the request still being made, in the last 20 s keeps it.
     if (now - entry.lastActivity > this.t.idle) this.endSession('idle');
   }

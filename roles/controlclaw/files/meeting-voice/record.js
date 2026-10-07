@@ -30,20 +30,25 @@ function tail(file, max = 1024 * 1024) {
 }
 const clock = at => { const d = new Date(at); return Number.isFinite(d.getTime()) ? d.toISOString().slice(11, 16) : '--:--'; };
 /**
- * The meeting so far (meet-wake-improvements.md, 2), oldest first: the captions the vm-agent writes
- * to captions.jsonl (`{at, speaker, text}`, speaker names from Meet), and the agent's own lines from
- * meeting.jsonl. Without captions (the host turned them off), what the agent heard in its sessions
- * stands in. One "[hh:mm] Speaker: text" line each; `name` labels the agent's lines.
+ * The meeting so far (meet-wake-improvements.md, 2), oldest first, one "[hh:mm] Speaker: text" line
+ * each: the captions the vm-agent writes (captions.jsonl, final lines; captions-live.json, the
+ * blocks Meet is still writing, so what someone is saying right now is there too), and the agent's
+ * own lines from meeting.jsonl. Without captions (the host turned them off), what the agent heard
+ * in its sessions stands in. `final` is false for a block still being written.
  */
-export function meetingTranscript(name, dir = DIR()) {
-  const captions = tail(join(dir, 'captions.jsonl')).filter(c => typeof c?.text === 'string' && typeof c.at === 'string')
-    .map(c => ({ at: c.at, speaker: typeof c.speaker === 'string' && c.speaker ? c.speaker.slice(0, 80) : 'Someone', text: c.text }));
+export function meetingLines(name, dir = DIR()) {
+  const caption = c => typeof c?.text === 'string' && c.text.trim() && typeof c.at === 'string';
+  const who = c => typeof c.speaker === 'string' && c.speaker ? c.speaker.slice(0, 80) : 'Someone';
+  const finals = tail(join(dir, 'captions.jsonl')).filter(caption).map(c => ({ at: c.at, speaker: who(c), text: c.text, final: true }));
+  let live = [];
+  try { const rows = JSON.parse(readFileSync(join(dir, 'captions-live.json'), 'utf8'))?.rows; if (Array.isArray(rows)) live = rows.slice(0, 50).filter(caption).map(c => ({ at: c.at, speaker: who(c), text: c.text.slice(-4000), final: false })); } catch { /* none yet */ }
   const voice = tail(join(dir, 'meeting.jsonl')).filter(l => l?.kind === 'line' && typeof l.text === 'string' && typeof l.at === 'string');
-  const own = voice.filter(l => l.role === 'assistant').map(l => ({ at: l.at, speaker: name, text: l.text }));
-  const heard = captions.length ? [] : voice.filter(l => l.role === 'user').map(l => ({ at: l.at, speaker: 'Someone', text: l.text }));
-  return [...captions, ...own, ...heard].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-    .map(l => `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`).join('\n');
+  const own = voice.filter(l => l.role === 'assistant').map(l => ({ at: l.at, speaker: name, text: l.text, final: true }));
+  const heard = finals.length || live.length ? [] : voice.filter(l => l.role === 'user').map(l => ({ at: l.at, speaker: 'Someone', text: l.text, final: true }));
+  return [...finals, ...live, ...own, ...heard].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    .map(l => ({ line: `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`, final: l.final }));
 }
+export const meetingTranscript = (name, dir = DIR()) => meetingLines(name, dir).map(l => l.line).join('\n');
 /** At most `max` characters: the start and the end, with a marker between. */
 export function clip(text, max) {
   if (text.length <= max) return text;

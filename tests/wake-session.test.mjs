@@ -323,7 +323,7 @@ test('END_SESSION: delegated after the answer, it is answered at once, never sen
   assert.match(f.ws.sent[0].session.instructions, /delegate the task "END_SESSION"/);
   hear(f.ws, 'Jarvis, remind everyone the review is on Friday.');
   speak(f.ws, 'Reminder: the budget review is on Friday.');
-  await wait(350);
+  await wait(450);
   delegate(f.ws, 'end1');
   assert.equal(f.out.tools.length, 0);
   assert.ok(f.ws.sent.some(e => e.type === 'session.thinking.append' && e.delegation_id === 'end1'));
@@ -361,7 +361,7 @@ test('"thanks" after the answer does not stop END_SESSION from being recognised'
   hear(f.ws, 'Jarvis, what is seven times six?');
   speak(f.ws, 'Forty-two.');
   hear(f.ws, 'Great, thanks.');
-  await wait(350);
+  await wait(450);
   delegate(f.ws, 'end');
   assert.equal(f.out.tools.length, 0);
   await until(() => f.bridge.session === null);
@@ -491,5 +491,55 @@ test('"Sure, checking." then the result in the same turn: the session closes onc
   speak(f.ws, "It's lemon shortbread.");
   await until(() => f.bridge.session === null, 1500);
   assert.deepEqual(f.ends, ['done']);
+  f.bridge.close();
+});
+
+test('prod: an answer sent faster than it plays, its transcript cut mid-sentence, is not closed while it is still being heard', async () => {
+  const f = await woken({ timing: { doneQuiet: 300, doneUser: 100, idle: 20000 } });
+  hear(f.ws, 'leabot, what do you think about it?');
+  // 3 s of speech arrive at once; the transcript so far stops mid-sentence.
+  f.ws.emit('message', JSON.stringify({ type: 'session.output_transcript.delta', delta: 'I\'m not sure what "it" refers to. Can you say what' }));
+  f.ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: pcm(3000, 3000).toString('base64') }));
+  await wait(1000);
+  assert.ok(f.bridge.session, 'still playing, and the sentence is not finished');
+  f.ws.emit('message', JSON.stringify({ type: 'session.output_transcript.delta', delta: ' you mean?' }));
+  await wait(2600);
+  assert.ok(f.bridge.session, 'a question back waits for the reply');
+  assert.deepEqual(f.ends, []);
+  f.bridge.close();
+});
+
+test('an answer that finished playing closes the session the quiet time after it was heard, not after it arrived', async () => {
+  const f = await woken({ timing: { doneQuiet: 300, doneUser: 100, idle: 20000 } });
+  hear(f.ws, 'Jarvis, what is the snack?');
+  f.ws.emit('message', JSON.stringify({ type: 'session.output_transcript.delta', delta: 'The team picnic snack is lemon shortbread.' }));
+  f.ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: pcm(1500, 3000).toString('base64') }));
+  const sent = Date.now();
+  await until(() => f.bridge.session === null, 4000);
+  assert.ok(Date.now() - sent >= 1700, 'closed only after 1.5 s of playback and the quiet time');
+  assert.deepEqual(f.ends, ['done']);
+  f.bridge.close();
+});
+
+test('prod: context said just before the name, in the same caption block Meet is still writing, reaches the woken session; later lines follow', async () => {
+  const { mkdtempSync, writeFileSync, appendFileSync } = await import('node:fs');
+  const dir = mkdtempSync(join(process.env.HOME, 'live-'));
+  const at = (s) => new Date(Date.now() - s * 1000).toISOString();
+  writeFileSync(join(dir, 'captions.jsonl'), JSON.stringify({ at: at(90), speaker: 'Bob', text: 'Morning all.' }) + '\n');
+  writeFileSync(join(dir, 'captions-live.json'), JSON.stringify({ rows: [{ id: 'x-b2.0', at: at(8), speaker: 'Marco Waldos', text: "Hi, hello. We are here to determine the team's favorite snack. What do you think about it? Leabot, what do you" }] }));
+  const f = fixture({ voiceDir: dir, timing: { context: 100 } });
+  await f.bridge.connect();
+  f.child().say({ type: 'partial', name: 'Jarvis' });
+  await until(() => f.bridge.session?.ready);
+  const ws = f.ws.all[0];
+  assert.match(ws.sent[0].session.instructions, /Marco Waldos: Hi, hello\. We are here to determine the team's favorite snack/);
+  // The block grew before the name was confirmed: the session gets its latest text.
+  writeFileSync(join(dir, 'captions-live.json'), JSON.stringify({ rows: [{ id: 'x-b2.0', at: at(8), speaker: 'Marco Waldos', text: "Hi, hello. We are here to determine the team's favorite snack. What do you think about it? Leabot, what do you think about it?" }] }));
+  f.child().say({ type: 'wake', name: 'Jarvis', conf: 0.9, stop: false });
+  await until(() => ws.sent.some(e => e.type === 'session.thinking.append' && /Leabot, what do you think about it\?/.test(e.content)));
+  // A line someone finishes while the agent is talking arrives as quiet context too.
+  appendFileSync(join(dir, 'captions.jsonl'), JSON.stringify({ at: at(0), speaker: 'Anna', text: 'I vote for lemon shortbread.' }) + '\n');
+  await until(() => ws.sent.some(e => e.type === 'session.thinking.append' && /Anna: I vote for lemon shortbread/.test(e.content)));
+  assert.ok(ws.sent.filter(e => e.type === 'session.thinking.append').every(e => e.content.length <= 1800 && !/Bob: Morning all/.test(e.content)), 'nothing twice, within the append cap');
   f.bridge.close();
 });
