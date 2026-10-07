@@ -320,7 +320,7 @@ test('the name confirmed long after the early session opened (over 15 s) still u
 test('END_SESSION: delegated after the answer, it is answered at once, never sent to the agent, and closes with a tone', async () => {
   const f = await woken({ timing: { doneQuiet: 5000, idle: 5000 } });
   assert.equal(f.out.tones.length, 1, 'a tone when the name is recognised');
-  assert.match(f.ws.sent[0].session.instructions, /delegate the request END_SESSION/);
+  assert.match(f.ws.sent[0].session.instructions, /delegate the task "END_SESSION"/);
   hear(f.ws, 'Jarvis, remind everyone the review is on Friday.');
   speak(f.ws, 'Reminder: the budget review is on Friday.');
   await wait(350);
@@ -477,5 +477,19 @@ test('a retried open plays one rising tone; a retry that fails too ends with the
   await wait(50);
   assert.equal(f.out.tones.length, 2, 'one rising, one falling');
   assert.deepEqual(f.ends, ['failed']);
+  f.bridge.close();
+});
+
+test('"Sure, checking." then the result in the same turn: the session closes once the result is given', async () => {
+  const f = await woken({ timing: { doneQuiet: 300, doneUser: 200, idle: 20000 } });
+  hear(f.ws, 'Jarvis, what is the team picnic snack?');
+  delegate(f.ws, 'd1'); // the model delegates first, then says its filler
+  await wait(20);
+  speak(f.ws, 'Sure! Checking.');
+  f.bridge.submitToolResult('d1', { text: 'Lemon shortbread.' });
+  await wait(50);
+  speak(f.ws, "It's lemon shortbread.");
+  await until(() => f.bridge.session === null, 1500);
+  assert.deepEqual(f.ends, ['done']);
   f.bridge.close();
 });

@@ -95,7 +95,7 @@ export class LiveBridge {
   session() {
     const names = nameList(this.wake.names);
     const addressing = this.config.woken
-      ? `You were connected because someone in the meeting seemed to call you by one of your names (${names}); the audio you hear first is what they said. If it is a request to you, handle that one request: give one answer, then stop. Do not ask whether they need anything else. Ask a question back only when you need the answer to finish the request; the reply to it needs no name. If they only mentioned the name while talking to someone else, say nothing. When you have finished and expect no reply, delegate the request ${END_SESSION} at once, without saying anything more; you stop listening then, and they call you by name for anything new.`
+      ? `You were connected because someone in the meeting seemed to call you by one of your names (${names}); the audio you hear first is what they said. If it is a request to you, handle that one request: give one answer, then stop. Do not ask whether they need anything else. Ask a question back only when you need the answer to finish the request; the reply to it needs no name. If they only mentioned the name while talking to someone else, say nothing. You hang up yourself: right after your final answer, when you expect no reply, delegate the task "${END_SESSION}" (say nothing about it). That ends this conversation; they call you by name for anything new.`
       : this.wakeRequired
       ? `Speak only when someone's request starts with one of your names: ${names}. Otherwise stay silent, even if you could help.`
       : this.phone ? '' : `Your names are ${names}.`;

@@ -35,6 +35,8 @@ const TIMING = { idle: 20000, maxSession: 5 * 60000, confirm: 60000, startGap: 5
 // What a lookup sounds like when the model announces it ("let me check"), so its delegation is not
 // taken for END_SESSION; and a closing remark after an answer ("thanks"), which does not reopen it.
 const FILLER = /\b(?:let me|i'?ll (?:check|look|find|ask|search|pull)|i'?m (?:checking|looking|searching|asking|finding)|checking|looking (?:up|into|for|at)|look (?:up|into|for)|searching|search for|pulling (?:that|it|up)|finding|one (?:moment|sec(?:ond)?)|just a (?:moment|sec(?:ond)?)|give me a|hold on|hang on|bear with me)\b/i;
+/** The last sentence of what the model said: "Checking. It's Thursday." is an answer, not a filler. */
+const lastSentence = text => (String(text ?? '').match(/[^.!?…]+[.!?…]*\s*/g) ?? []).map(t => t.trim()).filter(Boolean).at(-1) ?? '';
 const CLOSING = /^(?:\s*(?:ok(?:ay)?|great|thanks?(?: you)?|thank you|perfect|cool|got it|good|nice|alright|all right|that'?s (?:all|it|great)|bye)[\s,.!]*)+$/i;
 const MAX_SESSIONS = 40;
 // "<name>, stop" as the voice model transcribed it: a second check, for when cc-wake missed "stop".
@@ -277,7 +279,7 @@ export class WakeSessionBridge {
     const quietMs = entry.lastAudible ? now - entry.lastAudible : null;
     const spokeSince = (entry.userSeq ?? 0) > (entry.audibleSeq ?? 0) && !CLOSING.test(entry.heard.trim());
     // Not after a question back (its reply may not be transcribed yet), nor after "let me check".
-    const end = this.session === entry && entry.confirmed && !!entry.answered && !entry.asked && quietMs >= 300 && !spokeSince && !FILLER.test(entry.turn);
+    const end = this.session === entry && entry.confirmed && !!entry.answered && !entry.asked && quietMs >= 300 && !spokeSince && !FILLER.test(lastSentence(entry.turn));
     this.metric('delegation', { verdict: end ? 'end_session' : 'lookup', quietMs, userMs: entry.lastUserAt ? now - entry.lastUserAt : null, turnChars: entry.turn.length, answered: !!entry.answered, asked: !!entry.asked });
     // A lookup: the answer is still to come, and what the model says next is a new turn.
     if (!end) { entry.answered = false; entry.turn = ''; entry.asked = false; }
@@ -314,7 +316,7 @@ export class WakeSessionBridge {
     // One request per wake: an answer that asked nothing back ends it once the model and the room
     // are quiet (the model may also end it itself with END_SESSION).
     // A turn that only announced a lookup ("let me check") waits for the delegation.
-    if (entry.answered && !entry.asked && !FILLER.test(entry.turn) && now - entry.lastAudible >= this.t.doneQuiet && now - (entry.lastUserAt ?? 0) >= this.t.doneUser) { this.endSession('done'); return; }
+    if (entry.answered && !entry.asked && !FILLER.test(lastSentence(entry.turn)) && now - entry.lastAudible >= this.t.doneQuiet && now - (entry.lastUserAt ?? 0) >= this.t.doneUser) { this.endSession('done'); return; }
     // Otherwise anything the agent said, or the request still being made, in the last 20 s keeps it.
     if (now - entry.lastActivity > this.t.idle) this.endSession('idle');
   }
