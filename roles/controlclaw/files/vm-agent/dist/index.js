@@ -3993,6 +3993,7 @@ var import_sender = __toESM(require_sender(), 1);
 var import_subprotocol = __toESM(require_subprotocol(), 1);
 var import_websocket = __toESM(require_websocket(), 1);
 var import_websocket_server = __toESM(require_websocket_server(), 1);
+var wrapper_default = import_websocket.default;
 
 // ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/buffer_utils.js
 var encoder = new TextEncoder();
@@ -5806,6 +5807,8 @@ var MeetingVoiceLog = class {
           out.push({ at: entry.at, kind: "usage", family: String(entry.family ?? "").slice(0, 20), seconds: Math.round(entry.seconds) });
         else if (entry.kind === "line" && (entry.role === "assistant" || entry.role === "user") && typeof entry.text === "string" && entry.text.trim())
           out.push({ at: entry.at, kind: "line", role: entry.role, text: entry.text.slice(0, 4e3) });
+        else if (entry.kind === "session" && typeof entry.reason === "string" && /^[a-z_]{1,20}$/.test(entry.reason))
+          out.push({ at: entry.at, kind: "session", reason: entry.reason });
       }
       return out;
     } finally {
@@ -27009,7 +27012,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID4 } from "crypto";
-import { readFileSync as readFileSync27, existsSync as existsSync21, writeFileSync as writeFileSync19, rmSync as rmSync6 } from "fs";
+import { readFileSync as readFileSync27, existsSync as existsSync21, writeFileSync as writeFileSync20, rmSync as rmSync7 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash5, randomBytes as randomBytes2 } from "crypto";
@@ -28392,8 +28395,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "5cedeac" : "unknown",
-  builtAt: true ? "2026-10-06T17:19:31+01:00" : "unknown"
+  commit: true ? "7f1f58c" : "unknown",
+  builtAt: true ? "2026-10-07T13:04:59+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -31028,19 +31031,331 @@ async function handleLlm(req, res, url3, service) {
 import { randomUUID as randomUUID2 } from "crypto";
 import { existsSync as existsSync13, readFileSync as readFileSync17, statfsSync } from "fs";
 import { totalmem } from "os";
-import { join as join14 } from "path";
+import { join as join15 } from "path";
+
+// src/meeting-captions.ts
+import { appendFileSync, mkdirSync as mkdirSync8, rmSync as rmSync2, writeFileSync as writeFileSync10 } from "fs";
+import { join as join13 } from "path";
+var BINDING = "__ccCap";
+var MAX_TEXT = 2e4;
+function mergeCaptionText(full, seen, next) {
+  if (next.startsWith(seen)) return full + next.slice(seen.length);
+  const visibleAt = Math.max(0, full.length - seen.length);
+  const words = next.split(/\s+/).filter(Boolean);
+  for (const n2 of [4, 3, 2]) {
+    if (words.length < n2) continue;
+    const at2 = full.indexOf(words.slice(0, n2).join(" "), visibleAt);
+    if (at2 >= 0) return full.slice(0, at2) + next;
+  }
+  return full.slice(0, visibleAt) + next;
+}
+function captionContinuation(done, next) {
+  if (!done) return next;
+  if (next.startsWith(done)) return next.slice(done.length).trim();
+  const old = done.split(/\s+/).filter(Boolean);
+  for (const n2 of [3, 2]) {
+    if (old.length < n2) continue;
+    const tail = old.slice(-n2).join(" ");
+    const at2 = next.lastIndexOf(tail);
+    if (at2 >= 0) return next.slice(at2 + tail.length).trim();
+  }
+  return next.split(/\s+/).filter(Boolean).slice(old.length).join(" ");
+}
+function captionPage(merge2, cont, binding) {
+  const w2 = window;
+  if (w2.__ccCaps) return;
+  const blocks = /* @__PURE__ */ new Map();
+  const doc = Math.random().toString(36).slice(2, 10) || "d";
+  const log = [];
+  let seq = 0, next = 0, pending = false, clicked = 0;
+  const text2 = (el) => (el.innerText ?? el.textContent ?? "").replace(/\r/g, "");
+  const region = () => document.querySelector('[role="region"][aria-label*="aption" i]');
+  function blocksOf(root) {
+    const found = /* @__PURE__ */ new Set();
+    for (const img of root.querySelectorAll("img")) {
+      let el = img;
+      while (el.parentElement && el.parentElement !== root && el.parentElement.querySelectorAll("img").length === 1) el = el.parentElement;
+      found.add(el);
+    }
+    if (!found.size) {
+      for (const child of root.children) if (text2(child).includes("\n")) found.add(child);
+    }
+    return [...found];
+  }
+  function parse4(el) {
+    const lines = text2(el).split("\n").map((s2) => s2.trim()).filter(Boolean);
+    return lines.length < 2 ? null : { speaker: lines[0].slice(0, 80), text: lines.slice(1).join(" ") };
+  }
+  function send2() {
+    pending = false;
+    const out = log.filter((e) => e.seq > sent);
+    if (!out.length) return;
+    sent = out.at(-1).seq;
+    const report = w2[binding];
+    if (typeof report === "function") report(JSON.stringify(out));
+  }
+  let sent = 0;
+  function emit(rec, final) {
+    const body = rec.full.trim();
+    if (!body) return;
+    log.push({ seq: ++seq, id: `${doc}-${rec.id}.${rec.seg}`, rev: ++rec.rev, speaker: rec.speaker, self: rec.self, text: body, final, at: rec.startedAt });
+    if (log.length > 2e3) log.splice(0, log.length - 2e3);
+    if (!pending) {
+      pending = true;
+      setTimeout(send2, 300);
+    }
+  }
+  function finish(rec) {
+    if (rec.final) return;
+    emit(rec, true);
+    rec.final = true;
+    rec.done = rec.shown;
+    rec.full = "";
+    rec.seen = "";
+    rec.seg++;
+    rec.rev = 0;
+  }
+  function scan() {
+    const root = region();
+    if (!root) {
+      const button = document.querySelector('button[aria-label*="turn on captions" i]');
+      if (button && Date.now() - clicked > 3e4) {
+        clicked = Date.now();
+        button.click();
+      }
+      return;
+    }
+    for (const el of blocksOf(root)) {
+      const row = parse4(el);
+      if (!row) continue;
+      let rec = blocks.get(el);
+      if (!rec) {
+        for (const other of blocks.values()) finish(other);
+        rec = { id: `b${++next}`, seg: 0, rev: 0, full: "", seen: "", done: "", shown: "", speaker: row.speaker, self: !!el.closest("[data-is-self]") || /^you$/i.test(row.speaker), changedAt: Date.now(), startedAt: Date.now(), final: false };
+        blocks.set(el, rec);
+      }
+      if (row.text === rec.shown) continue;
+      rec.shown = row.text;
+      const text3 = cont(rec.done, row.text);
+      if (!text3 || text3 === rec.seen) continue;
+      if (rec.final) {
+        rec.final = false;
+        rec.startedAt = Date.now();
+      }
+      rec.full = merge2(rec.full, rec.seen, text3);
+      rec.seen = text3;
+      rec.changedAt = Date.now();
+      emit(rec, false);
+    }
+    for (const [el, rec] of blocks) if (!el.isConnected) {
+      finish(rec);
+      blocks.delete(el);
+    }
+  }
+  let queued = false;
+  const later = () => {
+    if (!queued) {
+      queued = true;
+      setTimeout(() => {
+        queued = false;
+        scan();
+      }, 150);
+    }
+  };
+  new MutationObserver(later).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  setInterval(() => {
+    scan();
+    for (const rec of blocks.values()) if (!rec.final && Date.now() - rec.changedAt > 2500) finish(rec);
+  }, 500);
+  w2.__ccCaps = {
+    doc,
+    since: (n2) => log.filter((e) => e.seq > n2),
+    flush: (n2) => {
+      scan();
+      for (const rec of blocks.values()) finish(rec);
+      return log.filter((e) => e.seq > n2);
+    }
+  };
+  scan();
+}
+var CAPTION_SCRIPT = `(() => { const __name = (f) => f; (${captionPage.toString()})(${mergeCaptionText.toString()}, ${captionContinuation.toString()}, ${JSON.stringify(BINDING)}); })();`;
+function parseCaptionEvents(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const e of raw.slice(0, 500)) {
+    if (!e || typeof e !== "object") continue;
+    if (!Number.isSafeInteger(e.seq) || !Number.isSafeInteger(e.rev) || typeof e.id !== "string" || !/^[a-z0-9]{1,10}-b\d{1,9}\.\d{1,6}$/.test(e.id)) continue;
+    if (typeof e.text !== "string" || !e.text.trim() || typeof e.speaker !== "string" || typeof e.at !== "number" || !Number.isFinite(e.at)) continue;
+    out.push({ seq: e.seq, id: e.id, rev: e.rev, speaker: e.speaker.slice(0, 80), self: e.self === true, text: e.text.slice(-MAX_TEXT), final: e.final === true, at: e.at });
+  }
+  return out.sort((a2, b2) => a2.seq - b2.seq);
+}
+var CaptionTap = class {
+  constructor(opts) {
+    this.opts = opts;
+  }
+  ws = null;
+  id = 0;
+  waiting = /* @__PURE__ */ new Map();
+  /** The newest row seen from each page document (ids start with the document's prefix). */
+  last = /* @__PURE__ */ new Map();
+  closed = false;
+  get cdp() {
+    return this.opts.cdp ?? "http://127.0.0.1:9223";
+  }
+  /** Connected to the Meet tab now (a dropped debugger connection needs attach() again). */
+  attached() {
+    return !!this.ws;
+  }
+  /** Attach to the Meet tab; false when there is none yet (the caller retries on its next poll). */
+  async attach() {
+    if (this.ws || this.closed) return !!this.ws;
+    const response = await (this.opts.fetchImpl ?? fetch)(`${this.cdp}/json/list`, { signal: AbortSignal.timeout(3e3) });
+    const targets = await response.json();
+    const page = targets.find((t2) => {
+      if (t2.type !== "page" || typeof t2.url !== "string" || typeof t2.webSocketDebuggerUrl !== "string") return false;
+      try {
+        const u2 = new URL(t2.url);
+        return u2.origin + u2.pathname.replace(/\/$/, "") === this.opts.url;
+      } catch {
+        return false;
+      }
+    });
+    if (!page || !/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/page\//.test(page.webSocketDebuggerUrl)) return false;
+    const ws = (this.opts.connect ?? ((url3) => new wrapper_default(url3, { maxPayload: 4 * 1024 * 1024 })))(page.webSocketDebuggerUrl);
+    await new Promise((resolve3, reject) => {
+      const timer = setTimeout(() => {
+        ws.close();
+        reject(new Error("Caption tap timed out"));
+      }, 5e3);
+      ws.on("open", () => {
+        clearTimeout(timer);
+        resolve3();
+      });
+      ws.on("error", () => {
+        clearTimeout(timer);
+        reject(new Error("Caption tap failed"));
+      });
+    });
+    if (this.closed) {
+      ws.close();
+      return false;
+    }
+    this.ws = ws;
+    ws.on("message", (data) => this.message(String(data)));
+    ws.on("close", () => {
+      if (this.ws === ws) this.ws = null;
+      for (const done of this.waiting.values()) done(null);
+      this.waiting.clear();
+    });
+    await this.send("Runtime.enable");
+    await this.send("Runtime.addBinding", { name: BINDING });
+    await this.send("Page.addScriptToEvaluateOnNewDocument", { source: CAPTION_SCRIPT });
+    await this.send("Runtime.evaluate", { expression: CAPTION_SCRIPT });
+    await this.pull("since");
+    return true;
+  }
+  /** Everything still open on the page, as final rows (the meeting is ending). */
+  async flush() {
+    if (this.ws) await this.pull("flush");
+  }
+  close() {
+    this.closed = true;
+    this.ws?.close();
+    this.ws = null;
+  }
+  /** Rows the page holds after the last one seen from its current document. */
+  async pull(fn) {
+    const seen = JSON.stringify(Object.fromEntries(this.last));
+    const expression = `window.__ccCaps ? JSON.stringify(window.__ccCaps.${fn}((${seen})[window.__ccCaps.doc] ?? 0)) : "[]"`;
+    const result = await this.send("Runtime.evaluate", { expression, returnByValue: true });
+    const value = result?.result?.value;
+    if (typeof value === "string") this.deliver(value);
+  }
+  send(method, params = {}) {
+    const ws = this.ws;
+    if (!ws) return Promise.resolve(null);
+    const id = ++this.id;
+    return new Promise((resolve3) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        resolve3(null);
+      }, 5e3);
+      this.waiting.set(id, (r2) => {
+        clearTimeout(timer);
+        resolve3(r2);
+      });
+      ws.send(JSON.stringify({ id, method, params }));
+    });
+  }
+  message(data) {
+    if (data.length > 4 * 1024 * 1024) return;
+    let msg;
+    try {
+      msg = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (typeof msg.id === "number") {
+      this.waiting.get(msg.id)?.(msg.result ?? null);
+      this.waiting.delete(msg.id);
+      return;
+    }
+    if (msg.method === "Runtime.bindingCalled" && msg.params?.name === BINDING && typeof msg.params.payload === "string") this.deliver(msg.params.payload);
+    const context = msg.params?.context;
+    if (msg.method === "Runtime.executionContextCreated" && context?.auxData?.isDefault && typeof context.id === "number" && context.origin === new URL(this.opts.url).origin)
+      void this.send("Runtime.evaluate", { expression: CAPTION_SCRIPT, contextId: context.id });
+  }
+  deliver(payload) {
+    let raw;
+    try {
+      raw = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    const events = parseCaptionEvents(raw).filter((e) => {
+      const doc = e.id.slice(0, e.id.indexOf("-"));
+      if (e.seq <= (this.last.get(doc) ?? 0)) return false;
+      this.last.set(doc, e.seq);
+      return true;
+    });
+    if (events.length) this.opts.onCaptions(events);
+  }
+};
+var CaptionContext = class {
+  constructor(dir) {
+    this.dir = dir;
+  }
+  get file() {
+    return join13(this.dir, "captions.jsonl");
+  }
+  start() {
+    mkdirSync8(this.dir, { recursive: true, mode: 448 });
+    writeFileSync10(this.file, "", { mode: 384 });
+  }
+  add(lines) {
+    if (!lines.length) return;
+    try {
+      appendFileSync(this.file, lines.map((l2) => JSON.stringify(l2)).join("\n") + "\n", { mode: 384 });
+    } catch {
+    }
+  }
+  end() {
+    rmSync2(this.file, { force: true });
+  }
+};
 
 // src/meeting-notes.ts
 import {
   existsSync as existsSync12,
-  mkdirSync as mkdirSync8,
+  mkdirSync as mkdirSync9,
   readFileSync as readFileSync16,
   renameSync as renameSync7,
-  rmSync as rmSync2,
-  writeFileSync as writeFileSync10,
+  rmSync as rmSync3,
+  writeFileSync as writeFileSync11,
   readdirSync as readdirSync2
 } from "fs";
-import { join as join13, resolve, sep } from "path";
+import { join as join14, resolve, sep } from "path";
 import { createRequire as createRequire3 } from "module";
 var requireBuiltin3 = createRequire3(import.meta.url);
 var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:(?:your )?(?:microphone|camera) is (?:on|off|muted)[.!]?\s*)+|you have joined the call\.(?:\s*(?:there (?:is|are) (?:one|\d+) other (?:person|people) in the call|your (?:camera|microphone) is (?:off|on|muted)|your hand is (?:lowered|raised))\.)*|(?:arrow_downward\s*)?jump to bottom|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
@@ -31079,18 +31394,18 @@ function cleanCaptions(input2) {
   return out;
 }
 function atomicJson(path, value) {
-  writeFileSync10(`${path}.tmp`, JSON.stringify(value), { mode: 384 });
+  writeFileSync11(`${path}.tmp`, JSON.stringify(value), { mode: 384 });
   renameSync7(`${path}.tmp`, path);
 }
 var MeetingArchive = class {
   constructor(root, tombstonesPath) {
     this.root = root;
     this.tombstonesPath = tombstonesPath;
-    mkdirSync8(root, { recursive: true, mode: 448 });
+    mkdirSync9(root, { recursive: true, mode: 448 });
   }
   filename(id) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid meeting");
-    return join13(this.root, `${id}.json`);
+    return join14(this.root, `${id}.json`);
   }
   deleted() {
     if (!existsSync12(this.tombstonesPath)) return {};
@@ -31098,7 +31413,7 @@ var MeetingArchive = class {
   }
   save(record2) {
     if (this.deleted()[record2.id]) return false;
-    mkdirSync8(this.root, { recursive: true, mode: 448 });
+    mkdirSync9(this.root, { recursive: true, mode: 448 });
     atomicJson(this.filename(record2.id), record2);
     return true;
   }
@@ -31106,7 +31421,7 @@ var MeetingArchive = class {
     const deleted = this.deleted();
     if (!existsSync12(this.root)) return [];
     return readdirSync2(this.root).filter((n2) => /^[a-f0-9-]{36}\.json$/.test(n2)).map(
-      (n2) => JSON.parse(readFileSync16(join13(this.root, n2), "utf8"))
+      (n2) => JSON.parse(readFileSync16(join14(this.root, n2), "utf8"))
     ).filter((r2) => !deleted[r2.id]).sort((a2, b2) => b2.startedAt.localeCompare(a2.startedAt));
   }
   tombstone(record2) {
@@ -31121,14 +31436,14 @@ var MeetingArchive = class {
     return existsSync12(this.tombstonesPath + ".pending");
   }
   deletionFinished() {
-    rmSync2(this.tombstonesPath + ".pending", { force: true });
+    rmSync3(this.tombstonesPath + ".pending", { force: true });
   }
   remove(id) {
-    rmSync2(this.filename(id), { force: true });
+    rmSync3(this.filename(id), { force: true });
   }
 };
 function nativeMeetingIds(stateDir) {
-  const file2 = join13(stateDir, "state", "openclaw.sqlite");
+  const file2 = join14(stateDir, "state", "openclaw.sqlite");
   if (!existsSync12(file2)) return [];
   const { DatabaseSync } = requireBuiltin3(
     "node:sqlite"
@@ -31146,7 +31461,7 @@ function nativeMeetingIds(stateDir) {
 }
 function eraseNativeMeetings(stateDir, sessionIds) {
   if (!sessionIds.length) return;
-  const file2 = join13(stateDir, "state", "openclaw.sqlite");
+  const file2 = join14(stateDir, "state", "openclaw.sqlite");
   if (existsSync12(file2)) {
     const { DatabaseSync } = requireBuiltin3(
       "node:sqlite"
@@ -31181,22 +31496,22 @@ function eraseNativeMeetings(stateDir, sessionIds) {
       db.close();
     }
   }
-  const exports = join13(stateDir, "transcripts");
+  const exports = join14(stateDir, "transcripts");
   if (!existsSync12(exports)) return;
   for (const date5 of readdirSync2(exports, { withFileTypes: true })) {
     if (!date5.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(date5.name)) continue;
-    for (const entry of readdirSync2(join13(exports, date5.name), {
+    for (const entry of readdirSync2(join14(exports, date5.name), {
       withFileTypes: true
     })) {
       if (!entry.isDirectory()) continue;
       const dir = resolve(exports, date5.name, entry.name);
       if (!dir.startsWith(resolve(exports) + sep))
         throw new Error("Invalid transcript export");
-      const metadata = join13(dir, "metadata.json");
+      const metadata = join14(dir, "metadata.json");
       if (!existsSync12(metadata)) continue;
       const raw = JSON.parse(readFileSync16(metadata, "utf8"));
       if (raw.sessionId && sessionIds.includes(raw.sessionId))
-        rmSync2(dir, { recursive: true, force: true });
+        rmSync3(dir, { recursive: true, force: true });
     }
   }
 }
@@ -31223,9 +31538,11 @@ function byTime(captions) {
 var MeetingService = class {
   constructor(opts) {
     this.opts = opts;
-    this.voice = opts.voiceLog ?? new MeetingVoiceLog(join14(opts.openclawStateDir, "cc-voice"));
+    this.voice = opts.voiceLog ?? new MeetingVoiceLog(join15(opts.openclawStateDir, "cc-voice"));
+    this.captionContext = new CaptionContext(join15(opts.openclawStateDir, "cc-voice"));
     try {
       this.voice.end();
+      this.captionContext.end();
     } catch {
     }
     this.ready = opts.browser(false).then(() => opts.reserve?.(false));
@@ -31255,6 +31572,7 @@ var MeetingService = class {
   ready;
   noteJobs = /* @__PURE__ */ new Map();
   voice;
+  captionContext;
   wakeCheck = null;
   save() {
     atomicJson(this.opts.statePath, {
@@ -31472,7 +31790,10 @@ var MeetingService = class {
         throw new Error("Meeting time limit reached");
       runtime.lease = await this.media("start");
       if (!this.alive(runtime)) return;
-      if (runtime.record.mode === "bidi") this.voice.start(runtime.lease.wake_sessions ?? 0);
+      if (runtime.record.mode === "bidi") {
+        this.voice.start(runtime.lease.wake_sessions ?? 0);
+        this.captionContext.start();
+      }
       runtime.timer = setInterval(
         () => {
           void this.renew(runtime).catch(() => this.captureFailure(runtime));
@@ -31531,6 +31852,7 @@ var MeetingService = class {
     runtime.record.state = "failed";
     runtime.record.error = "Capture could not be saved. Free disk space, then press Stop to retry cleanup.";
     if (runtime.timer) clearInterval(runtime.timer);
+    runtime.tap?.close();
     if (runtime.lease)
       await this.media("stop", runtime.lease.id).catch(() => void 0);
     await this.opts.browser(false).catch(() => void 0);
@@ -31548,6 +31870,10 @@ var MeetingService = class {
     const disk = statfsSync(this.opts.archive.root);
     if (disk.bavail * disk.bsize < 64 * 1024 ** 2)
       throw new Error("Low disk space");
+    if (runtime.tap) {
+      this.mergeTap(runtime, sessionId);
+      if (runtime.tap.attached()) return;
+    }
     const request = this.opts.gateway.call("googlemeet.transcript", { sessionId, sinceIndex: runtime.cursor }, 2e4);
     const result = runtime.record.mode === "bidi" ? await request.catch(() => ({})) : await request;
     if ((result.droppedLines ?? 0) > runtime.cursor)
@@ -31568,6 +31894,40 @@ var MeetingService = class {
     if (typeof result.nextIndex === "number") runtime.cursor = result.nextIndex;
     this.opts.archive.save(runtime.record);
   }
+  /**
+   * Rows from the caption observer: each speaker block is one line, updated in place as Meet adds
+   * words (same source id, higher revision). The agent's own captioned speech ("You") is left out;
+   * its words come from the voice log. Final lines also go to captions.jsonl for the voice adapter.
+   */
+  mergeTap(runtime, sessionId) {
+    const rows = runtime.tapRows ?? [];
+    runtime.tapRows = [];
+    const final = [];
+    for (const row of rows) {
+      if (row.self) continue;
+      const id = `${sessionId}:cc:${row.id}`;
+      const caption = { at: new Date(row.at).toISOString(), speaker: row.speaker || "Unknown speaker", text: row.text, source: { id, revision: row.rev }, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+      const at2 = runtime.record.transcript.findIndex((c2) => c2.source?.id === id);
+      if (at2 < 0) {
+        runtime.record.transcript.push(caption);
+        runtime.captions = (runtime.captions ?? 0) + 1;
+      } else if ((runtime.record.transcript[at2].source?.revision ?? -1) < row.rev) runtime.record.transcript[at2] = caption;
+      if (row.final) final.push(caption);
+    }
+    this.captionContext.add(final.map((c2) => ({ at: c2.at, speaker: c2.speaker, text: c2.text })));
+    if (!rows.length) return;
+    runtime.record.transcript = cleanCaptions(byTime(runtime.record.transcript));
+    this.opts.archive.save(runtime.record);
+  }
+  /** Attach the caption observer once the bot is in the call; retried on each poll until it works. */
+  async tapCaptions(runtime) {
+    if (runtime.tap?.attached() || runtime.closing) return;
+    runtime.tap ??= (this.opts.captionTap ?? ((url3, onCaptions) => new CaptionTap({ url: url3, onCaptions })))(runtime.url, (events) => {
+      (runtime.tapRows ??= []).push(...events);
+      if (runtime.tapRows.length > 5e3) runtime.tapRows.splice(0, runtime.tapRows.length - 5e3);
+    });
+    await runtime.tap.attach().catch(() => false);
+  }
   /** Voice sessions and the agent's own lines, from the adapter's log (D8/D11). */
   mergeVoice(runtime) {
     let changed = false;
@@ -31576,6 +31936,9 @@ var MeetingService = class {
       if (entry.kind === "usage") {
         runtime.record.voiceSeconds = (runtime.record.voiceSeconds ?? 0) + entry.seconds;
         runtime.record.voiceSessions = (runtime.record.voiceSessions ?? 0) + 1;
+      } else if (entry.kind === "session") {
+        const ends = runtime.record.voiceEnds ??= {};
+        ends[entry.reason] = (ends[entry.reason] ?? 0) + 1;
       } else if (entry.role === "assistant") runtime.record.transcript.push({ at: entry.at, speaker: this.botName(), text: entry.text });
       else (runtime.heard ??= []).push({ at: entry.at, speaker: "Heard by the agent", text: entry.text });
     }
@@ -31635,6 +31998,7 @@ var MeetingService = class {
         }
       }
       runtime.record.state = health2?.inCall ? "active" : "waiting";
+      if (health2?.inCall && runtime.record.mode === "bidi") await this.tapCaptions(runtime);
       await this.capture(runtime);
       this.opts.archive.save(runtime.record);
       if (runtime.record.mode !== "bidi" && health2?.inCall && Date.now() - (runtime.activeAt ?? Date.now()) > 9e4 && !runtime.record.transcript.length) {
@@ -31719,6 +32083,8 @@ var MeetingService = class {
     if (runtime.timer) clearInterval(runtime.timer);
     runtime.record.state = "leaving";
     try {
+      if (runtime.tap?.attached()) await runtime.tap.flush().catch(() => void 0);
+      runtime.tap?.close();
       for (const sessionId of runtime.record.sessionIds)
         await this.opts.gateway.call("googlemeet.leave", { sessionId }, 6e4);
       if (runtime.record.mode === "bidi") await new Promise((resolve3) => setTimeout(resolve3, this.opts.voiceFlushMs ?? 2e3));
@@ -31734,11 +32100,12 @@ var MeetingService = class {
     });
     if (runtime.record.mode === "bidi") {
       this.voice.end();
+      this.captionContext.end();
       const captioned = runtime.record.transcript.some((c2) => c2.speaker !== this.botName() && c2.speaker !== "Heard by the agent");
       if (!runtime.captions && !captioned) {
         const wakeMode = (this.applied?.policy.wake ?? MEETING_WAKE_DEFAULT).enabled;
         if (runtime.heard?.length) runtime.record.transcript = cleanCaptions(byTime([...runtime.record.transcript, ...runtime.heard]));
-        runtime.record.transcriptNote = wakeMode ? "The transcript has what was said to the agent and its answers. Bidi does not keep captions yet." : "The transcript is what the agent heard and said, without speaker names. Bidi does not keep captions yet.";
+        runtime.record.transcriptNote = wakeMode ? "Meet showed no captions in this meeting, so the transcript has only what was said to the agent and its answers." : "Meet showed no captions in this meeting, so the transcript is what the agent heard and said, without speaker names.";
       }
     }
     runtime.record.endedAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -31825,7 +32192,7 @@ var MeetingService = class {
   }
   /** Restore content without rolling back the firewall's accepted meeting policy. */
   sanitizeRestoredConfig(staging) {
-    const path = join14(staging, "openclaw.json");
+    const path = join15(staging, "openclaw.json");
     if (!existsSync13(path)) return;
     const config2 = JSON.parse(readFileSync17(path, "utf8"));
     config2.plugins ??= {};
@@ -31853,7 +32220,7 @@ var MeetingService = class {
     config2.browser ??= {};
     config2.browser.profiles ??= {};
     config2.browser.profiles["cc-meetings"] = { cdpUrl: "http://127.0.0.1:9223", attachOnly: true };
-    const livePath = join14(this.opts.openclawStateDir, "openclaw.json");
+    const livePath = join15(this.opts.openclawStateDir, "openclaw.json");
     if (existsSync13(livePath)) {
       const live = JSON.parse(readFileSync17(livePath, "utf8"));
       if (live.plugins?.installs?.["google-meet"]) {
@@ -32292,7 +32659,7 @@ async function handleSearch(req, res, url3, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync14, mkdirSync as mkdirSync9, readFileSync as readFileSync18, renameSync as renameSync8, unlinkSync, writeFileSync as writeFileSync11 } from "fs";
+import { existsSync as existsSync14, mkdirSync as mkdirSync10, readFileSync as readFileSync18, renameSync as renameSync8, unlinkSync, writeFileSync as writeFileSync12 } from "fs";
 import { dirname as dirname7 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -32458,9 +32825,9 @@ function readState(path) {
   }
 }
 function writeState(path, state) {
-  mkdirSync9(dirname7(path), { recursive: true });
+  mkdirSync10(dirname7(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync11(tmp, JSON.stringify(state), { mode: 384 });
+  writeFileSync12(tmp, JSON.stringify(state), { mode: 384 });
   renameSync8(tmp, path);
 }
 function cliEnvContents(relayUrl, token) {
@@ -32473,9 +32840,9 @@ function cliEnvContents(relayUrl, token) {
   ].join("\n");
 }
 function writeCliEnv(path, relayUrl, token) {
-  mkdirSync9(dirname7(path), { recursive: true });
+  mkdirSync10(dirname7(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync11(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
+  writeFileSync12(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
   renameSync8(tmp, path);
 }
 function removeFile(path) {
@@ -32555,7 +32922,7 @@ async function handleConnectors(req, res, url3, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync15, mkdirSync as mkdirSync10, readFileSync as readFileSync19, renameSync as renameSync9, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync15, mkdirSync as mkdirSync11, readFileSync as readFileSync19, renameSync as renameSync9, writeFileSync as writeFileSync13 } from "fs";
 import { dirname as dirname8 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -32607,9 +32974,9 @@ function parseApply4(body) {
   return { placeholder, scope, connected: body.connected === true, defaults, mounts };
 }
 function writeAtomic(path, body, mode) {
-  mkdirSync10(dirname8(path), { recursive: true });
+  mkdirSync11(dirname8(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync12(tmp, body, { mode });
+  writeFileSync13(tmp, body, { mode });
   renameSync9(tmp, path);
 }
 var DriveService = class {
@@ -32834,10 +33201,10 @@ async function handleDrive(req, res, url3, service) {
 // src/secrets.ts
 import {
   existsSync as existsSync16,
-  mkdirSync as mkdirSync11,
+  mkdirSync as mkdirSync12,
   readFileSync as readFileSync20,
   renameSync as renameSync10,
-  writeFileSync as writeFileSync13
+  writeFileSync as writeFileSync14
 } from "fs";
 import { dirname as dirname9 } from "path";
 function parseSecretApply(raw) {
@@ -32874,9 +33241,9 @@ var SecretsService = class {
       ...input2.entries.map((e) => `${e.name}=${e.placeholder}`)
     ].join("\n") + "\n";
     if (current !== next) {
-      mkdirSync11(dirname9(this.opts.envPath), { recursive: true });
+      mkdirSync12(dirname9(this.opts.envPath), { recursive: true });
       const tmp = `${this.opts.envPath}.secrets.tmp`;
-      writeFileSync13(tmp, next, { mode: 384 });
+      writeFileSync14(tmp, next, { mode: 384 });
       renameSync10(tmp, this.opts.envPath);
     }
     if (!this.opts.restartService().ok)
@@ -32914,10 +33281,10 @@ async function handleSecrets(req, res, url3, service) {
 // src/agentmail.ts
 import {
   existsSync as existsSync17,
-  mkdirSync as mkdirSync12,
+  mkdirSync as mkdirSync13,
   readFileSync as readFileSync21,
   renameSync as renameSync11,
-  writeFileSync as writeFileSync14
+  writeFileSync as writeFileSync15
 } from "fs";
 import { dirname as dirname10 } from "path";
 function parseAgentMailApply(raw) {
@@ -32994,9 +33361,9 @@ var AgentMailService = class {
       )
     );
     if (input2.placeholder) lines.push(`AGENTMAIL_API_KEY=${input2.placeholder}`);
-    mkdirSync12(dirname10(this.opts.envPath), { recursive: true });
+    mkdirSync13(dirname10(this.opts.envPath), { recursive: true });
     const tmp = `${this.opts.envPath}.agentmail.tmp`;
-    writeFileSync14(tmp, `${lines.filter(Boolean).join("\n")}
+    writeFileSync15(tmp, `${lines.filter(Boolean).join("\n")}
 `, {
       mode: 384
     });
@@ -33116,7 +33483,7 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync18, mkdirSync as mkdirSync13, readFileSync as readFileSync22, renameSync as renameSync12, rmSync as rmSync3, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync18, mkdirSync as mkdirSync14, readFileSync as readFileSync22, renameSync as renameSync12, rmSync as rmSync4, writeFileSync as writeFileSync16 } from "fs";
 import { dirname as dirname11 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -33145,9 +33512,9 @@ function parseApply5(body) {
   return { placeholder, connected: body.connected === true, projectId, services, accountLabel };
 }
 function writeAtomic2(path, body, mode) {
-  mkdirSync13(dirname11(path), { recursive: true });
+  mkdirSync14(dirname11(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync15(tmp, body, { mode });
+  writeFileSync16(tmp, body, { mode });
   renameSync12(tmp, path);
 }
 function envValue(value) {
@@ -33178,7 +33545,7 @@ var GoogleService = class {
     const granted = input2.connected && !!input2.placeholder;
     try {
       if (!granted) {
-        rmSync3(this.opts.envPath, { force: true });
+        rmSync4(this.opts.envPath, { force: true });
       } else {
         const lines = [
           "# Written by the ControlClaw agent from what the org firewall pushed. Do not edit:",
@@ -33436,7 +33803,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp as mkdtemp2, lstat, opendir, readlink, rename as rename2, rm as rm2, stat, symlink, utimes, writeFile as writeFile2, chmod } from "fs/promises";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname12, join as join15 } from "path";
+import { dirname as dirname12, join as join16 } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -37268,7 +37635,7 @@ var BackupService = class {
       return this.opts.staged.root;
     }
     if (kind === "gbrain") throw new Error("an agent box does not hold a brain");
-    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join15(this.home, ARCHIVE_ROOTS[kind]);
+    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join16(this.home, ARCHIVE_ROOTS[kind]);
     assertArchivableRoot(root);
     return root;
   }
@@ -37282,25 +37649,25 @@ var BackupService = class {
     const walk = async (rel) => {
       let dir;
       try {
-        dir = await opendir(rel === "" ? root : join15(root, rel));
+        dir = await opendir(rel === "" ? root : join16(root, rel));
       } catch {
         return;
       }
       for await (const item of dir) {
         const childRel = rel === "" ? item.name : `${rel}/${item.name}`;
         if (shouldExclude(childRel, kind)) {
-          const bytes = item.isDirectory() ? await dirSize(join15(root, childRel)) : await fileSize(join15(root, childRel));
+          const bytes = item.isDirectory() ? await dirSize(join16(root, childRel)) : await fileSize(join16(root, childRel));
           excluded.push({ path: childRel, bytes });
           continue;
         }
         let st2;
         try {
-          st2 = await lstat(join15(root, childRel));
+          st2 = await lstat(join16(root, childRel));
         } catch {
           continue;
         }
         if (st2.isSymbolicLink()) {
-          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join15(root, childRel)) });
+          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join16(root, childRel)) });
           continue;
         }
         if (st2.isDirectory()) {
@@ -37353,8 +37720,8 @@ var BackupService = class {
         backupId: input2.backupId,
         kind: input2.kind
       });
-      const dir = await mkdtemp2(join15(this.spoolDir, "cc-backup-"));
-      spool = join15(dir, "archive.bin");
+      const dir = await mkdtemp2(join16(this.spoolDir, "cc-backup-"));
+      spool = join16(dir, "archive.bin");
       await pipeline(
         Readable.from(tarOf(plan.root, manifest, input2.kind)),
         createGzip({ level: 6 }),
@@ -37465,7 +37832,7 @@ var BackupService = class {
             manifest = parseManifest(new TextDecoder().decode(e.body));
             continue;
           }
-          const abs = join15(into, rel);
+          const abs = join16(into, rel);
           if (e.type === "dir") {
             await mkdir(abs, { recursive: true, mode: 448 });
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
@@ -37539,7 +37906,7 @@ async function* tarOf(root, manifest, kind) {
   yield manifestBody;
   yield* tarPadding(manifestBody.length);
   for (const e of manifest.entries) {
-    const abs = join15(root, e.path);
+    const abs = join16(root, e.path);
     if (e.kind === "dir") {
       yield* tarHeader({ path: `${e.path}/`, type: "dir", size: 0, mode: e.mode, mtime });
       continue;
@@ -37599,8 +37966,8 @@ async function swapDirectory(opts) {
   };
   try {
     for (const rel of opts.keep ?? []) {
-      const from = join15(opts.target, rel);
-      const to = join15(opts.staged, rel);
+      const from = join16(opts.target, rel);
+      const to = join16(opts.staged, rel);
       const exists2 = await lstat(from).then(
         () => true,
         () => false
@@ -37650,7 +38017,7 @@ async function dirSize(path) {
     return 0;
   }
   for await (const item of dir) {
-    const child = join15(path, item.name);
+    const child = join16(path, item.name);
     if (item.isDirectory()) total += await dirSize(child);
     else if (item.isFile()) total += await fileSize(child);
   }
@@ -37766,7 +38133,7 @@ async function handleBackup(req, res, url3, service, kinds = AGENT_KINDS) {
 import { createReadStream as createReadStream2 } from "fs";
 import { chmod as chmod2, lstat as lstat2, mkdir as mkdir2, open as open2, readdir as readdir2, realpath, rename as rename3, rm as rm3, stat as stat2, unlink } from "fs/promises";
 import { randomUUID as randomUUID3 } from "crypto";
-import { basename as basename2, dirname as dirname13, join as join16, resolve as resolve2, sep as sep2 } from "path";
+import { basename as basename2, dirname as dirname13, join as join17, resolve as resolve2, sep as sep2 } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -37915,7 +38282,7 @@ async function realpathLenient(path) {
   for (; ; ) {
     try {
       const real = await realpath(cursor);
-      return missing.length ? join16(real, ...missing.reverse()) : real;
+      return missing.length ? join17(real, ...missing.reverse()) : real;
     } catch {
       const parent = dirname13(cursor);
       if (parent === cursor) return resolve2(path);
@@ -37998,7 +38365,7 @@ var FilesService = class {
     const normalized = normalizeRelative(rel);
     let real;
     try {
-      real = await realpath(normalized ? join16(root, normalized) : root);
+      real = await realpath(normalized ? join17(root, normalized) : root);
     } catch {
       throw new FilesError(404, "not_found", "No such file or folder.");
     }
@@ -38029,7 +38396,7 @@ var FilesService = class {
     const parent = await this.resolveExisting(parentRel);
     const st2 = await stat2(parent.abs).catch(() => null);
     if (!st2?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
-    const abs = join16(parent.abs, name);
+    const abs = join17(parent.abs, name);
     await this.assertAllowed(abs);
     return { rel: normalized, abs, parent: parent.abs, name };
   }
@@ -38048,7 +38415,7 @@ var FilesService = class {
     const truncated = names.length > this.limits.listMaxEntries;
     const entries = [];
     for (const name of names.slice(0, this.limits.listMaxEntries)) {
-      const entry = await describe3(root, join16(abs, name), name);
+      const entry = await describe3(root, join17(abs, name), name);
       if (entry) entries.push(entry);
     }
     entries.sort((a2, b2) => {
@@ -38208,7 +38575,7 @@ var FilesService = class {
   async spool(req, parent, max, op) {
     const declared = Number(req.headers["content-length"] ?? "");
     if (Number.isFinite(declared) && declared > max) throw tooLargeError(op, max);
-    const tmp = join16(parent, `.cc-${op}-${randomUUID3()}.part`);
+    const tmp = join17(parent, `.cc-${op}-${randomUUID3()}.part`);
     let written = 0;
     let tooBig = false;
     const meter = new Transform({
@@ -38282,7 +38649,7 @@ async function countEntries(dir, max) {
     for (const name of names) {
       count++;
       if (count > max) return null;
-      const child = join16(current, name);
+      const child = join17(current, name);
       const st2 = await lstat2(child).catch(() => null);
       if (st2?.isDirectory()) stack.push(child);
     }
@@ -38496,9 +38863,9 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash8 } from "crypto";
-import { mkdirSync as mkdirSync14, mkdtempSync, readFileSync as readFileSync24, rmSync as rmSync4, writeFileSync as writeFileSync16 } from "fs";
+import { mkdirSync as mkdirSync15, mkdtempSync, readFileSync as readFileSync24, rmSync as rmSync5, writeFileSync as writeFileSync17 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { dirname as dirname14, join as join17 } from "path";
+import { dirname as dirname14, join as join18 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -38576,14 +38943,14 @@ var SshAccessService = class {
   async close() {
     const was = this.readState();
     await this.exec("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
-    rmSync4(this.opts.statePath, { force: true });
+    rmSync5(this.opts.statePath, { force: true });
     if (was) this.log(`[ssh] closed for ${this.user} (was ${was.fingerprint})`);
     return { user: this.user, closed: !!was };
   }
   // ---- internals ----
   async mint(grantId) {
-    const dir = mkdtempSync(join17(this.opts.workDir ?? tmpdir3(), "cc-ssh-"));
-    const path = join17(dir, "key");
+    const dir = mkdtempSync(join18(this.opts.workDir ?? tmpdir3(), "cc-ssh-"));
+    const path = join18(dir, "key");
     try {
       await this.exec(
         "ssh-keygen",
@@ -38595,7 +38962,7 @@ var SshAccessService = class {
         privateKey: readFileSync24(path, "utf8")
       };
     } finally {
-      rmSync4(dir, { recursive: true, force: true });
+      rmSync5(dir, { recursive: true, force: true });
     }
   }
   readState() {
@@ -38613,8 +38980,8 @@ var SshAccessService = class {
     }
   }
   writeState(state) {
-    mkdirSync14(dirname14(this.opts.statePath), { recursive: true });
-    writeFileSync16(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    mkdirSync15(dirname14(this.opts.statePath), { recursive: true });
+    writeFileSync17(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -39167,7 +39534,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile6 } from "child_process";
-import { existsSync as existsSync19, mkdirSync as mkdirSync15, readFileSync as readFileSync25, rmSync as rmSync5, writeFileSync as writeFileSync17 } from "fs";
+import { existsSync as existsSync19, mkdirSync as mkdirSync16, readFileSync as readFileSync25, rmSync as rmSync6, writeFileSync as writeFileSync18 } from "fs";
 import { dirname as dirname15 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile6);
@@ -39217,7 +39584,7 @@ var GmailWatchService = class {
    * role, so nothing here writes a systemd unit at runtime.
    */
   async apply(cfg) {
-    mkdirSync15(dirname15(this.opts.envPath), { recursive: true });
+    mkdirSync16(dirname15(this.opts.envPath), { recursive: true });
     const lines = [
       "# Managed by the ControlClaw vm-agent. Do not edit.",
       "# The audience is the firewall's public URL for this webhook, set explicitly: derived from",
@@ -39232,16 +39599,16 @@ var GmailWatchService = class {
       "OPENCLAW_SKIP_GMAIL_WATCHER=1",
       ""
     ];
-    writeFileSync17(this.opts.envPath, lines.join("\n"), { mode: 384 });
-    writeFileSync17(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+    writeFileSync18(this.opts.envPath, lines.join("\n"), { mode: 384 });
+    writeFileSync18(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
     await this.systemctl("restart");
     this.log(`[gmail-watch] serving ${cfg.path} on 127.0.0.1:${cfg.port} for ${cfg.audience}`);
     return this.status();
   }
   /** Stop watching and forget the configuration. Used when the registration is revoked. */
   async clear() {
-    rmSync5(this.opts.envPath, { force: true });
-    rmSync5(this.opts.statePath, { force: true });
+    rmSync6(this.opts.envPath, { force: true });
+    rmSync6(this.opts.statePath, { force: true });
     await this.systemctl("stop").catch(() => void 0);
     return this.status();
   }
@@ -39303,7 +39670,7 @@ var GmailWatchService = class {
 
 // src/gmail-wake.ts
 import { randomBytes as randomBytes3 } from "crypto";
-import { existsSync as existsSync20, readFileSync as readFileSync26, renameSync as renameSync13, writeFileSync as writeFileSync18 } from "fs";
+import { existsSync as existsSync20, readFileSync as readFileSync26, renameSync as renameSync13, writeFileSync as writeFileSync19 } from "fs";
 var gmailWakeInput = external_exports.object({
   messageId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   threadId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -39352,7 +39719,7 @@ var GmailWakeService = class {
       if (state && snapshot.config?.hooks?.enabled === true) return { ok: true, changed: false };
       const token = state?.token ?? randomBytes3(32).toString("hex");
       const tmp = `${this.opts.statePath}.tmp`;
-      writeFileSync18(tmp, JSON.stringify({ token }), { mode: 384 });
+      writeFileSync19(tmp, JSON.stringify({ token }), { mode: 384 });
       renameSync13(tmp, this.opts.statePath);
       await patchConfig(client, { hooks: { enabled: true, token, path: "/hooks", allowRequestSessionKey: false } }, {
         timeoutMs: CONFIG_PATCH_RESTART_MS,
@@ -39682,7 +40049,7 @@ var poolHealthy = false;
 if (POOL_UNCLAIMED && !existsSync21(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
-  writeFileSync19(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+  writeFileSync20(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
   const saasPublicKey2 = readFileSync27(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
@@ -40032,8 +40399,8 @@ server.listen(PORT, BIND, () => {
     gateway: client,
     browser: async (start, voice = false) => {
       const marker = `${STATE_DIR}/meeting-browser-voice`;
-      if (start && voice) writeFileSync19(marker, "bidi", { mode: 384 });
-      else rmSync6(marker, { force: true });
+      if (start && voice) writeFileSync20(marker, "bidi", { mode: 384 });
+      else rmSync7(marker, { force: true });
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
       if (!start) return;
       const deadline = Date.now() + 15e3;
@@ -40048,8 +40415,8 @@ server.listen(PORT, BIND, () => {
       throw new Error("Meeting browser did not become ready");
     },
     reserve: (reserved) => {
-      if (reserved) writeFileSync19(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
-      else rmSync6(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
+      if (reserved) writeFileSync20(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
+      else rmSync7(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
     },
     summarize: summarizeMeeting,
     service: (action) => runAction(action),
