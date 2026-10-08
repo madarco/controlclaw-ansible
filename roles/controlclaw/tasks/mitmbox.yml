@@ -339,6 +339,9 @@
     validate: /usr/sbin/visudo -cf %s
     content: |
       # Firewall logs: read the fixed service journals and the last update run (files/cc-fw-logs).
+      # Not logged and no PAM session: the page reads every 10 s, and sudo would otherwise write
+      # three lines per read into the mitm-agent's own journal, burying what the page is for.
+      Defaults!/usr/local/bin/cc-fw-logs !syslog, !pam_session
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-fw-logs *
 
 # --- systemd services ---
