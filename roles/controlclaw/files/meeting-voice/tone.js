@@ -1,25 +1,41 @@
-// Short tones that tell people the agent started or stopped listening (controlclaw
-// docs/plans/meet-wake-improvements.md, 4). Two quiet notes, 24 kHz mono PCM16, made once.
+// Short cues that tell people the agent started or stopped listening (controlclaw
+// docs/plans/meet-wake-improvements.md, 4). 24 kHz mono PCM16, made once.
+//
+// Two chime notes, like a soft marimba: a fundamental with a few harmonics, a quick attack and a
+// decay. On a real Meet, 70 ms pure sine beeps at -20 dBFS arrived only as loud as speech, too short
+// to be noticed, and Meet's noise suppression sometimes removed one note entirely (down to -56 dBFS);
+// a harmonic, decaying sound is what it keeps. The harmonics stay under 3.5 kHz, so the same cue
+// goes through the phone's 8 kHz line unchanged.
 const RATE = 24000;
-const NOTE_MS = 70, FADE_MS = 8, GAP_MS = 20;
-const LEVEL = 0.1 * 32767; // about -20 dBFS
+const PARTIALS = [[1, 1], [2, 0.45], [3, 0.22]]; // multiple of the fundamental, amplitude
+const NOTE_S = 0.32, STEP_S = 0.12, ATTACK_S = 0.004, DECAY_S = 0.09;
+const PEAK = 0.56 * 32767; // about -5 dBFS at the attack, about -15 dBFS over its first 100 ms
 
-export function tone(freqs) {
-  const note = RATE * NOTE_MS / 1000, fade = RATE * FADE_MS / 1000, gap = RATE * GAP_MS / 1000;
-  const out = Buffer.alloc((freqs.length * note + (freqs.length - 1) * gap) * 2);
+export function chime(freqs) {
+  const length = Math.round(RATE * (STEP_S * (freqs.length - 1) + NOTE_S));
+  const mix = new Float64Array(length);
   freqs.forEach((f, n) => {
-    const at = n * (note + gap);
-    for (let i = 0; i < note; i++) {
-      const env = Math.min(1, i / fade, (note - 1 - i) / fade);
-      out.writeInt16LE(Math.round(Math.sin(2 * Math.PI * f * i / RATE) * LEVEL * env), (at + i) * 2);
+    const start = Math.round(RATE * STEP_S * n);
+    for (let i = 0; start + i < length && i < RATE * NOTE_S; i++) {
+      const t = i / RATE;
+      const attack = Math.min(1, t / ATTACK_S);
+      // Higher partials fade faster, as on a struck bar; the tail fades to silence by the end.
+      const tail = Math.min(1, (NOTE_S - t) / 0.02);
+      let v = 0;
+      for (const [k, a] of PARTIALS) v += a * Math.exp(-t * k / DECAY_S) * Math.sin(2 * Math.PI * f * k * t);
+      mix[start + i] += v * attack * tail;
     }
   });
+  let peak = 0; for (const v of mix) peak = Math.max(peak, Math.abs(v));
+  const out = Buffer.alloc(length * 2);
+  mix.forEach((v, i) => out.writeInt16LE(Math.round(v / peak * PEAK), i * 2));
   return out;
 }
+const G5 = 784, C6 = 1047;
 /**
  * Rising: the agent heard its name and is listening. A short silence follows, so an answer that
- * starts at once is queued after the beep instead of running into it (seen on the real Meet).
+ * starts at once is queued after the chime instead of running into it.
  */
-export const WAKE_TONE = Buffer.concat([tone([660, 880]), Buffer.alloc(RATE / 5 * 2)]);
+export const WAKE_TONE = Buffer.concat([chime([G5, C6]), Buffer.alloc(RATE / 6 * 2)]);
 /** Falling: the agent stopped listening. */
-export const STOP_TONE = tone([880, 660]);
+export const STOP_TONE = chime([C6, G5]);
