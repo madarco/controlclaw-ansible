@@ -64,14 +64,14 @@ var require_node_gyp_build = __commonJS({
     "use strict";
     var fs = __require("fs");
     var path = __require("path");
-    var os = __require("os");
+    var os2 = __require("os");
     var runtimeRequire = typeof __webpack_require__ === "function" ? __non_webpack_require__ : __require;
     var vars = process.config && process.config.variables || {};
     var prebuildsOnly = !!process.env.PREBUILDS_ONLY;
     var abi = process.versions.modules;
     var runtime = isElectron() ? "electron" : isNwjs() ? "node-webkit" : "node";
-    var arch = process.env.npm_config_arch || os.arch();
-    var platform = process.env.npm_config_platform || os.platform();
+    var arch = process.env.npm_config_arch || os2.arch();
+    var platform = process.env.npm_config_platform || os2.platform();
     var libc = process.env.LIBC || (isAlpine(platform) ? "musl" : "glibc");
     var armv = process.env.ARM_VERSION || (arch === "arm64" ? "8" : vars.arm_version) || "";
     var uv = (process.versions.uv || "").split(".")[0];
@@ -111,17 +111,17 @@ var require_node_gyp_build = __commonJS({
       ].filter(Boolean).join(" ");
       throw new Error("No native build was found for " + target + "\n    loaded from: " + dir + "\n");
       function resolve3(dir2) {
-        var tuples = readdirSync3(path.join(dir2, "prebuilds")).map(parseTuple);
+        var tuples = readdirSync4(path.join(dir2, "prebuilds")).map(parseTuple);
         var tuple2 = tuples.filter(matchTuple(platform, arch)).sort(compareTuples)[0];
         if (!tuple2) return;
         var prebuilds = path.join(dir2, "prebuilds", tuple2.name);
-        var parsed = readdirSync3(prebuilds).map(parseTags);
+        var parsed = readdirSync4(prebuilds).map(parseTags);
         var candidates = parsed.filter(matchTags(runtime, abi));
         var winner = candidates.sort(compareTags(runtime))[0];
         if (winner) return path.join(prebuilds, winner.file);
       }
     };
-    function readdirSync3(dir) {
+    function readdirSync4(dir) {
       try {
         return fs.readdirSync(dir);
       } catch (err) {
@@ -129,7 +129,7 @@ var require_node_gyp_build = __commonJS({
       }
     }
     function getFirst(dir, filter) {
-      var files2 = readdirSync3(dir).filter(filter);
+      var files2 = readdirSync4(dir).filter(filter);
       return files2[0] && path.join(dir, files2[0]);
     }
     function matchBuild(name) {
@@ -2384,7 +2384,7 @@ var require_extension = __commonJS({
       if (dest[name] === void 0) dest[name] = [elem];
       else dest[name].push(elem);
     }
-    function parse4(header2) {
+    function parse4(header3) {
       const offers = /* @__PURE__ */ Object.create(null);
       let params = /* @__PURE__ */ Object.create(null);
       let mustUnescape = false;
@@ -2396,8 +2396,8 @@ var require_extension = __commonJS({
       let code = -1;
       let end = -1;
       let i2 = 0;
-      for (; i2 < header2.length; i2++) {
-        code = header2.charCodeAt(i2);
+      for (; i2 < header3.length; i2++) {
+        code = header3.charCodeAt(i2);
         if (extensionName === void 0) {
           if (end === -1 && tokenChars[code] === 1) {
             if (start === -1) start = i2;
@@ -2408,7 +2408,7 @@ var require_extension = __commonJS({
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
             if (end === -1) end = i2;
-            const name = header2.slice(start, end);
+            const name = header3.slice(start, end);
             if (code === 44) {
               push(offers, name, params);
               params = /* @__PURE__ */ Object.create(null);
@@ -2429,7 +2429,7 @@ var require_extension = __commonJS({
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
             if (end === -1) end = i2;
-            push(params, header2.slice(start, end), true);
+            push(params, header3.slice(start, end), true);
             if (code === 44) {
               push(offers, extensionName, params);
               params = /* @__PURE__ */ Object.create(null);
@@ -2437,7 +2437,7 @@ var require_extension = __commonJS({
             }
             start = end = -1;
           } else if (code === 61 && start !== -1 && end === -1) {
-            paramName = header2.slice(start, i2);
+            paramName = header3.slice(start, i2);
             start = end = -1;
           } else {
             throw new SyntaxError(`Unexpected character at index ${i2}`);
@@ -2461,7 +2461,7 @@ var require_extension = __commonJS({
             } else {
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
-          } else if (code === 34 && header2.charCodeAt(i2 - 1) === 61) {
+          } else if (code === 34 && header3.charCodeAt(i2 - 1) === 61) {
             inQuotes = true;
           } else if (end === -1 && tokenChars[code] === 1) {
             if (start === -1) start = i2;
@@ -2472,7 +2472,7 @@ var require_extension = __commonJS({
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
             if (end === -1) end = i2;
-            let value = header2.slice(start, end);
+            let value = header3.slice(start, end);
             if (mustUnescape) {
               value = value.replace(/\\/g, "");
               mustUnescape = false;
@@ -2494,7 +2494,7 @@ var require_extension = __commonJS({
         throw new SyntaxError("Unexpected end of input");
       }
       if (end === -1) end = i2;
-      const token = header2.slice(start, end);
+      const token = header3.slice(start, end);
       if (extensionName === void 0) {
         push(offers, token, params);
       } else {
@@ -2537,7 +2537,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net2 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes4, createHash: createHash10 } = __require("crypto");
+    var { randomBytes: randomBytes4, createHash: createHash11 } = __require("crypto");
     var { Duplex, Readable: Readable2 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -2720,7 +2720,7 @@ var require_websocket = __commonJS({
        *     not to skip UTF-8 validation for text and close messages
        * @private
        */
-      setSocket(socket, head, options) {
+      setSocket(socket, head2, options) {
         const receiver = new Receiver2({
           allowSynchronousEvents: options.allowSynchronousEvents,
           binaryType: this.binaryType,
@@ -2747,7 +2747,7 @@ var require_websocket = __commonJS({
         sender.onerror = senderOnError;
         if (socket.setTimeout) socket.setTimeout(0);
         if (socket.setNoDelay) socket.setNoDelay();
-        if (head.length > 0) socket.unshift(head);
+        if (head2.length > 0) socket.unshift(head2);
         socket.on("close", socketOnClose);
         socket.on("data", socketOnData);
         socket.on("end", socketOnEnd);
@@ -3209,7 +3209,7 @@ var require_websocket = __commonJS({
           );
         }
       });
-      req.on("upgrade", (res, socket, head) => {
+      req.on("upgrade", (res, socket, head2) => {
         websocket.emit("upgrade", res);
         if (websocket.readyState !== WebSocket3.CONNECTING) return;
         req = websocket._req = null;
@@ -3218,7 +3218,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash10("sha1").update(key + GUID).digest("base64");
+        const digest = createHash11("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3269,7 +3269,7 @@ var require_websocket = __commonJS({
           }
           websocket._extensions[PerMessageDeflate2.extensionName] = perMessageDeflate;
         }
-        websocket.setSocket(socket, head, {
+        websocket.setSocket(socket, head2, {
           allowSynchronousEvents: opts.allowSynchronousEvents,
           generateMask: opts.generateMask,
           maxBufferedChunks: opts.maxBufferedChunks,
@@ -3540,13 +3540,13 @@ var require_subprotocol = __commonJS({
   "../../node_modules/.pnpm/ws@8.22.0_bufferutil@4.1.0_utf-8-validate@6.0.6/node_modules/ws/lib/subprotocol.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
-    function parse4(header2) {
+    function parse4(header3) {
       const protocols = /* @__PURE__ */ new Set();
       let start = -1;
       let end = -1;
       let i2 = 0;
-      for (i2; i2 < header2.length; i2++) {
-        const code = header2.charCodeAt(i2);
+      for (i2; i2 < header3.length; i2++) {
+        const code = header3.charCodeAt(i2);
         if (end === -1 && tokenChars[code] === 1) {
           if (start === -1) start = i2;
         } else if (i2 !== 0 && (code === 32 || code === 9)) {
@@ -3556,7 +3556,7 @@ var require_subprotocol = __commonJS({
             throw new SyntaxError(`Unexpected character at index ${i2}`);
           }
           if (end === -1) end = i2;
-          const protocol2 = header2.slice(start, end);
+          const protocol2 = header3.slice(start, end);
           if (protocols.has(protocol2)) {
             throw new SyntaxError(`The "${protocol2}" subprotocol is duplicated`);
           }
@@ -3569,7 +3569,7 @@ var require_subprotocol = __commonJS({
       if (start === -1 || end !== -1) {
         throw new SyntaxError("Unexpected end of input");
       }
-      const protocol = header2.slice(start, i2);
+      const protocol = header3.slice(start, i2);
       if (protocols.has(protocol)) {
         throw new SyntaxError(`The "${protocol}" subprotocol is duplicated`);
       }
@@ -3587,7 +3587,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash10 } = __require("crypto");
+    var { createHash: createHash11 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3688,8 +3688,8 @@ var require_websocket_server = __commonJS({
           this._removeListeners = addListeners(this._server, {
             listening: this.emit.bind(this, "listening"),
             error: this.emit.bind(this, "error"),
-            upgrade: (req, socket, head) => {
-              this.handleUpgrade(req, socket, head, emitConnection);
+            upgrade: (req, socket, head2) => {
+              this.handleUpgrade(req, socket, head2, emitConnection);
             }
           });
         }
@@ -3784,7 +3784,7 @@ var require_websocket_server = __commonJS({
        * @param {Function} cb Callback
        * @public
        */
-      handleUpgrade(req, socket, head, cb) {
+      handleUpgrade(req, socket, head2, cb) {
         socket.on("error", socketOnError);
         const key = req.headers["sec-websocket-key"];
         const upgrade = req.headers.upgrade;
@@ -3863,7 +3863,7 @@ var require_websocket_server = __commonJS({
                 protocols,
                 req,
                 socket,
-                head,
+                head2,
                 cb
               );
             });
@@ -3871,7 +3871,7 @@ var require_websocket_server = __commonJS({
           }
           if (!this.options.verifyClient(info)) return abortHandshake(socket, 401);
         }
-        this.completeUpgrade(extensions, key, protocols, req, socket, head, cb);
+        this.completeUpgrade(extensions, key, protocols, req, socket, head2, cb);
       }
       /**
        * Upgrade the connection to WebSocket.
@@ -3886,7 +3886,7 @@ var require_websocket_server = __commonJS({
        * @throws {Error} If called more than once with the same socket
        * @private
        */
-      completeUpgrade(extensions, key, protocols, req, socket, head, cb) {
+      completeUpgrade(extensions, key, protocols, req, socket, head2, cb) {
         if (!socket.readable || !socket.writable) return socket.destroy();
         if (socket[kWebSocket]) {
           throw new Error(
@@ -3894,7 +3894,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash10("sha1").update(key + GUID).digest("base64");
+        const digest = createHash11("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -3920,7 +3920,7 @@ var require_websocket_server = __commonJS({
         this.emit("headers", headers, req);
         socket.write(headers.concat("\r\n").join("\r\n"));
         socket.removeListener("error", socketOnError);
-        ws.setSocket(socket, head, {
+        ws.setSocket(socket, head2, {
           allowSynchronousEvents: this.options.allowSynchronousEvents,
           maxBufferedChunks: this.options.maxBufferedChunks,
           maxFragments: this.options.maxFragments,
@@ -4120,9 +4120,9 @@ function isObject(input2) {
 }
 function isDisjoint(...headers) {
   const parameters = /* @__PURE__ */ new Set();
-  for (const header2 of headers)
-    if (header2)
-      for (const parameter of Object.keys(header2)) {
+  for (const header3 of headers)
+    if (header3)
+      for (const parameter of Object.keys(header3)) {
         if (parameters.has(parameter))
           return false;
         parameters.add(parameter);
@@ -4196,10 +4196,10 @@ function validateB64(protectedHeader, extensions) {
   }
   return true;
 }
-function serializeJoseHeader(Err, header2) {
+function serializeJoseHeader(Err, header3) {
   let serialized, parsed;
   try {
-    serialized = JSON.stringify(header2), parsed = JSON.parse(serialized);
+    serialized = JSON.stringify(header3), parsed = JSON.parse(serialized);
   } catch (cause) {
     throw new Err("JOSE Header is not valid JSON", { cause });
   }
@@ -4538,10 +4538,10 @@ function encodeCompactUnencodedPayload(payload) {
   }
 }
 async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedProtected) {
-  const { protected: encodedProtected, header: header2, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
-  if (!isDisjoint(parsedProt, header2))
+  const { protected: encodedProtected, header: header3, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
+  if (!isDisjoint(parsedProt, header3))
     throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
-  const joseHeader = { ...parsedProt, ...header2 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
+  const joseHeader = { ...parsedProt, ...header3 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
   if (typeof alg != "string" || !alg)
     throw new JWSInvalid('JWS "alg" (Algorithm) Header Parameter missing or invalid');
   if (shared[0] && !shared[0].has(alg))
@@ -4564,7 +4564,7 @@ async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedP
   if (!verified)
     throw new JWSSignatureVerificationFailed();
   const result = { payload: typeof signingPayload == "string" ? decodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload };
-  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header2 !== void 0 && (result.unprotectedHeader = header2), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
+  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header3 !== void 0 && (result.unprotectedHeader = header3), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
 }
 async function verifyCompact(jws, shared, key) {
   if (jws instanceof Uint8Array && (jws = decoder.decode(jws)), typeof jws != "string")
@@ -4918,6 +4918,10 @@ async function verifySaasToken(token) {
 var CONTROL_PLANE_ROUTES = {
   openclaw: /* @__PURE__ */ new Set([
     "GET /health",
+    // The health check (docs/plans/health-check.md): states, numbers and reason codes only.
+    "GET /health/summary",
+    "POST /health/model",
+    "GET /health/patches",
     "GET /status",
     "POST /start",
     "POST /stop",
@@ -5035,7 +5039,7 @@ var PhoneStreamRelay = class {
   used = /* @__PURE__ */ new Map();
   active = /* @__PURE__ */ new Set();
   refusals = [];
-  async upgrade(req, socket, head) {
+  async upgrade(req, socket, head2) {
     let callSid;
     const refuse = (reason) => {
       const now = Date.now();
@@ -5112,7 +5116,7 @@ var PhoneStreamRelay = class {
       socket.once("close", () => {
         if (!outer) stop();
       });
-      this.wss.handleUpgrade(req, socket, head, (ws) => {
+      this.wss.handleUpgrade(req, socket, head2, (ws) => {
         outer = ws;
         ws.pause();
         peer = new import_websocket.default("ws://127.0.0.1:8789" + p2.path, {
@@ -5549,10 +5553,10 @@ function nodeRequestFacts(req, methodOverride) {
     credentialed: one(headers.cookie) !== null
   };
 }
-function cookieValues(header2, name) {
-  if (!header2) return [];
+function cookieValues(header3, name) {
+  if (!header3) return [];
   const out = [];
-  for (const part of header2.split(";")) {
+  for (const part of header3.split(";")) {
     const trimmed = part.trim();
     const eq = trimmed.indexOf("=");
     if (eq < 1) continue;
@@ -5561,8 +5565,8 @@ function cookieValues(header2, name) {
   }
   return out;
 }
-function readUniqueCookie(header2, name) {
-  const values = cookieValues(header2, name);
+function readUniqueCookie(header3, name) {
+  const values = cookieValues(header3, name);
   if (values.length === 1) return { value: values[0] ?? null, duplicated: false };
   return { value: null, duplicated: values.length > 1 };
 }
@@ -5741,8 +5745,8 @@ async function verifyViewSession(cookieHeader, vmId) {
     return false;
   }
 }
-function uniqueCookie(header2, name) {
-  const reading = readUniqueCookie(header2, name);
+function uniqueCookie(header3, name) {
+  const reading = readUniqueCookie(header3, name);
   if (reading.duplicated) console.warn(`[session] ${name} arrived more than once \u2014 ignoring it (cookie tossing)`);
   return reading.value;
 }
@@ -5754,6 +5758,67 @@ function consumeJti(jti, expSeconds) {
   seenJti.set(jti, expSeconds);
   return true;
 }
+
+// src/routes/cc-shell.ts
+var navState = () => ({ meetings: false, phone: false, whatsapp: false });
+function setShellNav(provider) {
+  navState = provider;
+}
+var ICONS = {
+  meetings: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  phone: '<path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>',
+  files: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
+  whatsapp: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
+};
+function icon(name, cls) {
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+function escapeHtml(s2) {
+  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
+}
+function inlineJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+function agentNameOf(hostname3) {
+  return hostname3 ? hostname3.split(".")[0] : "your agent";
+}
+function consoleAgentUrl(consoleOrigin2, vmId) {
+  const origin = consoleOrigin2 ?? "https://controlclaw.com";
+  return vmId ? `${origin}/dashboard/agents/${encodeURIComponent(vmId)}` : `${origin}/dashboard/agents`;
+}
+var NAV = [
+  { page: "meetings", label: "Meetings", href: "/__cc/meetings", when: "meetings" },
+  { page: "phone", label: "Calls", href: "/__cc/phone", when: "phone" },
+  { page: "whatsapp", label: "WhatsApp", href: "/__cc/whatsapp", when: "whatsapp" },
+  { page: "files", label: "Files", href: "/__cc/files" },
+  { page: "logs", label: "Logs", href: "/__cc/logs" },
+  { page: "browser", label: "Browser", href: "/__cc/browser" }
+];
+function shellNav(active, state = navState()) {
+  return NAV.filter((item) => !item.when || state[item.when] || item.page === active).map(({ page, label, href }) => ({ page, label, href }));
+}
+function head(title, extraHead) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title><script src="/__cc/shell.js"></script><link rel="stylesheet" href="/__cc/files-ui/tw.css">${extraHead}</head>`;
+}
+function header(ctx) {
+  const agent = escapeHtml(agentNameOf(ctx.hostname));
+  return `<header class="flex h-full min-w-0 items-center gap-3 px-4 md:px-5"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">${icon("mark", "h-[18px] w-[18px]")}</span><div class="min-w-0 leading-tight"><div class="truncate text-[14px] font-semibold text-ink">${agent}</div><div class="truncate font-mono text-[11.5px] text-ink-2">${escapeHtml(ctx.hostname ?? "")}</div></div><span class="flex-1"></span><a href="${escapeHtml(ctx.consoleUrl)}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-[13px] font-medium text-ink shadow-sm hover:bg-bg">${icon("back", "h-4 w-4 text-ink-2")}<span class="hidden sm:inline">Back to console</span><span class="sm:hidden">Console</span></a></header>`;
+}
+function shellPage(opts) {
+  const links = shellNav(opts.active, opts.nav).map((item) => {
+    const on = item.page === opts.active;
+    return `<a href="${item.href}"${on ? ' aria-current="page"' : ""} class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] ${on ? "bg-surface font-semibold text-ink shadow-sm" : "text-ink-2 hover:bg-bg"}">${icon(item.page, `h-4 w-4 shrink-0 ${on ? "text-brand" : "text-ink-2"}`)}<span>${item.label}</span></a>`;
+  }).join("");
+  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
+}
+function shellBarePage(opts) {
+  return head(opts.title, opts.css ? `<style>${opts.css}</style>` : "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_1fr]">${header(opts.ctx)}<div class="grid place-items-center px-4 py-8"><main class="w-full max-w-[26rem] rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8">${opts.body}</main></div></div>${opts.script ? `<script>${opts.script}</script>` : ""}</body></html>`;
+}
+var SHELL_JS = `(function(){var m=window.matchMedia("(prefers-color-scheme: dark)");var a=function(){document.documentElement.classList.toggle("dark",m.matches)};a();m.addEventListener("change",a)})();`;
 
 // src/meeting-voice-log.ts
 import { execFile } from "child_process";
@@ -5895,10 +5960,15 @@ async function handlePhonePage(req, res, pathname, ctx) {
       res.end(ctx.deniedPage);
       return;
     }
-    const agentName = (ctx.hostname ? ctx.hostname.split(".")[0] : "your agent").replace(/[&<>"']/g, "");
+    const agentName = agentNameOf(ctx.hostname);
     res.writeHead(200, PAGE_HEADERS);
     res.end(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName} \xB7 calls</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-phone" type="application/json">${JSON.stringify({ agentName, canDelete: !!session?.canWrite }).replace(/</g, "\\u003c")}</script><script type="module" src="/__cc/files-ui/phone.js"></script></body></html>`
+      shellPage({
+        ctx: ctx.shell,
+        title: `${agentName} \xB7 calls`,
+        active: "phone",
+        body: `<div id="root"></div><script id="cc-phone" type="application/json">${inlineJson({ agentName, canDelete: !!session?.canWrite })}</script><script type="module" src="/__cc/files-ui/phone.js"></script>`
+      })
     );
     return;
   }
@@ -9202,10 +9272,10 @@ function isValidJWT(token, algorithm = null) {
     const tokensParts = token.split(".");
     if (tokensParts.length !== 3)
       return false;
-    const [header2] = tokensParts;
-    if (!header2)
+    const [header3] = tokensParts;
+    if (!header3)
       return false;
-    const parsedHeader = JSON.parse(atob(header2));
+    const parsedHeader = JSON.parse(atob(header3));
     if ("typ" in parsedHeader && parsedHeader?.typ !== "JWT")
       return false;
     if (!parsedHeader.alg)
@@ -27012,7 +27082,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID4 } from "crypto";
-import { readFileSync as readFileSync27, existsSync as existsSync21, writeFileSync as writeFileSync20, rmSync as rmSync7 } from "fs";
+import { readFileSync as readFileSync28, existsSync as existsSync22, writeFileSync as writeFileSync20, rmSync as rmSync7 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash5, randomBytes as randomBytes2 } from "crypto";
@@ -27055,9 +27125,6 @@ async function serveFilesAsset(res, name) {
   });
   res.end(body);
 }
-function inlineJson(value) {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
-}
 async function serveFilesPage(req, res, ctx) {
   const headers = {
     "Content-Type": "text/html; charset=utf-8",
@@ -27073,11 +27140,17 @@ async function serveFilesPage(req, res, ctx) {
     res.end(ctx.deniedPage);
     return;
   }
-  const agentName = ctx.hostname ? ctx.hostname.split(".")[0] : "your agent";
-  const data = { canWrite: session.canWrite, agentName, consoleUrl: ctx.consoleUrl };
+  const agentName = agentNameOf(ctx.hostname);
+  const data = { canWrite: session.canWrite, agentName, consoleUrl: ctx.shell.consoleUrl };
   res.writeHead(200, headers);
   res.end(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName.replace(/[&<>"']/g, "")} \xB7 files</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"><link rel="stylesheet" href="/__cc/files-ui/app.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-files" type="application/json">${inlineJson(data)}</script><script type="module" src="/__cc/files-ui/app.js"></script></body></html>`
+    shellPage({
+      ctx: ctx.shell,
+      title: `${agentName} \xB7 files`,
+      active: "files",
+      head: `<link rel="stylesheet" href="/__cc/files-ui/app.css">`,
+      body: `<div id="root"></div><script id="cc-files" type="application/json">${inlineJson(data)}</script><script type="module" src="/__cc/files-ui/app.js"></script>`
+    })
   );
 }
 
@@ -27530,9 +27603,6 @@ function followCli(onLine, onExit) {
 }
 
 // src/routes/logs-page.ts
-function inlineJson2(value) {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
-}
 var PAGE_HEADERS2 = {
   "Content-Type": "text/html; charset=utf-8",
   "Cache-Control": "no-store",
@@ -27545,10 +27615,15 @@ async function serveLogsPage(req, res, ctx) {
     res.end(ctx.deniedPage);
     return;
   }
-  const agentName = ctx.hostname ? ctx.hostname.split(".")[0] : "your agent";
+  const agentName = agentNameOf(ctx.hostname);
   res.writeHead(200, PAGE_HEADERS2);
   res.end(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName.replace(/[&<>"']/g, "")} \xB7 logs</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-logs" type="application/json">${inlineJson2({ agentName })}</script><script type="module" src="/__cc/files-ui/logs.js"></script></body></html>`
+    shellPage({
+      ctx: ctx.shell,
+      title: `${agentName} \xB7 logs`,
+      active: "logs",
+      body: `<div id="root"></div><script id="cc-logs" type="application/json">${inlineJson({ agentName })}</script><script type="module" src="/__cc/files-ui/logs.js"></script>`
+    })
   );
 }
 async function serveLogsData(req, res, pathname, ctx) {
@@ -27663,54 +27738,61 @@ function json2(res, status, body, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 var PAGE_CSS = `
-:root{--bg:#f7f6fb;--card:#fff;--ink:#17162b;--ink2:#6b6a80;--line:#e6e4f0;--brand:#6d4aff;--brand-soft:#efeaff;--ok:#1a9c5b;--bad:#d64545}
-@media(prefers-color-scheme:dark){:root{--bg:#0f0e17;--card:#17162b;--ink:#f3f2fa;--ink2:#a09fb5;--line:#2a2940;--brand:#9b82ff;--brand-soft:#2a2350;--ok:#3ccf82;--bad:#ff7070}}
-*{box-sizing:border-box}html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--ink);font:15px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:grid;place-items:center;padding:1.5rem}
-.card{width:100%;max-width:26rem;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:2rem;box-shadow:0 20px 50px -30px rgba(23,22,43,.35)}
-.mark{width:44px;height:44px;border-radius:12px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;margin-bottom:1.25rem}
-h1{font-size:1.2rem;margin:0 0 .25rem;letter-spacing:-.01em}
-.host{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink2);margin:0 0 1.5rem;word-break:break-all}
+h1{font-size:1.2rem;font-weight:600;margin:0 0 .25rem;letter-spacing:-.01em}
+.host{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink-2);margin:0 0 1.5rem;word-break:break-all}
 .steps{list-style:none;margin:0;padding:0;display:grid;gap:.6rem}
-.steps li{display:flex;align-items:center;gap:.7rem;color:var(--ink2);transition:color .2s}
+.steps li{display:flex;align-items:center;gap:.7rem;color:var(--ink-2);transition:color .2s}
 .steps li.active{color:var(--ink)}.steps li.done{color:var(--ink)}
 .dot{width:20px;height:20px;border-radius:50%;border:2px solid var(--line);display:grid;place-items:center;flex:none;transition:all .2s}
 .active .dot{border-color:var(--brand);border-top-color:transparent;animation:spin .8s linear infinite}
-.done .dot{border-color:var(--ok);background:var(--ok)}
+.done .dot{border-color:var(--allow);background:var(--allow)}
 .done .dot::after{content:"";width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
 @keyframes spin{to{transform:rotate(360deg)}}
-.err{display:none;margin-top:1.25rem;padding:.9rem 1rem;border-radius:12px;background:color-mix(in srgb,var(--bad) 10%,transparent);color:var(--bad);font-size:14px}
+.err{display:none;margin-top:1.25rem;padding:.9rem 1rem;border-radius:12px;background:var(--block-soft);color:var(--block-fg);font-size:14px}
 .err.show{display:block}
 a.btn{display:inline-block;margin-top:1.25rem;padding:.55rem .9rem;border-radius:10px;background:var(--brand);color:#fff;text-decoration:none;font-weight:600;font-size:14px}
-a.btn.alt{margin-left:.5rem;background:transparent;color:var(--brand);border:1px solid var(--line)}
-p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink2)}
-.foot{margin-top:1.5rem;font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:.4rem}
-p.lead{margin:0 0 1rem;color:var(--ink2)}
+a.btn.alt{margin-left:.5rem;background:transparent;color:var(--brand-ink);border:1px solid var(--line)}
+p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink-2)}
+.foot{margin-top:1.5rem;font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:.4rem}
+.foot::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--brand)}
+p.lead{margin:0 0 1rem;color:var(--ink-2)}
 input.code{width:100%;font:600 1.6rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3em;text-align:center;padding:.7rem;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink)}
 input.code:focus{outline:2px solid var(--brand);outline-offset:1px}
 button.btn{margin-top:1rem;width:100%;padding:.7rem;border:0;border-radius:10px;background:var(--brand);color:#fff;font-weight:600;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:.4rem}
 button.btn:disabled{opacity:.5;cursor:not-allowed}
 [hidden]{display:none!important}
-.otp{--otp-line:#e7e4dc;--otp-ring:oklch(.52 .18 265);--otp-ink:#0d1117;--otp-bg:transparent;display:flex;align-items:center;justify-content:center;gap:8px}
-@media(prefers-color-scheme:dark){.otp{--otp-line:oklch(1 0 0/12%);--otp-ring:oklch(.7 .17 265);--otp-ink:oklch(.98 .005 265);--otp-bg:oklch(1 0 0/3.6%)}}
+.otp{display:flex;align-items:center;justify-content:center;gap:8px}
 .otp .g{display:flex;align-items:center}
-.otp input{position:relative;width:36px;height:36px;margin:0;padding:0;border:1px solid var(--otp-line);border-left-width:0;border-radius:0;background:var(--otp-bg);color:var(--otp-ink);font-family:inherit;font-size:14px;text-align:center;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);outline:none;transition:border-color .15s,box-shadow .15s}
+.otp input{position:relative;width:36px;height:36px;margin:0;padding:0;border:1px solid var(--line);border-left-width:0;border-radius:0;background:transparent;color:var(--ink);font-family:inherit;font-size:14px;text-align:center;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);outline:none;transition:border-color .15s,box-shadow .15s}
 .otp .g input:first-child{border-left-width:1px;border-radius:8px 0 0 8px}
 .otp .g input:last-child{border-radius:0 8px 8px 0}
-.otp input:focus{z-index:1;border-color:var(--otp-ring);box-shadow:0 0 0 3px color-mix(in srgb,var(--otp-ring) 50%,transparent)}
-.otp .sep{display:flex;color:var(--otp-ink)}
+.otp input:focus{z-index:1;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 50%,transparent)}
+.otp .sep{display:flex;color:var(--ink)}
 .otp.busy{opacity:.5}.otp.busy input{cursor:not-allowed}
-.line{display:flex;align-items:center;justify-content:center;gap:.4rem;margin:.75rem 0 0;font-size:12.5px;color:var(--ink2)}
+.line{display:flex;align-items:center;justify-content:center;gap:.4rem;margin:.75rem 0 0;font-size:12.5px;color:var(--ink-2)}
 .spin{width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;flex:none}
 `;
-var MARK_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`;
-var CONSOLE_URL = "https://controlclaw.com/dashboard/agents";
+var consolePage = null;
+function shellContext() {
+  const origin = allowedOrigins().console;
+  return {
+    hostname: readKey("vm_hostname"),
+    consoleUrl: consolePage ? `${origin ?? "https://controlclaw.com"}${consolePage}` : consoleAgentUrl(origin, readKey("vm_id") ?? "")
+  };
+}
 function shell(title, body, script = "") {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title><style>${PAGE_CSS}</style></head><body><main class="card"><div class="mark">${MARK_SVG}</div>${body}<div class="foot"><span style="width:6px;height:6px;border-radius:50%;background:var(--brand)"></span>Secured by ControlClaw</div></main>${script ? `<script>${script}</script>` : ""}</body></html>`;
+  return shellBarePage({ ctx: shellContext(), title, body: `${body}<div class="foot">Secured by ControlClaw</div>`, css: PAGE_CSS, script });
 }
-function escapeHtml(s2) {
-  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
+function withSidebar(active, title, body, script = "") {
+  return shellPage({
+    ctx: shellContext(),
+    title,
+    active,
+    head: `<style>${PAGE_CSS}</style>`,
+    body: `<div class="mx-auto max-w-[34rem] px-4 py-8 md:px-9">${body}</div>${script ? `<script>${script}</script>` : ""}`
+  });
 }
+var consoleUrl = () => escapeHtml(shellContext().consoleUrl);
 function loginPage(hostname3, steps = ["Pairing this browser with the agent", "Loading OpenClaw"]) {
   const agent = hostname3 ? escapeHtml(hostname3.split(".")[0]) : "your agent";
   const host = hostname3 ? escapeHtml(hostname3) : "";
@@ -27724,7 +27806,7 @@ function loginPage(hostname3, steps = ["Pairing this browser with the agent", "L
 </ol>
 <div class="err" id="err"></div>
 <p class="note" id="note" style="display:none"></p>
-<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>
+<a class="btn" id="back" href="${consoleUrl()}" style="display:none">Back to the console</a>
 <a class="btn alt" id="anyway" href="/" style="display:none">Continue anyway</a>`,
     `
 (async () => {
@@ -27755,41 +27837,47 @@ function loginPage(hostname3, steps = ["Pairing this browser with the agent", "L
 })();`
   );
 }
-var DENIED_PAGE = shell(
+var DENIED_PAGE = () => shell(
   "This agent is private",
   `<h1>This agent is private</h1>
 <p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Open again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_VIEW_PAGE = shell(
+var DENIED_VIEW_PAGE = () => shell(
   "This browser is private",
   `<h1>This browser is private</h1>
 <p class="note">Open it from your ControlClaw console. If you were watching a moment ago, the view has expired: press Screen again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_FILES_PAGE = shell(
+var DENIED_FILES_PAGE = () => shell(
   "These files are private",
   `<h1>These files are private</h1>
 <p class="note">Open them from your ControlClaw console. If you were signed in, your session has expired: click Files again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_WHATSAPP_PAGE = shell(
+var DENIED_WHATSAPP_PAGE = () => shell(
   "This code is private",
   `<h1>This code is private</h1>
 <p class="note">Only an owner or admin can link WhatsApp. Open it from the Channels page of your ControlClaw console.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_PHONE_PAGE = shell(
+var DENIED_PHONE_PAGE = () => shell(
   "These calls are private",
   `<h1>These calls are private</h1>
 <p class="note">Open Call history from the Phone page of your ControlClaw console. If you were signed in, your session has expired: open it again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_LOGS_PAGE = shell(
+var DENIED_MEETINGS_PAGE = () => shell(
+  "These meetings are private",
+  `<h1>These meetings are private</h1>
+<p class="note">Press Meeting controls on this agent's Meetings tab in your ControlClaw console, from an enrolled owner browser. If you were signed in, your session has expired: press it again.</p>
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
+);
+var DENIED_LOGS_PAGE = () => shell(
   "This log is private",
   `<h1>This log is private</h1>
 <p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Logs again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
 function browserPage(hostname3) {
   const agent = hostname3 ? escapeHtml(hostname3.split(".")[0]) : "your agent";
@@ -27808,7 +27896,15 @@ function browserPage(hostname3) {
   const fail = (msg) => { $('h').textContent = 'Could not open the browser'; for (let i = 1; i <= 2; i++) $('s' + i).className = ''; $('err').textContent = msg; $('err').className = 'err show'; };
   const t = new URLSearchParams(location.hash.slice(1)).get('t');
   history.replaceState(null, '', location.pathname);
-  if (!t) { fail('This page only works from the Screen button in your ControlClaw console.'); return; }
+  if (!t) {
+    // The sidebar's Browser link: no ticket, but a browser already signed in to this agent (or
+    // holding a live-view pass) may watch, which is what Caddy asks /__cc/verify-view for.
+    try {
+      const v = await fetch('/__cc/verify-view', { credentials: 'same-origin', cache: 'no-store' });
+      if (v.ok) { $('s1').className = 'done'; $('s2').className = 'active'; location.replace(${JSON.stringify(NOVNC_URL)}); return; }
+    } catch (e) { /* fall through to the message below */ }
+    fail('Press Screen on this agent in your ControlClaw console to open its browser.'); return;
+  }
   let d, ok;
   try {
     const r = await fetch('/__cc/view-session', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
@@ -27839,7 +27935,7 @@ function openPage(hostname3) {
   <li id="s1" class="active"><span class="dot"></span>Checking this browser with your firewall</li>
 </ol>
 <div class="err" id="err"></div>
-<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>`,
+<a class="btn" id="back" href="${consoleUrl()}" style="display:none">Back to the console</a>`,
     `
 (async () => {
   const $ = (id) => document.getElementById(id);
@@ -27916,7 +28012,7 @@ function enrollPage(hostname3, firewall) {
   const agent = hostname3 ? escapeHtml(hostname3.split(".")[0]) : "your agent";
   const host = hostname3 ? escapeHtml(hostname3) : "";
   if (!firewall) {
-    return shell("Could not open the agent", `<h1>Could not open the agent</h1><p class="host">${host}</p><p class="note">${escapeHtml(OPEN_ERRORS.no_firewall)}</p><a class="btn" href="${CONSOLE_URL}">Back to the console</a>`);
+    return shell("Could not open the agent", `<h1>Could not open the agent</h1><p class="host">${host}</p><p class="note">${escapeHtml(OPEN_ERRORS.no_firewall)}</p><a class="btn" href="${consoleUrl()}">Back to the console</a>`);
   }
   return shell(
     `Confirm this browser`,
@@ -27992,7 +28088,8 @@ var WHATSAPP_PAGE_HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "n
 function whatsappPage(hostname3) {
   const agent = hostname3 ? escapeHtml(hostname3.split(".")[0]) : "your agent";
   const host = hostname3 ? escapeHtml(hostname3) : "";
-  return shell(
+  return withSidebar(
+    "whatsapp",
     "Link WhatsApp",
     `<h1 id="h">Link WhatsApp to ${agent}</h1><p class="host">${host}</p>
 <p class="lead" id="lead">On your phone, open WhatsApp, go to Linked devices, and scan this code.</p>
@@ -28039,7 +28136,7 @@ async function serveWhatsapp(req, res, pathname, vmId) {
     return;
   }
   if (!session || !session.canWrite) {
-    if (page) html(res, 401, DENIED_WHATSAPP_PAGE, WHATSAPP_PAGE_HEADERS);
+    if (page) html(res, 401, DENIED_WHATSAPP_PAGE(), WHATSAPP_PAGE_HEADERS);
     else json2(res, 401, { error: "Only an owner or admin who opened this agent can see the WhatsApp code." }, WHATSAPP_PAGE_HEADERS);
     return;
   }
@@ -28112,6 +28209,15 @@ async function handleAccess(req, res, pathname, opts = {}) {
     json2(res, 500, { error: "Box has no vm_id" });
     return;
   }
+  if (pathname === "/__cc/shell.js" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
+    res.end(SHELL_JS);
+    return;
+  }
+  if (pathname.startsWith("/__cc/files-ui/") && req.method === "GET") {
+    await serveFilesAsset(res, pathname.slice("/__cc/files-ui/".length));
+    return;
+  }
   if (opts.only && !opts.only.has(pathname)) {
     json2(res, 404, { error: "Not found" });
     return;
@@ -28148,7 +28254,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       res.writeHead(200, { "Cache-Control": "no-store" });
       res.end();
     } else {
-      html(res, 401, DENIED_PAGE);
+      html(res, 401, DENIED_PAGE());
     }
     return;
   }
@@ -28242,12 +28348,12 @@ async function handleAccess(req, res, pathname, opts = {}) {
       res.writeHead(200, { "Cache-Control": "no-store" });
       res.end();
     } else {
-      html(res, 401, DENIED_VIEW_PAGE);
+      html(res, 401, DENIED_VIEW_PAGE());
     }
     return;
   }
   if (pathname === "/__cc/files" && req.method === "GET") {
-    await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), consoleUrl: CONSOLE_URL, deniedPage: DENIED_FILES_PAGE });
+    await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), shell: shellContext(), deniedPage: DENIED_FILES_PAGE() });
     return;
   }
   if ((pathname === "/__cc/whatsapp" || pathname === "/__cc/whatsapp/qr") && req.method === "GET") {
@@ -28255,15 +28361,11 @@ async function handleAccess(req, res, pathname, opts = {}) {
     return;
   }
   if (pathname === "/__cc/logs" && req.method === "GET") {
-    await serveLogsPage(req, res, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
+    await serveLogsPage(req, res, { vmId, hostname: readKey("vm_hostname"), shell: shellContext(), deniedPage: DENIED_LOGS_PAGE(), boxOrigin: allowedOrigins().box });
     return;
   }
   if ((pathname === "/__cc/logs/snapshot" || pathname === "/__cc/logs/stream") && req.method === "GET") {
-    await serveLogsData(req, res, pathname, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
-    return;
-  }
-  if (pathname.startsWith("/__cc/files-ui/") && req.method === "GET") {
-    await serveFilesAsset(res, pathname.slice("/__cc/files-ui/".length));
+    await serveLogsData(req, res, pathname, { vmId, hostname: readKey("vm_hostname"), shell: shellContext(), deniedPage: DENIED_LOGS_PAGE(), boxOrigin: allowedOrigins().box });
     return;
   }
   if (pathname === "/__cc/logout" && req.method === "POST") {
@@ -28395,8 +28497,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "9ffacfc" : "unknown",
-  builtAt: true ? "2026-10-08T10:31:38+01:00" : "unknown"
+  commit: true ? "7a5549b" : "unknown",
+  builtAt: true ? "2026-10-08T15:29:53+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -28406,6 +28508,7 @@ var OPENCLAW_CANDIDATES = [
 ];
 var OPENCLAW_BIN2 = "/usr/bin/openclaw";
 var MAX_FIELD = 64;
+var SEMVER = /^\d+\.\d+\.\d+$/;
 function clip(value) {
   return typeof value === "string" && value.length > 0 ? value.slice(0, MAX_FIELD) : null;
 }
@@ -28424,7 +28527,8 @@ function readRelease(path = RELEASE_PATH) {
   const commitDate = clip(raw.commitDate);
   const installedAt = clip(raw.installedAt);
   if (!commit2 || !commitDate || !installedAt) return null;
-  return { commit: commit2, commitDate, installedAt };
+  const version2 = clip(raw.version);
+  return version2 && SEMVER.test(version2) ? { commit: commit2, commitDate, installedAt, version: version2 } : { commit: commit2, commitDate, installedAt };
 }
 function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BIN2) {
   for (const path of candidates) {
@@ -28944,6 +29048,12 @@ function handleStop(res) {
 function handleRestart(res) {
   handleAction(res, "restart");
 }
+function runState(unit, connected) {
+  return openClawState(unit, unit === "active" && connected !== false ? 0 : recentAutoRestarts(), connected);
+}
+function currentOpenClawState(gateway2) {
+  return runState(runIsActive(), gateway2 ? gateway2.connected : null);
+}
 function handleStatus(res, drive2, gateway2) {
   const status = runIsActive();
   const summary = runStatusSummary();
@@ -28953,7 +29063,7 @@ function handleStatus(res, drive2, gateway2) {
     action: "status",
     active: status === "active",
     status,
-    state: openClawState(status, status === "active" && connected !== false ? 0 : recentAutoRestarts(), connected),
+    state: runState(status, connected),
     ...connected !== null ? { gateway: connected } : {},
     message: summary,
     software: boxSoftware(),
@@ -31547,6 +31657,8 @@ function eraseNativeMeetings(stateDir, sessionIds) {
 
 // src/meetings.ts
 var MEETINGS_UPDATE_WAIT_MS = 45e3;
+var SetupFailed = class extends Error {
+};
 var MeetingSettingsError = class extends Error {
 };
 function meetRealtime(policy, speech) {
@@ -31780,6 +31892,7 @@ var MeetingService = class {
       startedAt: (/* @__PURE__ */ new Date()).toISOString(),
       state: "joining",
       mode: raw.mode,
+      meetingCode: new URL(url3).pathname.slice(1),
       sessionIds: [],
       transcript: []
     };
@@ -31848,10 +31961,14 @@ var MeetingService = class {
         ok: setup.ok === true,
         checks: (setup.checks ?? []).slice(0, 30).filter((c2) => typeof c2.id === "string").map((c2) => ({ id: c2.id.slice(0, 100), ok: c2.ok === true }))
       };
-      if (!setup.ok)
-        throw new Error(
-          "Meeting setup checks failed. Update this agent and retry."
-        );
+      const blocking = (setup.checks ?? []).filter((c2) => c2 && c2.ok !== true && !String(c2.id ?? "").startsWith("twilio-"));
+      if (!setup.ok && blocking.length === 0 && (setup.checks ?? []).some((c2) => c2 && c2.ok !== true))
+        console.info("[meetings] setup: only Twilio dial-in checks failed; joining through Chrome");
+      else if (!setup.ok) {
+        const failing = blocking.slice(0, 3).map((c2) => `${String(c2.id ?? "check").slice(0, 60)}${typeof c2.message === "string" ? `: ${c2.message.slice(0, 160)}` : ""}`);
+        console.error(`[meetings] setup checks failed: ${failing.join("; ") || "no failing check reported"}`);
+        throw new SetupFailed(`Meeting setup failed${failing.length ? ` (${failing.join("; ")})` : ""}. Update this agent and retry.`);
+      }
       if (!this.alive(runtime)) return;
       const result = await this.opts.gateway.call(
         "googlemeet.join",
@@ -31870,9 +31987,10 @@ var MeetingService = class {
       }
       runtime.record.state = "waiting";
       await this.poll(runtime);
-    } catch {
+    } catch (error62) {
+      console.error(`[meetings] join stopped: ${error62 instanceof Error ? error62.message.slice(0, 300) : "unknown error"}`);
       if (this.alive(runtime)) {
-        runtime.record.error = "Could not join. Check host admission and meeting setup, then retry.";
+        runtime.record.error = error62 instanceof SetupFailed ? error62.message : "Could not join. Check host admission and meeting setup, then retry.";
         await this.finish(runtime, true);
       }
     } finally {
@@ -32333,76 +32451,61 @@ function summarizeMeeting(captions, signal) {
   });
 }
 
-// src/routes/meetings-ui.ts
-var MEETINGS_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Meetings \xB7 ControlClaw</title><style>
-:root{color-scheme:light dark;--bg:#f8f8f6;--panel:#fff;--ink:#242821;--muted:#686e64;--line:#dfe2d9;--accent:#386245}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:40px 24px}header{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:32px}.brand{font-size:13px;letter-spacing:.08em;color:var(--muted)}h1{font-size:36px;letter-spacing:-.035em;line-height:1.15;margin:18px 0 12px}h2{font-size:21px;letter-spacing:-.02em;margin:0 0 10px}p{margin:8px 0;color:var(--muted)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px;margin:18px 0}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}label{display:block;font-size:14px;margin-bottom:8px}select{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:11px;border-radius:6px;font:inherit}input{width:100%;min-width:0;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:12px;border-radius:6px;font:inherit}.input{flex:1;min-width:220px}button{border:1px solid var(--line);border-radius:6px;padding:11px 16px;font:inherit;background:var(--panel);color:var(--ink);cursor:pointer}button.primary{background:var(--accent);color:white;border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #88ad80;outline-offset:3px}.badge{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:30px;padding:3px 10px;font-size:12px}.spacer{flex:1}.error{color:#aa443a}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}summary{cursor:pointer;font-weight:600}details{border-top:1px solid var(--line);padding-top:16px;margin-top:16px}.caption{padding:8px 0;border-bottom:1px solid var(--line)}.caption small{color:var(--muted)}[hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--bg:#171b18;--panel:#202620;--ink:#e5e9e0;--muted:#a3af9d;--line:#3b453a;--accent:#52765a}.error{color:#ffa99e}}@media(max-width:480px){main{padding:24px 16px}h1{font-size:30px}.panel{padding:18px}.row button{flex-grow:1}.input{min-width:100%}}
-</style></head><body><main><header><div class="brand">CONTROLCLAW / ON YOUR AGENT</div><h1>Meetings</h1><p>Join as a guest. Keep the conversation here.</p><span class="badge">Google Meet \xB7 Private meeting controls</span></header><section class="panel"><h2>Join a meeting</h2><p>The camera stays off. Transcript needs captions. <span id="wake">In Bidi, say ControlClaw to address the agent.</span> Actions require your approved private channel; meeting chat is unavailable.</p><p id="wake-unheard" class="error" hidden></p><form id="join"><label for="mode">Meeting mode</label><div class="row"><select id="mode"><option value="transcript">Transcript</option></select><button type="button" id="switch-mode" hidden>Switch mode</button></div><p>Switching closes audio and rejoins. Expect a gap and possible host readmission.</p><label for="url">Google Meet link</label><div class="row"><div class="input"><input id="url" type="url" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off" required></div><button class="primary" id="join-button">Join meeting</button><button type="button" id="stop" hidden>Stop</button></div></form><p id="status" role="status" aria-live="polite">Checking meeting setup\u2026</p><p id="error" class="error" role="alert"></p><p id="setup"></p></section><section><div class="row"><h2>Meeting notes</h2><span class="spacer"></span><button id="delete-all" type="button">Delete all</button></div><p>Kept until you delete them. Notes use this agent's configured model, including AI Gateway with included credit. Meeting platforms and your model provider receive the content they process.</p><p>Delete removes the live archive and managed notes. Backups keep seven daily and four weekly copies, with a day of grace; the newest is kept until a newer backup exists. Check Backups in your console for remaining copies. Personal exports remain yours to remove.</p><div id="meetings"></div></section></main><script src="/__cc/meetings/app.js" defer></script></body></html>`;
-var MEETINGS_SCRIPT = String.raw`
-let state = null, busy = false, initialized = false;
-const el = id => document.getElementById(id);
-const node = (tag, text) => { const e = document.createElement(tag); e.textContent = text; return e; };
-async function refresh() {
-  try {
-    const response = await fetch('/__cc/meetings/state', { cache:'no-store' });
-    if (!response.ok) throw new Error('Press Meeting controls again on this agent’s Meetings tab in your console to sign in.');
-    state = await response.json();
-    el('status').textContent = state.active ? 'Meeting ' + state.active.state + '. ' + (state.active.error || '') : state.enabled ? 'Ready to join. One meeting at a time.' : 'Turn on meetings in this agent’s Meetings tab in your console first.';
-    const modes=state.supportedModes||['transcript'];
-    const chosen=el('mode').value;el('mode').replaceChildren(...modes.map(m=>{const o=node('option',m==='bidi'?'Bidi · realtime conversation':'Transcript');o.value=m;return o;}));
-    el('mode').value=initialized&&modes.includes(chosen)?chosen:state.defaultMode;initialized=true;
-    el('switch-mode').hidden=!state.active;el('switch-mode').disabled=busy||!state.active||state.active.mode===el('mode').value;
-    const wake=state.wake;
-    const names=wake?(wake.words.length<2?wake.words.join(''):wake.words.slice(0,-1).join(', ')+' or '+wake.words.at(-1)):'ControlClaw';
-    el('wake').textContent=!wake||wake.enabled?'In Bidi, start a request with '+names+' to address the agent.'+(wake&&wake.local?' This agent listens for the names itself and connects the voice only when called.':''):'In Bidi, the agent answers when someone addresses it.';
-    const unheard=wake&&wake.enabled&&wake.local?wake.unheard:[];
-    el('wake-unheard').hidden=!unheard.length;
-    el('wake-unheard').textContent=unheard.length?unheard.join(', ')+' can’t be heard on this agent. Write it as separate words or as it sounds (for example “Claudia”), in this agent’s Meetings settings.':'';
-    el('setup').textContent = state.setup ? 'Setup: ' + state.setup.checks.map(c => c.id + (c.ok ? ' passed' : ' needs attention')).join(' · ') : '';
-    el('join-button').disabled = busy || !state.enabled || !!state.active;
-    el('stop').hidden = !state.active;
-    el('delete-all').disabled = busy;
-    el('delete-all').textContent = state.deletionPending ? 'Retry deletion' : 'Delete all';
-    const container = el('meetings');
-    // Preserve expanded transcripts across status polling.
-    const expanded = new Set(Array.from(container.querySelectorAll('details[open]')).map(e => e.dataset.id));
-    container.replaceChildren();
-    if (!state.meetings.length) container.append(node('p','Your saved transcripts and notes will appear here.'));
-    for (const meeting of state.meetings) {
-      const card=node('article',''); card.className='panel';
-      const row=node('div',''); row.className='row';
-      row.append(node('h2',new Date(meeting.startedAt).toLocaleString()));
-      const badge=node('span',meeting.state); badge.className='badge'; row.append(badge);
-      const spacer=node('span',''); spacer.className='spacer'; row.append(spacer);
-      const del=node('button','Delete'); del.disabled=busy; del.onclick=()=>remove(meeting.id); row.append(del); card.append(row);
-      for(const gap of meeting.gaps||[])card.append(node('p','Mode change '+gap.from+' → '+gap.to+'. Capture gap: '+new Date(gap.startedAt).toLocaleTimeString()+' to '+(gap.endedAt?new Date(gap.endedAt).toLocaleTimeString():'rejoining…')));
-      if(meeting.error){const p=node('p',meeting.error);p.className='error';card.append(p);}
-      if(meeting.voiceSeconds!=null){const m=Math.floor(meeting.voiceSeconds/60),sec=meeting.voiceSeconds%60;card.append(node('p','Voice: '+(m?m+' min ':'')+sec+' s'+(meeting.voiceSessions>1?' in '+meeting.voiceSessions+' conversations':'')+'.'));}
-      if(meeting.transcriptNote)card.append(node('p',meeting.transcriptNote));
-      card.append(node('pre',meeting.notes || (meeting.mode === 'bidi' && !meeting.transcript.length ? 'Bidi conversation. Nothing was captioned or said to the agent.' : ['joining','waiting','active','leaving'].includes(meeting.state) ? 'Notes will be generated when this meeting ends.' : meeting.error ? 'Notes are not available. See the status above.' : meeting.transcript.length ? 'Generating notes with your configured model…' : 'No captions captured yet.')));
-      const details=node('details',''); details.dataset.id=meeting.id; details.open=expanded.has(meeting.id); details.append(node('summary','Transcript · '+meeting.transcript.length+' entries'));
-      for(const caption of meeting.transcript){const div=node('div','');div.className='caption';div.append(node('small',caption.speaker+' · '+new Date(caption.at).toLocaleTimeString()),node('div',caption.text));details.append(div);}
-      card.append(details);container.append(card);
-    }
-  } catch(error) { el('error').textContent=error.message; }
+// ../meetings/src/archive.ts
+var MEETINGS_PAGE_SIZE = 20;
+var LIVE = ["joining", "waiting", "active", "leaving"];
+function summarizeMeeting2(m2) {
+  const end = m2.endedAt ? Date.parse(m2.endedAt) : NaN;
+  const start = Date.parse(m2.startedAt);
+  const live = LIVE.includes(m2.state);
+  return {
+    id: m2.id,
+    startedAt: m2.startedAt,
+    endedAt: m2.endedAt ?? null,
+    durationSeconds: !live && Number.isFinite(end) && Number.isFinite(start) ? Math.max(0, Math.round((end - start) / 1e3)) : null,
+    mode: m2.mode ?? "transcript",
+    meetingCode: m2.meetingCode ?? null,
+    state: m2.state,
+    notes: m2.notes ? "ready" : live || m2.state === "complete" && m2.transcript.length > 0 && !m2.error ? "pending" : "none",
+    captions: m2.transcript.length,
+    failed: m2.state === "failed" || !!m2.error
+  };
 }
-async function command(action, body={}) {
-  if(busy || !state) return;
-  busy=true;el('error').textContent='';
-  try {
-    const response=await fetch('/__cc/meetings/'+action,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...body,operationId:crypto.randomUUID(),revision:state.commandRevision})});
-    if(!response.ok) throw new Error((await response.json()).error);
-    if(action==='join') el('url').value='';
-  } catch(error){el('error').textContent=error.message;} finally{busy=false;await refresh();}
+function meetingDetail(m2) {
+  const { id, startedAt, endedAt, meetingCode, gaps, state, transcript, notes, notesSource, error: error62, voiceSeconds, voiceSessions, voiceEnds, transcriptNote } = m2;
+  return {
+    id,
+    startedAt,
+    endedAt,
+    meetingCode,
+    gaps,
+    state,
+    transcript,
+    notes,
+    notesSource,
+    error: error62,
+    voiceSeconds,
+    voiceSessions,
+    voiceEnds,
+    transcriptNote,
+    mode: m2.mode ?? "transcript",
+    summary: summarizeMeeting2(m2)
+  };
 }
-function remove(id){if(confirm('Delete '+(id==='all'?'all meeting notes and transcripts':'this meeting')+' from the live archive? Backups keep seven daily and four weekly copies, with a day of grace; the newest is kept until replaced. Check Backups for remaining copies. External exports are not removed.')) command('delete',{id});}
-el('join').onsubmit=e=>{e.preventDefault();command('join',{url:el('url').value.trim(),mode:el('mode').value});};
-el('mode').onchange=()=>{el('switch-mode').disabled=busy||!state.active||state.active.mode===el('mode').value;};
-el('switch-mode').onclick=()=>command('set-mode',{mode:el('mode').value});
-el('stop').onclick=()=>command('leave');el('delete-all').onclick=()=>remove('all');
-refresh();setInterval(()=>{if(!busy)refresh();},5000);
-`;
+function meetingsPage(all, page, pageSize = MEETINGS_PAGE_SIZE) {
+  const last = Math.max(1, Math.ceil(all.length / pageSize));
+  const p2 = Math.min(last, Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1));
+  return { meetings: all.slice((p2 - 1) * pageSize, p2 * pageSize).map(summarizeMeeting2), page: p2, pageSize, total: all.length };
+}
 
 // src/routes/meetings.ts
+var MEETING_PAGE = /^\/__cc\/meetings\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+var MEETING_ITEM = /^\/__cc\/meetings\/item\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+var PAGE_HEADERS3 = {
+  "Content-Type": "text/html; charset=utf-8",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+};
 async function handleMeetings(req, res, url3, service, context) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
@@ -32433,33 +32536,44 @@ async function handleMeetings(req, res, url3, service, context) {
     );
   }
   const session = await readSession(req.headers.cookie, context.vmId);
-  if (!session?.deviceId || !session.canWrite)
+  const allowed = !!session?.deviceId && session.canWrite;
+  const pageId = MEETING_PAGE.exec(path);
+  if ((path === "/__cc/meetings" || pageId) && req.method === "GET") {
+    res.writeHead(allowed ? 200 : 403, PAGE_HEADERS3);
+    if (!allowed) return void res.end(context.deniedPage());
+    const agentName = agentNameOf(context.shell.hostname);
+    res.end(
+      shellPage({
+        ctx: context.shell,
+        title: `${agentName} \xB7 meetings`,
+        active: "meetings",
+        body: `<div id="root"></div><script id="cc-meetings" type="application/json">${inlineJson({ agentName, meetingId: pageId?.[1] ?? null })}</script><script type="module" src="/__cc/files-ui/meetings.js"></script>`
+      })
+    );
+    return;
+  }
+  if (!allowed)
     return sendJson(res, 403, {
       error: "Press Meeting controls on the agent\u2019s Meetings tab in the console, from an enrolled owner browser."
     });
   if (!service) return sendJson(res, 503, { error: "Meetings unavailable" });
-  if (path === "/__cc/meetings" && req.method === "GET") {
-    res.writeHead(200, {
-      "content-type": "text/html; charset=utf-8",
-      "X-Frame-Options": "DENY",
-      "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-    });
-    res.end(MEETINGS_PAGE);
-    return;
-  }
   const origin = checkOrigin(nodeRequestFacts(req), {
     allowed: [context.origin],
     allowTopLevelNavigation: false
   });
   if (!origin.ok)
     return sendJson(res, 403, { error: "Use this agent's own Meetings page" });
-  if (path === "/__cc/meetings/app.js" && req.method === "GET") {
-    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-    res.end(MEETINGS_SCRIPT);
-    return;
+  if (path === "/__cc/meetings/state" && req.method === "GET") {
+    const { meetings: meetings2, ...state } = service.status();
+    return sendJson(res, 200, { ...state, total: meetings2.length });
   }
-  if (path === "/__cc/meetings/state" && req.method === "GET")
-    return sendJson(res, 200, service.status());
+  if (path === "/__cc/meetings/list" && req.method === "GET")
+    return sendJson(res, 200, meetingsPage(service.status().meetings, Number(url3.searchParams.get("page") ?? "1")));
+  const item = MEETING_ITEM.exec(path);
+  if (item && req.method === "GET") {
+    const meeting = service.status().meetings.find((m2) => m2.id === item[1]);
+    return meeting ? sendJson(res, 200, meetingDetail(meeting)) : sendJson(res, 404, { error: "This meeting was deleted or never saved." });
+  }
   if (req.method !== "POST") return sendJson(res, 404, { error: "Not found" });
   try {
     const body = await readJsonBody(req);
@@ -37317,10 +37431,10 @@ function frame(body) {
 async function makeEncryptor(dataKeyB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const { state, header: header2 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
+  const { state, header: header3 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
   let closed = false;
   return {
-    header: toB64(header2),
+    header: toB64(header3),
     push(plain) {
       if (closed) throw new Error("the archive stream is already closed");
       if (plain.length > CHUNK_BYTES) throw new Error(`chunk of ${plain.length} bytes is over the ${CHUNK_BYTES} limit`);
@@ -37347,20 +37461,20 @@ var TRUNCATED = "This archive ended early \u2014 it is incomplete. Nothing was r
 async function makeDecryptor(dataKeyB64, headerB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const header2 = fromB64(headerB64);
-  if (header2.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
+  const header3 = fromB64(headerB64);
+  if (header3.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
   let state;
   try {
-    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header2, fromB64(dataKeyB64));
+    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header3, fromB64(dataKeyB64));
   } catch {
     throw new Error(WRONG_KEY);
   }
   let buffer = new Uint8Array(0);
   let sawFinal = false;
   const take = (n2) => {
-    const head = buffer.subarray(0, n2);
+    const head2 = buffer.subarray(0, n2);
     buffer = buffer.subarray(n2);
-    return head;
+    return head2;
   };
   return {
     push(cipher) {
@@ -37432,7 +37546,7 @@ function writeString(buf, at2, s2, width) {
   buf.set(bytes, at2);
 }
 var TYPEFLAG = { file: "0", dir: "5", link: "2" };
-function header(entry, typeflag = TYPEFLAG[entry.type], name = entry.path) {
+function header2(entry, typeflag = TYPEFLAG[entry.type], name = entry.path) {
   const h2 = new Uint8Array(BLOCK);
   writeString(h2, 0, name, 100);
   writeString(h2, 100, octal(entry.mode & 4095, 8), 8);
@@ -37456,10 +37570,10 @@ function padding(size) {
 }
 function longLink(value, typeflag) {
   const bytes = new TextEncoder().encode(value);
-  const head = header({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
+  const head2 = header2({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
   const body = new Uint8Array(bytes.length + 1);
   body.set(bytes);
-  return [head, body, padding(body.length)].filter((b2) => b2.length > 0);
+  return [head2, body, padding(body.length)].filter((b2) => b2.length > 0);
 }
 function tarHeader(entry) {
   const name = new TextEncoder().encode(entry.path);
@@ -37468,7 +37582,7 @@ function tarHeader(entry) {
   if (target.length > 100) out.push(...longLink(entry.target, "K"));
   if (name.length > 100) out.push(...longLink(entry.path, "L"));
   out.push(
-    header(
+    header2(
       // The real header's own fields must still fit; the long-link pair is what carries the value.
       { ...entry, path: name.length > 100 ? "././@LongLink" : entry.path, target: target.length > 100 ? "" : entry.target },
       TYPEFLAG[entry.type],
@@ -37512,20 +37626,20 @@ var TarReader = class {
     const out = [];
     for (; ; ) {
       if (this.ended || this.buffer.length < BLOCK) return out;
-      const head = this.buffer.subarray(0, BLOCK);
-      if (head.every((b2) => b2 === 0)) {
+      const head2 = this.buffer.subarray(0, BLOCK);
+      if (head2.every((b2) => b2 === 0)) {
         this.buffer = this.buffer.subarray(BLOCK);
         if (++this.zeroBlocks >= 2) this.ended = true;
         continue;
       }
       this.zeroBlocks = 0;
-      if (readString(head, 257, 6).replace(/\0.*$/, "") !== "ustar") throw new Error("this archive is not a tar file we wrote");
-      const size = readOctal(head, 124, 12);
+      if (readString(head2, 257, 6).replace(/\0.*$/, "") !== "ustar") throw new Error("this archive is not a tar file we wrote");
+      const size = readOctal(head2, 124, 12);
       const bodyBlocks = Math.ceil(size / BLOCK) * BLOCK;
       if (this.buffer.length < BLOCK + bodyBlocks) return out;
       const body = this.buffer.subarray(BLOCK, BLOCK + size);
-      const flag = readString(head, 156, 1);
-      const path = this.longName ?? readString(head, 0, 100);
+      const flag = readString(head2, 156, 1);
+      const path = this.longName ?? readString(head2, 0, 100);
       this.buffer = this.buffer.subarray(BLOCK + bodyBlocks);
       if (flag === "L" || flag === "K") {
         const value = new TextDecoder().decode(body).replace(/\0+$/, "");
@@ -37542,9 +37656,9 @@ var TarReader = class {
         path,
         type,
         size: type === "file" ? size : 0,
-        mode: readOctal(head, 100, 8) & 4095,
-        mtime: readOctal(head, 136, 12),
-        ...type === "link" ? { target: longTarget ?? readString(head, 157, 100) } : {},
+        mode: readOctal(head2, 100, 8) & 4095,
+        mtime: readOctal(head2, 136, 12),
+        ...type === "link" ? { target: longTarget ?? readString(head2, 157, 100) } : {},
         // A copy, not a view: the buffer it points into is reused as more chunks arrive.
         body: type === "file" ? new Uint8Array(body) : new Uint8Array(0)
       });
@@ -38101,13 +38215,13 @@ function parseRestore(body, kinds = AGENT_KINDS) {
   if (typeof c2 === "string") return c2;
   const downloadUrl = url2(body, "downloadUrl");
   if (!downloadUrl) return "downloadUrl must be an https URL";
-  const header2 = str5(body, "header");
+  const header3 = str5(body, "header");
   const hash2 = str5(body, "manifestHash");
-  if (!header2 || header2.length !== 32 || !B64.test(header2)) return "header is required";
+  if (!header3 || header3.length !== 32 || !B64.test(header3)) return "header is required";
   if (!hash2 || !HEX64.test(hash2)) return "manifestHash is required";
   const source = str5(body, "sourceVmId");
   if (source !== null && !ID.test(source)) return "sourceVmId must be a vm id";
-  return { ...c2, downloadUrl, header: header2, manifestHash: hash2, ...source ? { sourceVmId: source } : {} };
+  return { ...c2, downloadUrl, header: header3, manifestHash: hash2, ...source ? { sourceVmId: source } : {} };
 }
 async function handleBackup(req, res, url3, service, kinds = AGENT_KINDS) {
   const write = req.method === "POST";
@@ -39977,6 +40091,301 @@ async function handleKill(req, res, url3) {
   sendJson(res, answer.ok ? 200 : 500, answer);
 }
 
+// src/routes/health-summary.ts
+import { statfs } from "fs/promises";
+import { execFile as execFile8 } from "child_process";
+import { lookup } from "dns/promises";
+import os from "os";
+
+// src/patch-check.ts
+import { execFile as execFile7 } from "child_process";
+import { createHash as createHash10 } from "crypto";
+import { existsSync as existsSync21, lstatSync, readFileSync as readFileSync27, readdirSync as readdirSync3 } from "fs";
+import { homedir } from "os";
+import { join as join19 } from "path";
+var HOST = "/usr/lib/node_modules/openclaw";
+var MEETING_PATCH = "/opt/controlclaw/meeting-runtime-patch.py";
+var VOICE_DIR2 = "/opt/controlclaw/meeting-voice";
+var GUARD = "/opt/controlclaw/meeting-guard/index.js";
+var PHONE_VERSION = PHONE_PACKAGE.slice(PHONE_PACKAGE.lastIndexOf("@") + 1);
+var CHECK_TIMEOUT_MS = 15e3;
+var readJson2 = (path) => {
+  try {
+    return JSON.parse(readFileSync27(path, "utf8"));
+  } catch {
+    return null;
+  }
+};
+function findPlugin(stateDir, name) {
+  const direct = join19(stateDir, "extensions", name);
+  if (existsSync21(join19(direct, "package.json"))) return direct;
+  const projects = join19(stateDir, "npm", "projects");
+  let entries = [];
+  try {
+    entries = readdirSync3(projects);
+  } catch {
+    return null;
+  }
+  for (const p2 of entries) {
+    const dir = join19(projects, p2, "node_modules", "@openclaw", name);
+    if (existsSync21(join19(dir, "package.json"))) return dir;
+  }
+  return null;
+}
+function runMeetingCheck(host, stateDir) {
+  let source = "";
+  try {
+    source = readFileSync27(MEETING_PATCH, "utf8");
+  } catch {
+    return Promise.resolve(null);
+  }
+  if (!source.includes("def check(")) return Promise.resolve(null);
+  return new Promise((resolve3) => {
+    execFile7("/usr/bin/python3", [MEETING_PATCH, "--check", host, stateDir], { timeout: CHECK_TIMEOUT_MS }, (err, stdout) => {
+      if (err) return resolve3({ error: true });
+      try {
+        resolve3(JSON.parse(stdout));
+      } catch {
+        resolve3({ error: true });
+      }
+    });
+  });
+}
+function meetingsRuntimeItem(raw, openclaw) {
+  const r2 = raw;
+  const expected = typeof r2?.reviewed === "string" ? r2.reviewed : null;
+  if (!r2) return { id: "meetings_runtime", status: "unknown", expected, actual: openclaw };
+  if (r2.error || r2.plugin === "missing") return { id: "meetings_runtime", status: r2.plugin === "missing" ? "missing" : "unknown", expected, actual: openclaw };
+  const statuses = (r2.files ?? []).map((f2) => f2.status);
+  const status = statuses.includes("unknown") ? "mismatch" : statuses.includes("missing") ? "missing" : statuses.includes("unpatched") ? "unpatched" : statuses.length ? "ok" : "unknown";
+  return { id: "meetings_runtime", status, expected, actual: openclaw };
+}
+function phonePluginItem(dir, read = (p2) => readFileSync27(p2, "utf8")) {
+  if (!dir) return { id: "phone_plugin", status: "not_installed", expected: PHONE_VERSION };
+  const version2 = readJson2(join19(dir, "package.json"))?.version ?? null;
+  if (version2 !== PHONE_VERSION) return { id: "phone_plugin", status: "mismatch", expected: PHONE_VERSION, actual: version2 };
+  const patches = [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT, ...PHONE_REPLY_COMPAT];
+  let unpatched = false;
+  for (const file2 of new Set(patches.map((p2) => p2.file))) {
+    let source;
+    try {
+      source = read(join19(dir, "dist", ".setup", file2));
+    } catch {
+      return { id: "phone_plugin", status: "missing", expected: PHONE_VERSION, actual: version2 };
+    }
+    try {
+      if (patchPhoneStages(source, patches.filter((p2) => p2.file === file2)) !== source) unpatched = true;
+    } catch {
+      return { id: "phone_plugin", status: "mismatch", expected: PHONE_VERSION, actual: version2 };
+    }
+  }
+  return { id: "phone_plugin", status: unpatched ? "unpatched" : "ok", expected: PHONE_VERSION, actual: version2 };
+}
+function phoneRuntimeItem(host, openclaw) {
+  try {
+    const dist = join19(host, "dist");
+    const files2 = readdirSync3(dist).filter((f2) => /^gateway-work-admission-[A-Za-z0-9_-]{8}\.mjs$/.test(f2));
+    if (files2.length !== 1) return { id: "phone_runtime", status: "mismatch", actual: openclaw };
+    const ok = phoneAdmissionDigest(readFileSync27(join19(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
+    return { id: "phone_runtime", status: ok ? "ok" : "mismatch", actual: openclaw };
+  } catch {
+    return { id: "phone_runtime", status: "missing", actual: openclaw };
+  }
+}
+function browserStealthItem(host) {
+  const link = join19(host, "node_modules", "playwright-core");
+  try {
+    if (lstatSync(link).isSymbolicLink()) return { id: "browser_stealth", status: "ok" };
+  } catch {
+    return { id: "browser_stealth", status: "missing" };
+  }
+  return { id: "browser_stealth", status: "mismatch", actual: readJson2(join19(link, "package.json"))?.version ?? null };
+}
+function voiceAdapterItem() {
+  const manifest = readJson2(join19(VOICE_DIR2, "openclaw.plugin.json"));
+  if (!manifest || !existsSync21(join19(VOICE_DIR2, "capabilities.json"))) return { id: "voice_adapter", status: "missing" };
+  return { id: "voice_adapter", status: JSON.stringify(manifest).includes("cc-phone-voice") ? "ok" : "mismatch" };
+}
+function emailCliItem(stateDir) {
+  const dir = join19(stateDir, "extensions", "agentmail");
+  if (!existsSync21(join19(dir, "package.json"))) return { id: "email_cli", status: "not_installed" };
+  const release = readJson2(join19(dir, "dist", "cli", "agentmail-cli-release.json"));
+  const arch = process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+  return { id: "email_cli", status: release?.assets?.[arch] ? "ok" : "missing", actual: readJson2(join19(dir, "package.json"))?.version ?? null };
+}
+function modelProviderItem(config2) {
+  if (!config2) return { id: "model_provider", status: "unknown" };
+  const model = config2.agents?.defaults?.model;
+  const primary = typeof model === "string" ? model : model?.primary;
+  if (typeof primary !== "string" || !primary.includes("/")) return { id: "model_provider", status: "not_installed" };
+  const provider = primary.slice(0, primary.indexOf("/"));
+  if (provider !== "controlclaw") return { id: "model_provider", status: "ok" };
+  const block = config2.models?.providers?.[provider];
+  return { id: "model_provider", status: block && typeof block.baseUrl === "string" && Array.isArray(block.models) && block.models.length ? "ok" : "missing" };
+}
+async function patchReport(deps) {
+  const openclaw = deps.openclawVersion();
+  const [meeting, config2] = await Promise.all([deps.meetingCheck(deps.host, deps.stateDir).catch(() => null), deps.config().catch(() => null)]);
+  const meetDir = findPlugin(deps.stateDir, "google-meet");
+  const meetVersion = meetDir ? readJson2(join19(meetDir, "package.json"))?.version ?? null : null;
+  const reviewed = meeting?.reviewed;
+  const items = [
+    meetingsRuntimeItem(meeting, openclaw),
+    {
+      id: "meetings_plugin",
+      status: !meetDir ? "missing" : typeof reviewed === "string" && meetVersion !== reviewed ? "mismatch" : "ok",
+      expected: typeof reviewed === "string" ? reviewed : null,
+      actual: meetVersion
+    },
+    phonePluginItem(findPlugin(deps.stateDir, "voice-call")),
+    phoneRuntimeItem(deps.host, openclaw),
+    voiceAdapterItem(),
+    { id: "wake", status: localWakeInstalled() ? "ok" : "missing" },
+    { id: "meeting_guard", status: existsSync21(GUARD) ? "ok" : "missing" },
+    browserStealthItem(deps.host),
+    emailCliItem(deps.stateDir),
+    modelProviderItem(config2)
+  ];
+  return { openclaw, items };
+}
+function defaultPatchDeps(config2) {
+  return {
+    stateDir: process.env.OPENCLAW_STATE_DIR ?? join19(homedir(), ".openclaw"),
+    host: HOST,
+    openclawVersion: () => readOpenClawVersion(),
+    meetingCheck: runMeetingCheck,
+    config: config2
+  };
+}
+
+// src/routes/health-summary.ts
+var PROBE_TIMEOUT_MS = 3e3;
+var MODEL_PROBE_TIMEOUT_MS = 2e4;
+function reasonOf(err) {
+  const code = err?.code;
+  if (code === "ETIMEOUT" || code === "ETIMEDOUT") return "timeout";
+  if (code === "ECONNREFUSED") return "refused";
+  if (code === "ENOTFOUND" || code === "ENODATA") return "not_found";
+  if (code === "EHOSTUNREACH" || code === "ENETUNREACH") return "no_route";
+  return "error";
+}
+function withTimeout(p2, ms) {
+  return new Promise((resolve3, reject) => {
+    const t2 = setTimeout(() => reject(Object.assign(new Error("timeout"), { code: "ETIMEOUT" })), ms);
+    p2.then(
+      (v2) => {
+        clearTimeout(t2);
+        resolve3(v2);
+      },
+      (e) => {
+        clearTimeout(t2);
+        reject(e);
+      }
+    );
+  });
+}
+async function timed(fn) {
+  const start = Date.now();
+  try {
+    const ok = await fn();
+    return ok ? { ok, ms: Date.now() - start } : { ok, ms: Date.now() - start, reason: "refused" };
+  } catch (err) {
+    return { ok: false, ms: Date.now() - start, reason: reasonOf(err) };
+  }
+}
+async function diskOf() {
+  try {
+    const s2 = await statfs("/");
+    const total = s2.blocks * s2.bsize;
+    const free = s2.bavail * s2.bsize;
+    if (total <= 0) return null;
+    return { usedPct: Math.round((total - free) / total * 1e3) / 10, freeBytes: free };
+  } catch {
+    return null;
+  }
+}
+function ntpSynced() {
+  return new Promise((resolve3) => {
+    execFile8("timedatectl", ["show", "-p", "NTPSynchronized", "--value"], { timeout: PROBE_TIMEOUT_MS }, (err, stdout) => {
+      if (err) return resolve3(null);
+      const v2 = stdout.trim();
+      resolve3(v2 === "yes" ? true : v2 === "no" ? false : null);
+    });
+  });
+}
+async function healthSummary(deps) {
+  const host = deps.controlPlaneHost();
+  const mitmIp = deps.mitmPrivateIp();
+  const [disk, synced, dns, egress] = await Promise.all([
+    diskOf(),
+    ntpSynced(),
+    host ? timed(() => withTimeout(lookup(host).then(() => true), PROBE_TIMEOUT_MS)) : Promise.resolve(null),
+    mitmIp ? timed(() => deps.tcpProbe(mitmIp, Number(process.env.MITM_PROXY_PORT ?? 8080), PROBE_TIMEOUT_MS)) : Promise.resolve(null)
+  ]);
+  const total = os.totalmem();
+  return {
+    ok: true,
+    now: Date.now(),
+    openclaw: { state: deps.openclawState(), gateway: deps.gatewayConnected() },
+    disk,
+    memory: { usedPct: Math.round((total - os.freemem()) / total * 1e3) / 10, totalBytes: total },
+    load1: Math.round(os.loadavg()[0] * 100) / 100,
+    cpus: os.cpus().length,
+    clock: { ntpSynced: synced },
+    dns,
+    egress,
+    rebootRequired: deps.rebootRequired()
+  };
+}
+var MODEL_STATUSES = /* @__PURE__ */ new Set(["auth", "billing", "rate_limit", "timeout", "format", "no_model"]);
+function providerOf(primary) {
+  if (typeof primary !== "string" || !primary.includes("/")) return null;
+  return primary.slice(0, primary.indexOf("/")).trim() || null;
+}
+async function gatewayConfig(deps) {
+  const gw = deps.gateway();
+  if (!gw) return null;
+  const snapshot = await gw.call("config.get", {}, PROBE_TIMEOUT_MS * 2);
+  return snapshot?.parsed ?? snapshot?.config ?? null;
+}
+async function modelProbe(deps) {
+  const gw = deps.gateway();
+  if (!gw) return { ok: false, provider: null, reason: "no_gateway" };
+  let provider;
+  try {
+    const snapshot = await gw.call("config.get", {}, PROBE_TIMEOUT_MS * 2);
+    const model = (snapshot?.parsed ?? snapshot?.config)?.agents?.defaults?.model;
+    provider = providerOf(typeof model === "string" ? model : model?.primary);
+  } catch {
+    return { ok: false, provider: null, reason: "no_gateway" };
+  }
+  if (!provider) return { ok: false, provider: null, reason: "no_model" };
+  try {
+    const r2 = await gw.call("models.probe", { provider, timeoutMs: MODEL_PROBE_TIMEOUT_MS }, MODEL_PROBE_TIMEOUT_MS + 5e3);
+    if (r2?.status === "ok") return { ok: true, provider, ...typeof r2.latencyMs === "number" ? { ms: r2.latencyMs } : {} };
+    return { ok: false, provider, reason: r2?.status && MODEL_STATUSES.has(r2.status) ? r2.status : "unknown" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    return { ok: false, provider, reason: /unknown method|not found|INVALID_REQUEST/i.test(msg) ? "unsupported" : "unknown" };
+  }
+}
+async function handleHealthRoutes(req, res, pathname, deps) {
+  if (pathname === "/health/summary" && req.method === "GET") {
+    const auth = await verifyMitmRequest(req, "health") ?? await verifyRequest(req);
+    if (!auth) return sendJson(res, 401, { error: "Unauthorized" });
+    return sendJson(res, 200, await healthSummary(deps));
+  }
+  if (pathname === "/health/patches" && req.method === "GET") {
+    if (!await verifyRequest(req)) return sendJson(res, 401, { error: "Unauthorized" });
+    return sendJson(res, 200, await patchReport(deps.patches ?? defaultPatchDeps(() => gatewayConfig(deps))));
+  }
+  if (pathname === "/health/model" && req.method === "POST") {
+    if (!await verifyRequest(req)) return sendJson(res, 401, { error: "Unauthorized" });
+    return sendJson(res, 200, await modelProbe(deps));
+  }
+  sendJson(res, 404, { error: "Not found" });
+}
+
 // src/routes/access-push.ts
 function json3(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -40078,15 +40487,15 @@ var AUDIT_POLL_MS = parseInt(process.env.AUDIT_POLL_MS ?? "5000", 10);
 var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 10);
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
-var POOL_UNCLAIMED = existsSync21("/etc/controlclaw/pool-unclaimed");
+var POOL_UNCLAIMED = existsSync22("/etc/controlclaw/pool-unclaimed");
 var poolHealthy = false;
-if (POOL_UNCLAIMED && !existsSync21(`${KEYS_DIR2}/saas_public_key.pem`)) {
+if (POOL_UNCLAIMED && !existsSync22(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
   writeFileSync20(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync27(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync28(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -40094,7 +40503,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync27(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync28(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -40109,10 +40518,10 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   if (POOL_UNCLAIMED) {
-    for (let i2 = 0; i2 < 300 && !existsSync21(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+    for (let i2 = 0; i2 < 300 && !existsSync22(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
       await new Promise((resolve3) => setTimeout(resolve3, 1e3));
     }
-    if (!existsSync21(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    if (!existsSync22(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
     const egress = await enableTransparentEgress(KEYS_DIR2);
     if (!egress) return;
     const hostname4 = readKeyFile(KEYS_DIR2, "vm_hostname");
@@ -40201,9 +40610,30 @@ var phone = null;
 var gmailWatch = null;
 var gmailWake = null;
 var gateway = null;
+setShellNav(() => ({
+  meetings: meetings?.metadata().enabled ?? false,
+  phone: phone?.status()?.status === "active" || phoneCalls.calls().length > 0,
+  whatsapp: (channels?.whatsappLogin().state ?? "idle") !== "idle"
+}));
 var devices = new DevicesService({ client: () => gateway });
 var brainMcp = new BrainMcpService(() => gateway);
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
+var healthDeps = {
+  openclawState: () => currentOpenClawState(gateway),
+  gatewayConnected: () => gateway ? gateway.connected : null,
+  controlPlaneHost: () => {
+    const base = saasBaseUrl(KEYS_DIR2);
+    try {
+      return base ? new URL(base).hostname : null;
+    } catch {
+      return null;
+    }
+  },
+  mitmPrivateIp: () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip"),
+  tcpProbe: probe,
+  rebootRequired: () => existsSync22("/var/run/reboot-required"),
+  gateway: () => gateway
+};
 var ssh = new SshAccessService({ statePath: `${STATE_DIR}/ssh.json` });
 var tailscale = new TailscaleService({});
 var backup = new BackupService({
@@ -40267,11 +40697,11 @@ var server = createServer2(async (req, res) => {
   }
   const url3 = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   if (url3.pathname.startsWith("/meetings/") || url3.pathname === "/__cc/meetings" || url3.pathname.startsWith("/__cc/meetings/")) {
-    await handleMeetings(req, res, url3, meetings, { vmId: readKeyFile(KEYS_DIR2, "vm_id") ?? "", origin: `https://${readKeyFile(KEYS_DIR2, "vm_hostname")}` });
+    await handleMeetings(req, res, url3, meetings, { vmId: readKeyFile(KEYS_DIR2, "vm_id") ?? "", origin: `https://${readKeyFile(KEYS_DIR2, "vm_hostname")}`, shell: shellContext(), deniedPage: DENIED_MEETINGS_PAGE });
     return;
   }
   if (isPhonePagePath(url3.pathname)) {
-    await handlePhonePage(req, res, url3.pathname, { vmId: readKeyFile(KEYS_DIR2, "vm_id") ?? "", hostname: readKeyFile(KEYS_DIR2, "vm_hostname"), boxOrigin: allowedOrigins().box, deniedPage: DENIED_PHONE_PAGE, calls: phoneCalls, log: phoneCallLog });
+    await handlePhonePage(req, res, url3.pathname, { vmId: readKeyFile(KEYS_DIR2, "vm_id") ?? "", hostname: readKeyFile(KEYS_DIR2, "vm_hostname"), shell: shellContext(), boxOrigin: allowedOrigins().box, deniedPage: DENIED_PHONE_PAGE(), calls: phoneCalls, log: phoneCallLog });
     return;
   }
   if (url3.pathname.startsWith("/__cc/")) {
@@ -40316,6 +40746,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url3.pathname.startsWith("/google/")) {
     await handleGoogle(req, res, url3, google);
+    return;
+  }
+  if (url3.pathname.startsWith("/health/")) {
+    await handleHealthRoutes(req, res, url3.pathname, healthDeps);
     return;
   }
   if (url3.pathname === "/update") {
@@ -40399,8 +40833,8 @@ var server = createServer2(async (req, res) => {
   res.end(JSON.stringify({ error: "Not found" }));
 });
 var phoneRelay = new PhoneStreamRelay(() => phone?.streamBinding() ?? null, void 0, (sid, patch) => phoneCallLog.stream(sid, patch));
-server.on("upgrade", (req, socket, head) => {
-  void phoneRelay.upgrade(req, socket, head);
+server.on("upgrade", (req, socket, head2) => {
+  void phoneRelay.upgrade(req, socket, head2);
 });
 server.listen(PORT, BIND, () => {
   console.log(`ControlClaw agent listening on ${BIND}:${PORT}`);

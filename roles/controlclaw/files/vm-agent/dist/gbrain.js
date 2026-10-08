@@ -135,9 +135,9 @@ function isObject(input) {
 }
 function isDisjoint(...headers) {
   const parameters = /* @__PURE__ */ new Set();
-  for (const header2 of headers)
-    if (header2)
-      for (const parameter of Object.keys(header2)) {
+  for (const header3 of headers)
+    if (header3)
+      for (const parameter of Object.keys(header3)) {
         if (parameters.has(parameter))
           return false;
         parameters.add(parameter);
@@ -211,10 +211,10 @@ function validateB64(protectedHeader, extensions) {
   }
   return true;
 }
-function serializeJoseHeader(Err, header2) {
+function serializeJoseHeader(Err, header3) {
   let serialized, parsed;
   try {
-    serialized = JSON.stringify(header2), parsed = JSON.parse(serialized);
+    serialized = JSON.stringify(header3), parsed = JSON.parse(serialized);
   } catch (cause) {
     throw new Err("JOSE Header is not valid JSON", { cause });
   }
@@ -553,10 +553,10 @@ function encodeCompactUnencodedPayload(payload) {
   }
 }
 async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedProtected) {
-  const { protected: encodedProtected, header: header2, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
-  if (!isDisjoint(parsedProt, header2))
+  const { protected: encodedProtected, header: header3, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
+  if (!isDisjoint(parsedProt, header3))
     throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
-  const joseHeader = { ...parsedProt, ...header2 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
+  const joseHeader = { ...parsedProt, ...header3 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
   if (typeof alg != "string" || !alg)
     throw new JWSInvalid('JWS "alg" (Algorithm) Header Parameter missing or invalid');
   if (shared[0] && !shared[0].has(alg))
@@ -579,7 +579,7 @@ async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedP
   if (!verified)
     throw new JWSSignatureVerificationFailed();
   const result = { payload: typeof signingPayload == "string" ? decodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload };
-  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header2 !== void 0 && (result.unprotectedHeader = header2), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
+  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header3 !== void 0 && (result.unprotectedHeader = header3), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
 }
 async function verifyCompact(jws, shared, key) {
   if (jws instanceof Uint8Array && (jws = decoder.decode(jws)), typeof jws != "string")
@@ -933,6 +933,10 @@ async function verifySaasToken(token) {
 var CONTROL_PLANE_ROUTES = {
   openclaw: /* @__PURE__ */ new Set([
     "GET /health",
+    // The health check (docs/plans/health-check.md): states, numbers and reason codes only.
+    "GET /health/summary",
+    "POST /health/model",
+    "GET /health/patches",
     "GET /status",
     "POST /start",
     "POST /stop",
@@ -4943,10 +4947,10 @@ function frame(body) {
 async function makeEncryptor(dataKeyB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const { state, header: header2 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
+  const { state, header: header3 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
   let closed = false;
   return {
-    header: toB64(header2),
+    header: toB64(header3),
     push(plain) {
       if (closed) throw new Error("the archive stream is already closed");
       if (plain.length > CHUNK_BYTES) throw new Error(`chunk of ${plain.length} bytes is over the ${CHUNK_BYTES} limit`);
@@ -4973,20 +4977,20 @@ var TRUNCATED = "This archive ended early \u2014 it is incomplete. Nothing was r
 async function makeDecryptor(dataKeyB64, headerB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const header2 = fromB64(headerB64);
-  if (header2.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
+  const header3 = fromB64(headerB64);
+  if (header3.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
   let state;
   try {
-    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header2, fromB64(dataKeyB64));
+    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header3, fromB64(dataKeyB64));
   } catch {
     throw new Error(WRONG_KEY);
   }
   let buffer = new Uint8Array(0);
   let sawFinal = false;
   const take = (n2) => {
-    const head = buffer.subarray(0, n2);
+    const head2 = buffer.subarray(0, n2);
     buffer = buffer.subarray(n2);
-    return head;
+    return head2;
   };
   return {
     push(cipher) {
@@ -5082,10 +5086,10 @@ function padding(size) {
 }
 function longLink(value, typeflag) {
   const bytes = new TextEncoder().encode(value);
-  const head = header({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
+  const head2 = header({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
   const body = new Uint8Array(bytes.length + 1);
   body.set(bytes);
-  return [head, body, padding(body.length)].filter((b2) => b2.length > 0);
+  return [head2, body, padding(body.length)].filter((b2) => b2.length > 0);
 }
 function tarHeader(entry) {
   const name = new TextEncoder().encode(entry.path);
@@ -5138,20 +5142,20 @@ var TarReader = class {
     const out = [];
     for (; ; ) {
       if (this.ended || this.buffer.length < BLOCK) return out;
-      const head = this.buffer.subarray(0, BLOCK);
-      if (head.every((b2) => b2 === 0)) {
+      const head2 = this.buffer.subarray(0, BLOCK);
+      if (head2.every((b2) => b2 === 0)) {
         this.buffer = this.buffer.subarray(BLOCK);
         if (++this.zeroBlocks >= 2) this.ended = true;
         continue;
       }
       this.zeroBlocks = 0;
-      if (readString(head, 257, 6).replace(/\0.*$/, "") !== "ustar") throw new Error("this archive is not a tar file we wrote");
-      const size = readOctal(head, 124, 12);
+      if (readString(head2, 257, 6).replace(/\0.*$/, "") !== "ustar") throw new Error("this archive is not a tar file we wrote");
+      const size = readOctal(head2, 124, 12);
       const bodyBlocks = Math.ceil(size / BLOCK) * BLOCK;
       if (this.buffer.length < BLOCK + bodyBlocks) return out;
       const body = this.buffer.subarray(BLOCK, BLOCK + size);
-      const flag = readString(head, 156, 1);
-      const path = this.longName ?? readString(head, 0, 100);
+      const flag = readString(head2, 156, 1);
+      const path = this.longName ?? readString(head2, 0, 100);
       this.buffer = this.buffer.subarray(BLOCK + bodyBlocks);
       if (flag === "L" || flag === "K") {
         const value = new TextDecoder().decode(body).replace(/\0+$/, "");
@@ -5168,9 +5172,9 @@ var TarReader = class {
         path,
         type,
         size: type === "file" ? size : 0,
-        mode: readOctal(head, 100, 8) & 4095,
-        mtime: readOctal(head, 136, 12),
-        ...type === "link" ? { target: longTarget ?? readString(head, 157, 100) } : {},
+        mode: readOctal(head2, 100, 8) & 4095,
+        mtime: readOctal(head2, 136, 12),
+        ...type === "link" ? { target: longTarget ?? readString(head2, 157, 100) } : {},
         // A copy, not a view: the buffer it points into is reused as more chunks arrive.
         body: type === "file" ? new Uint8Array(body) : new Uint8Array(0)
       });
@@ -5760,13 +5764,13 @@ function parseRestore(body, kinds = AGENT_KINDS) {
   if (typeof c2 === "string") return c2;
   const downloadUrl = url(body, "downloadUrl");
   if (!downloadUrl) return "downloadUrl must be an https URL";
-  const header2 = str(body, "header");
+  const header3 = str(body, "header");
   const hash = str(body, "manifestHash");
-  if (!header2 || header2.length !== 32 || !B64.test(header2)) return "header is required";
+  if (!header3 || header3.length !== 32 || !B64.test(header3)) return "header is required";
   if (!hash || !HEX64.test(hash)) return "manifestHash is required";
   const source = str(body, "sourceVmId");
   if (source !== null && !ID.test(source)) return "sourceVmId must be a vm id";
-  return { ...c2, downloadUrl, header: header2, manifestHash: hash, ...source ? { sourceVmId: source } : {} };
+  return { ...c2, downloadUrl, header: header3, manifestHash: hash, ...source ? { sourceVmId: source } : {} };
 }
 async function handleBackup(req, res, url2, service, kinds = AGENT_KINDS) {
   const write = req.method === "POST";
@@ -6090,8 +6094,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "9ffacfc" : "unknown",
-  builtAt: true ? "2026-10-08T10:31:38+01:00" : "unknown"
+  commit: true ? "7a5549b" : "unknown",
+  builtAt: true ? "2026-10-08T15:29:53+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6101,6 +6105,7 @@ var OPENCLAW_CANDIDATES = [
 ];
 var OPENCLAW_BIN = "/usr/bin/openclaw";
 var MAX_FIELD = 64;
+var SEMVER = /^\d+\.\d+\.\d+$/;
 function clip(value) {
   return typeof value === "string" && value.length > 0 ? value.slice(0, MAX_FIELD) : null;
 }
@@ -6119,7 +6124,8 @@ function readRelease(path = RELEASE_PATH) {
   const commitDate = clip(raw.commitDate);
   const installedAt = clip(raw.installedAt);
   if (!commit || !commitDate || !installedAt) return null;
-  return { commit, commitDate, installedAt };
+  const version = clip(raw.version);
+  return version && SEMVER.test(version) ? { commit, commitDate, installedAt, version } : { commit, commitDate, installedAt };
 }
 function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BIN) {
   for (const path of candidates) {
@@ -6252,6 +6258,9 @@ function handleStop(res) {
 function handleRestart(res) {
   handleAction(res, "restart");
 }
+function runState(unit, connected) {
+  return openClawState(unit, unit === "active" && connected !== false ? 0 : recentAutoRestarts(), connected);
+}
 function handleStatus(res, drive, gateway) {
   const status = runIsActive();
   const summary = runStatusSummary();
@@ -6261,7 +6270,7 @@ function handleStatus(res, drive, gateway) {
     action: "status",
     active: status === "active",
     status,
-    state: openClawState(status, status === "active" && connected !== false ? 0 : recentAutoRestarts(), connected),
+    state: runState(status, connected),
     ...connected !== null ? { gateway: connected } : {},
     message: summary,
     software: boxSoftware(),
@@ -6901,10 +6910,10 @@ function nodeRequestFacts(req, methodOverride) {
     credentialed: one(headers.cookie) !== null
   };
 }
-function cookieValues(header2, name) {
-  if (!header2) return [];
+function cookieValues(header3, name) {
+  if (!header3) return [];
   const out = [];
-  for (const part of header2.split(";")) {
+  for (const part of header3.split(";")) {
     const trimmed = part.trim();
     const eq = trimmed.indexOf("=");
     if (eq < 1) continue;
@@ -6913,8 +6922,8 @@ function cookieValues(header2, name) {
   }
   return out;
 }
-function readUniqueCookie(header2, name) {
-  const values = cookieValues(header2, name);
+function readUniqueCookie(header3, name) {
+  const values = cookieValues(header3, name);
   if (values.length === 1) return { value: values[0] ?? null, duplicated: false };
   return { value: null, duplicated: values.length > 1 };
 }
@@ -6993,8 +7002,8 @@ async function verifyViewSession(cookieHeader, vmId) {
     return false;
   }
 }
-function uniqueCookie(header2, name) {
-  const reading = readUniqueCookie(header2, name);
+function uniqueCookie(header3, name) {
+  const reading = readUniqueCookie(header3, name);
   if (reading.duplicated) console.warn(`[session] ${name} arrived more than once \u2014 ignoring it (cookie tossing)`);
   return reading.value;
 }
@@ -7011,6 +7020,66 @@ function consumeJti(jti, expSeconds) {
 import { readFile as readFile4 } from "fs/promises";
 import { basename, join as join7 } from "path";
 import { fileURLToPath } from "url";
+
+// src/routes/cc-shell.ts
+var navState = () => ({ meetings: false, phone: false, whatsapp: false });
+var ICONS = {
+  meetings: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  phone: '<path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>',
+  files: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
+  whatsapp: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
+};
+function icon(name, cls) {
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+function escapeHtml(s2) {
+  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
+}
+function inlineJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+function agentNameOf(hostname) {
+  return hostname ? hostname.split(".")[0] : "your agent";
+}
+function consoleAgentUrl(consoleOrigin2, vmId) {
+  const origin = consoleOrigin2 ?? "https://controlclaw.com";
+  return vmId ? `${origin}/dashboard/agents/${encodeURIComponent(vmId)}` : `${origin}/dashboard/agents`;
+}
+var NAV = [
+  { page: "meetings", label: "Meetings", href: "/__cc/meetings", when: "meetings" },
+  { page: "phone", label: "Calls", href: "/__cc/phone", when: "phone" },
+  { page: "whatsapp", label: "WhatsApp", href: "/__cc/whatsapp", when: "whatsapp" },
+  { page: "files", label: "Files", href: "/__cc/files" },
+  { page: "logs", label: "Logs", href: "/__cc/logs" },
+  { page: "browser", label: "Browser", href: "/__cc/browser" }
+];
+function shellNav(active, state = navState()) {
+  return NAV.filter((item) => !item.when || state[item.when] || item.page === active).map(({ page, label, href }) => ({ page, label, href }));
+}
+function head(title, extraHead) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title><script src="/__cc/shell.js"></script><link rel="stylesheet" href="/__cc/files-ui/tw.css">${extraHead}</head>`;
+}
+function header2(ctx) {
+  const agent = escapeHtml(agentNameOf(ctx.hostname));
+  return `<header class="flex h-full min-w-0 items-center gap-3 px-4 md:px-5"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">${icon("mark", "h-[18px] w-[18px]")}</span><div class="min-w-0 leading-tight"><div class="truncate text-[14px] font-semibold text-ink">${agent}</div><div class="truncate font-mono text-[11.5px] text-ink-2">${escapeHtml(ctx.hostname ?? "")}</div></div><span class="flex-1"></span><a href="${escapeHtml(ctx.consoleUrl)}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-[13px] font-medium text-ink shadow-sm hover:bg-bg">${icon("back", "h-4 w-4 text-ink-2")}<span class="hidden sm:inline">Back to console</span><span class="sm:hidden">Console</span></a></header>`;
+}
+function shellPage(opts) {
+  const links = shellNav(opts.active, opts.nav).map((item) => {
+    const on = item.page === opts.active;
+    return `<a href="${item.href}"${on ? ' aria-current="page"' : ""} class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] ${on ? "bg-surface font-semibold text-ink shadow-sm" : "text-ink-2 hover:bg-bg"}">${icon(item.page, `h-4 w-4 shrink-0 ${on ? "text-brand" : "text-ink-2"}`)}<span>${item.label}</span></a>`;
+  }).join("");
+  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header2(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
+}
+function shellBarePage(opts) {
+  return head(opts.title, opts.css ? `<style>${opts.css}</style>` : "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_1fr]">${header2(opts.ctx)}<div class="grid place-items-center px-4 py-8"><main class="w-full max-w-[26rem] rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8">${opts.body}</main></div></div>${opts.script ? `<script>${opts.script}</script>` : ""}</body></html>`;
+}
+var SHELL_JS = `(function(){var m=window.matchMedia("(prefers-color-scheme: dark)");var a=function(){document.documentElement.classList.toggle("dark",m.matches)};a();m.addEventListener("change",a)})();`;
+
+// src/routes/files-page.ts
 function uiDir() {
   return process.env.FILES_UI_DIR ?? fileURLToPath(new URL("./files-ui/", import.meta.url));
 }
@@ -7042,9 +7111,6 @@ async function serveFilesAsset(res, name) {
   });
   res.end(body);
 }
-function inlineJson(value) {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
-}
 async function serveFilesPage(req, res, ctx) {
   const headers = {
     "Content-Type": "text/html; charset=utf-8",
@@ -7060,18 +7126,21 @@ async function serveFilesPage(req, res, ctx) {
     res.end(ctx.deniedPage);
     return;
   }
-  const agentName = ctx.hostname ? ctx.hostname.split(".")[0] : "your agent";
-  const data = { canWrite: session.canWrite, agentName, consoleUrl: ctx.consoleUrl };
+  const agentName = agentNameOf(ctx.hostname);
+  const data = { canWrite: session.canWrite, agentName, consoleUrl: ctx.shell.consoleUrl };
   res.writeHead(200, headers);
   res.end(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName.replace(/[&<>"']/g, "")} \xB7 files</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"><link rel="stylesheet" href="/__cc/files-ui/app.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-files" type="application/json">${inlineJson(data)}</script><script type="module" src="/__cc/files-ui/app.js"></script></body></html>`
+    shellPage({
+      ctx: ctx.shell,
+      title: `${agentName} \xB7 files`,
+      active: "files",
+      head: `<link rel="stylesheet" href="/__cc/files-ui/app.css">`,
+      body: `<div id="root"></div><script id="cc-files" type="application/json">${inlineJson(data)}</script><script type="module" src="/__cc/files-ui/app.js"></script>`
+    })
   );
 }
 
 // src/routes/logs-page.ts
-function inlineJson2(value) {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
-}
 var PAGE_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
   "Cache-Control": "no-store",
@@ -7084,10 +7153,15 @@ async function serveLogsPage(req, res, ctx) {
     res.end(ctx.deniedPage);
     return;
   }
-  const agentName = ctx.hostname ? ctx.hostname.split(".")[0] : "your agent";
+  const agentName = agentNameOf(ctx.hostname);
   res.writeHead(200, PAGE_HEADERS);
   res.end(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${agentName.replace(/[&<>"']/g, "")} \xB7 logs</title><link rel="stylesheet" href="/__cc/files-ui/tw.css"></head><body class="bg-bg text-ink antialiased"><div id="root"></div><script id="cc-logs" type="application/json">${inlineJson2({ agentName })}</script><script type="module" src="/__cc/files-ui/logs.js"></script></body></html>`
+    shellPage({
+      ctx: ctx.shell,
+      title: `${agentName} \xB7 logs`,
+      active: "logs",
+      body: `<div id="root"></div><script id="cc-logs" type="application/json">${inlineJson({ agentName })}</script><script type="module" src="/__cc/files-ui/logs.js"></script>`
+    })
   );
 }
 async function serveLogsData(req, res, pathname, ctx) {
@@ -7190,54 +7264,64 @@ function json(res, status, body, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 var PAGE_CSS = `
-:root{--bg:#f7f6fb;--card:#fff;--ink:#17162b;--ink2:#6b6a80;--line:#e6e4f0;--brand:#6d4aff;--brand-soft:#efeaff;--ok:#1a9c5b;--bad:#d64545}
-@media(prefers-color-scheme:dark){:root{--bg:#0f0e17;--card:#17162b;--ink:#f3f2fa;--ink2:#a09fb5;--line:#2a2940;--brand:#9b82ff;--brand-soft:#2a2350;--ok:#3ccf82;--bad:#ff7070}}
-*{box-sizing:border-box}html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--ink);font:15px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:grid;place-items:center;padding:1.5rem}
-.card{width:100%;max-width:26rem;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:2rem;box-shadow:0 20px 50px -30px rgba(23,22,43,.35)}
-.mark{width:44px;height:44px;border-radius:12px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;margin-bottom:1.25rem}
-h1{font-size:1.2rem;margin:0 0 .25rem;letter-spacing:-.01em}
-.host{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink2);margin:0 0 1.5rem;word-break:break-all}
+h1{font-size:1.2rem;font-weight:600;margin:0 0 .25rem;letter-spacing:-.01em}
+.host{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink-2);margin:0 0 1.5rem;word-break:break-all}
 .steps{list-style:none;margin:0;padding:0;display:grid;gap:.6rem}
-.steps li{display:flex;align-items:center;gap:.7rem;color:var(--ink2);transition:color .2s}
+.steps li{display:flex;align-items:center;gap:.7rem;color:var(--ink-2);transition:color .2s}
 .steps li.active{color:var(--ink)}.steps li.done{color:var(--ink)}
 .dot{width:20px;height:20px;border-radius:50%;border:2px solid var(--line);display:grid;place-items:center;flex:none;transition:all .2s}
 .active .dot{border-color:var(--brand);border-top-color:transparent;animation:spin .8s linear infinite}
-.done .dot{border-color:var(--ok);background:var(--ok)}
+.done .dot{border-color:var(--allow);background:var(--allow)}
 .done .dot::after{content:"";width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
 @keyframes spin{to{transform:rotate(360deg)}}
-.err{display:none;margin-top:1.25rem;padding:.9rem 1rem;border-radius:12px;background:color-mix(in srgb,var(--bad) 10%,transparent);color:var(--bad);font-size:14px}
+.err{display:none;margin-top:1.25rem;padding:.9rem 1rem;border-radius:12px;background:var(--block-soft);color:var(--block-fg);font-size:14px}
 .err.show{display:block}
 a.btn{display:inline-block;margin-top:1.25rem;padding:.55rem .9rem;border-radius:10px;background:var(--brand);color:#fff;text-decoration:none;font-weight:600;font-size:14px}
-a.btn.alt{margin-left:.5rem;background:transparent;color:var(--brand);border:1px solid var(--line)}
-p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink2)}
-.foot{margin-top:1.5rem;font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:.4rem}
-p.lead{margin:0 0 1rem;color:var(--ink2)}
+a.btn.alt{margin-left:.5rem;background:transparent;color:var(--brand-ink);border:1px solid var(--line)}
+p.note{margin:1.25rem 0 0;font-size:13px;color:var(--ink-2)}
+.foot{margin-top:1.5rem;font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:.4rem}
+.foot::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--brand)}
+p.lead{margin:0 0 1rem;color:var(--ink-2)}
 input.code{width:100%;font:600 1.6rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.3em;text-align:center;padding:.7rem;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--ink)}
 input.code:focus{outline:2px solid var(--brand);outline-offset:1px}
 button.btn{margin-top:1rem;width:100%;padding:.7rem;border:0;border-radius:10px;background:var(--brand);color:#fff;font-weight:600;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:.4rem}
 button.btn:disabled{opacity:.5;cursor:not-allowed}
 [hidden]{display:none!important}
-.otp{--otp-line:#e7e4dc;--otp-ring:oklch(.52 .18 265);--otp-ink:#0d1117;--otp-bg:transparent;display:flex;align-items:center;justify-content:center;gap:8px}
-@media(prefers-color-scheme:dark){.otp{--otp-line:oklch(1 0 0/12%);--otp-ring:oklch(.7 .17 265);--otp-ink:oklch(.98 .005 265);--otp-bg:oklch(1 0 0/3.6%)}}
+.otp{display:flex;align-items:center;justify-content:center;gap:8px}
 .otp .g{display:flex;align-items:center}
-.otp input{position:relative;width:36px;height:36px;margin:0;padding:0;border:1px solid var(--otp-line);border-left-width:0;border-radius:0;background:var(--otp-bg);color:var(--otp-ink);font-family:inherit;font-size:14px;text-align:center;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);outline:none;transition:border-color .15s,box-shadow .15s}
+.otp input{position:relative;width:36px;height:36px;margin:0;padding:0;border:1px solid var(--line);border-left-width:0;border-radius:0;background:transparent;color:var(--ink);font-family:inherit;font-size:14px;text-align:center;box-shadow:0 1px 2px 0 rgb(0 0 0/.05);outline:none;transition:border-color .15s,box-shadow .15s}
 .otp .g input:first-child{border-left-width:1px;border-radius:8px 0 0 8px}
 .otp .g input:last-child{border-radius:0 8px 8px 0}
-.otp input:focus{z-index:1;border-color:var(--otp-ring);box-shadow:0 0 0 3px color-mix(in srgb,var(--otp-ring) 50%,transparent)}
-.otp .sep{display:flex;color:var(--otp-ink)}
+.otp input:focus{z-index:1;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--brand) 50%,transparent)}
+.otp .sep{display:flex;color:var(--ink)}
 .otp.busy{opacity:.5}.otp.busy input{cursor:not-allowed}
-.line{display:flex;align-items:center;justify-content:center;gap:.4rem;margin:.75rem 0 0;font-size:12.5px;color:var(--ink2)}
+.line{display:flex;align-items:center;justify-content:center;gap:.4rem;margin:.75rem 0 0;font-size:12.5px;color:var(--ink-2)}
 .spin{width:14px;height:14px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;flex:none}
 `;
-var MARK_SVG = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>`;
-var CONSOLE_URL = "https://controlclaw.com/dashboard/agents";
+var consolePage = null;
+function setConsolePage(path) {
+  consolePage = path;
+}
+function shellContext() {
+  const origin = allowedOrigins().console;
+  return {
+    hostname: readKey("vm_hostname"),
+    consoleUrl: consolePage ? `${origin ?? "https://controlclaw.com"}${consolePage}` : consoleAgentUrl(origin, readKey("vm_id") ?? "")
+  };
+}
 function shell(title, body, script = "") {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title><style>${PAGE_CSS}</style></head><body><main class="card"><div class="mark">${MARK_SVG}</div>${body}<div class="foot"><span style="width:6px;height:6px;border-radius:50%;background:var(--brand)"></span>Secured by ControlClaw</div></main>${script ? `<script>${script}</script>` : ""}</body></html>`;
+  return shellBarePage({ ctx: shellContext(), title, body: `${body}<div class="foot">Secured by ControlClaw</div>`, css: PAGE_CSS, script });
 }
-function escapeHtml(s2) {
-  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
+function withSidebar(active, title, body, script = "") {
+  return shellPage({
+    ctx: shellContext(),
+    title,
+    active,
+    head: `<style>${PAGE_CSS}</style>`,
+    body: `<div class="mx-auto max-w-[34rem] px-4 py-8 md:px-9">${body}</div>${script ? `<script>${script}</script>` : ""}`
+  });
 }
+var consoleUrl = () => escapeHtml(shellContext().consoleUrl);
 function loginPage(hostname, steps = ["Pairing this browser with the agent", "Loading OpenClaw"]) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
   const host = hostname ? escapeHtml(hostname) : "";
@@ -7251,7 +7335,7 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
 </ol>
 <div class="err" id="err"></div>
 <p class="note" id="note" style="display:none"></p>
-<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>
+<a class="btn" id="back" href="${consoleUrl()}" style="display:none">Back to the console</a>
 <a class="btn alt" id="anyway" href="/" style="display:none">Continue anyway</a>`,
     `
 (async () => {
@@ -7282,41 +7366,35 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
 })();`
   );
 }
-var DENIED_PAGE = shell(
+var DENIED_PAGE = () => shell(
   "This agent is private",
   `<h1>This agent is private</h1>
 <p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Open again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_VIEW_PAGE = shell(
+var DENIED_VIEW_PAGE = () => shell(
   "This browser is private",
   `<h1>This browser is private</h1>
 <p class="note">Open it from your ControlClaw console. If you were watching a moment ago, the view has expired: press Screen again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_FILES_PAGE = shell(
+var DENIED_FILES_PAGE = () => shell(
   "These files are private",
   `<h1>These files are private</h1>
 <p class="note">Open them from your ControlClaw console. If you were signed in, your session has expired: click Files again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_WHATSAPP_PAGE = shell(
+var DENIED_WHATSAPP_PAGE = () => shell(
   "This code is private",
   `<h1>This code is private</h1>
 <p class="note">Only an owner or admin can link WhatsApp. Open it from the Channels page of your ControlClaw console.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
-var DENIED_PHONE_PAGE = shell(
-  "These calls are private",
-  `<h1>These calls are private</h1>
-<p class="note">Open Call history from the Phone page of your ControlClaw console. If you were signed in, your session has expired: open it again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
-);
-var DENIED_LOGS_PAGE = shell(
+var DENIED_LOGS_PAGE = () => shell(
   "This log is private",
   `<h1>This log is private</h1>
 <p class="note">Open it from your ControlClaw console. If you were signed in, your session has expired: click Logs again.</p>
-<a class="btn" href="${CONSOLE_URL}">Go to the console</a>`
+<a class="btn" href="${consoleUrl()}">Go to the console</a>`
 );
 function browserPage(hostname) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
@@ -7335,7 +7413,15 @@ function browserPage(hostname) {
   const fail = (msg) => { $('h').textContent = 'Could not open the browser'; for (let i = 1; i <= 2; i++) $('s' + i).className = ''; $('err').textContent = msg; $('err').className = 'err show'; };
   const t = new URLSearchParams(location.hash.slice(1)).get('t');
   history.replaceState(null, '', location.pathname);
-  if (!t) { fail('This page only works from the Screen button in your ControlClaw console.'); return; }
+  if (!t) {
+    // The sidebar's Browser link: no ticket, but a browser already signed in to this agent (or
+    // holding a live-view pass) may watch, which is what Caddy asks /__cc/verify-view for.
+    try {
+      const v = await fetch('/__cc/verify-view', { credentials: 'same-origin', cache: 'no-store' });
+      if (v.ok) { $('s1').className = 'done'; $('s2').className = 'active'; location.replace(${JSON.stringify(NOVNC_URL)}); return; }
+    } catch (e) { /* fall through to the message below */ }
+    fail('Press Screen on this agent in your ControlClaw console to open its browser.'); return;
+  }
   let d, ok;
   try {
     const r = await fetch('/__cc/view-session', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
@@ -7366,7 +7452,7 @@ function openPage(hostname) {
   <li id="s1" class="active"><span class="dot"></span>Checking this browser with your firewall</li>
 </ol>
 <div class="err" id="err"></div>
-<a class="btn" id="back" href="${CONSOLE_URL}" style="display:none">Back to the console</a>`,
+<a class="btn" id="back" href="${consoleUrl()}" style="display:none">Back to the console</a>`,
     `
 (async () => {
   const $ = (id) => document.getElementById(id);
@@ -7443,7 +7529,7 @@ function enrollPage(hostname, firewall) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
   const host = hostname ? escapeHtml(hostname) : "";
   if (!firewall) {
-    return shell("Could not open the agent", `<h1>Could not open the agent</h1><p class="host">${host}</p><p class="note">${escapeHtml(OPEN_ERRORS.no_firewall)}</p><a class="btn" href="${CONSOLE_URL}">Back to the console</a>`);
+    return shell("Could not open the agent", `<h1>Could not open the agent</h1><p class="host">${host}</p><p class="note">${escapeHtml(OPEN_ERRORS.no_firewall)}</p><a class="btn" href="${consoleUrl()}">Back to the console</a>`);
   }
   return shell(
     `Confirm this browser`,
@@ -7516,7 +7602,8 @@ var WHATSAPP_PAGE_HEADERS = { "Cache-Control": "no-store", "Referrer-Policy": "n
 function whatsappPage(hostname) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
   const host = hostname ? escapeHtml(hostname) : "";
-  return shell(
+  return withSidebar(
+    "whatsapp",
     "Link WhatsApp",
     `<h1 id="h">Link WhatsApp to ${agent}</h1><p class="host">${host}</p>
 <p class="lead" id="lead">On your phone, open WhatsApp, go to Linked devices, and scan this code.</p>
@@ -7563,7 +7650,7 @@ async function serveWhatsapp(req, res, pathname, vmId) {
     return;
   }
   if (!session || !session.canWrite) {
-    if (page) html(res, 401, DENIED_WHATSAPP_PAGE, WHATSAPP_PAGE_HEADERS);
+    if (page) html(res, 401, DENIED_WHATSAPP_PAGE(), WHATSAPP_PAGE_HEADERS);
     else json(res, 401, { error: "Only an owner or admin who opened this agent can see the WhatsApp code." }, WHATSAPP_PAGE_HEADERS);
     return;
   }
@@ -7636,6 +7723,15 @@ async function handleAccess(req, res, pathname, opts = {}) {
     json(res, 500, { error: "Box has no vm_id" });
     return;
   }
+  if (pathname === "/__cc/shell.js" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
+    res.end(SHELL_JS);
+    return;
+  }
+  if (pathname.startsWith("/__cc/files-ui/") && req.method === "GET") {
+    await serveFilesAsset(res, pathname.slice("/__cc/files-ui/".length));
+    return;
+  }
   if (opts.only && !opts.only.has(pathname)) {
     json(res, 404, { error: "Not found" });
     return;
@@ -7672,7 +7768,7 @@ async function handleAccess(req, res, pathname, opts = {}) {
       res.writeHead(200, { "Cache-Control": "no-store" });
       res.end();
     } else {
-      html(res, 401, DENIED_PAGE);
+      html(res, 401, DENIED_PAGE());
     }
     return;
   }
@@ -7766,12 +7862,12 @@ async function handleAccess(req, res, pathname, opts = {}) {
       res.writeHead(200, { "Cache-Control": "no-store" });
       res.end();
     } else {
-      html(res, 401, DENIED_VIEW_PAGE);
+      html(res, 401, DENIED_VIEW_PAGE());
     }
     return;
   }
   if (pathname === "/__cc/files" && req.method === "GET") {
-    await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), consoleUrl: CONSOLE_URL, deniedPage: DENIED_FILES_PAGE });
+    await serveFilesPage(req, res, { vmId, hostname: readKey("vm_hostname"), shell: shellContext(), deniedPage: DENIED_FILES_PAGE() });
     return;
   }
   if ((pathname === "/__cc/whatsapp" || pathname === "/__cc/whatsapp/qr") && req.method === "GET") {
@@ -7779,15 +7875,11 @@ async function handleAccess(req, res, pathname, opts = {}) {
     return;
   }
   if (pathname === "/__cc/logs" && req.method === "GET") {
-    await serveLogsPage(req, res, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
+    await serveLogsPage(req, res, { vmId, hostname: readKey("vm_hostname"), shell: shellContext(), deniedPage: DENIED_LOGS_PAGE(), boxOrigin: allowedOrigins().box });
     return;
   }
   if ((pathname === "/__cc/logs/snapshot" || pathname === "/__cc/logs/stream") && req.method === "GET") {
-    await serveLogsData(req, res, pathname, { vmId, hostname: readKey("vm_hostname"), deniedPage: DENIED_LOGS_PAGE, boxOrigin: allowedOrigins().box });
-    return;
-  }
-  if (pathname.startsWith("/__cc/files-ui/") && req.method === "GET") {
-    await serveFilesAsset(res, pathname.slice("/__cc/files-ui/".length));
+    await serveLogsData(req, res, pathname, { vmId, hostname: readKey("vm_hostname"), shell: shellContext(), deniedPage: DENIED_LOGS_PAGE(), boxOrigin: allowedOrigins().box });
     return;
   }
   if (pathname === "/__cc/logout" && req.method === "POST") {
@@ -8081,6 +8173,7 @@ var backup = new BackupService({
   }
 });
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
+setConsolePage("/dashboard/brain");
 var BRAIN_ACCESS_ROUTES = /* @__PURE__ */ new Set(["/__cc/open", "/__cc/open/begin", "/__cc/enroll", "/__cc/login", "/__cc/session", "/__cc/verify", "/__cc/logout"]);
 var server = createServer2(async (req, res) => {
   const url2 = new URL(req.url ?? "/", `http://localhost:${PORT}`);

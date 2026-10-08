@@ -590,26 +590,26 @@ var require_permessage_deflate = __commonJS({
             value = value[0];
             if (key === "client_max_window_bits") {
               if (value !== true) {
-                const num2 = +value;
-                if (!Number.isInteger(num2) || num2 < 8 || num2 > 15) {
+                const num3 = +value;
+                if (!Number.isInteger(num3) || num3 < 8 || num3 > 15) {
                   throw new TypeError(
                     `Invalid value for parameter "${key}": ${value}`
                   );
                 }
-                value = num2;
+                value = num3;
               } else if (!this._isServer) {
                 throw new TypeError(
                   `Invalid value for parameter "${key}": ${value}`
                 );
               }
             } else if (key === "server_max_window_bits") {
-              const num2 = +value;
-              if (!Number.isInteger(num2) || num2 < 8 || num2 > 15) {
+              const num3 = +value;
+              if (!Number.isInteger(num3) || num3 < 8 || num3 > 15) {
                 throw new TypeError(
                   `Invalid value for parameter "${key}": ${value}`
                 );
               }
-              value = num2;
+              value = num3;
             } else if (key === "client_no_context_takeover" || key === "server_no_context_takeover") {
               if (value !== true) {
                 throw new TypeError(
@@ -1372,8 +1372,8 @@ var require_receiver = __commonJS({
           return;
         }
         const buf = this.consume(8);
-        const num2 = buf.readUInt32BE(0);
-        if (num2 > Math.pow(2, 53 - 32) - 1) {
+        const num3 = buf.readUInt32BE(0);
+        if (num3 > Math.pow(2, 53 - 32) - 1) {
           const error62 = this.createError(
             RangeError,
             "Unsupported WebSocket frame: payload length > 2^53 - 1",
@@ -1384,7 +1384,7 @@ var require_receiver = __commonJS({
           cb(error62);
           return;
         }
-        this._payloadLength = num2 * Math.pow(2, 32) + buf.readUInt32BE(4);
+        this._payloadLength = num3 * Math.pow(2, 32) + buf.readUInt32BE(4);
         this.haveLength(cb);
       }
       /**
@@ -5540,9 +5540,9 @@ var COMMON_WORDS = /* @__PURE__ */ new Set([
   "guys",
   "team"
 ]);
-function wakeWordProblem(word) {
-  if (typeof word !== "string") return "Enter a name";
-  const w2 = word.trim().replace(/\s+/g, " ");
+function wakeWordProblem(word2) {
+  if (typeof word2 !== "string") return "Enter a name";
+  const w2 = word2.trim().replace(/\s+/g, " ");
   if (w2.length < 3 || w2.length > 32) return "Use 3 to 32 characters";
   if (!/^[\p{L}\p{N}][\p{L}\p{N} '’-]*$/u.test(w2)) return "Use letters, numbers, spaces, hyphens or apostrophes";
   if ((w2.match(new RegExp("\\p{L}", "gu")) ?? []).length < 3) return "Use at least 3 letters";
@@ -6341,8 +6341,8 @@ function defineLazy(object3, key, getter) {
     configurable: true
   });
 }
-function objectClone(obj) {
-  return Object.create(Object.getPrototypeOf(obj), Object.getOwnPropertyDescriptors(obj));
+function objectClone(obj2) {
+  return Object.create(Object.getPrototypeOf(obj2), Object.getOwnPropertyDescriptors(obj2));
 }
 function assignProp(target, prop, value) {
   Object.defineProperty(target, prop, {
@@ -6413,10 +6413,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path) {
+function getElementAtPath(obj2, path) {
   if (!path)
-    return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+    return obj2;
+  return path.reduce((acc, key) => acc?.[key], obj2);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -6840,9 +6840,9 @@ function parsedType(data) {
       if (Array.isArray(data)) {
         return "array";
       }
-      const obj = data;
-      if (obj && Object.getPrototypeOf(obj) !== Object.prototype && "constructor" in obj && obj.constructor) {
-        return obj.constructor.name;
+      const obj2 = data;
+      if (obj2 && Object.getPrototypeOf(obj2) !== Object.prototype && "constructor" in obj2 && obj2.constructor) {
+        return obj2.constructor.name;
       }
     }
   }
@@ -6860,8 +6860,8 @@ function issue(...args) {
   }
   return { ...iss };
 }
-function cleanEnum(obj) {
-  return Object.entries(obj).filter(([k2, _2]) => {
+function cleanEnum(obj2) {
+  return Object.entries(obj2).filter(([k2, _2]) => {
     return Number.isNaN(Number.parseInt(k2, 10));
   }).map((el) => el[1]);
 }
@@ -7186,15 +7186,15 @@ var $ZodError = $constructor("$ZodError", initializer);
 var $ZodRealError = $constructor("$ZodError", initializer, void 0, {
   Parent: Error
 });
-function node(obj, key, make) {
-  if (!Object.prototype.hasOwnProperty.call(obj, key)) {
+function node(obj2, key, make) {
+  if (!Object.prototype.hasOwnProperty.call(obj2, key)) {
     if (key === "__proto__") {
-      Object.defineProperty(obj, key, { value: make(), writable: true, enumerable: true, configurable: true });
+      Object.defineProperty(obj2, key, { value: make(), writable: true, enumerable: true, configurable: true });
     } else {
-      obj[key] = make();
+      obj2[key] = make();
     }
   }
-  return obj[key];
+  return obj2[key];
 }
 function flattenError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = {};
@@ -13824,12 +13824,12 @@ function hu_default() {
 function getArmenianPlural(count, one, many) {
   return Math.abs(count) === 1 ? one : many;
 }
-function withDefiniteArticle(word) {
-  if (!word)
+function withDefiniteArticle(word2) {
+  if (!word2)
     return "";
   const vowels = ["\u0561", "\u0565", "\u0568", "\u056B", "\u0578", "\u0578\u0582", "\u0585"];
-  const lastChar = word[word.length - 1];
-  return word + (vowels.includes(lastChar) ? "\u0576" : "\u0568");
+  const lastChar = word2[word2.length - 1];
+  return word2 + (vowels.includes(lastChar) ? "\u0576" : "\u0568");
 }
 var error24 = () => {
   const Sizable = {
@@ -30660,30 +30660,30 @@ function createBLAKE2b(bits = 512, key = null) {
       wasm.writeMemory(keyBuffer);
     }
     wasm.init(initParam);
-    const obj = {
+    const obj2 = {
       init: initParam > 512 ? () => {
         wasm.writeMemory(keyBuffer);
         wasm.init(initParam);
-        return obj;
+        return obj2;
       } : () => {
         wasm.init(initParam);
-        return obj;
+        return obj2;
       },
       update: (data) => {
         wasm.update(data);
-        return obj;
+        return obj2;
       },
       // biome-ignore lint/suspicious/noExplicitAny: Conflict with IHasher type
       digest: (outputType) => wasm.digest(outputType),
       save: () => wasm.save(),
       load: (data) => {
         wasm.load(data);
-        return obj;
+        return obj2;
       },
       blockSize: 128,
       digestSize: outputSize
     };
-    return obj;
+    return obj2;
   });
 }
 function encodeResult(salt, options, res) {
@@ -32660,6 +32660,7 @@ function purposeForPath(path) {
   if (path.startsWith("/access/")) return "access";
   if (path.startsWith("/meetings/")) return "meetings";
   if (path.startsWith("/gbrain/")) return "gbrain";
+  if (path.startsWith("/health/")) return "health";
   return "channels";
 }
 function makeAgentTokenSigner(keysDir, boxId) {
@@ -40345,6 +40346,124 @@ var KillFirewall = class {
   }
 };
 
+// src/health.ts
+var HEALTH_REACH_MS = 6e4;
+var PROBE_TIMEOUT_MS = 8e3;
+function causeCode(err) {
+  let e = err;
+  for (let i2 = 0; i2 < 4 && e; i2++) {
+    const code = e.code;
+    if (typeof code === "string") return code;
+    e = e.cause;
+  }
+  return "";
+}
+function statusOf(err) {
+  const m2 = err instanceof Error ? /^agent (\d{3}):/.exec(err.message) : null;
+  if (m2) return Number(m2[1]);
+  if (err instanceof Error && err.message.startsWith("The agent is not running")) return 503;
+  return null;
+}
+function agentAnswered(err) {
+  const s2 = statusOf(err);
+  return s2 !== null && s2 >= 400 && s2 < 500;
+}
+function reachErrorOf(err) {
+  if (isAgentTimeout(err)) return "timeout";
+  const s2 = statusOf(err);
+  if (s2 !== null && s2 >= 500) return "service_down";
+  const code = causeCode(err);
+  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EHOSTUNREACH" || code === "ENETUNREACH") return "refused";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") return "dns";
+  if (code.startsWith("ERR_TLS") || code.includes("CERT") || code === "DEPTH_ZERO_SELF_SIGNED_CERT") return "tls";
+  if (code === "UND_ERR_CONNECT_TIMEOUT" || code === "ETIMEDOUT") return "timeout";
+  return "error";
+}
+var num = (v2) => typeof v2 === "number" && Number.isFinite(v2) ? v2 : null;
+var bool = (v2) => typeof v2 === "boolean" ? v2 : null;
+var word = (v2) => typeof v2 === "string" && /^[a-z_]{1,32}$/.test(v2) ? v2 : null;
+var obj = (v2) => v2 && typeof v2 === "object" ? v2 : null;
+function probeOf(v2) {
+  const p2 = obj(v2);
+  return p2 ? { ok: p2.ok === true, ms: num(p2.ms), reason: word(p2.reason) } : null;
+}
+function cleanSummary(raw) {
+  const oc = obj(raw.openclaw), disk = obj(raw.disk), mem = obj(raw.memory), clock = obj(raw.clock);
+  return {
+    now: num(raw.now),
+    openclaw: oc ? { state: word(oc.state), gateway: bool(oc.gateway) } : null,
+    disk: disk ? { usedPct: num(disk.usedPct), freeBytes: num(disk.freeBytes) } : null,
+    memory: mem ? { usedPct: num(mem.usedPct), totalBytes: num(mem.totalBytes) } : null,
+    load1: num(raw.load1),
+    cpus: num(raw.cpus),
+    clock: clock ? { ntpSynced: bool(clock.ntpSynced) } : null,
+    dns: probeOf(raw.dns),
+    egress: probeOf(raw.egress),
+    rebootRequired: bool(raw.rebootRequired)
+  };
+}
+var HealthFirewall = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+  }
+  reach = /* @__PURE__ */ new Map();
+  now;
+  async probe(target) {
+    const start = this.now();
+    try {
+      const raw = await this.opts.agent.get(target, "/health/summary", { timeoutMs: PROBE_TIMEOUT_MS });
+      return { reachable: true, ms: this.now() - start, error: null, outdated: false, summary: cleanSummary(raw) };
+    } catch (err) {
+      const ms = this.now() - start;
+      if (agentAnswered(err)) return { reachable: true, ms, error: null, outdated: true, summary: null };
+      return { reachable: false, ms, error: reachErrorOf(err), outdated: false, summary: null };
+    }
+  }
+  record(vmId, r2) {
+    const prev = this.reach.get(vmId);
+    const now2 = this.now();
+    this.reach.set(vmId, {
+      vm_id: vmId,
+      ok: r2.reachable,
+      at: now2,
+      last_ok_at: r2.reachable ? now2 : prev?.last_ok_at ?? null,
+      down_since: r2.reachable ? null : prev && !prev.ok ? prev.down_since : now2,
+      error: r2.error,
+      ms: r2.ms
+    });
+  }
+  /** Check every agent once. Run every `HEALTH_REACH_MS`. */
+  async tick() {
+    const agents = this.opts.identities().filter((i2) => i2.hostname);
+    const live = new Set(agents.map((a2) => String(a2.vm_id)));
+    for (const id of this.reach.keys()) if (!live.has(id)) this.reach.delete(id);
+    await Promise.all(
+      agents.map(async (a2) => {
+        const vmId = String(a2.vm_id);
+        const r2 = await this.probe({ vmId, hostname: a2.hostname });
+        this.record(vmId, r2);
+      })
+    );
+  }
+  /** For the heartbeat. Empty until the first tick has run. */
+  summary() {
+    return [...this.reach.values()];
+  }
+  handlers() {
+    return {
+      "health.probe": async (payload) => {
+        const vmId = typeof payload.vmId === "string" ? payload.vmId : "";
+        const agent = this.opts.identities().find((i2) => String(i2.vm_id) === vmId && i2.hostname);
+        if (!agent) return { ok: false, status: "failed", message: "This firewall does not know that agent.", data: { vmId, known: false } };
+        const r2 = await this.probe({ vmId, hostname: agent.hostname });
+        this.record(vmId, r2);
+        return { ok: true, status: "done", data: { vmId, known: true, ...r2 } };
+      }
+    };
+  }
+};
+
 // src/access.ts
 import { createHash as createHash8, randomBytes as randomBytes14, timingSafeEqual as timingSafeEqual5 } from "crypto";
 
@@ -41369,9 +41488,9 @@ var DoctorFirewall = class {
     let recoveryAllowed = false;
     if (this.opts.agents().length === 1 && this.opts.recovery?.publicKey()) {
       try {
-        await this.opts.agent.get(target, "/health", { timeoutMs: 5e3 });
-      } catch {
-        recoveryAllowed = true;
+        await this.opts.agent.get(target, "/health/summary", { timeoutMs: 5e3 });
+      } catch (err) {
+        recoveryAllowed = !agentAnswered(err);
       }
     }
     if (!routes.length && !recoveryAllowed) return { ok: false, status: "failed", message: `${noRecipients(void 0).message} Doctor has no first-use shortcut.`, data: { ...data, noRecipients: true } };
@@ -42891,7 +43010,7 @@ var COUNTED_IDS_KEPT = 2e4;
 function str11(v2) {
   return typeof v2 === "string" && v2.length > 0 ? v2 : null;
 }
-function num(v2) {
+function num2(v2) {
   return typeof v2 === "number" && Number.isFinite(v2) ? v2 : null;
 }
 function isKind6(v2) {
@@ -42956,7 +43075,7 @@ function parseProposal9(payload) {
   const changeId = str11(payload.changeId);
   if (!changeId || !isKind6(payload.kind)) throw new Error("malformed exit.propose payload");
   const kind = payload.kind;
-  const port = num(payload.port);
+  const port = num2(payload.port);
   const provider = str11(payload.provider) ?? "custom";
   if (kind === "add" || kind === "replace") {
     if (!str11(payload.host) || !port || !isScheme(payload.scheme)) throw new Error("malformed exit.propose payload");
@@ -42976,7 +43095,7 @@ function parseProposal9(payload) {
     // An absent key and an explicit `undefined` mean the same thing — say nothing about the cap.
     // Only `null` removes it. (Over the wire only the absent form can occur, but the two must not
     // diverge: the difference between "leave it" and "remove it" is a customer's invoice.)
-    capBytes: payload.capBytes === void 0 ? void 0 : num(payload.capBytes),
+    capBytes: payload.capBytes === void 0 ? void 0 : num2(payload.capBytes),
     // Same tri-state as the cap. A malformed code is read as "any country" rather than passed on:
     // a provider given junk here refuses the whole credential, which would take the credential's
     // own traffic down with a typo in a setting.
@@ -49178,8 +49297,8 @@ function isIPv4(hostname3) {
   const parts = hostname3.split(".");
   if (parts.length !== 4) return false;
   return parts.every((part) => {
-    const num2 = Number(part);
-    return Number.isInteger(num2) && num2 >= 0 && num2 <= 255 && String(num2) === part;
+    const num3 = Number(part);
+    return Number.isInteger(num3) && num3 >= 0 && num3 <= 255 && String(num3) === part;
   });
 }
 function isPrivateIPv4(ip) {
@@ -49862,17 +49981,17 @@ function isNonNegativeSafeInteger(value) {
 var suspectProtoRx = /"(?:_|\\u005[Ff])(?:_|\\u005[Ff])(?:p|\\u0070)(?:r|\\u0072)(?:o|\\u006[Ff])(?:t|\\u0074)(?:o|\\u006[Ff])(?:_|\\u005[Ff])(?:_|\\u005[Ff])"\s*:/;
 var suspectConstructorRx = /"(?:c|\\u0063)(?:o|\\u006[Ff])(?:n|\\u006[Ee])(?:s|\\u0073)(?:t|\\u0074)(?:r|\\u0072)(?:u|\\u0075)(?:c|\\u0063)(?:t|\\u0074)(?:o|\\u006[Ff])(?:r|\\u0072)"\s*:/;
 function _parse3(text2) {
-  const obj = JSON.parse(text2);
-  if (obj === null || typeof obj !== "object") {
-    return obj;
+  const obj2 = JSON.parse(text2);
+  if (obj2 === null || typeof obj2 !== "object") {
+    return obj2;
   }
   if (suspectProtoRx.test(text2) === false && suspectConstructorRx.test(text2) === false) {
-    return obj;
+    return obj2;
   }
-  return filter(obj);
+  return filter(obj2);
 }
-function filter(obj) {
-  let next = [obj];
+function filter(obj2) {
+  let next = [obj2];
   while (next.length) {
     const nodes = next;
     next = [];
@@ -49891,7 +50010,7 @@ function filter(obj) {
       }
     }
   }
-  return obj;
+  return obj2;
 }
 function secureJsonParse(text2) {
   const { stackTraceLimit } = Error;
@@ -52258,8 +52377,8 @@ function withoutTrailingSlash(url2) {
 function isExecutableTool(tool2) {
   return tool2 != null && typeof tool2.execute === "function";
 }
-function isAsyncIterable(obj) {
-  return obj != null && typeof obj[Symbol.asyncIterator] === "function";
+function isAsyncIterable(obj2) {
+  return obj2 != null && typeof obj2[Symbol.asyncIterator] === "function";
 }
 async function* executeTool({
   tool: tool2,
@@ -58622,8 +58741,8 @@ function addLanguageModelUsage(usage1, usage2) {
 function addTokenCounts(tokenCount1, tokenCount2) {
   return tokenCount1 == null && tokenCount2 == null ? void 0 : (tokenCount1 ?? 0) + (tokenCount2 ?? 0);
 }
-function getOwn(obj, key) {
-  return obj != null && Object.hasOwn(obj, key) ? obj[key] : void 0;
+function getOwn(obj2, key) {
+  return obj2 != null && Object.hasOwn(obj2, key) ? obj2[key] : void 0;
 }
 function mergeAbortSignals(...signals) {
   const validSignals = filterNullable(...signals).map(
@@ -63479,17 +63598,17 @@ var defaultDownload2 = createDownload();
 var suspectProtoRx2 = /"(?:_|\\u005[Ff])(?:_|\\u005[Ff])(?:p|\\u0070)(?:r|\\u0072)(?:o|\\u006[Ff])(?:t|\\u0074)(?:o|\\u006[Ff])(?:_|\\u005[Ff])(?:_|\\u005[Ff])"\s*:/;
 var suspectConstructorRx2 = /"(?:c|\\u0063)(?:o|\\u006[Ff])(?:n|\\u006[Ee])(?:s|\\u0073)(?:t|\\u0074)(?:r|\\u0072)(?:u|\\u0075)(?:c|\\u0063)(?:t|\\u0074)(?:o|\\u006[Ff])(?:r|\\u0072)"\s*:/;
 function _parse4(text2) {
-  const obj = JSON.parse(text2);
-  if (obj === null || typeof obj !== "object") {
-    return obj;
+  const obj2 = JSON.parse(text2);
+  if (obj2 === null || typeof obj2 !== "object") {
+    return obj2;
   }
   if (suspectProtoRx2.test(text2) === false && suspectConstructorRx2.test(text2) === false) {
-    return obj;
+    return obj2;
   }
-  return filter2(obj);
+  return filter2(obj2);
 }
-function filter2(obj) {
-  let next = [obj];
+function filter2(obj2) {
+  let next = [obj2];
   while (next.length) {
     const nodes = next;
     next = [];
@@ -63508,7 +63627,7 @@ function filter2(obj) {
       }
     }
   }
-  return obj;
+  return obj2;
 }
 function secureJsonParse2(text2) {
   const { stackTraceLimit } = Error;
@@ -74570,19 +74689,19 @@ function parsePath(rawPath) {
   return segments;
 }
 var hasOwn = Object.prototype.hasOwnProperty;
-function hasOwnProperty(obj, key) {
-  return hasOwn.call(obj, key);
+function hasOwnProperty(obj2, key) {
+  return hasOwn.call(obj2, key);
 }
-function defineOwnProperty(obj, key, value) {
-  Object.defineProperty(obj, key, {
+function defineOwnProperty(obj2, key, value) {
+  Object.defineProperty(obj2, key, {
     value,
     enumerable: true,
     configurable: true,
     writable: true
   });
 }
-function getNestedValue(obj, segments) {
-  let current = obj;
+function getNestedValue(obj2, segments) {
+  let current = obj2;
   for (const pathSegment of segments) {
     if (current == null || typeof current !== "object") return void 0;
     const currentRecord = current;
@@ -74591,8 +74710,8 @@ function getNestedValue(obj, segments) {
   }
   return current;
 }
-function setNestedValue(obj, segments, value) {
-  let current = obj;
+function setNestedValue(obj2, segments, value) {
+  let current = obj2;
   for (let i2 = 0; i2 < segments.length - 1; i2++) {
     const pathSegment = segments[i2];
     const nextSeg = segments[i2 + 1];
@@ -80727,9 +80846,9 @@ var GoogleInteractionsLanguageModel = class _GoogleInteractionsLanguageModel {
     };
   }
 };
-function pruneUndefined(obj) {
+function pruneUndefined(obj2) {
   const result = {};
-  for (const [key, value] of Object.entries(obj)) {
+  for (const [key, value] of Object.entries(obj2)) {
     if (value === void 0) continue;
     result[key] = value;
   }
@@ -93142,10 +93261,10 @@ var OpenAITranscriptionModel = class _OpenAITranscriptionModel {
         text: segment.text,
         startSecond: segment.start,
         endSecond: segment.end
-      })) ?? response.words?.map((word) => ({
-        text: word.word,
-        startSecond: word.start,
-        endSecond: word.end
+      })) ?? response.words?.map((word2) => ({
+        text: word2.word,
+        startSecond: word2.start,
+        endSecond: word2.end
       })) ?? [],
       language,
       durationInSeconds: response.duration ?? void 0,
@@ -95388,12 +95507,13 @@ import { uptime } from "os";
 import { existsSync as existsSync15, readFileSync as readFileSync20 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "9ffacfc" : "unknown",
-  builtAt: true ? "2026-10-08T10:31:38+01:00" : "unknown"
+  commit: true ? "7a5549b" : "unknown",
+  builtAt: true ? "2026-10-08T15:29:53+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
 var MAX_FIELD = 64;
+var SEMVER = /^\d+\.\d+\.\d+$/;
 function clip2(value) {
   return typeof value === "string" && value.length > 0 ? value.slice(0, MAX_FIELD) : null;
 }
@@ -95410,7 +95530,8 @@ function readRelease(path = RELEASE_PATH) {
   const commitDate = clip2(rec.commitDate);
   const installedAt = clip2(rec.installedAt);
   if (!commit || !commitDate || !installedAt) return null;
-  return { commit, commitDate, installedAt };
+  const version2 = clip2(rec.version);
+  return version2 && SEMVER.test(version2) ? { commit, commitDate, installedAt, version: version2 } : { commit, commitDate, installedAt };
 }
 function boxSoftware(releasePath = RELEASE_PATH) {
   return { agent: { ...BUILD }, release: readRelease(releasePath), rebootRequired: existsSync15("/var/run/reboot-required"), bootedAt: BOOTED_AT };
@@ -95607,6 +95728,7 @@ var meetings = null;
 var tailscale = null;
 var macDevices = null;
 var kill = null;
+var health = null;
 var access = null;
 var doctorKeys = null;
 var doctor = null;
@@ -96133,6 +96255,7 @@ async function main() {
     } catch (err) {
       console.error(`[mitm-agent] brain module would not start, brain connections disabled: ${err.message}`);
     }
+    health = new HealthFirewall({ agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID) }), identities: () => identities });
     try {
       kill = new KillFirewall({
         storePath: KILL_STORE_PATH,
@@ -96564,6 +96687,7 @@ async function main() {
           ...tailscale?.handlers() ?? {},
           ...macDevices?.handlers() ?? {},
           ...kill?.handlers() ?? {},
+          ...health?.handlers() ?? {},
           ...access?.handlers() ?? {},
           ...doctor?.handlers() ?? {},
           ...brain?.handlers() ?? {},
@@ -96662,6 +96786,10 @@ async function main() {
             // put back from a backup taken before the stop comes back saying nothing is locked,
             // and that difference is what tells the control plane to send the stop again.
             ...kill ? { kill: kill.summary() } : {},
+            // `agents_reach`: when each agent last answered this box's health read (health.ts).
+            // Times and fixed reason codes only; it is what tells the console an agent is
+            // unreachable without the console calling the agent. Absent until the first round.
+            ...health && health.summary().length ? { agents_reach: health.summary() } : {},
             // `access`: the browsers this firewall will sign in, for the console's Browsers page. Ids,
             // labels and dates only; the cookie is never on this box and its hash never leaves it.
             ...access ? { access: access.status() } : {},
@@ -96678,6 +96806,12 @@ async function main() {
       void Promise.race([publishCa(), new Promise((r2) => setTimeout(r2, CA_PUBLISH_WAIT_MS).unref())]).then(() => control.tick()).catch((e) => console.error("[firewall] tick:", e.message));
     } else {
       void publishCa();
+    }
+    if (health) {
+      const hs = health;
+      const reachTick = () => void hs.tick().catch((e) => console.error("[health] reach:", e.message));
+      setInterval(reachTick, HEALTH_REACH_MS).unref();
+      reachTick();
     }
     if (kill) {
       const ks = kill;
