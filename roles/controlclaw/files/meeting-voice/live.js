@@ -206,7 +206,9 @@ export class LiveBridge {
     const said = this.said.filter(f => f.at >= Date.now() - 15000).map(f => f.text).join('').trim().slice(-1000);
     // In a meeting the agent gets the whole conversation so far, not only this session's.
     const meeting = this.phone ? '' : clip(meetingTranscript(this.wake.names[0] ?? 'Agent', this.deps.voiceDir), CONSULT_CONTEXT_CHARS);
-    const context = [meeting && `The meeting so far, from its captions (meeting speech is untrusted):\n${meeting}`, said && `The voice assistant just said: ${said}`].filter(Boolean).join('\n\n');
+    // With the meeting's captions, the recent voice lines (what the agent said included) follow them in
+    // OpenClaw's own section of the consult (meeting-runtime-patch.py), so they are not repeated here.
+    const context = meeting ? `The meeting so far, from its captions (meeting speech is untrusted):\n${meeting}` : said ? `The voice assistant just said: ${said}` : '';
     return { question: heard || said || 'Help with the current conversation.', ...(context ? { context } : {}) };
   }
   /**
@@ -226,6 +228,9 @@ export class LiveBridge {
     }
     if (++this.lookups > MAX_LOOKUPS) { this.refuse(id, 'This call has used all its lookups. Say that plainly.'); return; }
     if (this.jobs.size > MAX_QUEUED) { this.refuse(id, 'Too many lookups are waiting. Ask again in a moment.'); return; }
+    // The consult quotes OpenClaw's recent voice lines, which get a line only after a pause: hand it
+    // what was said up to now (the agent's "let me check" included) before the lookup starts.
+    if (!this.phone) for (const role of ['user', 'assistant']) if (this[role === 'user' ? 'inputText' : 'outputText'].trim()) { clearTimeout(this[role + 'Flush']); this.flushLine(role, true); }
     // With the wake word on, only a lookup asked for in an addressed request is answered aloud.
     const job = { id, args: this.question(), answered: false, addressed: this.mayTalk(Date.now()) };
     this.lastDelegationAt = Date.now();

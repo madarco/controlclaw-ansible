@@ -153,10 +153,11 @@ test('a meeting lookup gets the whole meeting so far as context; a phone lookup 
  const lines=[];for(let i=0;i<400;i++)lines.push(JSON.stringify({at:new Date(Date.now()-(400-i)*10000).toISOString(),speaker:i%2?'Alice':'Bob',text:i===3?'The launch moved to Thursday.':`Point number ${i} about the roadmap and the budget.`}));
  writeFileSync(join(dir,'captions.jsonl'),lines.join('\n')+'\n');
  const f=fixture('meeting',LiveBridge,{enabled:false,words:['Jarvis']});f.bridge.deps.voiceDir=dir;
- said(f,'user','Jarvis, when is the launch?');f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ said(f,'user','Jarvis, when is the launch?');said(f,'assistant','Let me check.');f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
  const ctx=f.tools[0].args.context;
  assert.match(ctx,/The meeting so far[\s\S]*Alice: The launch moved to Thursday\./,'the start of the meeting');
  assert.match(ctx,/Point number 399/,'and its end');assert.ok(ctx.length<=41000);
+ assert.doesNotMatch(ctx,/The voice assistant just said/,'the recent voice lines come in OpenClaw\'s own section, after the captions');
  assert.match(f.tools[0].args.question,/when is the launch/);f.bridge.close();
  const p=fixture('phone');p.bridge.deps.voiceDir=dir;said(p,'user','check my notes');p.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
  assert.doesNotMatch(p.tools[0].args.context??'',/meeting so far/);p.bridge.close();
@@ -171,4 +172,14 @@ test('phone with wake words on: a tone when a request to the agent starts, anoth
  clock+=16000;f.bridge.watch();assert.equal(f.tones.length,2);f.bridge.watch();assert.equal(f.tones.length,2);
  assert.ok(f.tones.every(b=>b.length>0),'tones reach the call as mu-law');f.bridge.close();
  const off=fixture('phone',PhoneLiveBridge);said(off,'user','Jarvis, hello');assert.equal(off.tones.length,0,'no tones without the wake word');off.bridge.close();
+});
+
+test('a meeting lookup hands OpenClaw the lines said up to now first, so its consult quotes them',()=>{
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['Jarvis']});
+ said(f,'user','Jarvis, what did Anna say about the budget?');said(f,'assistant','Let me check.');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ assert.deepEqual(f.transcripts.map(t=>[t[0],t[1]]),[['user','Jarvis, what did Anna say about the budget?'],['assistant','Let me check.']],'reported before the consult');
+ assert.equal(f.tools.length,1);
+ assert.match(f.tools[0].args.question,/what did Anna say/,'the request is still the question');
+ f.bridge.close();
 });
