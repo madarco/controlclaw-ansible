@@ -22,13 +22,23 @@ SERVICES = {
     "proxy": ["controlclaw-mitmproxy.service"],
     "caddy": ["caddy.service"],
     "dnsmasq": ["dnsmasq.service"],
-    "tang": ["tangd.socket", "tangd@*.service"],
+    "tang": ["tangd.socket"],
     "disk": ["cc-secure.service"],
     "team-chat": ["clickclack.service"],
     "chrony": ["chrony.service"],
     "tailscale": ["tailscaled.service"],
     "update": ["cc-reprovision.service"],
 }
+# Template units that start one instance per connection, read through their slice instead of by
+# unit name. Tang runs a tangd@<n>-<addr>:<port>.service for every key request, so a firewall that
+# has been up a week has tens of thousands of instance names in its journal. `journalctl -u
+# 'tangd@*.service'` turns that glob into matches for every one of them (about 17 ms each), and a
+# read took minutes; the slice is one match. systemd's own lines about an instance carry no slice,
+# so the two that matter, a main process that exited and a unit that failed, are matched by their
+# message ids; the mitm-agent drops the ones about units outside its list.
+INSTANCE_SLICES = {"tang": "system-tangd.slice"}
+SYSTEMD_EXITED = "98e322203f7a4ed290d09fe03c09fe15"
+SYSTEMD_FAILED = "d9b373ed55a64feb8242e02dbe79a49c"
 FIELDS = "MESSAGE,PRIORITY,_SYSTEMD_UNIT,UNIT,SYSLOG_IDENTIFIER,_PID"
 LOG = "/var/log/ansible-pull.log"
 START = "/opt/controlclaw/state/update-log-start"
@@ -48,20 +58,35 @@ def number(value, high):
     return max(1, min(int(value), high))
 
 
+def matches(names):
+    """journalctl match terms for these services, OR-ed with `+`: what `-u` adds for each unit
+    (its own lines, systemd's lines about it, coredumps), plus each instance slice."""
+    groups = []
+    for name in names:
+        for unit in SERVICES[name]:
+            groups += [[f"_SYSTEMD_UNIT={unit}"], [f"UNIT={unit}", "_PID=1"], [f"OBJECT_SYSTEMD_UNIT={unit}", "_UID=0"], [f"COREDUMP_UNIT={unit}", "_UID=0"]]
+        if name in INSTANCE_SLICES:
+            groups += [[f"_SYSTEMD_SLICE={INSTANCE_SLICES[name]}"], [f"MESSAGE_ID={SYSTEMD_EXITED}", "_PID=1"], [f"MESSAGE_ID={SYSTEMD_FAILED}", "_PID=1"]]
+    out = []
+    for group in groups:
+        if out:
+            out.append("+")
+        out += group
+    return out
+
+
 def journal(args):
     if len(args) != 3:
         fail("usage: cc-fw-logs journal <since-seconds> <max-lines> <service|all>")
     since = number(args[0], 86400)
     lines = number(args[1], 5000)
     if args[2] == "all":
-        units = [u for group in SERVICES.values() for u in group]
+        names = list(SERVICES)
     elif args[2] in SERVICES:
-        units = SERVICES[args[2]]
+        names = [args[2]]
     else:
         fail("unknown service")
-    cmd = ["journalctl", "--no-pager", "-o", "json", f"--output-fields={FIELDS}", f"--since=-{since}s", "-n", str(lines)]
-    for unit in units:
-        cmd += ["-u", unit]
+    cmd = ["journalctl", "--no-pager", "-o", "json", f"--output-fields={FIELDS}", f"--since=-{since}s", "-n", str(lines)] + matches(names)
     os.execvp(cmd[0], cmd)
 
 
