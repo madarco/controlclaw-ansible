@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.1.0",
+    "date": "2026-10-08",
+    "changes": [
+      "Meetings join again after the latest OpenClaw update, and a failed join now says why.",
+      "The Doctor tab shows a quick health status and a Check that finds problems and suggests fixes.",
+      "Agent pages share one look with a Back to console button, and Meetings has a new list and a page for each meeting.",
+      "Agents and firewalls show a version number and what changed in each update."
+    ]
+  },
+  {
     "version": "1.0.0",
     "commit": "758058d7ab070378754479965aae4e0f39d9ec92",
     "date": "2026-10-08",
