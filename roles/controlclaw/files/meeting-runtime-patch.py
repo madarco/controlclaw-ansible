@@ -82,11 +82,63 @@ def patch(host, plugin):
     if changes:
         print('changed')
 
+# The OpenClaw/Meet release every digest above was reviewed against. The health check shows it
+# next to the installed version when a file no longer matches.
+REVIEWED = '2026.9.7'
+
+def find_plugin(root):
+    plugin = Path(root)
+    if (plugin / 'dist/.setup').is_dir():
+        return plugin
+    candidates = list(plugin.glob('extensions/google-meet/package.json')) + list(plugin.glob('**/node_modules/@openclaw/google-meet/package.json'))
+    if len(candidates) != 1:
+        return None
+    return candidates[0].parent
+
+def locate(spec, host, plugin):
+    path = Path(host if spec['kind'] == 'host' else plugin) / spec['path']
+    if spec['kind'] == 'host' and not path.exists():
+        pattern = re.sub(r'-[A-Za-z0-9_-]{8}(?=\.mjs$)', '-????????', path.name)
+        matches = list(path.parent.glob(pattern))
+        return matches[0] if len(matches) == 1 else None
+    return path if path.exists() else None
+
+def check(host, plugin):
+    """Read-only: is each file patched, still patchable, or an unreviewed build? Writes nothing.
+
+    Used by the agent's health check (vm-agent patch-check.ts) as the unprivileged service user.
+    Prints JSON with paths and verdicts only, never file contents.
+    """
+    files = []
+    for spec in PATCHES:
+        if spec['kind'] == 'plugin' and plugin is None:
+            files.append({'path': spec['path'], 'status': 'missing'})
+            continue
+        path = locate(spec, host, plugin)
+        if path is None:
+            files.append({'path': spec['path'], 'status': 'missing'})
+            continue
+        source = path.read_text()
+        digest = hashlib.sha256(source.encode()).hexdigest()
+        known = (spec['before'], spec.get('previous'))
+        if digest == spec['after']:
+            status = 'patched'
+        elif digest in known or digest in spec.get('upgrades', {}):
+            status = 'unpatched'
+        elif spec['kind'] == 'host':
+            before, after = HOST_DIGESTS[spec['path']]
+            canonical = host_digest(source)
+            status = 'patched' if canonical == after else 'unpatched' if canonical == before else 'unknown'
+        else:
+            status = 'unknown'
+        files.append({'path': spec['path'], 'status': status})
+    return {'reviewed': REVIEWED, 'plugin': 'found' if plugin is not None else 'missing', 'files': files}
+
 if __name__ == '__main__':
-    plugin = Path(sys.argv[2])
-    if not (plugin / 'dist/.setup').is_dir():
-        candidates = list(plugin.glob('extensions/google-meet/package.json')) + list(plugin.glob('**/node_modules/@openclaw/google-meet/package.json'))
-        if len(candidates) != 1:
-            raise RuntimeError('Expected exactly one installed Google Meet package')
-        plugin = candidates[0].parent
+    if sys.argv[1] == '--check':
+        print(json.dumps(check(sys.argv[2], find_plugin(sys.argv[3]))))
+        sys.exit(0)
+    plugin = find_plugin(sys.argv[2])
+    if plugin is None:
+        raise RuntimeError('Expected exactly one installed Google Meet package')
     patch(sys.argv[1], plugin)
