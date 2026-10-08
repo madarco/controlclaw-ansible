@@ -92,6 +92,19 @@ const IDENTITY_PUB = "/etc/controlclaw/unlock_identity.pub";
 /** One successful disk-open per partner per this long. Counts successes only — see gate(). */
 const RECOVERY_COOLDOWN_MS = 10 * 60_000;
 const RETRY_FAST_MS = 10_000, RETRY_FAST_FOR_MS = 15 * 60_000, RETRY_SLOW_MS = 60_000;
+/**
+ * A pool box beats every two seconds while it waits to be claimed and while it is being activated,
+ * so a claim is picked up at once. The activation marker counts only while it is fresh: a failed
+ * activation used to leave it behind, and that box then beat every two seconds for good (T-tang). A
+ * box marked failed is waiting to be retired and gets the ordinary beat.
+ */
+const POOL_BEAT_MS = 2_000, POOL_ACTIVATING_FOR_MS = 15 * 60_000;
+function poolBeat() {
+  if (fs.existsSync("/etc/controlclaw/pool-failed")) return false;
+  if (fs.existsSync("/etc/controlclaw/pool-unclaimed")) return true;
+  try { return Date.now() - fs.statSync("/etc/controlclaw/pool-activating").mtimeMs < POOL_ACTIVATING_FOR_MS; }
+  catch { return false; }
+}
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
@@ -534,9 +547,9 @@ async function reconcile(partners) {
 async function reportLoop(ident) {
   for (;;) {
     let status = { mounted: false, thumbprint: "" };
-    // Async: `cc-secure status` asks tangd for this box's thumbprint with a five-second curl, and a
-    // box whose tang is dead is exactly the box that spends all five — with its gate shut, every
-    // beat, which is the state a partner is trying to reach it in.
+    // Async: `cc-secure status` runs cryptsetup and clevis, and a hung one must not shut the gate.
+    // It reads the thumbprint off the key database rather than asking tangd, because every /adv
+    // starts a tangd@ instance and this runs every beat — every two seconds on a pool box (T-tang).
     try { status = JSON.parse(await shAsync(["status"])); } catch { /* report what little we know */ }
     // A mounted container with no thumbprint means tangd is not answering. The box is otherwise
     // perfectly healthy — open, reporting, serving — and the only consequence is that its partner
@@ -549,7 +562,7 @@ async function reportLoop(ident) {
     // unreachable control plane, or one too old to say, keeps the ordinary beat.
     const asked = Number(res?.nextReportMs);
     const wait = Number.isFinite(asked) ? Math.min(Math.max(asked, REPORT_MIN_MS), REPORT_MAX_MS) : REPORT_EVERY_MS;
-    await new Promise((r) => setTimeout(r, fs.existsSync("/etc/controlclaw/pool-unclaimed") || fs.existsSync("/etc/controlclaw/pool-activating") ? 2000 : wait));
+    await new Promise((r) => setTimeout(r, poolBeat() ? POOL_BEAT_MS : wait));
   }
 }
 
@@ -601,7 +614,7 @@ async function main() {
     }
     notify(`STATUS=locked, waiting for a partner (${Math.round((Date.now() - started) / 1000)}s)`);
     const wait = Date.now() - started < RETRY_FAST_FOR_MS ? RETRY_FAST_MS : RETRY_SLOW_MS;
-    await new Promise((r) => setTimeout(r, fs.existsSync("/etc/controlclaw/pool-unclaimed") || fs.existsSync("/etc/controlclaw/pool-activating") ? 2000 : wait));
+    await new Promise((r) => setTimeout(r, poolBeat() ? POOL_BEAT_MS : wait));
   }
 }
 

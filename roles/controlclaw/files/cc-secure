@@ -173,6 +173,9 @@ cmd_mount() {
     # box still opens its disk, still reports, and simply never publishes a thumbprint — so no
     # partner can bind to it and the mutual unlock quietly does not exist.
     local err
+    # A failed tangd@ instance makes `status` report no thumbprint (tang_thumbprint_local). Clear
+    # the old ones here, where tang is (re)started and then checked for real.
+    systemctl reset-failed 'tangd@*' 2>/dev/null || true
     if ! err=$(systemctl start tangd.socket 2>&1); then
       log "ERROR: tangd.socket would not start: ${err:-no reason given}"
     elif ! curl -sf --max-time 3 "http://127.0.0.1:${TANGD_PORT}/adv" >/dev/null 2>&1; then
@@ -209,12 +212,48 @@ cmd_tang_keygen() {
   chown -R _tang:_tang "$TANG_DB"; chmod 0440 "$TANG_DB"/*.jwk
 }
 
-# This box's tang thumbprint, which is what a partner pins when it binds.
+# This box's tang thumbprint, which is what a partner pins when it binds. Asked of tangd itself, so
+# it costs one tangd instance: fine for a one-off, not for anything on a beat (see the next one).
 cmd_thumbprint() {
   curl -sf --max-time 5 "http://127.0.0.1:${TANGD_PORT}/adv" \
     | jose fmt -j- -g payload -y -o- \
     | jose jwk use -i- -r -u verify -o- \
     | jose jwk thp -i-
+}
+
+# setpriv, not runuser: runuser opens a PAM session, which writes two journal lines per call.
+as_tang() { setpriv --reuid=_tang --regid=_tang --clear-groups -- "$@"; }
+
+# The same thumbprint, read off the key database instead of asked of tangd, and printed only when
+# tangd could serve it: the socket listens on loopback where the gate forwards, every key tangd would
+# advertise is a valid key `_tang` can reach and read (the permission fault T-58 found on a real
+# box), there is a signing key and an exchange key, and no tangd@ instance has failed since the last
+# `cc-secure mount` (a tangd that cannot start still leaves the socket listening).
+#
+# `status` runs on cc-secure-daemon's report beat — every minute, every few seconds on a pool box —
+# and tangd.socket starts one tangd@ instance per connection. Asking /adv there started ~1,440
+# instances a day on every box and ~43,000 on an idle pool pair, and filled the journal (T-tang).
+# What a partner fetches is the advertisement of these same files: tangd signs every key in the
+# directory that is not hidden (rotated keys are renamed to .<thp>.jwk), so the result is identical.
+# An empty answer is what the daemon's T-97 repair waits for: it runs `cc-secure mount`, which asks
+# tangd for real.
+tang_thumbprint_local() {
+  ss -lntH "sport = :${TANGD_PORT}" 2>/dev/null | grep -q '127\.0\.0\.1' || return 1
+  [ -z "$(systemctl list-units --all --no-legend --plain --state=failed 'tangd@*' 2>/dev/null)" ] || return 1
+  as_tang test -r "$TANG_DB" -a -x "$TANG_DB" 2>/dev/null || return 1
+  local f thp="" exchange=false
+  for f in "$TANG_DB"/*.jwk; do
+    [ -f "$f" ] || continue
+    as_tang test -r "$f" 2>/dev/null || return 1
+    if jose jwk use -i "$f" -r -u verify 2>/dev/null; then
+      thp=${thp:+$thp$'\n'}$(jose jwk thp -i "$f") || return 1
+    elif jose jwk use -i "$f" -r -u deriveKey 2>/dev/null; then
+      exchange=true
+    else
+      return 1
+    fi
+  done
+  [ -n "$thp" ] && [ "$exchange" = true ] && printf '%s\n' "$thp"
 }
 
 # ---------------------------------------------------------------------------- bindings
@@ -377,7 +416,7 @@ cmd_status() {
   is_open && open=true
   is_mounted && mounted=true
   if [ "$mounted" = true ]; then
-    thp=$(cmd_thumbprint 2>/dev/null || true)
+    thp=$(tang_thumbprint_local 2>/dev/null || true)
     slots=$(cmd_list 2>/dev/null | paste -sd, -); slots="[${slots}]"
   fi
   printf '{"present":%s,"open":%s,"mounted":%s,"thumbprint":"%s","partners":%s}\n' \

@@ -141,6 +141,8 @@ def claim(config):
     report_progress(payload, 'finished', result.returncode)
     if result.returncode:
         Path('/etc/controlclaw/pool-failed').touch(mode=0o600)
+        # Not activating any more, so off the two-second disk beat too (T-tang).
+        Path('/etc/controlclaw/pool-activating').unlink(missing_ok=True)
         subprocess.run(['systemctl', 'disable', 'cc-pool-worker'], check=False)
         return
     # Tang binding and a valid certificate are claim requirements, beyond process startup.
@@ -149,6 +151,8 @@ def claim(config):
     if proof.returncode:
         report_progress(payload, 'finished', 1)
         Path('/etc/controlclaw/pool-failed').touch(mode=0o600)
+        # Not activating any more, so off the two-second disk beat too (T-tang).
+        Path('/etc/controlclaw/pool-activating').unlink(missing_ok=True)
         return
     Path('/etc/controlclaw/pool-activating').unlink(missing_ok=True)
     CLAIMED.write_text(variables['vm_id'])
