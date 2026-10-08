@@ -9,7 +9,7 @@
 #
 # The reachable surface of a firewall box is precisely what this file serves, so it has to stay
 # small: one path prefix, two exact POST routes that answer with a status or a redirect and never
-# a page, Team chat behind the mitm-agent's cookie check, and a bare 404 for everything else. No admin endpoint, no file server, no directory
+# a page, Team chat behind the mitm-agent's cookie check, the website logins page, and a bare 404 for everything else. No admin endpoint, no file server, no directory
 # listing, no OpenClaw, no noVNC — none of those exist on this box.
 {
     email {{ caddy_acme_email }}
@@ -71,6 +71,16 @@
     }
 
 {% endif %}
+    # Website logins (controlclaw docs/plans/website-credentials.md): the page an owner or admin types
+    # a login into, served by the mitm-agent behind its own cookie and an enrolled browser. A login is
+    # a few hundred bytes; the bound leaves room for a CSV import later and nothing more.
+    handle /__cc/logins/* {
+        request_body {
+            max_size 64KB
+        }
+        reverse_proxy 127.0.0.1:{{ ingress_port }}
+    }
+
     # Team chat's own routes: the page that opens it from the console, and Caddy's question below.
     handle /__cc/team-chat/* {
         request_body {
