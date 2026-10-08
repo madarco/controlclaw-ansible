@@ -223,6 +223,33 @@ for key, env in shared + (mitm if role == "mitm" else agent):
         v[key] = os.environ[env]
 print(json.dumps(v))')
 
+# What the console shows for a failed run: the last task of THIS run, read from byte $2 of the log.
+# Secrets never reach the log: the extra-vars we pass hold no token, and ansible redacts no_log tasks.
+#
+# No task at all means ansible-pull failed before the playbook started, while fetching the repo. It
+# used to read the whole log, which starts with the box's first provisioning, and so reported
+# "at: Provisioning complete" for a fetch that never happened (T-updfail). Say what git said instead.
+failure_detail() {
+  local log="$1" start="$2" rc="$3" task reason
+  task=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | grep -a '^TASK \[' | tail -1 | sed -E 's/^TASK \[(.*)\].*/\1/')
+  if [ -n "$task" ]; then
+    printf 'ansible-pull exited %s at: %s' "$rc" "$task"
+    return
+  fi
+  reason=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | python3 -c '
+import re, sys
+text = sys.stdin.read()
+m = re.search(r"\"msg\": \"((?:[^\"\\]|\\.)*)\"", text)
+line = m.group(1).encode().decode("unicode_escape", "replace") if m else ""
+if not line:
+    errs = [l for l in text.splitlines() if l.startswith("ERROR!") or "FAILED!" in l or l.startswith("fatal:")]
+    line = errs[-1] if errs else ""
+line = " ".join(line.split())
+print(line[:240])
+')
+  printf 'could not fetch the update (ansible-pull exited %s before the playbook started)%s' "$rc" "${reason:+: $reason}"
+}
+
 # --- run ---------------------------------------------------------------------------------------
 say installing "fetching collections"
 ansible-galaxy collection install community.docker community.general ansible.posix \
@@ -238,6 +265,9 @@ if [ "${CC_UPDATE_MODE:-}" = auto ]; then
   [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ] || die "automatic update window closed before installation"
 fi
 say running "ansible-pull ${REF:0:12}"
+# Where this run starts in the log. The log is appended to and begins with the box's first
+# provisioning, so a failure must be read from here on (see failure_detail).
+START=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
 ansible-pull $FULL -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
 rc=$?
 
@@ -256,9 +286,6 @@ if [ "$rc" -eq 0 ]; then
     say done "updated to ${REF:0:12}"
   fi
 else
-  # The last complete TASK line is the most useful thing to show someone. Secrets never reach the
-  # log: the extra-vars we pass hold no token, and ansible redacts no_log tasks itself.
-  task=$(grep -a '^TASK \[' "$LOG" | tail -1 | sed -E 's/^TASK \[(.*)\].*/\1/')
-  say failed "ansible-pull exited $rc${task:+ at: $task}"
+  say failed "$(failure_detail "$LOG" "$START" "$rc")"
 fi
 exit "$rc"
