@@ -6094,8 +6094,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "7a5549b" : "unknown",
-  builtAt: true ? "2026-10-08T15:29:53+01:00" : "unknown"
+  commit: true ? "1083cac" : "unknown",
+  builtAt: true ? "2026-10-08T18:44:47+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6378,16 +6378,38 @@ import { join as join5 } from "path";
 // src/redact.ts
 import { readFileSync as readFileSync10 } from "fs";
 import { join as join4 } from "path";
-var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
+
+// ../log-redact/src/index.ts
 var MIN_SECRET_LENGTH = 8;
 var PARAM_RE = /\b(token|api[_-]?key|key|secret|password|passwd|code_challenge|code_verifier|access_token|refresh_token|client_secret|authorization)=([^&\s"'`,;]+)/gi;
 var BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
 var PHONE_RE = /\+\d{7,15}\b/g;
-var secrets = [];
 function escapeRegExp(s2) {
   return s2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-var secretRe = null;
+function makeRedactor(values) {
+  const exact = /* @__PURE__ */ new Set();
+  for (const value of values) {
+    for (const part of [value, ...value.split("\n")]) {
+      const v2 = part.trim();
+      if (v2.length >= MIN_SECRET_LENGTH) exact.add(v2);
+    }
+  }
+  const sorted = [...exact].sort((a2, b2) => b2.length - a2.length);
+  const secretRe = sorted.length ? new RegExp(sorted.map(escapeRegExp).join("|"), "g") : null;
+  return (text) => {
+    let out = text;
+    if (secretRe) out = out.replace(secretRe, "[redacted]");
+    out = out.replace(PARAM_RE, (_m, k2) => `${k2}=[redacted]`);
+    out = out.replace(BEARER_RE, "Bearer [redacted]");
+    out = out.replace(PHONE_RE, (m2) => `+\u2026${m2.slice(-4)}`);
+    return out;
+  };
+}
+
+// src/redact.ts
+var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
+var redactor = makeRedactor([]);
 function loadRedactionSecrets(keysDir2) {
   const found = [];
   for (const name of SECRET_FILES) {
@@ -6401,16 +6423,10 @@ function loadRedactionSecrets(keysDir2) {
   return found.length;
 }
 function setRedactionSecrets(values) {
-  secrets = values.filter((v2) => v2.length >= MIN_SECRET_LENGTH);
-  secretRe = secrets.length ? new RegExp(secrets.map(escapeRegExp).join("|"), "g") : null;
+  redactor = makeRedactor(values);
 }
 function redact(text) {
-  let out = text;
-  if (secretRe) out = out.replace(secretRe, "[redacted]");
-  out = out.replace(PARAM_RE, (_m, k2) => `${k2}=[redacted]`);
-  out = out.replace(BEARER_RE, "Bearer [redacted]");
-  out = out.replace(PHONE_RE, (m2) => `+\u2026${m2.slice(-4)}`);
-  return out;
+  return redactor(text);
 }
 
 // src/routes/logs.ts
