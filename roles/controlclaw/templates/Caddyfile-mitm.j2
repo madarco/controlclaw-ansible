@@ -73,10 +73,10 @@
 {% endif %}
     # Website logins (controlclaw docs/plans/website-credentials.md): the page an owner or admin types
     # a login into, served by the mitm-agent behind its own cookie and an enrolled browser. A login is
-    # a few hundred bytes; the bound leaves room for a CSV import later and nothing more.
+    # a few hundred bytes; the bound is for a CSV import of 200 of them (the mitm-agent caps it too).
     handle /__cc/logins/* {
         request_body {
-            max_size 64KB
+            max_size 1MB
         }
         reverse_proxy 127.0.0.1:{{ ingress_port }}
     }
