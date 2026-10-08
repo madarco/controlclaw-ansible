@@ -27093,6 +27093,7 @@ function execFailureLine(err) {
 }
 
 // src/gateway.ts
+import { isDeepStrictEqual } from "util";
 var GATEWAY_SCOPES = ["operator.read", "operator.approvals", "operator.admin"];
 var PROTOCOL = 4;
 var CONNECT_TIMEOUT_MS = 1e4;
@@ -27112,9 +27113,19 @@ async function patchConfig(gw, patch, opts) {
   const raw = JSON.stringify(patch);
   const log = opts.log ?? ((l2) => console.log(`[gateway] ${l2}`));
   for (let attempt = 0; ; attempt++) {
-    const baseHash = attempt === 0 && opts.baseHash ? opts.baseHash : await freshHash(gw, opts.readTimeoutMs);
+    let baseHash;
+    let current;
+    if (attempt === 0 && opts.baseHash) {
+      baseHash = opts.baseHash;
+      current = opts.snapshot ? snapshotConfigs(opts.snapshot) : (await readSnapshot(gw, opts.readTimeoutMs)).configs;
+    } else {
+      const snapshot = await readSnapshot(gw, opts.readTimeoutMs);
+      baseHash = snapshot.hash;
+      current = snapshot.configs;
+    }
+    const replacePaths = [.../* @__PURE__ */ new Set([...opts.replacePaths ?? [], ...current.flatMap((c2) => arrayReplacePaths(c2, patch))])];
     try {
-      await gw.call("config.patch", { raw, baseHash, ...opts.replacePaths ? { replacePaths: opts.replacePaths } : {} }, opts.timeoutMs);
+      await gw.call("config.patch", { raw, baseHash, ...replacePaths.length ? { replacePaths } : {} }, opts.timeoutMs);
       return;
     } catch (err) {
       const message2 = err.message ?? "";
@@ -27132,10 +27143,59 @@ async function patchConfig(gw, patch, opts) {
     }
   }
 }
-async function freshHash(gw, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
+function snapshotConfigs(snapshot) {
+  return [snapshot.config, snapshot.parsed].filter((c2) => isPlainRecord(c2));
+}
+async function readSnapshot(gw, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
   const snapshot = await gw.call("config.get", {}, timeoutMs);
   if (typeof snapshot.hash !== "string" || !snapshot.hash) throw new Error("OpenClaw returned no config hash");
-  return snapshot.hash;
+  return { hash: snapshot.hash, configs: snapshotConfigs(snapshot) };
+}
+function isPlainRecord(v2) {
+  return !!v2 && typeof v2 === "object" && !Array.isArray(v2);
+}
+function isIdEntry(v2) {
+  return isPlainRecord(v2) && typeof v2.id === "string" && v2.id.length > 0;
+}
+function arrayReplacePaths(current, patch, path = "") {
+  if (!isPlainRecord(patch) || !isPlainRecord(current)) return [];
+  const out = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "__proto__" || key === "constructor" || key === "prototype") continue;
+    const at2 = path ? `${path}.${key}` : key;
+    const base = current[key];
+    if (Array.isArray(base)) {
+      if (!Array.isArray(value)) {
+        out.push(at2);
+        continue;
+      }
+      if (base.every(isIdEntry)) {
+        const byId = new Map(base.map((e) => [e.id, e]));
+        for (const entry of value) if (isIdEntry(entry) && byId.has(entry.id)) out.push(...arrayReplacePaths(byId.get(entry.id), entry, `${at2}[]`));
+      } else if (!keepsEntries(base, value)) out.push(at2);
+      continue;
+    }
+    if (isPlainRecord(base) && !isPlainRecord(value)) {
+      out.push(...arraysUnder(base, at2));
+      continue;
+    }
+    if (isPlainRecord(value)) out.push(...arrayReplacePaths(base, value, at2));
+  }
+  return out;
+}
+function keepsEntries(base, next) {
+  const left = [...next];
+  for (const entry of base) {
+    const i2 = left.findIndex((e) => isDeepStrictEqual(e, entry));
+    if (i2 === -1) return false;
+    left.splice(i2, 1);
+  }
+  return true;
+}
+function arraysUnder(base, path) {
+  if (Array.isArray(base)) return [path];
+  if (!isPlainRecord(base)) return [];
+  return Object.entries(base).flatMap(([k2, v2]) => arraysUnder(v2, `${path}.${k2}`));
 }
 async function whenBack(gw, timeoutMs) {
   if (gw.whenConnected) return gw.whenConnected(timeoutMs);
@@ -27973,6 +28033,7 @@ var PhoneService = class {
         },
         {
           baseHash: snapshot.hash,
+          snapshot,
           timeoutMs: CONFIG_PATCH_RESTART_MS,
           readTimeoutMs: GATEWAY_READ_MS,
           // OpenClaw refuses a patch that drops array entries unless the path is named: removing a
@@ -33778,7 +33839,7 @@ var ConsoleMcpService = class {
         return;
       }
       const hash2 = typeof snapshot.hash === "string" && snapshot.hash ? snapshot.hash : void 0;
-      await patchConfig(gw, { mcp: { servers: { [CONSOLE_MCP_NAME]: { url: url3, transport: "streamable-http" } } } }, { baseHash: hash2, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
+      await patchConfig(gw, { mcp: { servers: { [CONSOLE_MCP_NAME]: { url: url3, transport: "streamable-http" } } } }, { baseHash: hash2, snapshot, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
       configured = true;
       this.log(`[console-mcp] ControlClaw tools added to OpenClaw (${url3})`);
     } catch (err) {
@@ -33790,8 +33851,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "1083cac" : "unknown",
-  builtAt: true ? "2026-10-08T18:44:47+01:00" : "unknown"
+  commit: true ? "26116dd" : "unknown",
+  builtAt: true ? "2026-10-08T22:35:22+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -34254,7 +34315,9 @@ function openClawState(unit, recentRestarts, gateway2) {
   if (unit === "failed") return "failed";
   if (unit === "active") return "starting";
   if (unit === "activating" || unit === "deactivating" || unit === "reloading") return "restarting";
-  return "stopped";
+  if (gateway2 === true) return "running";
+  if (unit === "inactive") return "stopped";
+  return "unknown";
 }
 
 // src/routes/openclaw.ts
@@ -36088,11 +36151,22 @@ var LlmService = class {
     const hash2 = str3(snapshot.hash);
     if (!hash2) throw new Error("OpenClaw returned no config hash");
     const config2 = snapshot.parsed ?? snapshot.config ?? {};
-    return { hash: hash2, config: config2 && typeof config2 === "object" ? config2 : {} };
+    return { hash: hash2, config: config2 && typeof config2 === "object" ? config2 : {}, raw: snapshot };
   }
-  async patchConfig(patch, baseHash) {
-    const hash2 = baseHash ?? (await this.config()).hash;
-    await patchConfig(this.gateway(), patch, { baseHash: hash2, timeoutMs: patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS, readTimeoutMs: GATEWAY_READ_MS });
+  /**
+   * `base` is the snapshot the patch was built from. Lists the patch shrinks (the old fallback,
+   * a provider block's model list) are named to OpenClaw by `patchConfig`, which refuses them
+   * otherwise; `replacePaths` adds lists that must be replaced even where OpenClaw would merge.
+   */
+  async patchConfig(patch, base, replacePaths) {
+    const snapshot = base ?? await this.config();
+    await patchConfig(this.gateway(), patch, {
+      baseHash: snapshot.hash,
+      snapshot: snapshot.raw,
+      timeoutMs: patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS,
+      readTimeoutMs: GATEWAY_READ_MS,
+      ...replacePaths ? { replacePaths } : {}
+    });
   }
   /** Make OpenClaw match the desired state. Applies what it can and reports each failure by name. */
   async apply(input2) {
@@ -36114,7 +36188,9 @@ var LlmService = class {
     for (const c2 of input2.credentials) {
       if (c2.providerBlock) {
         try {
-          await this.patchConfig({ models: { providers: { [c2.provider]: { baseUrl: c2.providerBlock.baseUrl, api: c2.providerBlock.api, models: c2.providerBlock.models } } } });
+          await this.patchConfig({ models: { providers: { [c2.provider]: { baseUrl: c2.providerBlock.baseUrl, api: c2.providerBlock.api, models: c2.providerBlock.models } } } }, void 0, [
+            `models.providers.${c2.provider}.models`
+          ]);
         } catch (err) {
           failed.push({ what: c2.provider, error: err.message });
           continue;
@@ -36130,7 +36206,8 @@ var LlmService = class {
         failed.push({ what: c2.provider, error: execFailureLine(err) });
       }
     }
-    const { hash: hash2, config: config2 } = await this.config();
+    const snapshot = await this.config();
+    const { config: config2 } = snapshot;
     const providers = config2.models?.providers;
     if (providers && RETIRED_CODEX_PROVIDER_ID in providers) providerPatch[RETIRED_CODEX_PROVIDER_ID] = null;
     const patch = {};
@@ -36145,7 +36222,7 @@ var LlmService = class {
     }
     let reindex = false;
     try {
-      await this.patchConfig(patch, hash2);
+      await this.patchConfig(patch, snapshot);
       applied.push("model");
       if (memory) {
         applied.push("memory");
@@ -37145,6 +37222,7 @@ var MeetingService = class {
       },
       {
         baseHash: snapshot.hash,
+        snapshot,
         timeoutMs: 6e4,
         // OpenClaw refuses a patch that drops array entries unless the path is named: replacing or
         // removing a wake name would otherwise fail and leave the old names in place (as phone does).
@@ -37912,10 +37990,11 @@ var SearchService = class _SearchService {
     const hash2 = str4(snapshot.hash);
     if (!hash2) throw new Error("OpenClaw returned no config hash");
     const config2 = snapshot.parsed ?? snapshot.config ?? {};
-    return { hash: hash2, config: config2 && typeof config2 === "object" ? config2 : {} };
+    return { hash: hash2, config: config2 && typeof config2 === "object" ? config2 : {}, raw: snapshot };
   }
-  async patchConfig(patch, baseHash) {
-    await patchConfig(this.gateway(), patch, { baseHash, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
+  /** `base` is the snapshot the patch was built from; lists it shrinks are named by `patchConfig`. */
+  async patchConfig(patch, base) {
+    await patchConfig(this.gateway(), patch, { baseHash: base.hash, snapshot: base.raw, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
   }
   /**
    * Plugin ids this box HAS, from `openclaw plugins list --json`. Empty when it cannot say.
@@ -37951,7 +38030,8 @@ var SearchService = class _SearchService {
   /** Make OpenClaw match the desired state. One config write, and a restart only when one is needed. */
   async apply(input2) {
     this.gateway();
-    const { hash: hash2, config: config2 } = await this.config();
+    const base = await this.config();
+    const { config: config2 } = base;
     const entries = _SearchService.entriesOf(config2);
     const current = _SearchService.providerOf(config2);
     const applied = [];
@@ -37991,12 +38071,12 @@ var SearchService = class _SearchService {
       return { ok: true, applied: [], provider: current };
     }
     try {
-      await this.patchConfig(patch, hash2);
+      await this.patchConfig(patch, base);
     } catch (err) {
       const retryable = !input2.search && provider !== null && /provider is not available/i.test(err.message);
       if (!retryable) throw err;
       this.log(`[search] ${provider} is not available on this box; unsetting the provider instead`);
-      await this.patchConfig({ ...patch, tools: { web: { search: { provider: null } } } }, (await this.config()).hash);
+      await this.patchConfig({ ...patch, tools: { web: { search: { provider: null } } } }, await this.config());
       provider = null;
     }
     if (patch.tools) applied.push("provider");
@@ -38176,7 +38256,7 @@ var ConnectorsService = class {
     const snapshot = await this.gateway().call("config.get", {}, GATEWAY_READ_MS);
     const hash2 = typeof snapshot.hash === "string" ? snapshot.hash : null;
     if (!hash2) throw new Error("OpenClaw returned no config hash");
-    await patchConfig(this.gateway(), { mcpServers: { [MCP_SERVER_NAME]: entry } }, { baseHash: hash2, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
+    await patchConfig(this.gateway(), { mcpServers: { [MCP_SERVER_NAME]: entry } }, { baseHash: hash2, snapshot, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
   }
   async status() {
     let configured2 = false;
@@ -38844,6 +38924,7 @@ var AgentMailService = class {
         },
         {
           baseHash: snapshot.hash,
+          snapshot,
           timeoutMs: CONFIG_PATCH_RESTART_MS,
           readTimeoutMs: GATEWAY_READ_MS,
           // Sender edits and forgetting the inbox intentionally remove list entries.
@@ -41797,7 +41878,8 @@ function defaultPatchDeps(config2) {
 
 // src/routes/health-summary.ts
 var PROBE_TIMEOUT_MS = 3e3;
-var MODEL_PROBE_TIMEOUT_MS = 2e4;
+var MODEL_PROBE_TIMEOUT_MS = 3e4;
+var SLOW_START_MODEL_PROBE_TIMEOUT_MS = 55e3;
 function reasonOf(err) {
   const code = err?.code;
   if (code === "ETIMEOUT" || code === "ETIMEDOUT") return "timeout";
@@ -41879,6 +41961,12 @@ function providerOf(primary) {
   if (typeof primary !== "string" || !primary.includes("/")) return null;
   return primary.slice(0, primary.indexOf("/")).trim() || null;
 }
+function slowStartModel(primary) {
+  if (typeof primary !== "string") return false;
+  const at2 = primary.indexOf("@");
+  const profile = at2 >= 0 ? primary.slice(at2 + 1) : "";
+  return /chatgpt|codex/i.test(profile) || providerOf(primary) === "openai-codex";
+}
 async function gatewayConfig(deps) {
   const gw = deps.gateway();
   if (!gw) return null;
@@ -41889,21 +41977,27 @@ async function modelProbe(deps) {
   const gw = deps.gateway();
   if (!gw) return { ok: false, provider: null, reason: "no_gateway" };
   let provider;
+  let slow;
   try {
     const snapshot = await gw.call("config.get", {}, PROBE_TIMEOUT_MS * 2);
     const model = (snapshot?.parsed ?? snapshot?.config)?.agents?.defaults?.model;
-    provider = providerOf(typeof model === "string" ? model : model?.primary);
+    const primary = typeof model === "string" ? model : model?.primary;
+    provider = providerOf(primary);
+    slow = slowStartModel(primary);
   } catch {
     return { ok: false, provider: null, reason: "no_gateway" };
   }
   if (!provider) return { ok: false, provider: null, reason: "no_model" };
+  const timeoutMs = slow ? SLOW_START_MODEL_PROBE_TIMEOUT_MS : MODEL_PROBE_TIMEOUT_MS;
+  const tag2 = slow ? { slowStart: true } : {};
   try {
-    const r2 = await gw.call("models.probe", { provider, timeoutMs: MODEL_PROBE_TIMEOUT_MS }, MODEL_PROBE_TIMEOUT_MS + 5e3);
-    if (r2?.status === "ok") return { ok: true, provider, ...typeof r2.latencyMs === "number" ? { ms: r2.latencyMs } : {} };
-    return { ok: false, provider, reason: r2?.status && MODEL_STATUSES.has(r2.status) ? r2.status : "unknown" };
+    const r2 = await gw.call("models.probe", { provider, timeoutMs }, timeoutMs + 5e3);
+    if (r2?.status === "ok") return { ok: true, provider, ...typeof r2.latencyMs === "number" ? { ms: r2.latencyMs } : {}, ...tag2 };
+    return { ok: false, provider, reason: r2?.status && MODEL_STATUSES.has(r2.status) ? r2.status : "unknown", ...tag2 };
   } catch (err) {
     const msg = err instanceof Error ? err.message : "";
-    return { ok: false, provider, reason: /unknown method|not found|INVALID_REQUEST/i.test(msg) ? "unsupported" : "unknown" };
+    const reason = /unknown method|not found|INVALID_REQUEST/i.test(msg) ? "unsupported" : /timed? ?out/i.test(msg) ? "timeout" : "unknown";
+    return { ok: false, provider, reason, ...tag2 };
   }
 }
 async function handleHealthRoutes(req, res, pathname, deps) {
@@ -41979,7 +42073,7 @@ var BrainMcpService = class {
     const current = snapshot.parsed?.mcp?.servers?.[BRAIN_MCP_NAME];
     if (entry && current?.url === entry.url) return { ok: true, configured: true, changed: false };
     const hash2 = typeof snapshot.hash === "string" && snapshot.hash ? snapshot.hash : void 0;
-    await patchConfig(gw, { mcp: { servers: { [BRAIN_MCP_NAME]: entry } } }, { baseHash: hash2, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
+    await patchConfig(gw, { mcp: { servers: { [BRAIN_MCP_NAME]: entry } } }, { baseHash: hash2, snapshot, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
     return { ok: true, configured: entry !== null, changed: true };
   }
 };

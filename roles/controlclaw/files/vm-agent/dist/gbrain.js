@@ -6070,6 +6070,9 @@ function prune(revoked, now) {
   return out;
 }
 
+// src/gateway.ts
+import { isDeepStrictEqual } from "util";
+
 // src/budgets.ts
 var APPLY_RECORD_TTL_MS = 10 * 6e4;
 var SERVICE_ACTION_MS = 3e4;
@@ -6094,8 +6097,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "1083cac" : "unknown",
-  builtAt: true ? "2026-10-08T18:44:47+01:00" : "unknown"
+  commit: true ? "26116dd" : "unknown",
+  builtAt: true ? "2026-10-08T22:35:22+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6186,7 +6189,9 @@ function openClawState(unit, recentRestarts, gateway) {
   if (unit === "failed") return "failed";
   if (unit === "active") return "starting";
   if (unit === "activating" || unit === "deactivating" || unit === "reloading") return "restarting";
-  return "stopped";
+  if (gateway === true) return "running";
+  if (unit === "inactive") return "stopped";
+  return "unknown";
 }
 
 // src/routes/openclaw.ts
