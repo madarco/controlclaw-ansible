@@ -268,6 +268,9 @@ say running "ansible-pull ${REF:0:12}"
 # Where this run starts in the log. The log is appended to and begins with the box's first
 # provisioning, so a failure must be read from here on (see failure_detail).
 START=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+# Saved for the Firewall Logs page (files/cc-fw-logs run), which shows this run and not the ones
+# before it. World-readable like the state file: a byte offset.
+echo "$START" > "$(dirname "$STATE")/update-log-start.tmp" && mv "$(dirname "$STATE")/update-log-start.tmp" "$(dirname "$STATE")/update-log-start"
 ansible-pull $FULL -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
 rc=$?
 

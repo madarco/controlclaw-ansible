@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+"""Firewall logs (controlclaw apps/saas/docs/features/firewall-logs.md): the one root helper the
+mitm-agent may run to read this box's own service journals and its last update run.
+
+Granted by one sudoers line (tasks/mitmbox.yml). It only reads. The units are fixed here: the caller
+picks one of the names below or `all`, never a unit, a path or a journalctl option. Numbers are
+clamped. Secrets are masked by the mitm-agent before anything leaves the box (src/fw-redact.ts).
+
+  cc-fw-logs journal <since-seconds> <max-lines> <service|all>
+                      journalctl -o json for those units, newest <max-lines> in the window
+  cc-fw-logs run      the last update or provisioning run: /var/log/ansible-pull.log from the
+                      offset cc-reprovision saved when that run started (the whole tail when there
+                      is none, which on a box never updated is its first provisioning)
+"""
+import os
+import re
+import sys
+
+# The service names are the contract with packages/mitm-agent/src/fw-logs.ts (FW_SERVICES).
+SERVICES = {
+    "mitm-agent": ["controlclaw-mitm-agent.service"],
+    "proxy": ["controlclaw-mitmproxy.service"],
+    "caddy": ["caddy.service"],
+    "dnsmasq": ["dnsmasq.service"],
+    "tang": ["tangd.socket", "tangd@*.service"],
+    "disk": ["cc-secure.service"],
+    "team-chat": ["clickclack.service"],
+    "chrony": ["chrony.service"],
+    "tailscale": ["tailscaled.service"],
+    "update": ["cc-reprovision.service"],
+}
+FIELDS = "MESSAGE,PRIORITY,_SYSTEMD_UNIT,UNIT,SYSLOG_IDENTIFIER,_PID"
+LOG = "/var/log/ansible-pull.log"
+START = "/opt/controlclaw/state/update-log-start"
+RUN_LINES = 2000
+# A run's log is a few hundred KiB at most; anything larger is read from its last 4 MiB.
+RUN_BYTES = 4 * 1024 * 1024
+
+
+def fail(message):
+    sys.stderr.write(message + "\n")
+    sys.exit(2)
+
+
+def number(value, high):
+    if not re.fullmatch(r"[0-9]{1,7}", value or ""):
+        fail("invalid number")
+    return max(1, min(int(value), high))
+
+
+def journal(args):
+    if len(args) != 3:
+        fail("usage: cc-fw-logs journal <since-seconds> <max-lines> <service|all>")
+    since = number(args[0], 86400)
+    lines = number(args[1], 5000)
+    if args[2] == "all":
+        units = [u for group in SERVICES.values() for u in group]
+    elif args[2] in SERVICES:
+        units = SERVICES[args[2]]
+    else:
+        fail("unknown service")
+    cmd = ["journalctl", "--no-pager", "-o", "json", f"--output-fields={FIELDS}", f"--since=-{since}s", "-n", str(lines)]
+    for unit in units:
+        cmd += ["-u", unit]
+    os.execvp(cmd[0], cmd)
+
+
+def run(args):
+    if args:
+        fail("usage: cc-fw-logs run")
+    try:
+        size = os.path.getsize(LOG)
+    except OSError:
+        return
+    start = 0
+    try:
+        with open(START) as f:
+            value = f.read().strip()
+        if re.fullmatch(r"[0-9]{1,15}", value) and int(value) <= size:
+            start = int(value)
+    except OSError:
+        pass
+    cut = size - RUN_BYTES > start
+    start = max(start, size - RUN_BYTES)
+    with open(LOG, "rb") as f:
+        f.seek(start)
+        data = f.read()
+    # Cut at 4 MiB, so the first line is a partial one: drop it.
+    if cut:
+        data = data[data.find(b"\n") + 1:]
+    tail = data.split(b"\n")[-RUN_LINES - 1:]
+    sys.stdout.buffer.write(b"\n".join(tail))
+
+
+def main():
+    if len(sys.argv) < 2:
+        fail("usage: cc-fw-logs journal|run ...")
+    if sys.argv[1] == "journal":
+        return journal(sys.argv[2:])
+    if sys.argv[1] == "run":
+        return run(sys.argv[2:])
+    fail("unknown command")
+
+
+if __name__ == "__main__":
+    main()

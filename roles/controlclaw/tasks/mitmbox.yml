@@ -319,6 +319,28 @@
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop controlclaw-mitmproxy
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart controlclaw-mitmproxy
 
+# Firewall logs (controlclaw apps/saas/docs/features/firewall-logs.md): the mitm-agent reads this
+# box's own service journals and its last update run through one read-only root helper, for the
+# owner's Firewall Logs page. The units are fixed inside the helper; the mitm-agent picks a name.
+- name: Firewall logs | the read-only root helper the mitm-agent runs
+  ansible.builtin.copy:
+    src: cc-fw-logs
+    dest: /usr/local/bin/cc-fw-logs
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Firewall logs | one sudoers line for that helper, and nothing else
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-fw-logs
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      # Firewall logs: read the fixed service journals and the last update run (files/cc-fw-logs).
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-fw-logs *
+
 # --- systemd services ---
 - name: Create controlclaw-mitmproxy service
   ansible.builtin.copy:
