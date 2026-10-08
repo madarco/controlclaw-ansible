@@ -228,6 +228,9 @@ export class LiveBridge {
     }
     if (++this.lookups > MAX_LOOKUPS) { this.refuse(id, 'This call has used all its lookups. Say that plainly.'); return; }
     if (this.jobs.size > MAX_QUEUED) { this.refuse(id, 'Too many lookups are waiting. Ask again in a moment.'); return; }
+    // The consult quotes OpenClaw's recent voice lines, which get a line only after a pause: hand it
+    // what was said up to now (the agent's "let me check" included) before the lookup starts.
+    if (!this.phone) for (const role of ['user', 'assistant']) if (this[role === 'user' ? 'inputText' : 'outputText'].trim()) { clearTimeout(this[role + 'Flush']); this.flushLine(role, true); }
     // With the wake word on, only a lookup asked for in an addressed request is answered aloud.
     const job = { id, args: this.question(), answered: false, addressed: this.mayTalk(Date.now()) };
     this.lastDelegationAt = Date.now();

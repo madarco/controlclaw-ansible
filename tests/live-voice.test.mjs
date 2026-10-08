@@ -173,3 +173,13 @@ test('phone with wake words on: a tone when a request to the agent starts, anoth
  assert.ok(f.tones.every(b=>b.length>0),'tones reach the call as mu-law');f.bridge.close();
  const off=fixture('phone',PhoneLiveBridge);said(off,'user','Jarvis, hello');assert.equal(off.tones.length,0,'no tones without the wake word');off.bridge.close();
 });
+
+test('a meeting lookup hands OpenClaw the lines said up to now first, so its consult quotes them',()=>{
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['Jarvis']});
+ said(f,'user','Jarvis, what did Anna say about the budget?');said(f,'assistant','Let me check.');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ assert.deepEqual(f.transcripts.map(t=>[t[0],t[1]]),[['user','Jarvis, what did Anna say about the budget?'],['assistant','Let me check.']],'reported before the consult');
+ assert.equal(f.tools.length,1);
+ assert.match(f.tools[0].args.question,/what did Anna say/,'the request is still the question');
+ f.bridge.close();
+});
