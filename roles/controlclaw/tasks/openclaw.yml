@@ -106,6 +106,13 @@
   changed_when: false
   failed_when: false
 
+# In a double-quoted scalar on purpose: YAML turns `\\.` into the `\.` the regex needs. The same
+# expression in a `>-` block keeps both backslashes, matches nothing, and made every update stop the
+# gateway and reinstall OpenClaw from a tarball the resolver had not downloaded (T-updfail).
+- name: Read the installed OpenClaw version number
+  ansible.builtin.set_fact:
+    openclaw_installed_semver: "{{ openclaw_installed_version.stdout | default('') | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+') | default('', true) }}"
+
 # Second look for the firewall CA (main.yml looked once, at the top of the play). If the box has
 # been confined since then, npm must get the CA or it hangs for hours (see vm-agent-start.yml).
 - name: Look again for the org mitm CA before the npm steps
@@ -131,7 +138,7 @@
       - /usr/local/bin/cc-openclaw-patch
       - "{{ openclaw_version }}"
       - "{{ openclaw_host_sha512 }}"
-      - "{{ openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+') | default('', true) }}"
+      - "{{ openclaw_installed_semver }}"
       - "{{ 'true' if openclaw_auto_patch | default(true) | bool else 'false' }}"
       - /opt/controlclaw/openclaw-pinned.tgz
   register: openclaw_patch
@@ -142,14 +149,12 @@
     openclaw_resolved_version: "{{ (openclaw_patch.stdout | from_json).version }}"
 
 # The installed host must match the tested plugin pin even on an older base image.
+# The resolver's own answer decides: it downloads the tarball exactly when the version it chose is not
+# the one installed, so installing on any other condition would run npm on a file that is not there.
 - name: Decide whether the pinned OpenClaw needs installing
   ansible.builtin.set_fact:
-    openclaw_install_wanted: >-
-      {{ openclaw_installed_version.rc != 0 or
-         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_resolved_version }}
-    openclaw_upgrading: >-
-      {{ openclaw_installed_version.rc == 0 and
-         (openclaw_installed_version.stdout | regex_search('[0-9]{4}\\.[0-9]+\\.[0-9]+')) != openclaw_resolved_version }}
+    openclaw_install_wanted: "{{ (openclaw_patch.stdout | from_json).changed | bool }}"
+    openclaw_upgrading: "{{ (openclaw_patch.stdout | from_json).changed | bool and openclaw_installed_semver | length > 0 }}"
 
 # An upgrade can carry a state migration the new gateway will not run by itself (T-107). OpenClaw
 # 2026.9.7 moved the agent database from schema 23 to 24, and on a v23 database it exits
