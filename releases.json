@@ -1,0 +1,10 @@
+[
+  {
+    "version": "1.0.0",
+    "commit": "758058d7ab070378754479965aae4e0f39d9ec92",
+    "date": "2026-10-08",
+    "changes": [
+      "First numbered release: agents and firewalls now show a version instead of a build code."
+    ]
+  }
+]

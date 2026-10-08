@@ -16,6 +16,26 @@
       register: cc_release
       changed_when: false
 
+    # The version is the newest entry of this checkout's releases.json (scripts/release.sh), so a
+    # box reports the release it actually ran. An unreadable file just leaves the field out.
+    - name: Read the version this checkout is on
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - |
+            import json, os, re, subprocess, sys
+            try:
+                root = subprocess.check_output(["git", "-C", sys.argv[1], "rev-parse", "--show-toplevel"], text=True).strip()
+                v = json.load(open(os.path.join(root, "releases.json")))[0]["version"]
+            except Exception:
+                v = ""
+            print(v if isinstance(v, str) and re.fullmatch(r"\d+\.\d+\.\d+", v) else "")
+          - "{{ playbook_dir }}"
+      register: cc_version
+      changed_when: false
+      failed_when: false
+
     - name: Make sure /etc/controlclaw exists
       ansible.builtin.file:
         path: /etc/controlclaw
@@ -33,6 +53,7 @@
         content: |
           {
             "commit": "{{ cc_release.stdout_lines[0] }}",
+            {{ ('"version": "' ~ cc_version.stdout ~ '",') if cc_version.stdout | default('') else '' }}
             "commitDate": "{{ cc_release.stdout_lines[1] }}",
             "installedAt": "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
           }
