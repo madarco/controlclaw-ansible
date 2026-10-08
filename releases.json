@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.2.0",
+    "date": "2026-10-08",
+    "changes": [
+      "Your firewall has a Logs page that shows each of its services and the last update.",
+      "Download workspace saves a readable copy of your agent: its files, memory, conversations, meetings and calls."
+    ]
+  },
+  {
     "version": "1.1.0",
     "date": "2026-10-08",
     "changes": [
