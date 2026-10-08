@@ -28395,8 +28395,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "a2b70ae" : "unknown",
-  builtAt: true ? "2026-10-07T15:47:03+01:00" : "unknown"
+  commit: true ? "9ffacfc" : "unknown",
+  builtAt: true ? "2026-10-08T10:31:38+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -31738,7 +31738,13 @@ var MeetingService = class {
           }
         }
       },
-      { baseHash: snapshot.hash, timeoutMs: 6e4 }
+      {
+        baseHash: snapshot.hash,
+        timeoutMs: 6e4,
+        // OpenClaw refuses a patch that drops array entries unless the path is named: replacing or
+        // removing a wake name would otherwise fail and leave the old names in place (as phone does).
+        ...speech ? { replacePaths: ["plugins.entries.google-meet.config.realtime.providers.cc-meeting-voice.wake.words"] } : {}
+      }
     );
     this.applied = input2;
     this.save();
@@ -32409,7 +32415,8 @@ async function handleMeetings(req, res, url3, service, context) {
       const body = await readJsonBody(req);
       if (!body) return sendJson(res, 400, { error: "Invalid request" });
       sendJson(res, 200, await service.apply(body));
-    } catch {
+    } catch (error62) {
+      console.error(`[meetings] settings were not applied: ${error62 instanceof Error ? error62.message.slice(0, 300) : "unknown error"}`);
       sendJson(res, 409, {
         error: "Meetings settings could not be applied. Update the agent and check its size."
       });
