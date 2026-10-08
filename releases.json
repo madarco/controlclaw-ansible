@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.2.1",
+    "date": "2026-10-08",
+    "changes": [
+      "Changing or removing a fallback model works, and a change the agent refuses now says so.",
+      "The health check no longer fails on slow ChatGPT models, and shows OpenClaw status unknown instead of stopped.",
+      "Firewall Logs loads on older firewalls, and says when the firewall needs an update."
+    ]
+  },
+  {
     "version": "1.2.0",
     "date": "2026-10-08",
     "changes": [
