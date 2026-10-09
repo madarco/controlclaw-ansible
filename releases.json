@@ -1,5 +1,16 @@
 [
   {
+    "version": "1.3.0",
+    "date": "2026-10-09",
+    "changes": [
+      "Website logins: save logins on the firewall, and your agents sign in to sites without ever seeing the password.",
+      "Your agent can ask you for a login with a secure link instead of in chat, and handles two-step codes.",
+      "Firewall Doctor repairs the firewall itself, even when its pages are down.",
+      "Doctor works when an agent's management service is down, and can be started from the firewall.",
+      "The firewall no longer fills its log with thousands of disk-key checks."
+    ]
+  },
+  {
     "version": "1.2.1",
     "date": "2026-10-08",
     "changes": [
