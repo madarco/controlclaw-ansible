@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.3.2",
+    "date": "2026-10-09",
+    "changes": [
+      "Doctor offers a list of current models, starting on GPT-6.1 Sol, and opens with the agent you came from.",
+      "Each agent's pages have a Doctor link, and the firewall's Logs page links to Doctor."
+    ]
+  },
+  {
     "version": "1.3.1",
     "date": "2026-10-09",
     "changes": [
