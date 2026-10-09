@@ -33914,8 +33914,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "a0343ae" : "unknown",
-  builtAt: true ? "2026-10-09T11:41:16+01:00" : "unknown"
+  commit: true ? "9447314" : "unknown",
+  builtAt: true ? "2026-10-09T18:01:58+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -37884,6 +37884,140 @@ function summarizeMeeting(captions, signal) {
     child.stdin.end(text2);
   });
 }
+
+// src/meeting-mic.ts
+var MIC_SCRIPT = `(() => {
+  const md = navigator.mediaDevices;
+  if (!md || md.__ccMic) return;
+  if (window === window.top && document.scripts.length > 0) {
+    let again = false;
+    try { again = sessionStorage.getItem('__ccMicReload') === '1'; sessionStorage.setItem('__ccMicReload', '1'); } catch { again = true; }
+    if (!again) { location.reload(); return; }
+  }
+  Object.defineProperty(md, '__ccMic', { value: true });
+  const KEYS = ['echoCancellation', 'noiseSuppression'];
+  const strip = (o) => {
+    const c = { ...o };
+    for (const k of KEYS) delete c[k];
+    for (const k of Object.keys(c)) if (/^goog/i.test(k)) delete c[k];
+    return c;
+  };
+  const audio = (a) => {
+    const c = a && typeof a === 'object' ? strip(a) : {};
+    if (Array.isArray(c.advanced)) c.advanced = c.advanced.map((x) => x && typeof x === 'object' ? strip(x) : x);
+    for (const k of KEYS) c[k] = false;
+    return c;
+  };
+  const getUserMedia = md.getUserMedia.bind(md);
+  md.getUserMedia = (c) => getUserMedia(c && c.audio ? { ...c, audio: audio(c.audio) } : c);
+  const apply = MediaStreamTrack.prototype.applyConstraints;
+  MediaStreamTrack.prototype.applyConstraints = function (c) {
+    return apply.call(this, this.kind === 'audio' && c && typeof c === 'object' ? audio(c) : c);
+  };
+})();`;
+var MeetingMic = class {
+  constructor(opts = {}) {
+    this.opts = opts;
+  }
+  ws = null;
+  id = 0;
+  retry = null;
+  /** Commands whose answer something waits for, by id. */
+  waiting = /* @__PURE__ */ new Map();
+  closed = false;
+  get cdp() {
+    return this.opts.cdp ?? "http://127.0.0.1:9223";
+  }
+  connected() {
+    return !!this.ws;
+  }
+  async start() {
+    if (this.ws || this.closed) return;
+    const response = await (this.opts.fetchImpl ?? fetch)(`${this.cdp}/json/version`, { signal: AbortSignal.timeout(3e3) });
+    const url3 = (await response.json()).webSocketDebuggerUrl;
+    if (typeof url3 !== "string" || !/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\//.test(url3)) throw new Error("Meeting browser debugger not found");
+    const ws = (this.opts.connect ?? ((u2) => new wrapper_default(u2, { maxPayload: 4 * 1024 * 1024 })))(url3);
+    await new Promise((resolve3, reject) => {
+      const timer = setTimeout(() => {
+        ws.close();
+        reject(new Error("Meeting browser debugger timed out"));
+      }, 5e3);
+      ws.on("open", () => {
+        clearTimeout(timer);
+        resolve3();
+      });
+      ws.on("error", () => {
+        clearTimeout(timer);
+        reject(new Error("Meeting browser debugger failed"));
+      });
+    });
+    if (this.closed) {
+      ws.close();
+      return;
+    }
+    this.ws = ws;
+    ws.on("message", (data) => this.message(String(data)));
+    ws.on("close", () => {
+      if (this.ws !== ws) return;
+      this.ws = null;
+      this.waiting.clear();
+      if (this.closed) return;
+      console.warn("[meetings] microphone settings: debugger connection dropped, connecting again");
+      this.retry = setTimeout(() => {
+        this.retry = null;
+        void this.start().catch(() => void 0);
+      }, this.opts.retryMs ?? 1e3);
+      this.retry.unref?.();
+    });
+    const answered = await new Promise((resolve3) => {
+      const timer = setTimeout(() => resolve3(false), 5e3);
+      this.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, void 0, () => {
+        clearTimeout(timer);
+        resolve3(true);
+      });
+    });
+    if (!answered) throw new Error("Meeting browser debugger did not answer");
+  }
+  close() {
+    this.closed = true;
+    if (this.retry) clearTimeout(this.retry);
+    this.ws?.close();
+    this.ws = null;
+    this.waiting.clear();
+  }
+  send(method, params = {}, sessionId, then) {
+    const id = ++this.id;
+    if (then) this.waiting.set(id, then);
+    this.ws?.send(JSON.stringify({ id, method, params, ...sessionId ? { sessionId } : {} }));
+  }
+  message(data) {
+    if (data.length > 4 * 1024 * 1024) return;
+    let msg;
+    try {
+      msg = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (typeof msg.id === "number") {
+      const then = this.waiting.get(msg.id);
+      this.waiting.delete(msg.id);
+      then?.();
+      return;
+    }
+    if (msg.method !== "Target.attachedToTarget" || typeof msg.params?.sessionId !== "string") return;
+    const sessionId = msg.params.sessionId, type = msg.params.targetInfo?.type;
+    const resume = () => {
+      this.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId);
+      this.send("Runtime.runIfWaitingForDebugger", {}, sessionId);
+    };
+    if (type !== "page" && type !== "iframe") {
+      resume();
+      return;
+    }
+    this.send("Page.enable", {}, sessionId);
+    this.send("Page.addScriptToEvaluateOnNewDocument", { source: MIC_SCRIPT, runImmediately: true }, sessionId, resume);
+  }
+};
 
 // ../meetings/src/archive.ts
 var MEETINGS_PAGE_SIZE = 20;
@@ -42552,6 +42686,7 @@ var channels = null;
 var llm = null;
 var search = null;
 var meetings = null;
+var meetingMic = null;
 var connectors = null;
 var drive = null;
 var google = null;
@@ -42833,13 +42968,23 @@ server.listen(PORT, BIND, () => {
       const marker = `${STATE_DIR}/meeting-browser-voice`;
       if (start && voice) writeFileSync20(marker, "bidi", { mode: 384 });
       else rmSync7(marker, { force: true });
+      meetingMic?.close();
+      meetingMic = null;
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
       if (!start) return;
       const deadline = Date.now() + 15e3;
       while (Date.now() < deadline) {
         try {
           const response = await fetch("http://127.0.0.1:9223/json/version", { signal: AbortSignal.timeout(1e3) });
-          if (response.ok && typeof (await response.json()).webSocketDebuggerUrl === "string") return;
+          if (response.ok && typeof (await response.json()).webSocketDebuggerUrl === "string") {
+            if (voice) {
+              const mic = meetingMic = new MeetingMic();
+              await mic.start().catch((error62) => {
+                console.warn(`[meetings] microphone settings not applied: ${error62 instanceof Error ? error62.message : "unknown error"}`);
+              });
+            }
+            return;
+          }
         } catch {
         }
         await new Promise((resolve3) => setTimeout(resolve3, 250));
