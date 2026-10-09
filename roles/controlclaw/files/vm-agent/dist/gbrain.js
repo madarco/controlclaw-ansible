@@ -912,6 +912,7 @@ var ICONS = {
   logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
   whatsapp: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  doctor: '<path d="M11 2v2"/><path d="M5 2v2"/><path d="M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1"/><path d="M8 15a6 6 0 0 0 12 0v-3"/><circle cx="20" cy="10" r="2"/>',
   back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
 };
@@ -930,6 +931,13 @@ function agentNameOf(hostname) {
 function consoleAgentUrl(consoleOrigin2, vmId) {
   const origin = consoleOrigin2 ?? "https://controlclaw.com";
   return vmId ? `${origin}/dashboard/agents/${encodeURIComponent(vmId)}` : `${origin}/dashboard/agents`;
+}
+function consoleDoctorUrl(consoleOrigin2, vmId) {
+  const origin = consoleOrigin2 ?? "https://controlclaw.com";
+  return vmId ? `${origin}/dashboard/doctor/firewall?vm=${encodeURIComponent(vmId)}` : `${origin}/dashboard/doctor/firewall`;
+}
+function isDoctorPath(pathname) {
+  return pathname === "/__cc/doctor" || pathname.startsWith("/__cc/doctor/");
 }
 var NAV = [
   { page: "meetings", label: "Meetings", href: "/__cc/meetings", when: "meetings" },
@@ -963,7 +971,8 @@ function shellPage(opts) {
     const on = item.page === opts.active;
     return `<a href="${item.href}"${on ? ' aria-current="page"' : ""} class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] ${on ? "bg-surface font-semibold text-ink shadow-sm" : "text-ink-2 hover:bg-bg"}">${icon(item.page, `h-4 w-4 shrink-0 ${on ? "text-brand" : "text-ink-2"}`)}<span>${item.label}</span></a>`;
   }).join("");
-  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
+  const doctor = opts.ctx.doctorUrl ? `<a href="${escapeHtml(opts.ctx.doctorUrl)}" class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] text-ink-2 hover:bg-bg">${icon("doctor", "h-4 w-4 shrink-0 text-ink-2")}<span>Doctor</span></a>` : "";
+  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}${doctor}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
 }
 function shellBarePage(opts) {
   return head(opts.title, opts.css ? `<style>${opts.css}</style>` : "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_1fr]">${header(opts.ctx)}<div class="grid place-items-center px-4 py-8"><main class="w-full max-w-[26rem] rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8">${opts.body}</main></div></div>${opts.script ? `<script>${opts.script}</script>` : ""}</body></html>`;
@@ -6164,8 +6173,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "104a810" : "unknown",
-  builtAt: true ? "2026-10-09T08:39:45+01:00" : "unknown"
+  commit: true ? "a0343ae" : "unknown",
+  builtAt: true ? "2026-10-09T11:41:16+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -7332,9 +7341,12 @@ function setConsolePage(path) {
 }
 function shellContext() {
   const origin = allowedOrigins().console;
+  const vmId = readKey("vm_id") ?? "";
   return {
     hostname: readKey("vm_hostname"),
-    consoleUrl: consolePage ? `${origin ?? "https://controlclaw.com"}${consolePage}` : consoleAgentUrl(origin, readKey("vm_id") ?? "")
+    consoleUrl: consolePage ? `${origin ?? "https://controlclaw.com"}${consolePage}` : consoleAgentUrl(origin, vmId),
+    // Doctor repairs agents; a brain box (which sets its own console page) has none.
+    doctorUrl: consolePage ? null : consoleDoctorUrl(origin, vmId)
   };
 }
 function shell(title, body, script = "") {
@@ -7773,6 +7785,14 @@ async function handleAccess(req, res, pathname, opts = {}) {
   if (opts.only && !opts.only.has(pathname)) {
     json(res, 404, { error: "Not found" });
     return;
+  }
+  if (isDoctorPath(pathname) && (req.method === "GET" || req.method === "HEAD")) {
+    const target = shellContext().doctorUrl;
+    if (target) {
+      res.writeHead(303, { Location: target, "Cache-Control": "no-store" });
+      res.end();
+      return;
+    }
   }
   if (pathname === "/__cc/login" && req.method === "GET") {
     html(res, 200, loginPage(readKey("vm_hostname"), opts.steps));
