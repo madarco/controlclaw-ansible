@@ -35220,7 +35220,7 @@ var LOWER = "abcdefghijkmnopqrstuvwxyz";
 var UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 var DIGIT = "23456789";
 var SYMBOL = "-_.";
-var PLACEHOLDER_MIN = 8;
+var PLACEHOLDER_MIN = 4;
 var PLACEHOLDER_MAX = 128;
 function placeholderClasses(password) {
   const classes = [];
@@ -35231,23 +35231,32 @@ function placeholderClasses(password) {
   if (!classes.length || classes.length === 1 && classes[0] === SYMBOL) classes.unshift(LOWER);
   return classes;
 }
+function placeholderLength(password) {
+  return Math.min(PLACEHOLDER_MAX, Math.max(PLACEHOLDER_MIN, [...password].length));
+}
 function makePlaceholder(password, pick2 = randomInt2) {
-  const length = Math.min(PLACEHOLDER_MAX, Math.max(PLACEHOLDER_MIN, [...password].length));
+  const length = placeholderLength(password);
   const classes = placeholderClasses(password);
   const all = classes.join("");
-  const letters = classes.filter((c2) => c2 !== SYMBOL).join("");
+  const plain = classes.filter((c2) => c2 !== SYMBOL);
   const char = (pool) => pool[pick2(pool.length)];
-  const middle = classes.map(char);
+  let first = char(plain.join(""));
+  let last = char(plain.join(""));
+  const missing = () => classes.filter((pool) => !pool.includes(first) && !pool.includes(last));
+  if (missing().length > length - 2) {
+    first = char(plain[0]);
+    last = char(plain[1 % plain.length]);
+  }
+  const middle = missing().map(char);
   while (middle.length < length - 2) middle.push(char(all));
   for (let i2 = middle.length - 1; i2 > 0; i2--) {
     const j2 = pick2(i2 + 1);
     [middle[i2], middle[j2]] = [middle[j2], middle[i2]];
   }
-  return char(letters) + middle.join("") + char(letters);
+  return first + middle.join("") + last;
 }
 function placeholderFits(placeholder, password) {
-  const length = Math.min(PLACEHOLDER_MAX, Math.max(PLACEHOLDER_MIN, [...password].length));
-  if (placeholder.length !== length) return false;
+  if (placeholder.length !== placeholderLength(password)) return false;
   const want = placeholderClasses(password);
   return [LOWER, UPPER, DIGIT, SYMBOL].every((pool) => want.includes(pool) === [...placeholder].some((c2) => pool.includes(c2)));
 }
@@ -35612,8 +35621,9 @@ var LoginsFirewall = class {
       return { error: "Your browser did not answer. Make sure the sign-in page is open, click into the password field, then try again." };
     }
     if (out.ok !== true) {
-      const why = out.reason === "site" ? `The page with the focused field is not one of this login's sites (${login.sites.join(", ")}).` : "Click into the password field on the sign-in page first, then call login_type again.";
-      this.record({ vmId, path: "/type", rule: `login ${login.name}: not typed (${out.reason === "site" ? "another site" : "no password field"})`, login: login.name, effect: "block" });
+      const why = out.reason === "site" ? `The page with the focused field is not one of this login's sites (${login.sites.join(", ")}).` : out.reason === "changed" ? "The page changed while the password was about to be typed (the focus moved or another page loaded), so nothing was typed. Click into the password field on the sign-in page, then call login_type again." : "Click into the password field on the sign-in page first, then call login_type again.";
+      const label = out.reason === "site" ? "another site" : out.reason === "changed" ? "the page changed" : "no password field";
+      this.record({ vmId, path: "/type", rule: `login ${login.name}: not typed (${label})`, login: login.name, effect: "block" });
       return { error: why };
     }
     login.lastUsedAt = this.iso();
@@ -98053,8 +98063,8 @@ import { uptime } from "os";
 import { existsSync as existsSync16, readFileSync as readFileSync21 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "95922ce" : "unknown",
-  builtAt: true ? "2026-10-09T07:30:32+01:00" : "unknown"
+  commit: true ? "104a810" : "unknown",
+  builtAt: true ? "2026-10-09T08:39:45+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

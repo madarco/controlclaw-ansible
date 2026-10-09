@@ -33894,8 +33894,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "95922ce" : "unknown",
-  builtAt: true ? "2026-10-09T07:30:32+01:00" : "unknown"
+  commit: true ? "104a810" : "unknown",
+  builtAt: true ? "2026-10-09T08:39:45+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -38930,16 +38930,32 @@ async function withBrowser(fn) {
     ws.close();
   }
 }
-var PROBE = `(() => {
-  let a = document.activeElement;
+var DEEP_ACTIVE = `function deepActive(d) {
+  let a = d.activeElement;
   for (let i = 0; i < 10 && a; i++) {
     if (a.shadowRoot && a.shadowRoot.activeElement) { a = a.shadowRoot.activeElement; continue; }
-    if (a.tagName === "IFRAME") { try { const d = a.contentDocument; if (d && d.activeElement) { a = d.activeElement; continue; } } catch {} }
+    if (a.tagName === "IFRAME") { try { const f = a.contentDocument; if (f && f.activeElement) { a = f.activeElement; continue; } } catch {} }
     break;
   }
-  const loc = (a && a.ownerDocument && a.ownerDocument.location) || location;
-  return { focus: document.hasFocus(), field: !!a && a.tagName === "INPUT" && a.type === "password", host: loc.hostname, https: loc.protocol === "https:" };
-})()`;
+  return a;
+}`;
+var FIND = `(() => { ${DEEP_ACTIVE}; return deepActive(document); })()`;
+var LOOK = `function () {
+  const loc = this.ownerDocument.location;
+  return { focus: document.hasFocus(), field: this.tagName === "INPUT" && this.type === "password", host: loc.hostname, https: loc.protocol === "https:" };
+}`;
+var checkThen = (then) => `function (password, sites) {
+  ${DEEP_ACTIVE}
+  let root = this.ownerDocument;
+  for (let i = 0; i < 10; i++) { const f = root.defaultView && root.defaultView.frameElement; if (!f) break; root = f.ownerDocument; }
+  const loc = this.ownerDocument.location;
+  const host = String(loc.hostname).toLowerCase().replace(/\\.$/, "");
+  const site = sites.some((s) => (s.startsWith("*.") ? host.endsWith(s.slice(1)) && host !== s.slice(2) : host === s));
+  if (!this.isConnected || deepActive(root) !== this || !root.hasFocus() || this.tagName !== "INPUT" || this.type !== "password" || loc.protocol !== "https:" || !site) return "changed";
+  ${then}
+}`;
+var CHECK_AND_TYPE = checkThen(`return this.ownerDocument.execCommand("insertText", false, password) ? "typed" : "unsupported";`);
+var CHECK = checkThen(`return "same";`);
 var BrowserLogins = class {
   async openTab(url3) {
     await withBrowser(async (send2) => {
@@ -38948,7 +38964,8 @@ var BrowserLogins = class {
   }
   /**
    * Type `password` into the password field that has focus, on a page that is one of `sites`.
-   * `field`: no page has a focused password field. `site`: it does, on another site.
+   * `field`: no page has a focused password field. `site`: it does, on another site. `changed`: it
+   * did, but the page changed before the typing (focus moved, another page loaded); nothing typed.
    */
   async type(password, sites) {
     return withBrowser(async (send2) => {
@@ -38956,18 +38973,34 @@ var BrowserLogins = class {
       let wrongSite = false;
       for (const t2 of (targetInfos ?? []).filter((i2) => i2.type === "page" || i2.type === "iframe")) {
         let sessionId = null;
+        let found = false;
         try {
           ({ sessionId } = await send2("Target.attachToTarget", { targetId: t2.targetId, flatten: true }));
-          const probe2 = await send2("Runtime.evaluate", { expression: PROBE, returnByValue: true }, sessionId);
-          const v2 = probe2.result?.value;
+          const focused = await send2("Runtime.evaluate", { expression: FIND, returnByValue: false }, sessionId);
+          const objectId = focused.result?.objectId;
+          if (!objectId) continue;
+          const look = await send2("Runtime.callFunctionOn", { objectId, functionDeclaration: LOOK, returnByValue: true }, sessionId);
+          const v2 = look.result?.value;
           if (!v2?.field || !v2.focus) continue;
           if (!v2.https || !hostIsSite(v2.host ?? "", sites)) {
             wrongSite = true;
             continue;
           }
+          found = true;
+          const typed = await send2(
+            "Runtime.callFunctionOn",
+            { objectId, functionDeclaration: CHECK_AND_TYPE, arguments: [{ value: password }, { value: sites }], returnByValue: true },
+            sessionId
+          );
+          const outcome = typed.result?.value;
+          if (outcome === "typed") return { ok: true };
+          if (outcome !== "unsupported") return { ok: false, reason: "changed" };
+          const again = await send2("Runtime.callFunctionOn", { objectId, functionDeclaration: CHECK, arguments: [{ value: "" }, { value: sites }], returnByValue: true }, sessionId);
+          if (again.result?.value !== "same") return { ok: false, reason: "changed" };
           await send2("Input.insertText", { text: password }, sessionId);
           return { ok: true };
         } catch {
+          if (found) return { ok: false, reason: "changed" };
           continue;
         } finally {
           if (sessionId) await send2("Target.detachFromTarget", { sessionId }).catch(() => {
