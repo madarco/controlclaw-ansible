@@ -532,8 +532,9 @@ def credentials_for(host: str, vm_id: str | None = None) -> list[dict[str, Any]]
     still get the org credential."""
     by_placeholder: dict[str, dict[str, Any]] = {}
     for c in _creds.get():
-        if c.get("secret_name"):
-            # Custom secrets never inherit org fallback or legacy broad swap locations.
+        if c.get("secret_name") or c.get("login_id"):
+            # Custom secrets and website logins never inherit org fallback or legacy broad swap
+            # locations: one agent, the hosts they were given, and nothing else.
             if not c.get("vm_id") or c["vm_id"] != vm_id:
                 continue
             if not any(secret_host_matches(pattern, host) for pattern in c.get("allowed_hosts", [])):
@@ -1673,6 +1674,209 @@ def phone_settle(flow):
         pass
 
 
+# ----- website logins (docs/plans/website-credentials.md) ----------------------
+#
+# An agent types a login's placeholder into a sign-in form; the real password goes in here, on the
+# way out, only to the login's own sites (`allowed_hosts`) and only for that agent. The placeholder
+# is made of letters, digits and `-_.` (packages/mitm-agent/src/logins-placeholder.ts), so it reads
+# the same in a form, a query string, JSON, or JSON inside a form: finding it is a substring search,
+# and only the replacement has to be escaped for where it sits.
+
+LOGIN_TRIPWIRE_RULE = "login_tripwire"
+# Responses larger than this are not searched for an echoed password.
+LOGIN_REDACT_MAX = 2 * 1024 * 1024
+
+
+def _json_levels(text: str, at: int) -> int:
+    """How many JSON strings the text at `at` sits inside, read off the quote that opens it.
+
+    `"PH"` is one string, `\\"PH\\"` (a JSON string inside a JSON string, as Google's sign-in
+    sends it inside a form field) two, and so on: the quote of a string k levels deep has
+    2^(k-1) - 1 backslashes in front of it. The search stops at a line break, which a JSON string
+    cannot hold, so a multipart part or a plain form value counts as no string at all. It reads the
+    nearest quote, so a password typed after an escaped quote in the same string is escaped once too
+    often; sign-in forms send the password as a value of its own."""
+    i = at - 1
+    while i >= 0 and text[i] not in "\"\r\n":
+        i -= 1
+    if i < 0 or text[i] != '"':
+        return 0
+    n = 0
+    j = i - 1
+    while j >= 0 and text[j] == "\\":
+        n += 1
+        j -= 1
+    return (n + 1).bit_length()
+
+
+def _json_escape(value: str, levels: int) -> str:
+    for _ in range(levels):
+        value = json.dumps(value, ensure_ascii=False)[1:-1]
+    return value
+
+
+def swap_login_text(text: str, placeholder: str, secret: str) -> str:
+    """Every occurrence of `placeholder` in `text`, replaced by `secret` escaped for where it sits."""
+    out: list[str] = []
+    start = 0
+    for m in _placeholder_re(placeholder).finditer(text):
+        out.append(text[start:m.start()])
+        out.append(_json_escape(secret, _json_levels(text, m.start())))
+        start = m.end()
+    out.append(text[start:])
+    return "".join(out)
+
+
+def swap_login_form(body: str, placeholder: str, secret: str) -> str:
+    """A form body: only the fields that hold the placeholder are decoded, swapped and re-encoded,
+    so every other byte stays exactly as the page sent it."""
+    from urllib.parse import quote_plus, unquote_plus
+    parts = body.split("&")
+    for i, part in enumerate(parts):
+        key, eq, value = part.partition("=")
+        if not eq:
+            continue
+        decoded = unquote_plus(value)
+        if _placeholder_re(placeholder).search(decoded):
+            parts[i] = f"{key}={quote_plus(swap_login_text(decoded, placeholder, secret), safe='*')}"
+    return "&".join(parts)
+
+
+def _login_entries() -> list[dict[str, Any]]:
+    return [c for c in _creds.get() if c.get("login_id") and c.get("placeholder")]
+
+
+def _placeholder_re(placeholder: str) -> "re.Pattern[str]":
+    """How a placeholder is found. Letters make a placeholder unmistakable; an all-digit one (for an
+    all-digit password) would also match inside any longer number, so it has to stand alone."""
+    if placeholder.isdigit():
+        return re.compile(r"(?<![0-9])" + placeholder + r"(?![0-9])")
+    return re.compile(re.escape(placeholder))
+
+
+def _integration_host(host: str, vm_id: str | None) -> bool:
+    """A host the firewall swaps one of this agent's OWN integration credentials into: its model
+    provider, its chat channels, its mail. The agent's conversation travels there, and a placeholder
+    it was handed is part of that conversation (a tool result, a message it writes), so the tripwire
+    must not fire on it. The placeholder carries no secret, so nothing is lost by letting it pass."""
+    return any(not c.get("login_id") for c in credentials_for(host, vm_id))
+
+
+def login_tripwire(flow: http.HTTPFlow, vm_id: str | None = None) -> dict[str, Any] | None:
+    """A login whose placeholder this request carries to a host that is not one of its sites.
+
+    The swap is what keeps a password where it belongs; this is the alarm. A placeholder going
+    anywhere else means the agent was talked into it (prompt injection, a look-alike domain), and the
+    people running it should hear about it. The request is refused so the attempt is visible."""
+    entries = _login_entries()
+    if not entries:
+        return None
+    host = flow.request.pretty_host
+    if CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, host):
+        return None
+    if _integration_host(host, vm_id):
+        return None
+    try:
+        body = flow.request.get_text(strict=False) or ""
+    except ValueError:
+        body = ""
+    url = flow.request.path
+    headers = "\n".join(v for _, v in flow.request.headers.items(multi=True))
+    for c in entries:
+        found = _placeholder_re(c["placeholder"])
+        if not (found.search(url) or found.search(body) or found.search(headers)):
+            continue
+        if any(secret_host_matches(pattern, host) for pattern in c.get("allowed_hosts", [])):
+            continue
+        return c
+    return None
+
+
+def _login_destination_ok(flow: http.HTTPFlow, host: str) -> bool:
+    """The swap may only go to the name the client asked for (same rule as custom secrets): the TLS
+    names must match the host, and behind redsocks an IP authority is re-pointed at that name."""
+    authority = flow.request.host.lower().rstrip(".")
+    destination = host.lower().rstrip(".")
+    client_sni = getattr(flow.client_conn, "sni", None)
+    server_sni = getattr(flow.server_conn, "sni", None)
+    if any(sni and sni.lower().rstrip(".") != destination for sni in (client_sni, server_sni)):
+        return False
+    if authority != destination:
+        try:
+            ipaddress.ip_address(authority)
+        except ValueError:
+            return False
+        if flow.request.scheme != "https" or not client_sni:
+            return False
+        flow.request.host = host
+        flow.server_conn = connection.Server(address=(host, flow.request.port), sni=host)
+    return True
+
+
+def apply_login_swap(flow: http.HTTPFlow, cred: dict[str, Any], host: str) -> bool:
+    placeholder = cred.get("placeholder") or ""
+    secret = _secret_value(cred) or ""
+    if not placeholder or not secret:
+        return False
+    try:
+        body = flow.request.get_text(strict=False) or ""
+    except ValueError:
+        body = ""
+    found = _placeholder_re(placeholder)
+    in_query = any(found.search(v) for v in flow.request.query.values())
+    in_body = bool(found.search(body))
+    if not in_body and not in_query:
+        return False
+    if not _login_destination_ok(flow, host):
+        return False
+    if in_query:
+        for k in list(flow.request.query.keys()):
+            values = flow.request.query.get_all(k)
+            if any(found.search(v) for v in values):
+                flow.request.query.set_all(k, [swap_login_text(v, placeholder, secret) for v in values])
+    if in_body:
+        ctype = (flow.request.headers.get("content-type") or "").lower()
+        if ctype.startswith("application/x-www-form-urlencoded"):
+            flow.request.set_text(swap_login_form(body, placeholder, secret))
+        else:
+            flow.request.set_text(swap_login_text(body, placeholder, secret))
+    return True
+
+
+def redact_login_response(flow: http.HTTPFlow) -> None:
+    """A site that echoes the password back (rare, but it happens on error pages) must not hand the
+    agent what the swap kept from it: the real value goes back to the placeholder."""
+    swaps = flow.metadata.get("cc_login_pairs") or []
+    if not swaps or not flow.response or not flow.response.raw_content:
+        return
+    if len(flow.response.raw_content) > LOGIN_REDACT_MAX:
+        return
+    from urllib.parse import quote, quote_plus
+    try:
+        text = flow.response.get_text(strict=False)
+    except ValueError:
+        return
+    if text is None:
+        return
+    changed = text
+    for secret, placeholder in swaps:
+        forms = {secret, quote(secret, safe=""), quote_plus(secret), _json_escape(secret, 1), _json_escape(secret, 2), json.dumps(secret)[1:-1]}
+        # Longest first, so a JSON spelling is replaced whole before the plain value inside it.
+        for form in sorted(forms, key=len, reverse=True):
+            if form and form in changed:
+                changed = changed.replace(form, placeholder)
+    if changed != text:
+        flow.response.set_text(changed)
+    # Per name, all values at once: assigning one would collapse repeated headers (Set-Cookie).
+    for name in {k.lower() for k in flow.response.headers.keys()}:
+        values = flow.response.headers.get_all(name)
+        cleaned = values
+        for secret, placeholder in swaps:
+            cleaned = [v.replace(secret, placeholder) for v in cleaned]
+        if cleaned != values:
+            flow.response.headers.set_all(name, cleaned)
+
+
 def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str, str]]:
     """Replace placeholders with real secrets, domain-scoped (+ vm-scoped with org fallback).
     Returns [(secret, placeholder)] pairs applied, for later log redaction."""
@@ -1694,6 +1898,13 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
             if authorization[:7].lower() == "bearer " and authorization[7:] == placeholder:
                 flow.request.headers["authorization"] = "Bearer " + secret
                 applied.append((secret, placeholder))
+            continue
+        if cred.get("login_id"):
+            if apply_login_swap(flow, cred, host):
+                applied.append((secret, placeholder))
+                flow.metadata.setdefault("cc_login_swaps", []).append(str(cred.get("login_name") or "login"))
+                flow.metadata.setdefault("cc_login_pairs", []).append((secret, placeholder))
+                log.info("[mitm] login=%s host=%s verdict=swapped", cred.get("login_id"), host)
             continue
         if cred.get("secret_name"):
             # Behind redsocks the routing authority is an IP. Require the client's
@@ -3192,6 +3403,22 @@ async def request(flow: http.HTTPFlow) -> None:
         flow.metadata["cc_rule"] = UPDATE_RULE
         return
 
+    tripped = login_tripwire(flow, vm_id)
+    if tripped is not None:
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = LOGIN_TRIPWIRE_RULE
+        flow.response = http.Response.make(
+            BLOCK_STATUS,
+            json.dumps({"error": "login_sent_to_another_site", "host": host,
+                        "message": "This password placeholder only works on the login's own sites. The firewall blocked it and recorded the attempt."}),
+            {"Content-Type": "application/json"},
+        )
+        rec = _http_record(flow, "block")
+        rec.update({"status": BLOCK_STATUS, "login": str(tripped.get("login_name") or "login")[:64]})
+        _log_once(flow, rec)
+        log.warning("[mitm] login=%s host=%s verdict=tripwire", tripped.get("login_id"), host)
+        return
+
     rule = match_rule(host, method, path, vm_id)
     effect = (rule or {}).get("effect", "allow")
     flow.metadata["cc_effect"] = effect
@@ -3367,7 +3594,10 @@ async def request(flow: http.HTTPFlow) -> None:
 
 def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
     rec = _http_record(flow, "allow")
-    rec["swapped"] = [p for _, p in flow.metadata.get("cc_applied", []) if not p.startswith("CC-SEC-")] + flow.metadata.get("cc_secret_swaps", [])
+    login_pairs = {p for _, p in flow.metadata.get("cc_login_pairs", [])}
+    rec["swapped"] = [p for _, p in flow.metadata.get("cc_applied", []) if not p.startswith("CC-SEC-") and p not in login_pairs] + flow.metadata.get("cc_secret_swaps", [])
+    if flow.metadata.get("cc_login_swaps"):
+        rec["login"] = flow.metadata["cc_login_swaps"][0][:64]
     if flow.metadata.get("cc_granted"):
         rec["permission_id"] = flow.metadata["cc_granted"]
     req_raw = flow.request.raw_content
@@ -3391,6 +3621,7 @@ def response(flow: http.HTTPFlow) -> None:
         _phone_settle_tasks.add(task)
         task.add_done_callback(_phone_settle_tasks.discard)
     voice_response(flow)
+    redact_login_response(flow)
     if flow.metadata.get("cc_exit_http"):
         rec = _residential_http_record(flow)
         rec.update({"status": flow.response.status_code,

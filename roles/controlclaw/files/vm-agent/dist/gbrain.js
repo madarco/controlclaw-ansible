@@ -903,6 +903,73 @@ async function importPKCS8(pkcs8, alg, options) {
   return fromPKCS8(pkcs8, alg, options);
 }
 
+// src/routes/cc-shell.ts
+var navState = () => ({ meetings: false, phone: false, whatsapp: false });
+var ICONS = {
+  meetings: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  phone: '<path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>',
+  files: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
+  whatsapp: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
+};
+function icon(name, cls) {
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+function escapeHtml(s2) {
+  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
+}
+function inlineJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+function agentNameOf(hostname) {
+  return hostname ? hostname.split(".")[0] : "your agent";
+}
+function consoleAgentUrl(consoleOrigin2, vmId) {
+  const origin = consoleOrigin2 ?? "https://controlclaw.com";
+  return vmId ? `${origin}/dashboard/agents/${encodeURIComponent(vmId)}` : `${origin}/dashboard/agents`;
+}
+var NAV = [
+  { page: "meetings", label: "Meetings", href: "/__cc/meetings", when: "meetings" },
+  { page: "phone", label: "Calls", href: "/__cc/phone", when: "phone" },
+  { page: "whatsapp", label: "WhatsApp", href: "/__cc/whatsapp", when: "whatsapp" },
+  { page: "files", label: "Files", href: "/__cc/files" },
+  { page: "logs", label: "Logs", href: "/__cc/logs" },
+  { page: "browser", label: "Browser", href: "/__cc/browser" }
+];
+var LOGIN_PAGES = ["files", "logs", "whatsapp", "meetings", "phone"];
+function isLoginPage(value) {
+  return typeof value === "string" && LOGIN_PAGES.includes(value);
+}
+function loginLanding(page) {
+  const item = NAV.find((n2) => n2.page === page);
+  if (!item) throw new Error(`no box page for ${page}`);
+  return item.href;
+}
+function shellNav(active, state = navState()) {
+  return NAV.filter((item) => !item.when || state[item.when] || item.page === active).map(({ page, label, href }) => ({ page, label, href }));
+}
+function head(title, extraHead) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title><script src="/__cc/shell.js"></script><link rel="stylesheet" href="/__cc/files-ui/tw.css">${extraHead}</head>`;
+}
+function header(ctx) {
+  const agent = escapeHtml(agentNameOf(ctx.hostname));
+  return `<header class="flex h-full min-w-0 items-center gap-3 px-4 md:px-5"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">${icon("mark", "h-[18px] w-[18px]")}</span><div class="min-w-0 leading-tight"><div class="truncate text-[14px] font-semibold text-ink">${agent}</div><div class="truncate font-mono text-[11.5px] text-ink-2">${escapeHtml(ctx.hostname ?? "")}</div></div><span class="flex-1"></span><a href="${escapeHtml(ctx.consoleUrl)}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-[13px] font-medium text-ink shadow-sm hover:bg-bg">${icon("back", "h-4 w-4 text-ink-2")}<span class="hidden sm:inline">Back to console</span><span class="sm:hidden">Console</span></a></header>`;
+}
+function shellPage(opts) {
+  const links = shellNav(opts.active, opts.nav).map((item) => {
+    const on = item.page === opts.active;
+    return `<a href="${item.href}"${on ? ' aria-current="page"' : ""} class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] ${on ? "bg-surface font-semibold text-ink shadow-sm" : "text-ink-2 hover:bg-bg"}">${icon(item.page, `h-4 w-4 shrink-0 ${on ? "text-brand" : "text-ink-2"}`)}<span>${item.label}</span></a>`;
+  }).join("");
+  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
+}
+function shellBarePage(opts) {
+  return head(opts.title, opts.css ? `<style>${opts.css}</style>` : "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_1fr]">${header(opts.ctx)}<div class="grid place-items-center px-4 py-8"><main class="w-full max-w-[26rem] rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8">${opts.body}</main></div></div>${opts.script ? `<script>${opts.script}</script>` : ""}</body></html>`;
+}
+var SHELL_JS = `(function(){var m=window.matchMedia("(prefers-color-scheme: dark)");var a=function(){document.documentElement.classList.toggle("dark",m.matches)};a();m.addEventListener("change",a)})();`;
+
 // src/auth.ts
 var saasPublicKey = null;
 var ownVmId = null;
@@ -1014,7 +1081,7 @@ async function verifyFirewallTicket(token, vmId, purpose) {
       c: p2.c,
       deviceId: p2.deviceId,
       canWrite: p2.canWrite === true,
-      ...p2.next === "files" || p2.next === "logs" || (p2.next === "whatsapp" || p2.next === "meetings" || p2.next === "phone") ? { next: p2.next } : {}
+      ...isLoginPage(p2.next) ? { next: p2.next } : {}
     };
   } catch {
     return null;
@@ -5062,7 +5129,7 @@ function writeString(buf, at2, s2, width) {
   buf.set(bytes, at2);
 }
 var TYPEFLAG = { file: "0", dir: "5", link: "2" };
-function header(entry, typeflag = TYPEFLAG[entry.type], name = entry.path) {
+function header2(entry, typeflag = TYPEFLAG[entry.type], name = entry.path) {
   const h2 = new Uint8Array(BLOCK);
   writeString(h2, 0, name, 100);
   writeString(h2, 100, octal(entry.mode & 4095, 8), 8);
@@ -5086,7 +5153,7 @@ function padding(size) {
 }
 function longLink(value, typeflag) {
   const bytes = new TextEncoder().encode(value);
-  const head2 = header({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
+  const head2 = header2({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
   const body = new Uint8Array(bytes.length + 1);
   body.set(bytes);
   return [head2, body, padding(body.length)].filter((b2) => b2.length > 0);
@@ -5098,7 +5165,7 @@ function tarHeader(entry) {
   if (target.length > 100) out.push(...longLink(entry.target, "K"));
   if (name.length > 100) out.push(...longLink(entry.path, "L"));
   out.push(
-    header(
+    header2(
       // The real header's own fields must still fit; the long-link pair is what carries the value.
       { ...entry, path: name.length > 100 ? "././@LongLink" : entry.path, target: target.length > 100 ? "" : entry.target },
       TYPEFLAG[entry.type],
@@ -6097,8 +6164,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "26116dd" : "unknown",
-  builtAt: true ? "2026-10-08T22:35:22+01:00" : "unknown"
+  commit: true ? "95922ce" : "unknown",
+  builtAt: true ? "2026-10-09T07:30:32+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -7041,66 +7108,6 @@ function consumeJti(jti, expSeconds) {
 import { readFile as readFile4 } from "fs/promises";
 import { basename, join as join7 } from "path";
 import { fileURLToPath } from "url";
-
-// src/routes/cc-shell.ts
-var navState = () => ({ meetings: false, phone: false, whatsapp: false });
-var ICONS = {
-  meetings: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
-  phone: '<path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>',
-  files: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
-  logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
-  whatsapp: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
-  browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
-  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
-  mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
-};
-function icon(name, cls) {
-  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
-}
-function escapeHtml(s2) {
-  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
-}
-function inlineJson(value) {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
-}
-function agentNameOf(hostname) {
-  return hostname ? hostname.split(".")[0] : "your agent";
-}
-function consoleAgentUrl(consoleOrigin2, vmId) {
-  const origin = consoleOrigin2 ?? "https://controlclaw.com";
-  return vmId ? `${origin}/dashboard/agents/${encodeURIComponent(vmId)}` : `${origin}/dashboard/agents`;
-}
-var NAV = [
-  { page: "meetings", label: "Meetings", href: "/__cc/meetings", when: "meetings" },
-  { page: "phone", label: "Calls", href: "/__cc/phone", when: "phone" },
-  { page: "whatsapp", label: "WhatsApp", href: "/__cc/whatsapp", when: "whatsapp" },
-  { page: "files", label: "Files", href: "/__cc/files" },
-  { page: "logs", label: "Logs", href: "/__cc/logs" },
-  { page: "browser", label: "Browser", href: "/__cc/browser" }
-];
-function shellNav(active, state = navState()) {
-  return NAV.filter((item) => !item.when || state[item.when] || item.page === active).map(({ page, label, href }) => ({ page, label, href }));
-}
-function head(title, extraHead) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title><script src="/__cc/shell.js"></script><link rel="stylesheet" href="/__cc/files-ui/tw.css">${extraHead}</head>`;
-}
-function header2(ctx) {
-  const agent = escapeHtml(agentNameOf(ctx.hostname));
-  return `<header class="flex h-full min-w-0 items-center gap-3 px-4 md:px-5"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">${icon("mark", "h-[18px] w-[18px]")}</span><div class="min-w-0 leading-tight"><div class="truncate text-[14px] font-semibold text-ink">${agent}</div><div class="truncate font-mono text-[11.5px] text-ink-2">${escapeHtml(ctx.hostname ?? "")}</div></div><span class="flex-1"></span><a href="${escapeHtml(ctx.consoleUrl)}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-[13px] font-medium text-ink shadow-sm hover:bg-bg">${icon("back", "h-4 w-4 text-ink-2")}<span class="hidden sm:inline">Back to console</span><span class="sm:hidden">Console</span></a></header>`;
-}
-function shellPage(opts) {
-  const links = shellNav(opts.active, opts.nav).map((item) => {
-    const on = item.page === opts.active;
-    return `<a href="${item.href}"${on ? ' aria-current="page"' : ""} class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] ${on ? "bg-surface font-semibold text-ink shadow-sm" : "text-ink-2 hover:bg-bg"}">${icon(item.page, `h-4 w-4 shrink-0 ${on ? "text-brand" : "text-ink-2"}`)}<span>${item.label}</span></a>`;
-  }).join("");
-  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header2(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
-}
-function shellBarePage(opts) {
-  return head(opts.title, opts.css ? `<style>${opts.css}</style>` : "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_1fr]">${header2(opts.ctx)}<div class="grid place-items-center px-4 py-8"><main class="w-full max-w-[26rem] rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8">${opts.body}</main></div></div>${opts.script ? `<script>${opts.script}</script>` : ""}</body></html>`;
-}
-var SHELL_JS = `(function(){var m=window.matchMedia("(prefers-color-scheme: dark)");var a=function(){document.documentElement.classList.toggle("dark",m.matches)};a();m.addEventListener("change",a)})();`;
-
-// src/routes/files-page.ts
 function uiDir() {
   return process.env.FILES_UI_DIR ?? fileURLToPath(new URL("./files-ui/", import.meta.url));
 }
@@ -7343,6 +7350,13 @@ function withSidebar(active, title, body, script = "") {
   });
 }
 var consoleUrl = () => escapeHtml(shellContext().consoleUrl);
+var LOGIN_PAGE_TITLES = {
+  files: "Opening files",
+  logs: "Opening logs",
+  whatsapp: "Opening WhatsApp",
+  meetings: "Opening meetings",
+  phone: "Opening call history"
+};
 function loginPage(hostname, steps = ["Pairing this browser with the agent", "Loading OpenClaw"]) {
   const agent = hostname ? escapeHtml(hostname.split(".")[0]) : "your agent";
   const host = hostname ? escapeHtml(hostname) : "";
@@ -7378,12 +7392,15 @@ function loginPage(hostname, steps = ["Pairing this browser with the agent", "Lo
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.view === 'files' || d.view === 'logs' || d.view === 'whatsapp' || d.view === 'meetings' || d.view === 'phone') { $('h').textContent = d.view === 'files' ? 'Opening files' : d.view === 'logs' ? 'Opening logs' : d.view === 'meetings' ? 'Opening meetings' : d.view === 'phone' ? 'Opening call history' : 'Opening WhatsApp'; step(3); location.replace(d.next); return; }
-  if (d.view === 'direct') { step(3); location.replace(d.next); return; }
-  if (d.paired === false) { notPaired(d.next, d.pairError); return; }
+  // One of this box's own pages: go there, and only to a path on this box under /__cc/.
+  const PAGES = ${JSON.stringify(LOGIN_PAGE_TITLES)};
+  const own = (p) => typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') && !p.includes(String.fromCharCode(92));
+  if (PAGES[d.view] && own(d.next) && d.next.startsWith('/__cc/')) { $('h').textContent = PAGES[d.view]; step(3); location.replace(d.next); return; }
+  if (d.view === 'direct' && own(d.next)) { step(3); location.replace(d.next); return; }
+  if (d.paired === false) { notPaired(own(d.next) ? d.next : '/', d.pairError); return; }
   await wait(450);
   step(3); await wait(350);
-  location.replace(d.next || '/');
+  location.replace(own(d.next) ? d.next : '/');
 })();`
   );
 }
@@ -7825,9 +7842,9 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    if (payload.next === "files" || payload.next === "logs" || payload.next === "whatsapp" || payload.next === "meetings" || payload.next === "phone") {
+    if (payload.next) {
       const session2 = await issueSession(vmId, claims);
-      json(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
+      json(res, 200, { next: loginLanding(payload.next), view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
     const exchangeOrigin = req.headers.origin;

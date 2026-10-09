@@ -5837,6 +5837,76 @@ async function importPKCS8(pkcs8, alg, options) {
   return fromPKCS8(pkcs8, alg, options);
 }
 
+// src/routes/cc-shell.ts
+var navState = () => ({ meetings: false, phone: false, whatsapp: false });
+function setShellNav(provider) {
+  navState = provider;
+}
+var ICONS = {
+  meetings: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  phone: '<path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>',
+  files: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
+  whatsapp: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
+};
+function icon(name, cls) {
+  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+function escapeHtml(s2) {
+  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
+}
+function inlineJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+function agentNameOf(hostname3) {
+  return hostname3 ? hostname3.split(".")[0] : "your agent";
+}
+function consoleAgentUrl(consoleOrigin2, vmId) {
+  const origin = consoleOrigin2 ?? "https://controlclaw.com";
+  return vmId ? `${origin}/dashboard/agents/${encodeURIComponent(vmId)}` : `${origin}/dashboard/agents`;
+}
+var NAV = [
+  { page: "meetings", label: "Meetings", href: "/__cc/meetings", when: "meetings" },
+  { page: "phone", label: "Calls", href: "/__cc/phone", when: "phone" },
+  { page: "whatsapp", label: "WhatsApp", href: "/__cc/whatsapp", when: "whatsapp" },
+  { page: "files", label: "Files", href: "/__cc/files" },
+  { page: "logs", label: "Logs", href: "/__cc/logs" },
+  { page: "browser", label: "Browser", href: "/__cc/browser" }
+];
+var LOGIN_PAGES = ["files", "logs", "whatsapp", "meetings", "phone"];
+function isLoginPage(value) {
+  return typeof value === "string" && LOGIN_PAGES.includes(value);
+}
+function loginLanding(page) {
+  const item = NAV.find((n2) => n2.page === page);
+  if (!item) throw new Error(`no box page for ${page}`);
+  return item.href;
+}
+function shellNav(active, state = navState()) {
+  return NAV.filter((item) => !item.when || state[item.when] || item.page === active).map(({ page, label, href }) => ({ page, label, href }));
+}
+function head(title, extraHead) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title><script src="/__cc/shell.js"></script><link rel="stylesheet" href="/__cc/files-ui/tw.css">${extraHead}</head>`;
+}
+function header(ctx) {
+  const agent = escapeHtml(agentNameOf(ctx.hostname));
+  return `<header class="flex h-full min-w-0 items-center gap-3 px-4 md:px-5"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">${icon("mark", "h-[18px] w-[18px]")}</span><div class="min-w-0 leading-tight"><div class="truncate text-[14px] font-semibold text-ink">${agent}</div><div class="truncate font-mono text-[11.5px] text-ink-2">${escapeHtml(ctx.hostname ?? "")}</div></div><span class="flex-1"></span><a href="${escapeHtml(ctx.consoleUrl)}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-[13px] font-medium text-ink shadow-sm hover:bg-bg">${icon("back", "h-4 w-4 text-ink-2")}<span class="hidden sm:inline">Back to console</span><span class="sm:hidden">Console</span></a></header>`;
+}
+function shellPage(opts) {
+  const links = shellNav(opts.active, opts.nav).map((item) => {
+    const on = item.page === opts.active;
+    return `<a href="${item.href}"${on ? ' aria-current="page"' : ""} class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] ${on ? "bg-surface font-semibold text-ink shadow-sm" : "text-ink-2 hover:bg-bg"}">${icon(item.page, `h-4 w-4 shrink-0 ${on ? "text-brand" : "text-ink-2"}`)}<span>${item.label}</span></a>`;
+  }).join("");
+  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
+}
+function shellBarePage(opts) {
+  return head(opts.title, opts.css ? `<style>${opts.css}</style>` : "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_1fr]">${header(opts.ctx)}<div class="grid place-items-center px-4 py-8"><main class="w-full max-w-[26rem] rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8">${opts.body}</main></div></div>${opts.script ? `<script>${opts.script}</script>` : ""}</body></html>`;
+}
+var SHELL_JS = `(function(){var m=window.matchMedia("(prefers-color-scheme: dark)");var a=function(){document.documentElement.classList.toggle("dark",m.matches)};a();m.addEventListener("change",a)})();`;
+
 // src/auth.ts
 var saasPublicKey = null;
 var ownVmId = null;
@@ -5948,7 +6018,7 @@ async function verifyFirewallTicket(token, vmId, purpose) {
       c: p2.c,
       deviceId: p2.deviceId,
       canWrite: p2.canWrite === true,
-      ...p2.next === "files" || p2.next === "logs" || (p2.next === "whatsapp" || p2.next === "meetings" || p2.next === "phone") ? { next: p2.next } : {}
+      ...isLoginPage(p2.next) ? { next: p2.next } : {}
     };
   } catch {
     return null;
@@ -6707,67 +6777,6 @@ function consumeJti(jti, expSeconds) {
   seenJti.set(jti, expSeconds);
   return true;
 }
-
-// src/routes/cc-shell.ts
-var navState = () => ({ meetings: false, phone: false, whatsapp: false });
-function setShellNav(provider) {
-  navState = provider;
-}
-var ICONS = {
-  meetings: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
-  phone: '<path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/>',
-  files: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
-  logs: '<path d="M15 12h-5"/><path d="M15 8h-5"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/><path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"/>',
-  whatsapp: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
-  browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
-  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
-  mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
-};
-function icon(name, cls) {
-  return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
-}
-function escapeHtml(s2) {
-  return s2.replace(/[&<>"']/g, (c2) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c2]);
-}
-function inlineJson(value) {
-  return JSON.stringify(value).replace(/</g, "\\u003c");
-}
-function agentNameOf(hostname3) {
-  return hostname3 ? hostname3.split(".")[0] : "your agent";
-}
-function consoleAgentUrl(consoleOrigin2, vmId) {
-  const origin = consoleOrigin2 ?? "https://controlclaw.com";
-  return vmId ? `${origin}/dashboard/agents/${encodeURIComponent(vmId)}` : `${origin}/dashboard/agents`;
-}
-var NAV = [
-  { page: "meetings", label: "Meetings", href: "/__cc/meetings", when: "meetings" },
-  { page: "phone", label: "Calls", href: "/__cc/phone", when: "phone" },
-  { page: "whatsapp", label: "WhatsApp", href: "/__cc/whatsapp", when: "whatsapp" },
-  { page: "files", label: "Files", href: "/__cc/files" },
-  { page: "logs", label: "Logs", href: "/__cc/logs" },
-  { page: "browser", label: "Browser", href: "/__cc/browser" }
-];
-function shellNav(active, state = navState()) {
-  return NAV.filter((item) => !item.when || state[item.when] || item.page === active).map(({ page, label, href }) => ({ page, label, href }));
-}
-function head(title, extraHead) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${escapeHtml(title)}</title><script src="/__cc/shell.js"></script><link rel="stylesheet" href="/__cc/files-ui/tw.css">${extraHead}</head>`;
-}
-function header(ctx) {
-  const agent = escapeHtml(agentNameOf(ctx.hostname));
-  return `<header class="flex h-full min-w-0 items-center gap-3 px-4 md:px-5"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-brand">${icon("mark", "h-[18px] w-[18px]")}</span><div class="min-w-0 leading-tight"><div class="truncate text-[14px] font-semibold text-ink">${agent}</div><div class="truncate font-mono text-[11.5px] text-ink-2">${escapeHtml(ctx.hostname ?? "")}</div></div><span class="flex-1"></span><a href="${escapeHtml(ctx.consoleUrl)}" class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-[13px] font-medium text-ink shadow-sm hover:bg-bg">${icon("back", "h-4 w-4 text-ink-2")}<span class="hidden sm:inline">Back to console</span><span class="sm:hidden">Console</span></a></header>`;
-}
-function shellPage(opts) {
-  const links = shellNav(opts.active, opts.nav).map((item) => {
-    const on = item.page === opts.active;
-    return `<a href="${item.href}"${on ? ' aria-current="page"' : ""} class="flex shrink-0 items-center gap-[11px] rounded-lg px-[10px] py-2 text-[13.5px] ${on ? "bg-surface font-semibold text-ink shadow-sm" : "text-ink-2 hover:bg-bg"}">${icon(item.page, `h-4 w-4 shrink-0 ${on ? "text-brand" : "text-ink-2"}`)}<span>${item.label}</span></a>`;
-  }).join("");
-  return head(opts.title, opts.head ?? "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_auto_1fr] md:h-dvh md:grid-cols-[220px_1fr] md:grid-rows-[58px_1fr] md:overflow-hidden"><div class="min-w-0 md:col-span-2">${header(opts.ctx)}</div><nav aria-label="Agent pages" class="flex min-w-0 gap-0.5 overflow-x-auto px-3 pb-2 md:flex-col md:overflow-x-visible md:overflow-y-auto md:pb-4">${links}</nav><main class="min-w-0 border-t border-line bg-surface md:overflow-y-auto md:mr-2 md:mb-2 md:rounded-tl-2xl md:border shadow-sm">${opts.body}</main></div></body></html>`;
-}
-function shellBarePage(opts) {
-  return head(opts.title, opts.css ? `<style>${opts.css}</style>` : "") + `<body class="bg-bg-2 font-sans text-ink antialiased"><div class="grid min-h-dvh grid-rows-[58px_1fr]">${header(opts.ctx)}<div class="grid place-items-center px-4 py-8"><main class="w-full max-w-[26rem] rounded-2xl border border-line bg-surface p-6 shadow-sm sm:p-8">${opts.body}</main></div></div>${opts.script ? `<script>${opts.script}</script>` : ""}</body></html>`;
-}
-var SHELL_JS = `(function(){var m=window.matchMedia("(prefers-color-scheme: dark)");var a=function(){document.documentElement.classList.toggle("dark",m.matches)};a();m.addEventListener("change",a)})();`;
 
 // src/meeting-voice-log.ts
 import { execFile } from "child_process";
@@ -28819,6 +28828,13 @@ function withSidebar(active, title, body2, script = "") {
   });
 }
 var consoleUrl = () => escapeHtml(shellContext().consoleUrl);
+var LOGIN_PAGE_TITLES = {
+  files: "Opening files",
+  logs: "Opening logs",
+  whatsapp: "Opening WhatsApp",
+  meetings: "Opening meetings",
+  phone: "Opening call history"
+};
 function loginPage(hostname3, steps = ["Pairing this browser with the agent", "Loading OpenClaw"]) {
   const agent = hostname3 ? escapeHtml(hostname3.split(".")[0]) : "your agent";
   const host = hostname3 ? escapeHtml(hostname3) : "";
@@ -28854,12 +28870,15 @@ function loginPage(hostname3, steps = ["Pairing this browser with the agent", "L
   await wait(Math.max(0, 500 - (Date.now() - started)));
   step(2);
   ${FORGET_PREVIOUS_GATEWAY_JS}
-  if (d.view === 'files' || d.view === 'logs' || d.view === 'whatsapp' || d.view === 'meetings' || d.view === 'phone') { $('h').textContent = d.view === 'files' ? 'Opening files' : d.view === 'logs' ? 'Opening logs' : d.view === 'meetings' ? 'Opening meetings' : d.view === 'phone' ? 'Opening call history' : 'Opening WhatsApp'; step(3); location.replace(d.next); return; }
-  if (d.view === 'direct') { step(3); location.replace(d.next); return; }
-  if (d.paired === false) { notPaired(d.next, d.pairError); return; }
+  // One of this box's own pages: go there, and only to a path on this box under /__cc/.
+  const PAGES = ${JSON.stringify(LOGIN_PAGE_TITLES)};
+  const own = (p) => typeof p === 'string' && p.startsWith('/') && !p.startsWith('//') && !p.includes(String.fromCharCode(92));
+  if (PAGES[d.view] && own(d.next) && d.next.startsWith('/__cc/')) { $('h').textContent = PAGES[d.view]; step(3); location.replace(d.next); return; }
+  if (d.view === 'direct' && own(d.next)) { step(3); location.replace(d.next); return; }
+  if (d.paired === false) { notPaired(own(d.next) ? d.next : '/', d.pairError); return; }
   await wait(450);
   step(3); await wait(350);
-  location.replace(d.next || '/');
+  location.replace(own(d.next) ? d.next : '/');
 })();`
   );
 }
@@ -29316,9 +29335,9 @@ async function handleAccess(req, res, pathname, opts = {}) {
       json2(res, 200, { next: landing.next, view: "direct", paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
-    if (payload.next === "files" || payload.next === "logs" || payload.next === "whatsapp" || payload.next === "meetings" || payload.next === "phone") {
+    if (payload.next) {
       const session2 = await issueSession(vmId, claims);
-      json2(res, 200, { next: `/__cc/${payload.next}`, view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
+      json2(res, 200, { next: loginLanding(payload.next), view: payload.next, paired: true }, { "Set-Cookie": [sessionCookie(session2), ...payload.cookies] });
       return;
     }
     const exchangeOrigin = req.headers.origin;
@@ -33799,6 +33818,7 @@ async function installDoctorKey(pub, sig2, opts = {}) {
 // src/console-mcp.ts
 var CONSOLE_MCP_NAME = "controlclaw-console";
 var CONSOLE_MCP_PORT = 3940;
+var LOGINS_MCP_NAME = "controlclaw-logins";
 var PRIVATE_IPV4 = /^10\.(?:\d{1,3}\.){2}\d{1,3}$/;
 var configured = false;
 function consoleMcpConfigured() {
@@ -33808,11 +33828,29 @@ function consoleMcpUrl(firewallPrivateIp) {
   const ip = firewallPrivateIp?.trim() ?? "";
   return PRIVATE_IPV4.test(ip) ? `http://${ip}:${CONSOLE_MCP_PORT}/mcp` : null;
 }
+function loginsMcpUrl(firewallPrivateIp) {
+  const ip = firewallPrivateIp?.trim() ?? "";
+  return PRIVATE_IPV4.test(ip) ? `http://${ip}:${CONSOLE_MCP_PORT}/logins/mcp` : null;
+}
+async function mcpAnswers(url3) {
+  try {
+    const res = await fetch(url3, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "controlclaw-vm-agent", version: "1" } } }),
+      signal: AbortSignal.timeout(5e3)
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 var ConsoleMcpService = class {
-  constructor(client, firewallPrivateIp, log = (l2) => console.log(l2)) {
+  constructor(client, firewallPrivateIp, log = (l2) => console.log(l2), loginsServed = async () => false) {
     this.client = client;
     this.firewallPrivateIp = firewallPrivateIp;
     this.log = log;
+    this.loginsServed = loginsServed;
   }
   running = null;
   /** Make sure the entry is there. Never throws; one run at a time. */
@@ -33833,15 +33871,20 @@ var ConsoleMcpService = class {
         {},
         GATEWAY_READ_MS
       );
-      const current = snapshot.parsed?.mcp?.servers?.[CONSOLE_MCP_NAME];
-      if (current?.url === url3 && current?.transport === "streamable-http") {
+      const servers = snapshot.parsed?.mcp?.servers ?? {};
+      const want = { [CONSOLE_MCP_NAME]: { url: url3, transport: "streamable-http" } };
+      const loginsUrl = loginsMcpUrl(this.firewallPrivateIp());
+      const hasLogins = servers[LOGINS_MCP_NAME]?.url === loginsUrl;
+      if (loginsUrl && (hasLogins || await this.loginsServed(loginsUrl))) want[LOGINS_MCP_NAME] = { url: loginsUrl, transport: "streamable-http" };
+      const missing = Object.entries(want).filter(([name, entry]) => servers[name]?.url !== entry.url || servers[name]?.transport !== entry.transport);
+      if (!missing.length) {
         configured = true;
         return;
       }
       const hash2 = typeof snapshot.hash === "string" && snapshot.hash ? snapshot.hash : void 0;
-      await patchConfig(gw, { mcp: { servers: { [CONSOLE_MCP_NAME]: { url: url3, transport: "streamable-http" } } } }, { baseHash: hash2, snapshot, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
+      await patchConfig(gw, { mcp: { servers: Object.fromEntries(missing) } }, { baseHash: hash2, snapshot, timeoutMs: CONFIG_PATCH_RESTART_MS, readTimeoutMs: GATEWAY_READ_MS });
       configured = true;
-      this.log(`[console-mcp] ControlClaw tools added to OpenClaw (${url3})`);
+      this.log(`[console-mcp] added to OpenClaw: ${missing.map(([name, e]) => `${name} (${e.url})`).join(", ")}`);
     } catch (err) {
       this.log(`[console-mcp] could not write the ControlClaw tools entry: ${err.message}`);
     }
@@ -33851,8 +33894,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "26116dd" : "unknown",
-  builtAt: true ? "2026-10-08T22:35:22+01:00" : "unknown"
+  commit: true ? "95922ce" : "unknown",
+  builtAt: true ? "2026-10-09T07:30:32+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -38799,6 +38842,205 @@ async function handleSecrets(req, res, url3, service) {
   }
 }
 
+// src/logins.ts
+var CDP = `http://127.0.0.1:${process.env.BROWSER_CDP_PORT ?? "9222"}`;
+var CALL_MS = 1e4;
+var SITE = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+function parseOpenTab(raw) {
+  const url3 = raw?.url;
+  if (typeof url3 !== "string" || url3.length > 2048) return null;
+  try {
+    const u2 = new URL(url3);
+    return u2.protocol === "https:" && SITE.test(u2.hostname) ? { url: u2.toString() } : null;
+  } catch {
+    return null;
+  }
+}
+function parseAnswered(raw) {
+  const r2 = raw;
+  if (typeof r2?.requestId !== "string" || !/^lr_[A-Za-z0-9_-]{8,40}$/.test(r2.requestId)) return null;
+  if (typeof r2.site !== "string" || !SITE.test(r2.site)) return null;
+  if (typeof r2.login !== "string" || !r2.login || r2.login.length > 64 || /[\x00-\x1f\x7f]/.test(r2.login)) return null;
+  if (r2.kind !== "password" && r2.kind !== "session") return null;
+  const url3 = typeof r2.url === "string" && r2.url.length <= 2048 && /^https:\/\/[^\s]+$/.test(r2.url) ? r2.url : void 0;
+  const task = typeof r2.task === "string" ? r2.task.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 300) : "";
+  return { requestId: r2.requestId, site: r2.site, login: r2.login, kind: r2.kind, ...url3 ? { url: url3 } : {}, ...task ? { task } : {} };
+}
+function answeredMessage(a2) {
+  const where = a2.url ?? `https://${a2.site}/`;
+  const then = a2.task ? ` Then do what you asked for it for: ${JSON.stringify(a2.task)}.` : "";
+  const start = a2.kind === "session" ? `A person signed you in to ${a2.site} themselves, in your browser. Open ${where} in your browser.` : `A person answered your login request for ${a2.site}: the login ${JSON.stringify(a2.login)} is ready. Open ${where} in your browser and sign in with login_use (type the username and the placeholder it gives you, never ask for the password).`;
+  return `${start}${then} Then send the person who answered, in the chat where you sent them the link, a screenshot of the signed-in page and one sentence on what you did.`;
+}
+function parseType(raw) {
+  const password = raw?.password;
+  const sites = parseClearCookies(raw)?.sites;
+  if (typeof password !== "string" || !password || password.length > 1024 || /[\x00-\x1f\x7f]/.test(password) || !sites) return null;
+  return { password, sites };
+}
+function hostIsSite(host, sites) {
+  const h2 = host.toLowerCase().replace(/\.$/, "");
+  return sites.some((s2) => s2.startsWith("*.") ? h2.endsWith(s2.slice(1)) && h2 !== s2.slice(2) : h2 === s2);
+}
+function parseClearCookies(raw) {
+  const sites = raw?.sites;
+  if (!Array.isArray(sites) || !sites.length || sites.length > 20) return null;
+  const clean = sites.map((s2) => typeof s2 === "string" ? s2.toLowerCase() : "");
+  return clean.every((s2) => SITE.test(s2)) ? { sites: clean } : null;
+}
+function cookieReaches(domain2, sites) {
+  const d2 = domain2.toLowerCase().replace(/^\./, "");
+  return sites.some((site) => {
+    if (site.startsWith("*.")) {
+      const base = site.slice(2);
+      return d2.endsWith(`.${base}`);
+    }
+    return site === d2 || site.endsWith(`.${d2}`);
+  });
+}
+async function withBrowser(fn) {
+  const version2 = await (await fetch(`${CDP}/json/version`, { signal: AbortSignal.timeout(CALL_MS) })).json();
+  if (!version2.webSocketDebuggerUrl) throw new Error("the browser has no DevTools endpoint");
+  const ws = new WebSocket(version2.webSocketDebuggerUrl);
+  await new Promise((resolve3, reject) => {
+    ws.addEventListener("open", () => resolve3(), { once: true });
+    ws.addEventListener("error", () => reject(new Error("the browser's DevTools endpoint did not answer")), { once: true });
+  });
+  let next = 0;
+  const waiting = /* @__PURE__ */ new Map();
+  ws.addEventListener("message", (event) => {
+    const msg = JSON.parse(String(event.data));
+    const w2 = msg.id === void 0 ? void 0 : waiting.get(msg.id);
+    if (!w2) return;
+    waiting.delete(msg.id);
+    if (msg.error) w2.reject(new Error(msg.error.message ?? "DevTools error"));
+    else w2.resolve(msg.result ?? {});
+  });
+  const send2 = (method, params = {}, sessionId) => new Promise((resolve3, reject) => {
+    const id = ++next;
+    waiting.set(id, { resolve: resolve3, reject });
+    ws.send(JSON.stringify({ id, method, params, ...sessionId ? { sessionId } : {} }));
+    setTimeout(() => {
+      if (waiting.delete(id)) reject(new Error(`${method} timed out`));
+    }, CALL_MS).unref();
+  });
+  try {
+    return await fn(send2);
+  } finally {
+    ws.close();
+  }
+}
+var PROBE = `(() => {
+  let a = document.activeElement;
+  for (let i = 0; i < 10 && a; i++) {
+    if (a.shadowRoot && a.shadowRoot.activeElement) { a = a.shadowRoot.activeElement; continue; }
+    if (a.tagName === "IFRAME") { try { const d = a.contentDocument; if (d && d.activeElement) { a = d.activeElement; continue; } } catch {} }
+    break;
+  }
+  const loc = (a && a.ownerDocument && a.ownerDocument.location) || location;
+  return { focus: document.hasFocus(), field: !!a && a.tagName === "INPUT" && a.type === "password", host: loc.hostname, https: loc.protocol === "https:" };
+})()`;
+var BrowserLogins = class {
+  async openTab(url3) {
+    await withBrowser(async (send2) => {
+      await send2("Target.createTarget", { url: url3 });
+    });
+  }
+  /**
+   * Type `password` into the password field that has focus, on a page that is one of `sites`.
+   * `field`: no page has a focused password field. `site`: it does, on another site.
+   */
+  async type(password, sites) {
+    return withBrowser(async (send2) => {
+      const { targetInfos } = await send2("Target.getTargets");
+      let wrongSite = false;
+      for (const t2 of (targetInfos ?? []).filter((i2) => i2.type === "page" || i2.type === "iframe")) {
+        let sessionId = null;
+        try {
+          ({ sessionId } = await send2("Target.attachToTarget", { targetId: t2.targetId, flatten: true }));
+          const probe2 = await send2("Runtime.evaluate", { expression: PROBE, returnByValue: true }, sessionId);
+          const v2 = probe2.result?.value;
+          if (!v2?.field || !v2.focus) continue;
+          if (!v2.https || !hostIsSite(v2.host ?? "", sites)) {
+            wrongSite = true;
+            continue;
+          }
+          await send2("Input.insertText", { text: password }, sessionId);
+          return { ok: true };
+        } catch {
+          continue;
+        } finally {
+          if (sessionId) await send2("Target.detachFromTarget", { sessionId }).catch(() => {
+          });
+        }
+      }
+      return { ok: false, reason: wrongSite ? "site" : "field" };
+    });
+  }
+  /** Remove every cookie that reaches one of `sites`. Returns how many went. */
+  async clearCookies(sites) {
+    return withBrowser(async (send2) => {
+      const { cookies } = await send2("Storage.getCookies");
+      const doomed = (cookies ?? []).filter((c2) => cookieReaches(c2.domain, sites));
+      for (const site of sites.filter((s2) => !s2.startsWith("*."))) {
+        await send2("Storage.clearDataForOrigin", { origin: `https://${site}`, storageTypes: "local_storage,indexeddb,service_workers,cache_storage" }).catch(() => {
+        });
+      }
+      if (!doomed.length) return 0;
+      const { targetId } = await send2("Target.createTarget", { url: "about:blank" });
+      try {
+        const { sessionId } = await send2("Target.attachToTarget", { targetId, flatten: true });
+        for (const c2 of doomed) await send2("Network.deleteCookies", { name: c2.name, domain: c2.domain, path: c2.path }, sessionId);
+      } finally {
+        await send2("Target.closeTarget", { targetId }).catch(() => {
+        });
+      }
+      return doomed.length;
+    });
+  }
+};
+
+// src/routes/logins.ts
+async function handleLogins(req, res, url3, browser, wake) {
+  if (!await verifyMitmRequest(req, "logins")) {
+    sendJson(res, 401, { error: "Login changes must come from the org firewall" });
+    return;
+  }
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  const raw = await readJsonBody(req);
+  try {
+    if (url3.pathname === "/logins/open-tab") {
+      const input2 = parseOpenTab(raw);
+      if (!input2) return sendJson(res, 400, { error: "Invalid site" });
+      await browser.openTab(input2.url);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (url3.pathname === "/logins/answered") {
+      const input2 = parseAnswered(raw);
+      if (!input2) return sendJson(res, 400, { error: "Invalid request" });
+      if (!wake) return sendJson(res, 503, { error: "The agent is not running." });
+      const out = await wake.submit(answeredMessage(input2), "Website logins", `login-${input2.requestId}`);
+      return sendJson(res, out.ok ? 200 : 502, { ok: out.ok });
+    }
+    if (url3.pathname === "/logins/type") {
+      const input2 = parseType(raw);
+      if (!input2) return sendJson(res, 400, { error: "Invalid request" });
+      return sendJson(res, 200, await browser.type(input2.password, input2.sites));
+    }
+    if (url3.pathname === "/logins/clear-cookies") {
+      const input2 = parseClearCookies(raw);
+      if (!input2) return sendJson(res, 400, { error: "Invalid sites" });
+      return sendJson(res, 200, { ok: true, removed: await browser.clearCookies(input2.sites) });
+    }
+  } catch {
+    return sendJson(res, 503, { error: "The agent's browser did not answer." });
+  }
+  sendJson(res, 404, { error: "Not found" });
+}
+
 // src/agentmail.ts
 import {
   existsSync as existsSync18,
@@ -41466,6 +41708,12 @@ var GmailWakeService = class {
     this.opts = opts;
   }
   serial = Promise.resolve();
+  get attempts() {
+    return this.opts.attempts ?? 12;
+  }
+  get retryMs() {
+    return this.opts.retryMs ?? 5e3;
+  }
   readState() {
     try {
       if (!existsSync21(this.opts.statePath)) return null;
@@ -41501,24 +41749,42 @@ var GmailWakeService = class {
   }
   /** Submit one turn for one email. Idempotent per message: a repeated wake does not run twice. */
   async wake(w2) {
+    return this.submit(wakeMessage(w2), "Gmail", `gmail-${w2.messageId}`);
+  }
+  /**
+   * Submit one turn through OpenClaw's hook, written by this box from data the firewall vetted.
+   * The answer goes where OpenClaw's hook sends it by default: the last chat the agent was in.
+   * Also used for website logins (`logins.ts`): a person answered the agent's login request.
+   */
+  async submit(message2, name, idempotencyKey) {
     let state = this.readState();
     if (!state) {
       await this.ensureHooks();
       state = this.readState();
       if (!state) return { ok: false, status: 503 };
     }
-    const res = await (this.opts.fetchImpl ?? fetch)(`http://127.0.0.1:${this.opts.gatewayPort}/hooks/agent`, {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(2e4),
-      headers: {
-        Authorization: `Bearer ${state.token}`,
-        "Content-Type": "application/json",
-        "Idempotency-Key": `gmail-${w2.messageId}`
-      },
-      body: JSON.stringify({ message: wakeMessage(w2), name: "Gmail" })
-    });
-    return { ok: res.ok, status: res.status };
+    let last = { ok: false, status: 503 };
+    for (let attempt = 0; attempt < this.attempts; attempt++) {
+      try {
+        const res = await (this.opts.fetchImpl ?? fetch)(`http://127.0.0.1:${this.opts.gatewayPort}/hooks/agent`, {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(2e4),
+          headers: {
+            Authorization: `Bearer ${state.token}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey
+          },
+          body: JSON.stringify({ message: message2, name })
+        });
+        last = { ok: res.ok, status: res.status };
+        if (res.ok || res.status < 500) return last;
+      } catch {
+        last = { ok: false, status: 503 };
+      }
+      await new Promise((r2) => setTimeout(r2, this.retryMs));
+    }
+    return last;
   }
 };
 
@@ -42266,6 +42532,7 @@ var healthDeps = {
   gateway: () => gateway
 };
 var ssh = new SshAccessService({ statePath: `${STATE_DIR}/ssh.json` });
+var browserLogins = new BrowserLogins();
 var tailscale = new TailscaleService({});
 var backup = new BackupService({
   home: `${process.env.HOME ?? "/home/controlclaw"}/.openclaw`,
@@ -42374,6 +42641,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url3.pathname.startsWith("/phone/")) {
     await handlePhone(req, res, url3, phone);
+    return;
+  }
+  if (url3.pathname.startsWith("/logins/")) {
+    await handleLogins(req, res, url3, browserLogins, gmailWake);
     return;
   }
   if (url3.pathname.startsWith("/secrets/")) {
@@ -42567,7 +42838,7 @@ server.listen(PORT, BIND, () => {
   if (!gmailWatch) console.log("[gmail-watch] gog is not on this box: Gmail push is off until it is re-provisioned");
   client?.onConnected(() => void channels?.reconcile());
   if (process.env.CC_SERVICE !== "gbrain") {
-    const consoleMcp = new ConsoleMcpService(() => client ?? null, () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip"));
+    const consoleMcp = new ConsoleMcpService(() => client ?? null, () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip"), void 0, mcpAnswers);
     client?.onConnected(() => void consoleMcp.ensure());
     setInterval(() => void consoleMcp.ensure(), 15 * 6e4).unref();
     void consoleMcp.ensure();
