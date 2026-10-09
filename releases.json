@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.3.1",
+    "date": "2026-10-09",
+    "changes": [
+      "Website logins work with short passwords and PINs, HTTP sign-in prompts and XML forms.",
+      "The login alarm no longer blocks pages by mistake, and a password a site shows back is hidden from the agent."
+    ]
+  },
+  {
     "version": "1.3.0",
     "date": "2026-10-09",
     "changes": [
