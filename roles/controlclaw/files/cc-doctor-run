@@ -51,6 +51,13 @@ def main():
         if old.get('ended') or old['cli'] != cli or old['agent'] != str(ip) or now >= old['deadline']: raise ValueError()
         seconds = min(seconds, old['deadline'] - now)
     else:
+        # Every session runs as ccdoctor, so a firewall repair and an agent repair must never run at
+        # the same time: each could read the other's key, tool token or tmux socket.
+        for other in BASE.glob('*.json'):
+            if other == metadata: continue
+            try: o = json.loads(other.read_text())
+            except (OSError, ValueError): continue
+            if not o.get('ended') and o.get('deadline', 0) > now and (o.get('agent') == 'firewall') != firewall: raise ValueError()
         # Parent is root-owned: ccdoctor cannot replace this directory with a symlink.
         work.mkdir(mode=0o700)
         os.chown(work,account.pw_uid,account.pw_gid)
@@ -101,9 +108,9 @@ pages and the agents' addresses), tang (unlocks the agents' encrypted disks), di
 encrypted state), team-chat, chrony. The firewall software itself (mitm-agent) runs this session; you
 cannot restart it.
 Read a service's logs before restarting it. Check a configuration before restarting caddy or dnsmasq.
-A broken rendered configuration is repaired by cc-fwdoctor update-retry, which re-renders every
-configuration from the pinned release; it may restart the firewall software, which ends this
-session, so say so and use it last. For a full disk, run cc-fwdoctor disk first and clean what is safe.
+A broken rendered configuration is repaired by cc-fwdoctor update-retry, which runs the firewall
+update again: it installs the current release and writes every configuration fresh. It may restart
+the firewall software, which ends this session. It runs once per session; say so and use it last. For a full disk, run cc-fwdoctor disk first and clean what is safe.
 Never print, copy or ask for secrets. Say what you will do before each restart or clean.
 Explain the cause, what you changed and what is still wrong.
 '''

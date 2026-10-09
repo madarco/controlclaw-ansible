@@ -83,13 +83,13 @@ def main(argv):
         return
     if verb == "check" and arg == "caddy":
         code, out = run(["caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"])
-        print(out or ("valid" if code == 0 else "invalid"))
+        print(out or ("valid" if code == 0 else "invalid"), flush=True)
         if code:
             fail("the Caddy configuration is not valid")
         return
     if verb == "check" and arg == "dnsmasq":
         code, out = run(["dnsmasq", "--test"])
-        print(out)
+        print(out, flush=True)
         if code:
             fail("the dnsmasq configuration is not valid")
         return
@@ -97,7 +97,7 @@ def main(argv):
         name = unit(arg)
         code, out = run(["systemctl", "restart", name], timeout=90)
         _, state = run(["systemctl", "is-active", name])
-        print(name + ": " + state)
+        print(name + ": " + state, flush=True)
         if code:
             fail(arg + " did not restart (" + state + "); read its logs")
         return
@@ -128,7 +128,7 @@ def main(argv):
         if not os.path.exists("/usr/local/sbin/cc-secure") and not os.path.exists("/usr/local/bin/cc-secure"):
             fail("this firewall has no disk encryption")
         code, out = run(["cc-secure", "mount"], timeout=90)
-        print(out or "mounted")
+        print(out or "mounted", flush=True)
         if code:
             fail("cc-secure mount failed; read the disk service's logs")
         return
