@@ -51,6 +51,31 @@
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-doctor-run *, /usr/local/bin/cc-doctor-stop *
       {{ controlclaw_user }} ALL=(ccdoctor) NOPASSWD: /usr/local/bin/cc-doctor-attach *
 
+# Firewall Doctor (controlclaw docs/plans/doctor-rescue.md, Phase 2). The coding agent calls
+# cc-fwdoctor, which only talks to the mitm-agent on loopback; the mitm-agent runs cc-fw-repair.
+# ccdoctor gets no sudo: the root helper is the controlclaw account's, and only for fixed verbs.
+- name: Doctor | firewall repair helper and its client
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "/usr/local/bin/{{ item.src }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: cc-fw-repair, mode: '0755' }
+    - { src: cc-fwdoctor, mode: '0755' }
+
+- name: Doctor | one sudoers line for the firewall repair helper
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-fw-repair
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      # Firewall Doctor's fixed repair actions (files/cc-fw-repair), run by the mitm-agent for a confirmed session.
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-fw-repair *
+
 - name: Doctor | download integrity-pinned CLI packages
   ansible.builtin.get_url:
     url: "{{ item.url }}"

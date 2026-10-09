@@ -3,7 +3,7 @@
 import fcntl, ipaddress, json, math, os, pwd, re, subprocess, sys, time
 from pathlib import Path
 BASE = Path('/run/ccdoctor')
-ALLOWED_ENV = {'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_GATEWAY_API_KEY', 'CC_DOCTOR_OPENAI_ACCOUNT_ID'}
+ALLOWED_ENV = {'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'AI_GATEWAY_API_KEY', 'CC_DOCTOR_OPENAI_ACCOUNT_ID', 'CC_FWDOCTOR_URL', 'CC_FWDOCTOR_TOKEN'}
 def write(path, data, uid, gid):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as out:
@@ -18,16 +18,23 @@ def main():
     data = json.loads(raw)
     env = data['env']
     if not isinstance(env, dict) or not env or any(k not in ALLOWED_ENV or not isinstance(v,str) or len(v)>16384 or '\0' in v or '\n' in v for k,v in env.items()): raise ValueError()
-    key = data['sshPrivateKey']
-    if not isinstance(key,str) or len(key)>8192 or not key.startswith('-----BEGIN OPENSSH PRIVATE KEY-----'): raise ValueError()
-    agent = data['agent']
-    ip = ipaddress.ip_address(agent['privateIp'])
-    if not ip.is_private or ip.is_loopback or ip.is_link_local: raise ValueError()
-    vmid = agent['vmId']
-    if not isinstance(vmid,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}',vmid): raise ValueError()
-    name = 'agent-'+vmid
-    hostkey = agent['sshHostKey']
-    if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]{68}(?: [^\r\n]+)?', hostkey): raise ValueError()
+    # Firewall Doctor repairs this box through cc-fwdoctor: no SSH key, no agent, a loopback tool URL.
+    firewall = data.get('target') == 'firewall'
+    if firewall:
+        if data.get('sshPrivateKey') or not re.fullmatch(r'http://127\.0\.0\.1:[0-9]{1,5}', env.get('CC_FWDOCTOR_URL','')) or not env.get('CC_FWDOCTOR_TOKEN'): raise ValueError()
+        ip, name = 'firewall', 'the firewall'
+    else:
+        if 'CC_FWDOCTOR_URL' in env or 'CC_FWDOCTOR_TOKEN' in env: raise ValueError()
+        key = data['sshPrivateKey']
+        if not isinstance(key,str) or len(key)>8192 or not key.startswith('-----BEGIN OPENSSH PRIVATE KEY-----'): raise ValueError()
+        agent = data['agent']
+        ip = ipaddress.ip_address(agent['privateIp'])
+        if not ip.is_private or ip.is_loopback or ip.is_link_local: raise ValueError()
+        vmid = agent['vmId']
+        if not isinstance(vmid,str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}',vmid): raise ValueError()
+        name = 'agent-'+vmid
+        hostkey = agent['sshHostKey']
+        if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/=]{68}(?: [^\r\n]+)?', hostkey): raise ValueError()
     for field, cap in [('model',256), ('problem',32768), ('resumeId',256)]:
         if field in data and (not isinstance(data[field],str) or len(data[field])>cap or '\0' in data[field]): raise ValueError()
     seconds = data.get('seconds',7200)
@@ -44,6 +51,13 @@ def main():
         if old.get('ended') or old['cli'] != cli or old['agent'] != str(ip) or now >= old['deadline']: raise ValueError()
         seconds = min(seconds, old['deadline'] - now)
     else:
+        # Every session runs as ccdoctor, so a firewall repair and an agent repair must never run at
+        # the same time: each could read the other's key, tool token or tmux socket.
+        for other in BASE.glob('*.json'):
+            if other == metadata: continue
+            try: o = json.loads(other.read_text())
+            except (OSError, ValueError): continue
+            if not o.get('ended') and o.get('deadline', 0) > now and (o.get('agent') == 'firewall') != firewall: raise ValueError()
         # Parent is root-owned: ccdoctor cannot replace this directory with a symlink.
         work.mkdir(mode=0o700)
         os.chown(work,account.pw_uid,account.pw_gid)
@@ -53,6 +67,18 @@ def main():
     active = subprocess.run(['/usr/bin/systemctl','is-active','--quiet','cc-doctor-'+sid+'.service']).returncode == 0
     if active: raise ValueError()
     subprocess.run(['/usr/bin/systemctl','reset-failed','cc-doctor-'+sid+'.service'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if firewall:
+        write(work/'AGENTS.md',FIREWALL_INSTRUCTIONS,account.pw_uid,account.pw_gid)
+    else:
+        write_agent_files(work,account,ip,name,key,hostkey)
+    alias = work/'CLAUDE.md'
+    if not alias.exists() and not alias.is_symlink(): alias.symlink_to('AGENTS.md')
+    data.update({'env':env,'mode':mode,'cli':cli})
+    data.pop('sshPrivateKey',None)
+    write(work/'request.json',json.dumps(data),account.pw_uid,account.pw_gid)
+    return launch(sid,work,mode,seconds,lock)
+
+def write_agent_files(work,account,ip,name,key,hostkey):
     write(work/'key',key,account.pw_uid,account.pw_gid)
     write(work/'known_hosts',f'{ip} {hostkey}\n',account.pw_uid,account.pw_gid)
     sshconfig = f'Host {name}\n  HostName {ip}\n  User ccdoctor\nHost *\n  IdentityFile {work}/key\n  IdentitiesOnly yes\n  UserKnownHostsFile {work}/known_hosts\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ForwardAgent no\n  ClearAllForwardings yes\n'
@@ -73,10 +99,23 @@ Never run offline database maintenance with the gateway running. Do not update o
 Only this named agent is authorized for repair. Explain the cause, repairs and remaining problems.
 '''
     write(work/'AGENTS.md',instructions,account.pw_uid,account.pw_gid)
-    alias = work/'CLAUDE.md'
-    if not alias.exists() and not alias.is_symlink(): alias.symlink_to('AGENTS.md')
-    data.update({'env':env,'mode':mode,'cli':cli})
-    write(work/'request.json',json.dumps(data),account.pw_uid,account.pw_gid)
+
+FIREWALL_INSTRUCTIONS = '''You are repairing this ControlClaw firewall: the box that proxies, filters and resolves for the
+organization's agents. You run as ccdoctor without sudo. Your only way to look at or change it is
+cc-fwdoctor. Start with: cc-fwdoctor help, then cc-fwdoctor status.
+Services: proxy (mitmproxy egress for the agents), dnsmasq (their DNS), caddy (HTTPS for this firewall's
+pages and the agents' addresses), tang (unlocks the agents' encrypted disks), disk (this firewall's own
+encrypted state), team-chat, chrony. The firewall software itself (mitm-agent) runs this session; you
+cannot restart it.
+Read a service's logs before restarting it. Check a configuration before restarting caddy or dnsmasq.
+A broken rendered configuration is repaired by cc-fwdoctor update-retry, which runs the firewall
+update again: it installs the current release and writes every configuration fresh. It may restart
+the firewall software, which ends this session. It runs once per session; say so and use it last. For a full disk, run cc-fwdoctor disk first and clean what is safe.
+Never print, copy or ask for secrets. Say what you will do before each restart or clean.
+Explain the cause, what you changed and what is still wrong.
+'''
+
+def launch(sid,work,mode,seconds,lock):
     args = ['/usr/bin/systemd-run','--quiet','--collect','--unit=cc-doctor-'+sid,
       '--property=User=ccdoctor','--property=Group=ccdoctor','--property=ProtectSystem=strict',
       '--property=ProtectHome=yes','--property=NoNewPrivileges=yes','--property=PrivateTmp=yes',

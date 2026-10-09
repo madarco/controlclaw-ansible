@@ -1,0 +1,147 @@
+#!/usr/bin/python3
+"""Firewall Doctor's repair actions (controlclaw docs/plans/doctor-rescue.md, Phase 2): the one root
+helper the mitm-agent runs on behalf of a confirmed Firewall Doctor session.
+
+Granted to the controlclaw account by one sudoers line (tasks/doctor-firewall.yml). The coding agent
+never calls this: it runs as ccdoctor without sudo and asks the mitm-agent over loopback, which
+checks the session, runs this and removes secrets from the answer (src/fw-doctor-tools.ts).
+
+Every verb and argument is fixed here. No shell, no path from the caller, no file write except what
+the cleaning verbs remove. Reading logs goes through cc-fw-logs, not here.
+
+  cc-fw-repair status                    failed units, disk and inode use, memory, uptime
+  cc-fw-repair check caddy|dnsmasq       validate the rendered configuration
+  cc-fw-repair restart <service>         restart one service and report whether it came up
+  cc-fw-repair reset-failed <service>    clear its failed state
+  cc-fw-repair disk                      the largest directories under the paths that fill up
+  cc-fw-repair clean journal|apt|tmp     free space
+  cc-fw-repair secure-mount              cc-secure mount
+
+Errors go to stderr as one line starting with "cc-fw-repair: ", which is all the mitm-agent passes on.
+"""
+import os
+import subprocess
+import sys
+
+# The names are the contract with packages/mitm-agent/src/fw-doctor-tools.ts (FW_REPAIR_SERVICES).
+# The mitm-agent itself is not here: restarting it would end the session that asked.
+SERVICES = {
+    "proxy": "controlclaw-mitmproxy.service",
+    "caddy": "caddy.service",
+    "dnsmasq": "dnsmasq.service",
+    "tang": "tangd.socket",
+    "disk": "cc-secure.service",
+    "team-chat": "clickclack.service",
+    "chrony": "chrony.service",
+}
+DISK_PATHS = ["/var/log", "/var/cache", "/var/lib", "/tmp", "/var/tmp", "/opt/controlclaw", "/home"]
+ENV = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+
+
+def fail(message):
+    sys.stderr.write("cc-fw-repair: " + message + "\n")
+    sys.exit(2)
+
+
+def run(argv, timeout=60):
+    try:
+        p = subprocess.run(argv, env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "(timed out)"
+    except FileNotFoundError:
+        return 127, "(not installed)"
+    return p.returncode, p.stdout.strip()
+
+
+def section(title, argv, timeout=30):
+    code, out = run(argv, timeout)
+    return "## " + title + "\n" + (out or "(empty)") + ("" if code == 0 else "\n(exit " + str(code) + ")")
+
+
+def unit(name):
+    if name not in SERVICES:
+        fail("unknown service")
+    return SERVICES[name]
+
+
+def main(argv):
+    if os.geteuid() != 0 or not argv:
+        fail("usage: cc-fw-repair <verb> [argument]")
+    verb, args = argv[0], argv[1:]
+    if len(args) > 1:
+        fail("too many arguments")
+    arg = args[0] if args else None
+
+    if verb == "status" and arg is None:
+        print("\n\n".join([
+            section("failed units", ["systemctl", "--failed", "--no-legend", "--plain"]),
+            section("disk", ["df", "-h", "-x", "tmpfs", "-x", "devtmpfs"]),
+            section("inodes", ["df", "-i", "-x", "tmpfs", "-x", "devtmpfs"]),
+            section("memory", ["free", "-m"]),
+            section("uptime", ["uptime"]),
+        ]))
+        return
+    if verb == "check" and arg == "caddy":
+        code, out = run(["caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"])
+        print(out or ("valid" if code == 0 else "invalid"), flush=True)
+        if code:
+            fail("the Caddy configuration is not valid")
+        return
+    if verb == "check" and arg == "dnsmasq":
+        code, out = run(["dnsmasq", "--test"])
+        print(out, flush=True)
+        if code:
+            fail("the dnsmasq configuration is not valid")
+        return
+    if verb == "restart" and arg:
+        name = unit(arg)
+        code, out = run(["systemctl", "restart", name], timeout=90)
+        _, state = run(["systemctl", "is-active", name])
+        print(name + ": " + state, flush=True)
+        if code:
+            fail(arg + " did not restart (" + state + "); read its logs")
+        return
+    if verb == "reset-failed" and arg:
+        name = unit(arg)
+        run(["systemctl", "reset-failed", name])
+        _, state = run(["systemctl", "is-active", name])
+        print(name + ": " + state)
+        return
+    if verb == "disk" and arg is None:
+        paths = [p for p in DISK_PATHS if os.path.isdir(p)]
+        code, out = run(["du", "-x", "-h", "--max-depth=2"] + paths, timeout=90)
+        rows = [line for line in out.splitlines() if "\t" in line]
+        rows.sort(key=lambda line: size_of(line.split("\t", 1)[0]), reverse=True)
+        print("\n".join(rows[:30]) or "(nothing to show)")
+        return
+    if verb == "clean" and arg == "journal":
+        print(section("journal", ["journalctl", "--vacuum-size=200M"], timeout=90))
+        return
+    if verb == "clean" and arg == "apt":
+        print(section("apt", ["apt-get", "clean"], timeout=90))
+        return
+    if verb == "clean" and arg == "tmp":
+        # Files only, older than two days, never crossing into another filesystem.
+        print(section("tmp", ["find", "/tmp", "/var/tmp", "-xdev", "-type", "f", "-mtime", "+2", "-print", "-delete"], timeout=90))
+        return
+    if verb == "secure-mount" and arg is None:
+        if not os.path.exists("/usr/local/sbin/cc-secure") and not os.path.exists("/usr/local/bin/cc-secure"):
+            fail("this firewall has no disk encryption")
+        code, out = run(["cc-secure", "mount"], timeout=90)
+        print(out or "mounted", flush=True)
+        if code:
+            fail("cc-secure mount failed; read the disk service's logs")
+        return
+    fail("unknown command")
+
+
+def size_of(text):
+    units = {"K": 1, "M": 1024, "G": 1024 ** 2, "T": 1024 ** 3}
+    try:
+        return float(text[:-1]) * units[text[-1]] if text[-1] in units else float(text) / 1024
+    except (ValueError, IndexError):
+        return 0
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
