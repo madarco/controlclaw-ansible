@@ -551,6 +551,10 @@
   ansible.builtin.include_tasks: connector.yml
   when: not ci_test
 
+- name: Install the 1Password CLI (website logins from a 1Password vault)
+  ansible.builtin.include_tasks: onepassword-cli.yml
+  when: not ci_test
+
 - name: Include doctor runtime
   ansible.builtin.include_tasks: doctor-firewall.yml
 

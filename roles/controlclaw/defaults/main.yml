@@ -204,6 +204,11 @@ gog_sha256_arm64: "a226c1f439f16e946d8d5b73b49da8e65875978adb65d6bc23e7e225e799e
 # The real binary. /usr/local/bin/gog is a wrapper in front of it (files/cc-gog), so `gog` on PATH
 # picks up a changed placeholder on the very next command with nothing restarted.
 gog_real_bin: /usr/local/lib/controlclaw/gog
+# The 1Password CLI on the firewall, for website logins read from a 1Password vault (controlclaw
+# docs/plans/website-credentials.md). Checksums of the release zips from cache.agilebits.com.
+op_cli_version: "2.40.0"
+op_cli_sha256_amd64: "74277219e8da60958c00f9aee9d2023225e98fdda8bfd2156a5d9e85e0edaab3"
+op_cli_sha256_arm64: "0e8ac99ee93d661aa725dc24a5ef8bf344741d224064a5dfb469dc689faec86a"
 # gog's config, data, state and cache. Deliberately NOT under the agent's home: a cache that turned
 # up in the workspace would show in the console's Files page and in a workspace backup.
 gog_home: /opt/controlclaw/gog
