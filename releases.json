@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.4.1",
+    "date": "2026-10-10",
+    "changes": [
+      "Meeting notes are written on an agent that has a mailbox, and a failed notes run is tried again later."
+    ]
+  },
+  {
     "version": "1.4.0",
     "date": "2026-10-10",
     "changes": [
