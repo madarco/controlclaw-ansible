@@ -172,14 +172,21 @@
     cc_wake_arch: "{{ 'aarch64' if ansible_architecture in ['aarch64', 'arm64'] else 'x86_64' }}"
     cc_wake_wheel_id: "{{ cc_wake_vosk_wheels[cc_wake_arch].sha256[:12] }}"
 
-- name: Meetings | provision an ephemeral guest browser unit
+- name: Meetings | install the meeting browser launcher
+  ansible.builtin.copy:
+    src: meeting-browser.sh
+    dest: /opt/controlclaw/meeting-browser.sh
+    mode: '0755'
+
+- name: Meetings | provision the meeting browser unit
   ansible.builtin.copy:
     dest: /etc/systemd/user/cc-meeting-browser.service
     mode: '0644'
     content: |
       [Unit]
-      Description=ControlClaw reserved Google Meet guest browser
+      Description=ControlClaw reserved Google Meet browser
       After=pipewire-pulse.socket
+      Conflicts=cc-meeting-signin.service
       [Service]
       Type=simple
       Environment=DISPLAY=:1
@@ -188,14 +195,34 @@
       Environment=PULSE_SOURCE=openclaw_meeting_audio
       RuntimeDirectory=cc-meetings
       RuntimeDirectoryMode=0700
-      ExecStartPre=/usr/bin/mkdir -p %t/cc-meetings/profile/Default
-      ExecStartPre=/usr/bin/python3 /opt/controlclaw/meeting-browser-preferences.py %t/cc-meetings/profile/Default/Preferences
-      ExecStart=/usr/bin/google-chrome-stable --user-data-dir=%t/cc-meetings/profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 --no-first-run --no-default-browser-check --disable-sync --disable-background-networking --password-store=basic --force-webrtc-ip-handling-policy=disable_non_proxied_udp --autoplay-policy=no-user-gesture-required about:blank
+      ExecStart=/opt/controlclaw/meeting-browser.sh
       KillMode=control-group
       TimeoutStopSec=10
       MemoryMax=2G
       OOMScoreAdjust=500
-      # No Install section: vm-agent owns its lifetime. RuntimeDirectory removes every cookie.
+      # No Install section: vm-agent owns its lifetime. RuntimeDirectory removes every guest cookie.
+
+# The owner signs in to the agent's Google account here, once, through the Screen view. vm-agent
+# starts it from the enrolled Meetings page and stops it on Done (controlclaw
+# docs/plans/meetsignin.md). Its presence is also how vm-agent knows this box offers sign-in.
+- name: Meetings | provision the Google sign-in window unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/user/cc-meeting-signin.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=ControlClaw Google sign-in window for meetings
+      Conflicts=cc-meeting-browser.service
+      [Service]
+      Type=simple
+      Environment=DISPLAY=:1
+      ExecStart=/opt/controlclaw/meeting-browser.sh signin
+      KillMode=control-group
+      TimeoutStopSec=10
+      RuntimeMaxSec=1200
+      MemoryMax=2G
+      OOMScoreAdjust=500
+      # No Install section: vm-agent owns its lifetime.
 
 - name: Meetings | reload the user units
   become: true
