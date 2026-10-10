@@ -1,7 +1,8 @@
 // Meetings on gpt-live, always listening (controlclaw docs/plans/meet-always-listening.md): the
 // wake word is off, the model is connected for the whole meeting and decides by itself when someone
 // is talking to it (the rules are in its instructions, live.js ALWAYS). gpt-live has no way for the
-// client to hold back or ask for a response, so there is no gate here: what the model says is played.
+// client to hold back or ask for a response, so what it says goes through a second check before it
+// is played (live.js mayTalk): only after a name, a follow-up or a lookup someone asked for.
 // No tones.
 //
 // What this adds to a plain LiveBridge:
@@ -9,7 +10,8 @@
 //   lines finished since as quiet context every 20 s.
 // - Silence pauses the voice instead of ending it. After five minutes with nobody speaking the
 //   session is closed (a connected session is billed, silence included) and the next speech
-//   reconnects, replaying the last seconds. A session the provider ends is reconnected the same way.
+//   reconnects, replaying the last seconds. A session the provider ends is reconnected the same
+//   way, and the new one takes over its unanswered lookups and the follow-up window.
 // - Meeting audio goes out in 100 ms frames, to stay far below the firewall's frame limit over an
 //   hour.
 import { LiveBridge, audible } from './live.js';
@@ -42,7 +44,10 @@ export class AlwaysBridge {
     this.maxSessions = Math.min(40, Number(this.config.sessions) || DEFAULT_SESSIONS);
     this.t = { ...TIMING, ...deps.timing };
     this.ring = []; this.ringBytes = 0; this.queue = []; this.queueBytes = 0; this.pending = []; this.pendingBytes = 0;
-    this.session = null; this.sessions = 0; this.lastStart = 0; this.failures = 0;
+    // `failures`: sessions that ended soon after opening, in a row. `refused`: connects refused in a row.
+    this.session = null; this.sessions = 0; this.lastStart = 0; this.failures = 0; this.refused = 0;
+    // What a session that ended on its own left for the next one, and results that came meanwhile.
+    this.handover = null; this.lateResults = [];
     this.closed = false; this.ready = false; this.paused = false;
     this.lastSpeech = Date.now(); this.lastActive = 0; this.loud = [];
     this.supportsToolResultContinuation = false;
@@ -78,7 +83,10 @@ export class AlwaysBridge {
     this.metric('session_open', { reason, sessions: this.sessions });
     return bridge.connect().then(() => {
       if (this.session !== entry) { bridge.close(); return; }
-      entry.ready = true;
+      entry.ready = true; this.refused = 0;
+      // Lookups the last session left unanswered, and any results that arrived while reconnecting.
+      if (this.handover) { bridge.adopt(this.handover); this.handover = null; }
+      for (const [callId, result] of this.lateResults.splice(0)) bridge.submitToolResult(callId, result);
       this.pump();
     }, (error) => {
       if (this.session === entry) this.session = null;
@@ -91,8 +99,9 @@ export class AlwaysBridge {
     if (this.closed) return;
     const short = Date.now() - entry.openedAt < this.t.lost;
     this.failures = short ? this.failures + 1 : 0;
-    this.metric('session_lost', { afterMs: Date.now() - entry.openedAt });
+    this.metric('session_lost', { afterMs: Date.now() - entry.openedAt, lookups: entry.bridge.handover?.jobs.length ?? 0 });
     if (this.failures >= 2) { this.fail(); return; }
+    this.handover = entry.bridge.handover ?? null;
     this.resume('lost', 0);
   }
   /** Reconnect, hearing the meeting from `back` ms ago; waits out the firewall's gap between starts. */
@@ -107,7 +116,7 @@ export class AlwaysBridge {
       this.open(reason).catch(() => {
         if (this.closed) return;
         // One more try (the previous socket may still be closing), then the voice stops.
-        if (++this.failures >= 2) { this.fail(); return; }
+        if (++this.refused >= 2) { this.fail(); return; }
         this.resuming = true;
         const again = setTimeout(start, this.t.startGap); again.unref?.();
       });
@@ -162,6 +171,8 @@ export class AlwaysBridge {
   tick() {
     const entry = this.session; if (!entry?.ready) return;
     const now = Date.now();
+    // A session that has lasted is not a failure: the next one that ends early counts from zero.
+    if (now - entry.openedAt > this.t.lost) this.failures = 0;
     // Caption lines finished since the session last saw the transcript: who said what.
     if (now - entry.contextAt >= this.t.context && entry.appends < MAX_CONTEXT_APPENDS) {
       entry.contextAt = now;
@@ -180,7 +191,11 @@ export class AlwaysBridge {
     this.metric('paused', { afterMs: Date.now() - entry.openedAt });
     entry.bridge.close('completed');
   }
-  submitToolResult(callId, result) { this.session?.bridge.submitToolResult(callId, result); }
+  submitToolResult(callId, result) {
+    if (this.session?.ready) this.session.bridge.submitToolResult(callId, result);
+    // Reconnecting: kept for the session that takes the lookup over.
+    else if (!this.closed && (this.handover || this.resuming || this.session) && this.lateResults.length < 4) this.lateResults.push([callId, result]);
+  }
   handleBargeIn() {}
   sendUserMessage() {}
   triggerGreeting() {}

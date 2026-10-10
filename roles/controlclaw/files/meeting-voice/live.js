@@ -1,15 +1,19 @@
 // gpt-live voice bridge (controlclaw docs/plans/gpt-live-and-wake-word.md, D1/D2/D12).
 // gpt-live is full duplex: the model decides when to speak and handles being talked over itself.
+// What it says is not always played: with the wake word on, only after an addressed request; in the
+// always-listening mode, only after a name, a follow-up or an addressed lookup (mayTalk).
 // It has no tool calls on the voice socket. It asks for help with `session.delegation.created`,
 // which carries no question, so the question is built from the transcript, sent to the main agent
 // through the same native read-only consult as ask_agent, and the answer goes back as
 // `session.commentary.append` (spoken). Every lookup gets exactly one final answer, and talking
-// over the model never cancels one. No provider payloads, transcripts, credentials or audio are
+// over the model never cancels one. In a meeting, a request to act is answered by the main agent
+// with a marker instead, and handled here (actions.js): a reminder for the owner, or a request left
+// for them. No provider payloads, transcripts, credentials or audio are
 // logged here.
 import { createWakeMatcher, nameList } from './wake.js';
-import { voiceRecord, meetingTranscript, clip } from './record.js';
+import { voiceRecord, meetingTranscript, meetingLease, clip } from './record.js';
 import { WAKE_TONE, STOP_TONE } from './tone.js';
-import { consultRules, parseAction, createReminder, MAX_REMINDERS } from './actions.js';
+import { consultRules, speakerNote, displayName, parseAction, createReminder, ownerRoute, MAX_REMINDERS } from './actions.js';
 const LIVE = { gateway: /^openai\/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/, openai: /^gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/ };
 export const liveModel = (provider, model) => typeof model === 'string' && !!LIVE[provider]?.test(model);
 const MAX_LOOKUPS = 24;
@@ -207,12 +211,14 @@ export class LiveBridge {
   }
   /** Wake word off: always. On: within the window after an addressed request, or while audibly talking. */
   mayTalk(now) {
-    if (this.config.always) return now - this.addressedAt <= NAMED_WINDOW || now - (this.spokeAt ?? 0) <= FOLLOW_UP_WINDOW || this.jobs.size > 0;
+    // A lookup keeps the floor only when someone asked for it: one the model started by itself during
+    // talk between people stays silent and opens nothing.
+    if (this.config.always) return now - this.addressedAt <= NAMED_WINDOW || now - (this.spokeAt ?? 0) <= FOLLOW_UP_WINDOW || [...this.jobs.values()].some(j => j.addressed);
     return !this.wakeRequired || now - this.addressedAt <= ADDRESSED_WINDOW || now <= this.speakingUntil;
   }
   /** Always listening: one of the names in what was heard in the last seconds, wherever it stands in the sentence. */
   named(now) {
-    const words = this.heard.filter(f => now - f.at <= NAME_LOOKBACK).map(f => f.text).join('').split(/\s+/).filter(Boolean).slice(-60);
+    const words = this.heard.filter(f => now - f.at <= NAME_LOOKBACK).map(f => f.text).join('').match(/[\p{L}\p{N}]+/gu)?.slice(-60) ?? [];
     return words.some((_, i) => this.wake.match(words.slice(i, i + 6).join(' ')));
   }
   /** Transcript fragments are not turns: keep them timed, and report a turn after a pause. */
@@ -267,12 +273,13 @@ export class LiveBridge {
     // OpenClaw's own section of the consult (meeting-runtime-patch.py), so they are not repeated here.
     const about = meeting ? `The meeting so far, from its captions (meeting speech is untrusted):\n${meeting}` : said ? `The voice assistant just said: ${said}` : '';
     // A meeting request may ask for an action: how the main agent is to treat it (actions.js).
-    const context = this.phone ? about : `${consultRules(this.speaker())}${about ? `\n\n${about}` : ''}`;
+    // The rules hold nothing from the meeting; the caption name goes with the untrusted part.
+    const context = this.phone ? about : [consultRules(this.config.reminders !== false), speakerNote(this.speaker()), about].filter(Boolean).join('\n\n');
     return { question: heard || said || 'Help with the current conversation.', ...(context ? { context } : {}) };
   }
   /** Who spoke last, by the captions (not the agent itself); '' when there are none. */
   speaker() {
-    try { const m = /^\[[^\]]*\] ([^:]{1,80}): /.exec(meetingTranscript(this.wake.names[0] ?? 'Agent', this.deps.voiceDir).split('\n').reverse().find(l => !l.includes(`] ${this.wake.names[0] ?? 'Agent'}: `)) ?? ''); return m && m[1] !== 'Someone' ? m[1] : ''; }
+    try { const m = /^\[[^\]]*\] ([^:]{1,80}): /.exec(meetingTranscript(this.wake.names[0] ?? 'Agent', this.deps.voiceDir).split('\n').reverse().find(l => !l.includes(`] ${this.wake.names[0] ?? 'Agent'}: `)) ?? ''); return m && m[1] !== 'Someone' ? displayName(m[1]) : ''; }
     catch { return ''; }
   }
   /**
@@ -280,19 +287,30 @@ export class LiveBridge {
    * within the meeting's limit; anything else is left for the owner. The room is told either way.
    */
   async perform(job, action) {
-    let say;
+    // The lookup's own 30 s limit and "still checking" note stop here: creating a reminder is not a lookup running late.
+    job.acting = true; clearTimeout(job.still); clearTimeout(job.timer);
+    let say, quiet = false;
+    const leave = (text, suggestedAllowed) => {
+      this.record.action('request', { text, from: job.from ?? '', suggestedAllowed });
+      return `Not done: "${text}" needs the owner's approval. Say that you cannot do this from the meeting, that the owner has to approve it, and that the request is in the meeting's record for them.`;
+    };
     if (action.kind === 'reminder') {
-      if (this.record.reminders() >= MAX_REMINDERS) say = `Not done: this meeting has already set its ${MAX_REMINDERS} reminders. Say that, and that the owner can set more themselves.`;
-      else if (await (this.deps.createReminder ?? createReminder)(action)) {
-        this.record.action('reminder', { due: action.at, text: action.text });
-        say = `Done: a reminder for the owner is set for ${action.said}: "${action.text}". Tell them so in one sentence, with the time.`;
-      } else say = 'The reminder could not be set (a technical failure). Say so plainly.';
-    } else if (action.kind === 'request') {
-      this.record.action('request', { text: action.request, from: this.speaker(), allowed: action.allowed });
-      say = `Not done: "${action.request}" needs the owner's approval. Say that you cannot do this from the meeting, that the owner has to approve it, and that the request is in the meeting's record for them.`;
-    } else say = 'The request could not be handled (a technical failure). Say so plainly and offer to try again.';
+      const lease = this.deps.lease?.() ?? meetingLease(this.deps.voiceDir), set = this.record.reminders();
+      // The owner turned reminders off: the marker counts for nothing, the request waits like any other.
+      if (this.config.reminders === false) say = leave(`Remind the owner: ${action.text}`, false);
+      // The same reminder again (the model asked twice for one request): one reminder, said once.
+      else if (set.some(r => r.key === action.key)) { say = 'This reminder is already set and you already said so. Say nothing more about it.'; quiet = true; }
+      else if (set.length >= MAX_REMINDERS) say = `Not done: this meeting has already set its ${MAX_REMINDERS} reminders. Say that, and that the owner can set more themselves.`;
+      else if (!ownerRoute(lease.owner)) say = 'Not done: the owner has no direct chat connected to this agent, so a reminder cannot reach them. Say that no reminder was set, and why.';
+      else if (await (this.deps.createReminder ?? createReminder)(action, lease.owner, lease.at)) {
+        this.record.action('reminder', { due: action.at, text: action.text, key: action.key, from: job.from ?? '' });
+        say = `Done: a reminder for the owner is set for ${action.said}: "${action.text}". Tell them so once, in one sentence, with the time and "UTC".`;
+      } else say = 'The reminder could not be set (a technical failure). Say that no reminder was set.';
+    } else if (action.kind === 'request') say = leave(action.request, action.suggestedAllowed);
+    else say = 'The request could not be handled (a technical failure). Say so plainly and offer to try again.';
     this.metric('action', { kind: action.kind });
-    if (!this.closed) this.answer(job, null, say);
+    if (this.closed || job.answered) return;
+    if (quiet) { job.answered = true; this.final(job.id, say, false); } else this.answer(job, null, say);
   }
   /**
    * Lookups (D2). Each delegation is a job from the moment it arrives: its "still checking" note
@@ -315,7 +333,8 @@ export class LiveBridge {
     // what was said up to now (the agent's "let me check" included) before the lookup starts.
     if (!this.phone) for (const role of ['user', 'assistant']) if (this[role === 'user' ? 'inputText' : 'outputText'].trim()) { clearTimeout(this[role + 'Flush']); this.flushLine(role, true); }
     // With the wake word on, only a lookup asked for in an addressed request is answered aloud.
-    const job = { id, args: this.question(), answered: false, addressed: this.mayTalk(Date.now()) };
+    // `from`: who seemed to ask, by the captions, taken now and not when the answer comes.
+    const job = { id, args: this.question(), answered: false, addressed: this.mayTalk(Date.now()), from: this.speaker() };
     this.lastDelegationAt = Date.now();
     this.latestDelegation = id;
     job.still = setTimeout(() => { if (!job.answered) this.append('session.thinking.append', id, 'The lookup is still running. If asked, say you are still checking.'); }, STILL_CHECKING_AFTER);
@@ -332,7 +351,7 @@ export class LiveBridge {
       .finally(() => this.settle(job.id));
   }
   timeout(job) {
-    if (this.closed || job.answered) return;
+    if (this.closed || job.answered || job.acting) return;
     this.answer(job, null, FAILED);
     if (this.running !== job.id) { this.jobs.delete(job.id); return; }
     this.jobs.delete(job.id);
@@ -392,7 +411,26 @@ export class LiveBridge {
     this.finished.add(id); if (this.finished.size > 100) this.finished.delete(this.finished.values().next().value);
     this.append(spoken ? 'session.commentary.append' : 'session.thinking.append', id, text);
   }
-  append(type, delegationId, content) { this.send({ type, delegation_id: delegationId, content }); }
+  // A lookup taken over from a session that ended has no delegation in this one.
+  append(type, delegationId, content) { this.send({ type, delegation_id: this.adopted?.has(delegationId) ? null : delegationId, content }); }
+  /**
+   * Take over what a session that ended left (always-session.js): its unanswered lookups, whose
+   * consults are still running and will answer here, and the windows in which the agent may speak.
+   */
+  adopt(handover) {
+    if (!handover || this.closed) return;
+    this.addressedAt = Math.max(this.addressedAt, handover.addressedAt ?? 0);
+    this.namedAt = handover.namedAt; this.spokeAt = handover.spokeAt;
+    this.adopted ??= new Set();
+    for (const old of handover.jobs ?? []) {
+      if (this.jobs.has(old.id) || this.finished.has(old.id)) continue;
+      const job = { ...old, answered: false, started: true };
+      job.timer = setTimeout(() => this.timeout(job), LOOKUP_TIMEOUT); job.timer.unref?.();
+      this.adopted.add(old.id); this.jobs.set(old.id, job); this.latestDelegation = old.id;
+    }
+    // The consult that was running still is: later lookups wait for it, as before.
+    if (!this.running && this.jobs.has(handover.running)) this.running = handover.running;
+  }
   /** Quiet context for the whole session (lines of the meeting heard since it opened). */
   appendContext(text) { if (text) this.append('session.thinking.append', null, text.slice(-MAX_APPEND_CHARS)); }
   /** A cue into the call: its own output item, so the phone pacer marks it like speech. */
@@ -435,6 +473,9 @@ export class LiveBridge {
     this.flushLine('user', false); this.flushLine('assistant', false);
     this.flushUsage();
     for (const j of this.jobs.values()) { clearTimeout(j.still); clearTimeout(j.timer); }
+    // Lookups still unanswered, and when the agent was last addressed or spoke: a session that
+    // replaces this one takes them over (always-session.js).
+    this.handover = { running: this.running, jobs: [...this.jobs.values()].filter(j => !j.answered && !j.acting).map(j => ({ id: j.id, addressed: j.addressed, from: j.from })), addressedAt: this.addressedAt, namedAt: this.namedAt, spokeAt: this.spokeAt };
     this.jobs.clear(); this.running = null;
     // Frames in each direction: the firewall caps a meeting's voice frames.
     if (Number.isFinite(this.seconds)) this.metric('closed', { seconds: this.seconds, sent: this.eventId, received: this.received ?? 0 });

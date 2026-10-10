@@ -25,7 +25,7 @@ function fixture({ sessions, timing = {}, voiceDir, mint = () => true } = {}) {
   const ws = sockets(), out = { audio: [], tones: [], ready: 0, errors: 0, closed: [], tools: [], mints: 0 };
   const metrics = [], usage = [];
   const req = {
-    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis', 'Maria Rossi'] }, sessions },
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis', 'Maria Rossi'] }, always: true, sessions },
     instructions: 'Respond when someone addresses you.',
     onAudio: (a, m) => (m?.itemId?.startsWith('cc_tone_') ? out.tones : out.audio).push(a), onReady: () => out.ready++, onError: () => out.errors++, onClose: r => out.closed.push(r), onToolCall: t => out.tools.push(t), onClearAudio: () => {},
   };
@@ -204,5 +204,92 @@ test('the second opinion: what the model says is played only after a name, a fol
   g.bridge.submitToolResult('d1', { text: 'Thursday.' });
   assert.ok(quiet.sent.some(e => e.type === 'session.thinking.append' && /Thursday/.test(e.content)));
   assert.ok(!quiet.sent.some(e => e.type === 'session.commentary.append'));
+  g.bridge.close();
+});
+
+test('a lookup the model starts by itself during talk between people stays silent and opens nothing', async () => {
+  const f = fixture({ timing: { pause: 60000 } });
+  await f.bridge.connect();
+  const ws = f.ws.all[0];
+  const hear = text => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: text }));
+  const say = () => ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: pcm(100).toString('base64') }));
+  hear('Bob, do you know what the picnic snack is?');
+  ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd1' } }));
+  assert.equal(f.out.tools.length, 1, 'the lookup itself runs');
+  say(); // "let me check": not played, though a lookup is pending
+  assert.equal(f.out.audio.length, 0);
+  f.bridge.submitToolResult('d1', { text: 'Lemon shortbread.' });
+  assert.ok(ws.sent.some(e => e.type === 'session.thinking.append' && /Lemon/.test(e.content)), 'the result is given quietly');
+  assert.ok(!ws.sent.some(e => e.type === 'session.commentary.append'));
+  say(); // and the model voicing it anyway is not played either
+  hear(' I think it was shortbread.');
+  say(); // nor does it open the follow-up window
+  assert.equal(f.out.audio.length, 0);
+  // The same lookup asked for by name is played.
+  await wait(750);
+  hear('Jarvis, what is the picnic snack?');
+  ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd2' } }));
+  await wait(20); // past the name window is not needed: the addressed lookup holds the floor
+  say();
+  assert.equal(f.out.audio.length, 1);
+  f.bridge.submitToolResult('d2', { text: 'Lemon shortbread, again.' });
+  assert.ok(ws.sent.some(e => e.type === 'session.commentary.append' && /again/.test(e.content)));
+  f.bridge.close();
+});
+
+test('a session the provider ends mid-lookup: the new one takes the lookup and the follow-up window, and speaks the answer', async () => {
+  const f = fixture({ timing: { pause: 60000, lost: 0 } });
+  await f.bridge.connect();
+  const first = f.ws.all[0];
+  first.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: 'Jarvis, what is the picnic snack?' }));
+  first.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd1' } }));
+  first.emit('message', JSON.stringify({ type: 'session.closed', usage: { seconds: 30 } }));
+  // The consult answers while the voice is reconnecting.
+  f.bridge.submitToolResult('d1', { text: 'Lemon shortbread.' });
+  await until(() => f.ws.all.length === 2 && f.bridge.session?.ready);
+  const second = f.ws.all[1];
+  await until(() => second.sent.some(e => e.type === 'session.commentary.append'));
+  const answer = second.sent.find(e => e.type === 'session.commentary.append');
+  assert.match(answer.content, /Lemon shortbread/);
+  assert.equal(answer.delegation_id, null, 'the new session never saw that delegation');
+  second.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: pcm(100).toString('base64') }));
+  assert.equal(f.out.audio.length, 1, 'and it may say it');
+  assert.equal(f.out.errors, 0);
+  f.bridge.close();
+
+  // The answer never comes: the room is told the lookup failed, after the lookup's limit.
+  const g = fixture({ timing: { pause: 60000, lost: 0 } });
+  await g.bridge.connect();
+  g.ws.all[0].emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: 'Jarvis, what is the picnic snack?' }));
+  g.ws.all[0].emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd1' } }));
+  g.ws.all[0].emit('message', JSON.stringify({ type: 'session.closed', usage: { seconds: 30 } }));
+  await until(() => g.ws.all.length === 2 && g.bridge.session?.ready && g.bridge.session.bridge.jobs.has('d1'));
+  const bridge = g.bridge.session.bridge;
+  bridge.timeout(bridge.jobs.get('d1'));
+  assert.ok(g.ws.all[1].sent.some(e => e.type === 'session.commentary.append' && /lookup failed/.test(e.content)));
+  g.bridge.close();
+});
+
+test('failure counts start over: a refused reconnect long ago does not end the voice at the next one, nor does one short session after a long one', async () => {
+  const f = fixture({ timing: { pause: 40 }, mint: n => n !== 2 && n !== 5 });
+  await f.bridge.connect();
+  for (let round = 0; round < 2; round++) {
+    await until(() => f.bridge.paused);
+    for (let i = 0; i < 5; i++) f.bridge.sendAudio(pcm(100));
+    await until(() => f.bridge.session?.ready);
+  }
+  assert.equal(f.out.errors, 0, 'two refused connects, each followed by a good one');
+  f.bridge.close();
+
+  const g = fixture({ timing: { pause: 60000, lost: 40 } });
+  await g.bridge.connect();
+  g.ws.all[0].terminate(); // short
+  await until(() => g.ws.all.length === 2 && g.bridge.session?.ready);
+  await wait(80); // this one lasts
+  g.ws.all[1].terminate();
+  await until(() => g.ws.all.length === 3 && g.bridge.session?.ready);
+  g.ws.all[2].terminate(); // short again: one in a row, not two
+  await until(() => g.ws.all.length === 4 && g.bridge.session?.ready);
+  assert.equal(g.out.errors, 0);
   g.bridge.close();
 });

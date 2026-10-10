@@ -20,6 +20,11 @@ export function meetingWakeSessions(dir = DIR()) {
     return Number.isInteger(n) && n > 1 && n <= 40 && Date.now() - at < 5 * 3600000 ? n : 0;
   } catch { return 0; }
 }
+/** The current meeting's lease as the vm-agent wrote it: when it started and the owner's direct chat, if there is one. */
+export function meetingLease(dir = DIR()) {
+  try { const lease = JSON.parse(readFileSync(join(dir, 'lease.json'), 'utf8')); return { at: typeof lease?.at === 'string' ? lease.at : '', owner: lease?.owner ?? null }; }
+  catch { return { at: '', owner: null }; }
+}
 /** The tail of a JSON-lines file, parsed; at most `max` bytes. */
 function tail(file, max = 1024 * 1024) {
   try {
@@ -79,7 +84,7 @@ export function voiceRecord(surface, dir = DIR()) {
     /** A reminder created for the owner, or a request left for them (actions.js). */
     action(kind, fields) { if (surface !== 'phone' && (kind === 'reminder' || kind === 'request')) write({ kind, ...fields }); },
     /** How many reminders this meeting has set (the log is emptied when a meeting starts). */
-    reminders() { return tail(file).filter(l => l?.kind === 'reminder').length; },
+    reminders() { return tail(file).filter(l => l?.kind === 'reminder'); },
     line(role, text, startedAt) { if (surface !== 'phone' && typeof text === 'string' && text.trim()) write({ kind: 'line', role: role === 'assistant' ? 'assistant' : 'user', text: text.trim().slice(0, 4000), ...(Number.isFinite(startedAt) ? { at: new Date(startedAt).toISOString() } : {}) }); },
   };
 }

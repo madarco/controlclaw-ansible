@@ -23,9 +23,10 @@ export default {
       createBridge: req => {
         const c = req.providerConfig;
         if (!liveModel(c?.provider, c?.model)) return new VoiceBridge(req, { WebSocket });
-        const sessions = meetingWakeSessions();
-        // Wake word off: connected for the whole meeting, the model decides when it is spoken to.
-        if (c.wake?.enabled === false) return new AlwaysBridge({ ...req, providerConfig: { ...c, sessions } }, { WebSocket });
+        // Wake word off and always listening chosen (`always`): connected for the whole meeting, the
+        // model decides when it is spoken to. Wake word off without it is the older single session.
+        if (c.wake?.enabled === false && c.always === true) return new AlwaysBridge({ ...req, providerConfig: { ...c, sessions: meetingWakeSessions() } }, { WebSocket });
+        const sessions = c.wake?.enabled !== false ? meetingWakeSessions() : 0;
         return sessions ? new WakeSessionBridge({ ...req, providerConfig: { ...c, wakeSessions: sessions } }, { WebSocket }) : new LiveBridge(req, { WebSocket });
       },
     });
