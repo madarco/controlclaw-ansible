@@ -168,6 +168,9 @@ openclaw_search_plugins:
   - { id: duckduckgo, package: "@openclaw/duckduckgo-plugin" }
   - { id: tavily, package: "@openclaw/tavily-plugin" }
   - { id: brave, package: "@openclaw/brave-plugin" }
+# The ones that need a key. Left `enabled: false` unless they are the provider in use
+# (tasks/openclaw-search.yml); the same list as SEARCH_PLUGINS in the vm-agent's search.ts.
+openclaw_search_keyed_plugins: [tavily, brave]
 
 # Swap (tasks/swap.yml). The stock box has none, which leaves the kernel no move under memory
 # pressure except to kill something. 0 disables.

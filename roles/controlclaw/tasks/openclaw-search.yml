@@ -265,6 +265,10 @@
   ansible.builtin.set_fact:
     openclaw_search_provider_current: "{{ openclaw_search_settings.provider | default('', true) }}"
     openclaw_search_disabled: "{{ openclaw_search_settings.enabled is defined and openclaw_search_settings.enabled is sameas false }}"
+    openclaw_search_plugins_off: >-
+      {{ ((openclaw_search_config.plugins | default({}, true)).entries | default({}, true)) | dict2items
+         | selectattr('value.enabled', 'defined') | selectattr('value.enabled', 'sameas', false)
+         | map(attribute='key') | list }}
   vars:
     openclaw_search_config: >-
       {{ (openclaw_search_config_raw.content | b64decode | from_json)
@@ -281,6 +285,39 @@
   when:
     - openclaw_search_provider_current is defined
     - openclaw_search_provider_current | length > 0 or openclaw_search_disabled | bool
+
+# The search plugins that need a key are switched off unless they are the provider in use.
+#
+# OpenClaw loads an installed plugin unless its entry says `enabled: false`, and a loaded plugin
+# offers the model its own tools whether or not it has a key: an agent searching with Parallel
+# called `tavily_search` and told its owner "Tavily is unavailable". The vm-agent puts this right
+# on every search change and once when it starts (`packages/vm-agent/src/search.ts`, `heal`), but
+# doing it there on a new box costs a gateway restart in the box's first minutes. Done here, the
+# gateway starts for the first time with them already off.
+#
+# Not parallel and not duckduckgo: neither needs a key, parallel serves the default provider, and
+# duckduckgo is the switch an owner makes by hand. Never the provider the box is using, and
+# nothing at all when the config could not be read. One literal patch per plugin, for the reason
+# the comma comment in openclaw.yml gives.
+- name: Web search | switch off the key-based search plugins that are not in use
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s'
+      '{"plugins":{"entries":{"{{ item }}":{"enabled":false}}}}'
+      | /usr/bin/openclaw config patch --stdin
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  loop: "{{ openclaw_search_keyed_plugins }}"
+  when:
+    - openclaw_search_provider_current is defined
+    - openclaw_search_plugins_off is defined
+    - openclaw_search_provider_current != item
+    - item not in openclaw_search_plugins_off
+  register: openclaw_search_off
+  changed_when: openclaw_search_off.rc == 0
+  failed_when: false
+  notify: restart openclaw
 
 # Only `provider` is written. `enabled` defaults to true in OpenClaw, so sending it would buy
 # nothing and would let this task re-enable a box where someone had switched search off.
