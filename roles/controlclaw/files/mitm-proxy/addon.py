@@ -1977,6 +1977,12 @@ def apply_login_swap(flow: http.HTTPFlow, cred: dict[str, Any], host: str) -> bo
             flow.request.set_text(swap_login_form(body, placeholder, secret))
         else:
             flow.request.set_text(swap_login_text(body, placeholder, secret, kind))
+    # Where the password went, for the log record: the AI review treats a password in a path or a
+    # query, or outside a sign-in, as something to look at (never the values, only the places).
+    places = flow.metadata.setdefault("cc_login_in", [])
+    for hit, place in ((in_path, "path"), (in_query, "query"), (bool(header_hits), "header"), (in_body, "body")):
+        if hit and place not in places:
+            places.append(place)
     return True
 
 
@@ -3779,6 +3785,7 @@ def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
     rec["swapped"] = [p for _, p in flow.metadata.get("cc_applied", []) if not p.startswith("CC-SEC-") and p not in login_pairs] + flow.metadata.get("cc_secret_swaps", [])
     if flow.metadata.get("cc_login_swaps"):
         rec["login"] = flow.metadata["cc_login_swaps"][0][:64]
+        rec["login_in"] = list(flow.metadata.get("cc_login_in") or [])
     if flow.metadata.get("cc_granted"):
         rec["permission_id"] = flow.metadata["cc_granted"]
     req_raw = flow.request.raw_content
