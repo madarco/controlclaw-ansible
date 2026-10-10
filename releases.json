@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.4.0",
+    "date": "2026-10-10",
+    "changes": [
+      "An agent no longer freezes during heavy web research: it can hold many more connections, and it recovers by itself if it gets stuck.",
+      "Meetings: the agent can listen the whole time without a wake word, set reminders when asked, join from calendar invites, join signed in to its Google account, and act on a meeting afterwards by your instructions.",
+      "Your firewall's pages (Logs, Doctor, Website logins) have the ControlClaw look, and the page an agent sends you to add a login works well on a phone.",
+      "Screenshots of a browser tab that is not in front no longer time out, and unused search providers are switched off."
+    ]
+  },
+  {
     "version": "1.3.4",
     "date": "2026-10-10",
     "changes": [
