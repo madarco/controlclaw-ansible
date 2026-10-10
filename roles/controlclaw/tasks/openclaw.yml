@@ -675,6 +675,11 @@
       # which takes over 6 s before it can fail.
       Restart=always
       RestartSec=2
+      # systemd's default is 90 s. An OpenClaw that has stopped answering ignores the stop signal,
+      # so Restart from the console waited those 90 s while the vm-agent gives the whole action 30
+      # (SERVICE_ACTION_MS) and reported a failure. After 25 s it is killed. OpenClaw reads this
+      # value and sizes its own shutdown from it: 10 s to let work in flight end, then exit.
+      TimeoutStopSec=25
       StandardOutput=journal
       StandardError=journal
       SyslogIdentifier=openclaw

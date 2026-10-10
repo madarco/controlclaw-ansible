@@ -357,6 +357,10 @@
       [Service]
       Type=simple
       User={{ controlclaw_user }}
+      # Every connection an agent has open is two descriptors here, for all of the organization's
+      # agents together. systemd's default of 1024 is about 500 connections, which one agent
+      # browsing a few busy sites reaches (T-browserhang).
+      LimitNOFILE=65536
       Environment=MITM_RULES_PATH=/run/mitm/config/rules.json
       Environment=MITM_CREDENTIALS_PATH=/run/mitm/config/credentials.json
       Environment=MITM_GRANTS_PATH=/run/mitm/config/grants.json
