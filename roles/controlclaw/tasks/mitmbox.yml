@@ -361,6 +361,13 @@
       # agents together. systemd's default of 1024 is about 500 connections, which one agent
       # browsing a few busy sites reaches (T-browserhang).
       LimitNOFILE=65536
+      # The proxy takes about 0.4 MiB for each connection it holds (measured: 82 MiB idle, 510 MiB
+      # at 1000, 945 MiB at 2000), and never gives it back. An agent can hold 2000
+      # (redsocks_conn_max), so one runaway browser costs under 1 GiB of this box. Past 60% of the
+      # box (2.3 GiB of a 4 GB firewall, about 5500 connections) the proxy is stopped and started
+      # again by systemd, which drops the agents' connections, before the kernel has to pick
+      # something to kill among the firewall's other services.
+      MemoryMax=60%
       Environment=MITM_RULES_PATH=/run/mitm/config/rules.json
       Environment=MITM_CREDENTIALS_PATH=/run/mitm/config/credentials.json
       Environment=MITM_GRANTS_PATH=/run/mitm/config/grants.json
