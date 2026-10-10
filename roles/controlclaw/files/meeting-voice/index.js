@@ -3,6 +3,7 @@ import { VoiceBridge } from './voice.js';
 import { LiveBridge, liveModel } from './live.js';
 import { PhoneVoiceBridge, PhoneLiveBridge } from './phone.js';
 import { WakeSessionBridge } from './wake-session.js';
+import { AlwaysBridge } from './always-session.js';
 import { meetingWakeSessions } from './record.js';
 const require = createRequire('/usr/lib/node_modules/openclaw/package.json');
 const WebSocket = require('ws');
@@ -22,7 +23,9 @@ export default {
       createBridge: req => {
         const c = req.providerConfig;
         if (!liveModel(c?.provider, c?.model)) return new VoiceBridge(req, { WebSocket });
-        const sessions = c.wake?.enabled !== false ? meetingWakeSessions() : 0;
+        const sessions = meetingWakeSessions();
+        // Wake word off: connected for the whole meeting, the model decides when it is spoken to.
+        if (c.wake?.enabled === false) return new AlwaysBridge({ ...req, providerConfig: { ...c, sessions } }, { WebSocket });
         return sessions ? new WakeSessionBridge({ ...req, providerConfig: { ...c, wakeSessions: sessions } }, { WebSocket }) : new LiveBridge(req, { WebSocket });
       },
     });
