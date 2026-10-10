@@ -1,13 +1,23 @@
 import { existsSync } from "node:fs";
 
-// The agent's own Chrome (browser-stream.service), the one OpenClaw's default browser profile drives.
-const CDP = "http://127.0.0.1:9222";
-// OpenClaw gives a screenshot 20 seconds; the hold ends by itself a little after that.
+// OpenClaw gives a screenshot 20 seconds; a hold ends by itself a little after that.
 const HOLD_MS = 30_000;
 const SCREENCAST = { format: "jpeg", quality: 1, maxWidth: 16, maxHeight: 16, everyNthFrame: 60 };
 
 /**
- * Keep every tab of the agent's Chrome drawing until the returned function is called.
+ * The debugger of the agent's own Chrome (browser-stream.service): what the role wrote into
+ * OpenClaw's `openclaw` browser profile from `browser_cdp_port`, else BROWSER_CDP_PORT as the
+ * vm-agent reads it, else 9222. Loopback only.
+ */
+export function ownCdpUrl(config, env = process.env) {
+  const url = config?.browser?.profiles?.openclaw?.cdpUrl;
+  if (typeof url === "string" && /^http:\/\/127\.0\.0\.1:\d+\/?$/.test(url)) return url.replace(/\/$/, "");
+  return `http://127.0.0.1:${/^\d+$/.test(env.BROWSER_CDP_PORT ?? "") ? env.BROWSER_CDP_PORT : "9222"}`;
+}
+
+/**
+ * Keep tabs of the agent's Chrome drawing until the returned function is called: the one tab
+ * `targetId` names, or every tab when it names none Chrome knows.
  *
  * That Chrome has a window, and a tab that is not the one in front answers one
  * Page.captureScreenshot and then none, so OpenClaw's screenshot of it waits its 20 seconds out
@@ -16,15 +26,23 @@ const SCREENCAST = { format: "jpeg", quality: 1, maxWidth: 16, maxHeight: 16, ev
  * keeps drawing it and every capture answers at once, whichever tab is in front. Nothing is read
  * from the pages: the frames are 16 pixels wide and are dropped.
  *
+ * `targetId` is what the agent passed to the browser tool. When it is a Chrome target id, or the
+ * start of exactly one, only that tab is held. A screenshot with no targetId, or with one of
+ * OpenClaw's own names for a tab (`t2`, a label), goes to a tab this hook cannot tell, so all of
+ * them are held, however many there are: a long-lived agent has dozens.
+ *
  * Never throws and never waits more than a second per step: a tool call must not fail on this.
  */
-export async function keepTabsDrawn({ cdp = CDP, fetchImpl = fetch, connect = (url) => new WebSocket(url) } = {}) {
+export async function keepTabsDrawn({ cdp = ownCdpUrl(), targetId, fetchImpl = fetch, connect = (url) => new WebSocket(url) } = {}) {
   const sockets = [];
   const release = () => { for (const ws of sockets.splice(0)) try { ws.close(); } catch {} };
   try {
     const targets = await (await fetchImpl(`${cdp}/json/list`, { signal: AbortSignal.timeout(1000) })).json();
     // Only the loopback debugger of that Chrome, and only its tabs.
-    const pages = (Array.isArray(targets) ? targets : []).filter((t) => t?.type === "page" && /^ws:\/\/127\.0\.0\.1:\d+\/devtools\/page\//.test(t.webSocketDebuggerUrl ?? "")).slice(0, 30);
+    let pages = (Array.isArray(targets) ? targets : []).filter((t) => t?.type === "page" && /^ws:\/\/127\.0\.0\.1:\d+\/devtools\/page\//.test(t.webSocketDebuggerUrl ?? ""));
+    const wanted = typeof targetId === "string" ? targetId.trim().toLowerCase() : "";
+    const named = wanted.length >= 4 ? pages.filter((t) => String(t.id ?? "").toLowerCase().startsWith(wanted)) : [];
+    if (named.length === 1) pages = named;
     await Promise.all(pages.map((t) => new Promise((resolve) => {
       const timer = setTimeout(resolve, 1000);
       const done = () => { clearTimeout(timer); resolve(); };
@@ -57,27 +75,38 @@ export default {
       }
     }, { priority: 1000 });
 
-    // Screenshots of a tab that is not in front (see keepTabsDrawn): held while any screenshot
-    // of the agent's own browser is running, and for HOLD_MS at most.
-    let drawn = null, running = 0, timer = null;
-    const end = () => {
-      clearTimeout(timer);
-      running = 0;
-      const held = drawn;
-      drawn = null;
-      void held?.then((release) => release());
+    // Screenshots of a tab that is not in front (see keepTabsDrawn). One hold per screenshot,
+    // kept by its toolCallId and ended by its own after_tool_call or after HOLD_MS, so an
+    // after_tool_call that arrives late ends nothing but the hold it belongs to.
+    //
+    // before_tool_call fails closed: a handler that throws blocks the tool call, and OpenClaw
+    // does not cut a slow handler short. Nothing here may throw or wait without a limit.
+    // keepTabsDrawn catches everything and waits a second per step at most.
+    const holds = new Map();
+    let unnamed = 0;
+    const end = (key) => {
+      const hold = holds.get(key);
+      if (!hold) return;
+      holds.delete(key);
+      clearTimeout(hold.timer);
+      void hold.drawn.then((release) => release());
     };
     const ownScreenshot = (event) => event.toolName === "browser" && event.params?.action === "screenshot" && (!event.params.profile || event.params.profile === "openclaw");
     api.on("before_tool_call", async (event) => {
       if (!ownScreenshot(event)) return;
-      running++;
-      clearTimeout(timer);
-      timer = setTimeout(end, HOLD_MS);
+      // OpenClaw reports one call under two names (the tool and its wrapper); one hold serves both.
+      const key = event.toolCallId || `unnamed:${++unnamed}`;
+      if (holds.has(key)) return void (await holds.get(key).drawn);
+      const timer = setTimeout(() => end(key), HOLD_MS);
       timer.unref?.();
-      await (drawn ??= keepTabsDrawn());
+      const drawn = keepTabsDrawn({ cdp: ownCdpUrl(api.config), targetId: event.params.targetId });
+      holds.set(key, { timer, drawn });
+      await drawn;
     });
     api.on("after_tool_call", (event) => {
-      if (ownScreenshot(event) && --running <= 0) end();
+      if (!ownScreenshot(event)) return;
+      // Without an id, the oldest hold that has none.
+      end(event.toolCallId || [...holds.keys()].find((k) => k.startsWith("unnamed:")));
     });
   },
 };
