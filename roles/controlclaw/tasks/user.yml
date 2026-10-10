@@ -63,6 +63,11 @@
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable openclaw
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable openclaw
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
+      # The vm-agent's watchdog (packages/vm-agent/src/watchdog.ts): restart, and only restart,
+      # the redirector all of this box's connections leave through, when it has stopped
+      # accepting them (T-browserhang). A restart cannot open a way around the firewall: the
+      # redirect rules and the lockdown are not touched, and a stopped redsocks is no egress.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart controlclaw-redsocks
 
       # Tailscale - none here. The one privileged Tailscale surface is cc-tailscale, granted in
       # /etc/sudoers.d/controlclaw-tailscale by tailscale-linux.yml. The `tailscale up *` line

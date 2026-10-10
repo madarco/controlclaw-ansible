@@ -50,6 +50,12 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+# try-restart: only a redsocks that is running. Before the vm-agent turns egress on
+# (cc-enable-egress) it is not, and must not be started from here.
+- name: restart controlclaw-redsocks
+  ansible.builtin.shell: systemctl daemon-reload && systemctl try-restart controlclaw-redsocks
+  changed_when: true
+
 - name: restart openclaw
   ansible.builtin.systemd:
     name: openclaw

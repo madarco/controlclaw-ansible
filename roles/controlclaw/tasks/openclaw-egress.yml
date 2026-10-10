@@ -201,6 +201,21 @@
     mode: '0755'
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
 
+# How many connections the box may have open at once (T-browserhang). redsocks works its limit out
+# from its descriptor limit: three quarters of it, six descriptors a connection. Under systemd's
+# default of 1024 that is 128 connections for the whole box (`redsocks started, conn_max=128` in
+# its log). At the limit redsocks stops accepting, so every NEW connection from the box hangs with
+# no error while the box sits idle: pages never load, the model is not reached, Telegram drops, the
+# disk report and Activity stop. It only lets go of a connection that has been idle for 2 hours,
+# and a browser with a few busy tabs keeps well over 128 alive, so the box stayed that way until
+# it was rebooted (a customer's agent, 14 hours, 2026-10-09).
+#
+# redsocks_conn_max sets the limit outright: 2000, fifteen times the old one and six times what 30
+# tabs of busy sites held (316). It is not higher because every connection here is one on the
+# firewall's proxy too, which all of the organization's agents share and which has 4 GB: one
+# runaway browser must not be able to fill it. LimitNOFILE in the unit below is what lets redsocks
+# hold that many (six descriptors each). The rest makes a full table drain in minutes and a dead
+# peer get noticed.
 - name: Write redsocks config (transparent → explicit CONNECT to the mitm proxy)
   ansible.builtin.copy:
     dest: /etc/controlclaw/egress/redsocks.conf
@@ -212,6 +227,12 @@
         log = "syslog:daemon";
         daemon = off;
         redirector = iptables;
+        redsocks_conn_max = 2000;
+        connpres_idle_timeout = 600;
+        max_accept_backoff = 1000;
+        tcp_keepalive_time = 300;
+        tcp_keepalive_probes = 3;
+        tcp_keepalive_intvl = 30;
       }
       redsocks {
         local_ip = 127.0.0.1;
@@ -221,6 +242,7 @@
         type = http-connect;
       }
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
+  notify: restart controlclaw-redsocks
 
 - name: Create controlclaw-redsocks service
   ansible.builtin.copy:
@@ -234,6 +256,7 @@
       [Service]
       Type=simple
       User=redsocks
+      LimitNOFILE=65536
       ExecStart=/usr/sbin/redsocks -c /etc/controlclaw/egress/redsocks.conf
       Restart=always
       RestartSec=5
@@ -241,7 +264,7 @@
       [Install]
       WantedBy=multi-user.target
   when: mitm_box_private_ip is defined and mitm_box_private_ip | length > 0
-  notify: reload systemd
+  notify: restart controlclaw-redsocks
 
 # nftables REDIRECT ruleset — STAGED, not applied here (cc-enable-egress applies it at the right
 # time). Idempotent (add+flush+rebuild). Exempts the mitm box, loopback, and the private subnet so

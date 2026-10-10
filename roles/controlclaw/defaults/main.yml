@@ -114,8 +114,15 @@ browser_desktop_rfbauth_file: /opt/controlclaw/keys/desktop_vnc_rfbauth
 # judgement — which in practice takes OpenClaw and leaves the browser looking fine. MemoryHigh
 # throttles it into swap first; MemoryMax is the wall. Covers Chrome, Xvfb, x11vnc, websockify
 # and openbox together (~220 MB of that is everything except Chrome).
-browser_memory_high: "1600M"
-browser_memory_max: "2G"
+#
+# A share of the box's memory (of MemTotal, which is a little under the plan's figure), worked out
+# by systemd when it loads the unit, so a box that is resized gets the new figure on its next boot.
+# They used to be 1600M and 2G whatever the size, and no box may get less than that: a 4 GB box
+# has about 3.8 GiB, where these come to 1.6 GiB and 2.05 GiB. On a cpx32 (8 GB, about 7.6 GiB)
+# with 30 tabs of busy sites the old limit had Chrome 1.5 GB into swap and its calls taking 4 to
+# 8 s while 4 GB of the box sat free (T-browserhang); there these are 3.2 GiB and 4.1 GiB.
+browser_memory_high: "42%"
+browser_memory_max: "54%"
 
 # What OpenClaw is pointed at (tasks/openclaw.yml). Written into the config AND compared against
 # what is already there, so it is derived once here rather than spelled out twice.
