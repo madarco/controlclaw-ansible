@@ -208,8 +208,14 @@
 # no error while the box sits idle: pages never load, the model is not reached, Telegram drops, the
 # disk report and Activity stop. It only lets go of a connection that has been idle for 2 hours,
 # and a browser with a few busy tabs keeps well over 128 alive, so the box stayed that way until
-# it was rebooted (a customer's agent, 14 hours, 2026-10-09). LimitNOFILE in the unit below makes
-# it 8192; the rest makes a full table drain in minutes and a dead peer get noticed.
+# it was rebooted (a customer's agent, 14 hours, 2026-10-09).
+#
+# redsocks_conn_max sets the limit outright: 2000, fifteen times the old one and six times what 30
+# tabs of busy sites held (316). It is not higher because every connection here is one on the
+# firewall's proxy too, which all of the organization's agents share and which has 4 GB: one
+# runaway browser must not be able to fill it. LimitNOFILE in the unit below is what lets redsocks
+# hold that many (six descriptors each). The rest makes a full table drain in minutes and a dead
+# peer get noticed.
 - name: Write redsocks config (transparent → explicit CONNECT to the mitm proxy)
   ansible.builtin.copy:
     dest: /etc/controlclaw/egress/redsocks.conf
@@ -221,6 +227,7 @@
         log = "syslog:daemon";
         daemon = off;
         redirector = iptables;
+        redsocks_conn_max = 2000;
         connpres_idle_timeout = 600;
         max_accept_backoff = 1000;
         tcp_keepalive_time = 300;
