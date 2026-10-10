@@ -76,6 +76,10 @@ export function voiceRecord(surface, dir = DIR()) {
     /** A finished line of the conversation; phone history already has its own transcript. */
     /** How a woken meeting session ended: end_session (the model), done, idle, stop or limit. */
     end(reason) { if (surface !== 'phone' && /^[a-z_]{1,20}$/.test(reason)) write({ kind: 'session', reason }); },
+    /** A reminder created for the owner, or a request left for them (actions.js). */
+    action(kind, fields) { if (surface !== 'phone' && (kind === 'reminder' || kind === 'request')) write({ kind, ...fields }); },
+    /** How many reminders this meeting has set (the log is emptied when a meeting starts). */
+    reminders() { return tail(file).filter(l => l?.kind === 'reminder').length; },
     line(role, text, startedAt) { if (surface !== 'phone' && typeof text === 'string' && text.trim()) write({ kind: 'line', role: role === 'assistant' ? 'assistant' : 'user', text: text.trim().slice(0, 4000), ...(Number.isFinite(startedAt) ? { at: new Date(startedAt).toISOString() } : {}) }); },
   };
 }
