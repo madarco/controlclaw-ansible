@@ -1,0 +1,4 @@
+# The default: an agent as it comes, with nothing added.
+name: blank
+description: An agent as it comes.
+steps: []

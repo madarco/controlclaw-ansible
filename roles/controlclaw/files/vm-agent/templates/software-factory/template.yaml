@@ -1,0 +1,60 @@
+# Software factory: takes tickets, works in a branch, opens pull requests.
+name: software-factory
+description: Takes tickets, opens pull requests.
+
+todo:
+  - id: github-token
+    title: Add the GitHub token as a firewall secret
+    why: It opens pull requests with it. The agent never sees the token.
+    go: add-secret
+    secret: GITHUB_TOKEN
+  - id: repositories
+    title: Name the repositories it works on
+    why: Its instructions have a list for them.
+    go: files
+  - id: channel
+    title: Connect a channel or Team chat
+    why: It reports there what it started, opened and is blocked on.
+    go: connect-channel
+
+steps:
+  - id: soul
+    title: Write the agent's instructions
+    file: { path: SOUL.md, from: files/SOUL.md, ifMissing: true, fill: true }
+
+  - id: agents
+    title: Write how the agent works
+    file: { path: AGENTS.md, from: files/AGENTS.md, ifMissing: true, fill: true }
+
+  - id: controlclaw-tools
+    title: Let the agent read its ControlClaw settings, not change them
+    controlclaw.setting: { tool: agent_tools_set_mode, values: { mode: read } }
+
+  - id: email
+    title: Turn off sending email
+    controlclaw.setting: { tool: email_set_agent_outbound, values: { mode: block } }
+
+  - id: local-bin
+    title: Put the agent's own tools on its PATH, after the system's
+    line: { file: ~/.profile, match: '^export PATH="\$PATH:\$HOME/\.local/bin"', line: 'export PATH="$PATH:$HOME/.local/bin"' }
+
+  # A download can be blocked by the firewall. The agent works without it, so the run goes on;
+  # the card shows the failure and an owner can press Try again.
+  - id: gh
+    optional: true
+    title: Install the GitHub CLI
+    run: { apply: scripts/gh-apply.sh, verify: scripts/gh-verify.sh, timeout: 300 }
+
+  - id: uv
+    optional: true
+    title: Install uv, for Python projects and pip
+    run: { apply: scripts/uv-apply.sh, verify: scripts/uv-verify.sh, timeout: 300 }
+
+  - id: ripgrep
+    optional: true
+    title: Install ripgrep
+    run: { apply: scripts/rg-apply.sh, verify: scripts/rg-verify.sh, timeout: 300 }
+
+  - id: build-tools
+    title: Check make, git, Node.js and Docker Compose
+    run: { apply: scripts/tools-verify.sh, verify: scripts/tools-verify.sh, timeout: 120 }

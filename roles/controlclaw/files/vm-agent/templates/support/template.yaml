@@ -1,0 +1,43 @@
+# Support agent: answers customers from what is written in knowledge/.
+name: support
+description: Answers customers.
+
+todo:
+  - id: channel
+    title: Connect the channel customers write on
+    why: Customers reach it there.
+    go: connect-channel
+  - id: knowledge
+    title: Add your knowledge files
+    why: It answers only from the files in its knowledge folder.
+    go: files
+  - id: company-site
+    title: Allow the company site and help centre
+    why: So it can read your own pages. Anything else it asks for.
+    go: company-domain-rule
+  - id: email-anyone
+    title: Let anyone write to it
+    why: Customers email it. It replies only to people who wrote first.
+    go: email-rules
+    optional: true
+
+steps:
+  - id: soul
+    title: Write the agent's instructions
+    file: { path: SOUL.md, from: files/SOUL.md, ifMissing: true, fill: true }
+
+  - id: agents
+    title: Write how the agent works
+    file: { path: AGENTS.md, from: files/AGENTS.md, ifMissing: true, fill: true }
+
+  - id: knowledge
+    title: Make the folder its answers come from
+    file: { path: knowledge/README.md, from: files/knowledge-README.md, ifMissing: true }
+
+  - id: controlclaw-tools
+    title: Turn off the agent's ControlClaw tools
+    controlclaw.setting: { tool: agent_tools_set_mode, values: { mode: "off" } }
+
+  - id: email
+    title: Let the agent email only people on the allowed list
+    controlclaw.setting: { tool: email_set_agent_outbound, values: { mode: listed } }

@@ -28180,7 +28180,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync32, existsSync as existsSync27, writeFileSync as writeFileSync21, rmSync as rmSync9 } from "fs";
+import { readFileSync as readFileSync33, existsSync as existsSync28, writeFileSync as writeFileSync22, rmSync as rmSync10 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash5, randomBytes as randomBytes2 } from "crypto";
@@ -33984,8 +33984,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8144eaa" : "unknown",
-  builtAt: true ? "2026-10-11T18:54:43+01:00" : "unknown"
+  commit: true ? "c8e4f82" : "unknown",
+  builtAt: true ? "2026-10-11T23:37:06+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -34067,7 +34067,7 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -51690,6 +51690,200 @@ async function handleGbrain(req, res, url3, service) {
   }
 }
 
+// src/templates.ts
+import { existsSync as existsSync27, mkdirSync as mkdirSync17, readFileSync as readFileSync32, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
+import { dirname as dirname16, join as join23 } from "path";
+var TEMPLATE_POLL_MS = 2 * 6e4;
+var TEMPLATE_VERIFY_MS = 6 * 60 * 6e4;
+var RUN_TIMEOUT_MS = 45 * 6e4;
+var VERIFY_TIMEOUT_MS = 10 * 6e4;
+var CALL_MS2 = 2e4;
+var TEMPLATE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+var STEP_ID = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
+var TemplateService = class {
+  constructor(opts) {
+    this.opts = opts;
+    try {
+      const kept = JSON.parse(readFileSync32(this.unsentPath, "utf8"));
+      if (kept && typeof kept === "object") this.unsent = kept;
+    } catch {
+    }
+  }
+  running = null;
+  /**
+   * A result the control plane has not taken yet. Kept on disk as well: the template is applied
+   * once, so a result lost to a restart of this service could never be produced again.
+   */
+  unsent = null;
+  settled = false;
+  get unsentPath() {
+    return join23(this.opts.stateDir, "unsent.json");
+  }
+  keep(result) {
+    this.unsent = result;
+    this.write(this.unsentPath, result);
+  }
+  /** True once the template has been applied (or there is none) and its result has been taken. */
+  get done() {
+    return this.settled && !this.unsent;
+  }
+  /** True while there is a reason to ask the control plane: a template was applied, so an owner may ask for steps again. */
+  get asks() {
+    const marker = this.marker();
+    return !this.settled || !!this.unsent || !!marker && !marker.missing;
+  }
+  log(line2) {
+    (this.opts.log ?? ((l2) => console.log(l2)))(`[templates] ${line2}`);
+  }
+  get markerPath() {
+    return join23(this.opts.stateDir, "applied.json");
+  }
+  marker() {
+    try {
+      const raw = JSON.parse(readFileSync32(this.markerPath, "utf8"));
+      if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
+      return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {} };
+    } catch {
+      return null;
+    }
+  }
+  write(path, value2) {
+    mkdirSync17(dirname16(path), { recursive: true, mode: 448 });
+    const tmp = `${path}.tmp`;
+    writeFileSync21(tmp, JSON.stringify(value2), { mode: 384 });
+    renameSync16(tmp, path);
+  }
+  async call(method, body2) {
+    const base = this.opts.base();
+    if (!base) throw new Error("no control plane address");
+    const response = await (this.opts.fetch ?? fetch)(`${base}/api/vm-agent/template`, {
+      method,
+      headers: { authorization: `Bearer ${await this.opts.getToken()}`, ...body2 === void 0 ? {} : { "content-type": "application/json" } },
+      body: body2 === void 0 ? void 0 : JSON.stringify(body2),
+      signal: AbortSignal.timeout(CALL_MS2)
+    });
+    if (!response.ok) throw Object.assign(new Error(`control plane answered ${response.status}`), { status: response.status });
+    return response.json();
+  }
+  /** Runs the runner and returns what it printed for the console, whatever its exit code. */
+  async runbook(command, dir, assignment, only) {
+    const vars = join23(this.opts.stateDir, "vars.json");
+    this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
+    const args = [this.opts.runbook, command, dir, "--vars", vars, "--json", "--public"];
+    if (command === "run") args.push("--skip-unconfirmed", ...assignment.runId ? ["--run-id", assignment.runId] : [], ...only ? ["--only", only.join(",")] : []);
+    let stdout = "";
+    try {
+      stdout = (await this.opts.exec(this.opts.node, args, command === "run" ? RUN_TIMEOUT_MS : VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
+    } catch (error62) {
+      stdout = error62.stdout ?? "";
+    }
+    try {
+      const report = JSON.parse(stdout);
+      return Array.isArray(report.steps) ? report : null;
+    } catch {
+      return null;
+    }
+  }
+  async send() {
+    if (!this.unsent) return;
+    try {
+      await this.call("POST", this.unsent);
+    } catch (error62) {
+      const status = error62.status;
+      if (status !== 400 && status !== 413) throw error62;
+      this.log(`the control plane refused the result (${status}); not sent again`);
+    }
+    this.unsent = null;
+    rmSync9(this.unsentPath, { force: true });
+  }
+  async assignment() {
+    const raw = await this.call("GET");
+    if (!raw || typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template)) return null;
+    const steps = raw.rerun && Array.isArray(raw.rerun.steps) ? raw.rerun.steps.filter((id) => typeof id === "string" && STEP_ID.test(id)) : [];
+    return {
+      template: raw.template,
+      note: typeof raw.note === "string" ? raw.note : "",
+      name: typeof raw.name === "string" ? raw.name : "",
+      timeZone: typeof raw.timeZone === "string" ? raw.timeZone : "UTC",
+      runId: typeof raw.runId === "string" ? raw.runId : null,
+      rerun: steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null
+    };
+  }
+  /** Applies the template if that is still to do, and sends whatever the console has not had. One at a time; never throws. */
+  tick() {
+    this.running ??= this.once().catch((error62) => this.log(`could not finish: ${error62.message}`)).finally(() => {
+      this.running = null;
+    });
+    return this.running;
+  }
+  async once() {
+    if (this.unsent) await this.send();
+    const marker = this.marker();
+    if (marker) {
+      this.settled = true;
+      if (!marker.missing) await this.rerun(marker);
+      return;
+    }
+    if (this.settled) return;
+    const assignment = await this.assignment();
+    if (!assignment?.template) {
+      this.settled = true;
+      return;
+    }
+    const dir = join23(this.opts.templatesDir, assignment.template);
+    const now = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
+    if (!existsSync27(join23(dir, "template.yaml"))) {
+      this.log(`${assignment.template} is not on this agent`);
+      this.keep({ kind: "run", template: assignment.template, missing: true });
+      this.write(this.markerPath, { template: assignment.template, at: now, missing: true });
+      this.settled = true;
+      return this.send();
+    }
+    this.log(`applying ${assignment.template}`);
+    const report = await this.runbook("run", dir, assignment);
+    this.keep({ kind: "run", template: assignment.template, ...report ? { report } : { broken: true } });
+    this.write(this.markerPath, { template: assignment.template, at: now });
+    this.settled = true;
+    this.log(report ? `applied ${assignment.template}: ${String(report.result)}` : `${assignment.template}: the runner gave no report`);
+    setTimeout(() => void this.verify(), this.opts.verifyAfterMs ?? 3 * 6e4).unref();
+    return this.send();
+  }
+  /**
+   * Steps an owner or admin asked for again in the console (a setting to confirm or set again, a
+   * failed step to try again). Which steps, and with which values, is the console's to say: the
+   * agent runs exactly the ones it is given, under the grant it is given, and reports them.
+   */
+  async rerun(marker) {
+    const assignment = await this.assignment();
+    if (!assignment || assignment.template !== marker.template || !assignment.rerun) return;
+    const request = `${assignment.rerun.runId ?? ""}:${assignment.rerun.at}:${assignment.rerun.steps.join(",")}`;
+    if (marker.rerun === request) return;
+    const dir = join23(this.opts.templatesDir, marker.template);
+    if (!existsSync27(join23(dir, "template.yaml"))) return;
+    this.log(`running ${assignment.rerun.steps.length} step(s) of ${marker.template} again`);
+    const report = await this.runbook("run", dir, { ...assignment, runId: assignment.rerun.runId }, assignment.rerun.steps);
+    this.write(this.markerPath, { ...marker, rerun: request });
+    if (!report) return;
+    const ran = report.steps.filter((s2) => typeof s2.id === "string" && assignment.rerun?.steps.includes(s2.id));
+    this.keep({ kind: "rerun", template: marker.template, report: { ...report, steps: ran } });
+    return this.send();
+  }
+  /** Checks the applied template again and tells the console how many steps still hold. Never throws. */
+  async verify() {
+    const marker = this.marker();
+    if (!marker || marker.missing || this.running) return;
+    const dir = join23(this.opts.templatesDir, marker.template);
+    if (!existsSync27(join23(dir, "template.yaml"))) return;
+    try {
+      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null };
+      const report = await this.runbook("verify", dir, assignment);
+      if (report) await this.call("POST", { kind: "verify", template: marker.template, report });
+    } catch (error62) {
+      this.log(`could not check ${marker.template}: ${error62.message}`);
+    }
+  }
+};
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -51706,15 +51900,15 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var MEETING_REQUEST_POLL_MS = 1e4;
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
-var POOL_UNCLAIMED = existsSync27("/etc/controlclaw/pool-unclaimed");
+var POOL_UNCLAIMED = existsSync28("/etc/controlclaw/pool-unclaimed");
 var poolHealthy = false;
-if (POOL_UNCLAIMED && !existsSync27(`${KEYS_DIR2}/saas_public_key.pem`)) {
+if (POOL_UNCLAIMED && !existsSync28(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
-  writeFileSync21(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+  writeFileSync22(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync32(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync33(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -51722,7 +51916,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync32(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync33(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -51737,10 +51931,10 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   if (POOL_UNCLAIMED) {
-    for (let i2 = 0; i2 < 300 && !existsSync27(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+    for (let i2 = 0; i2 < 300 && !existsSync28(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
       await new Promise((resolve3) => setTimeout(resolve3, 1e3));
     }
-    if (!existsSync27(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    if (!existsSync28(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
     const egress = await enableTransparentEgress(KEYS_DIR2);
     if (!egress) return;
     const hostname4 = readKeyFile(KEYS_DIR2, "vm_hostname");
@@ -51859,7 +52053,7 @@ var healthDeps = {
   },
   mitmPrivateIp: () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip"),
   tcpProbe: probe,
-  rebootRequired: () => existsSync27("/var/run/reboot-required"),
+  rebootRequired: () => existsSync28("/var/run/reboot-required"),
   gateway: () => gateway,
   watchdog: () => watchdog?.status() ?? null,
   stalled: (now, minMs) => {
@@ -51897,7 +52091,7 @@ var MEETINGS_DIR = `${OPENCLAW_HOME}/workspace/meetings`;
 var workspaceExporter = new WorkspaceExporter({
   openclawHome: OPENCLAW_HOME,
   agentName: () => agentNameOf(readKeyFile(KEYS_DIR2, "vm_hostname")),
-  meetings: () => existsSync27(MEETINGS_DIR) ? new MeetingArchive(MEETINGS_DIR, `${STATE_DIR}/meeting-deletions.json`).list() : [],
+  meetings: () => existsSync28(MEETINGS_DIR) ? new MeetingArchive(MEETINGS_DIR, `${STATE_DIR}/meeting-deletions.json`).list() : [],
   calls: () => phoneCalls.calls().map((c2) => callDetail(c2, phoneCallLog))
 });
 var files = new FilesService({
@@ -52181,16 +52375,16 @@ server.listen(PORT, BIND, () => {
   }) : null;
   if (meetingFollowUp) setInterval(() => void meetingFollowUp.tick().catch(() => void 0), MEETING_REQUEST_POLL_MS).unref();
   const reserveMeetingBrowser = (reserved) => {
-    if (reserved) writeFileSync21(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
-    else rmSync9(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
+    if (reserved) writeFileSync22(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
+    else rmSync10(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
   };
   const meetingBrowser = async (start, voice = false, signedIn = false) => {
     const marker = `${STATE_DIR}/meeting-browser-voice`;
-    if (start && voice) writeFileSync21(marker, "bidi", { mode: 384 });
-    else rmSync9(marker, { force: true });
+    if (start && voice) writeFileSync22(marker, "bidi", { mode: 384 });
+    else rmSync10(marker, { force: true });
     const signed = `${STATE_DIR}/meeting-browser-signed`;
-    if (start && signedIn) writeFileSync21(signed, "signed", { mode: 384 });
-    else rmSync9(signed, { force: true });
+    if (start && signedIn) writeFileSync22(signed, "signed", { mode: 384 });
+    else rmSync10(signed, { force: true });
     meetingMic?.close();
     meetingMic = null;
     await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
@@ -52214,14 +52408,14 @@ server.listen(PORT, BIND, () => {
     }
     throw new Error("Meeting browser did not become ready");
   };
-  if (client && existsSync27("/etc/systemd/user/cc-meeting-signin.service")) meetingSignin = new MeetingSignin({
+  if (client && existsSync28("/etc/systemd/user/cc-meeting-signin.service")) meetingSignin = new MeetingSignin({
     statePath: `${STATE_DIR}/meeting-signin.json`,
     profileDir: `${STATE_DIR}/meeting-profile`,
     account: () => google?.account() ?? null,
     connected: () => google?.connected() ?? false,
     window: async (start, url3) => {
-      if (start && url3) writeFileSync21(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
-      else rmSync9(`${STATE_DIR}/meeting-signin-url`, { force: true });
+      if (start && url3) writeFileSync22(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
+      else rmSync10(`${STATE_DIR}/meeting-signin-url`, { force: true });
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-signin.service"], 15e3);
     },
     browser: (start) => meetingBrowser(start, false, true),
@@ -52252,7 +52446,7 @@ server.listen(PORT, BIND, () => {
       let inboxId = agentmail?.status()?.inboxId;
       if (!inboxId) {
         try {
-          inboxId = JSON.parse(readFileSync32(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
+          inboxId = JSON.parse(readFileSync33(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
         } catch {
         }
       }
@@ -52335,5 +52529,24 @@ server.listen(PORT, BIND, () => {
     setInterval(() => void consoleMcp.ensure(), 15 * 6e4).unref();
     void consoleMcp.ensure();
     if (!POOL_UNCLAIMED) startWatchdog();
+  }
+  if (process.env.CC_SERVICE !== "gbrain" && !POOL_UNCLAIMED) {
+    const templates = new TemplateService({
+      base: () => saasBaseUrl(KEYS_DIR2),
+      getToken: makeBoxTokenSigner(KEYS_DIR2),
+      exec: defaultExec,
+      node: process.execPath,
+      runbook: `${__dirname}/cc-runbook.js`,
+      templatesDir: `${__dirname}/../templates`,
+      stateDir: `${STATE_DIR}/templates`
+    });
+    const apply = () => {
+      if (templates.asks && client?.connected) void templates.tick();
+    };
+    client?.onConnected(apply);
+    setInterval(apply, TEMPLATE_POLL_MS).unref();
+    apply();
+    setTimeout(() => void templates.verify(), 3 * 6e4).unref();
+    setInterval(() => void templates.verify(), TEMPLATE_VERIFY_MS).unref();
   }
 });

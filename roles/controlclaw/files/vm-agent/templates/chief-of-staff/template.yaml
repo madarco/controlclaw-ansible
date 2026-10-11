@@ -1,0 +1,42 @@
+# Chief of staff: a work routine for one person (the note says who).
+name: chief-of-staff
+description: A work routine for one person.
+
+todo:
+  - id: google
+    title: Connect Google
+    why: The morning brief and the inbox triage read the calendar and the mail.
+    go: connect-google
+  - id: channel
+    title: Connect a channel
+    why: The brief and its questions arrive there.
+    go: connect-channel
+  - id: meetings
+    title: Turn on Meetings
+    why: It joins from the calendar, silent, and sends the notes afterwards. This needs your confirmation code.
+    go: turn-on-meetings
+  - id: email-allowed
+    title: Allow its person and the company domain
+    why: It may email them freely; anyone else is asked for first.
+    go: email-rules
+
+steps:
+  - id: soul
+    title: Write the agent's instructions
+    file: { path: SOUL.md, from: files/SOUL.md, ifMissing: true, fill: true }
+
+  - id: agents
+    title: Write how the agent works
+    file: { path: AGENTS.md, from: files/AGENTS.md, ifMissing: true, fill: true }
+
+  - id: controlclaw-tools
+    title: Let the agent read its ControlClaw settings, not change them
+    controlclaw.setting: { tool: agent_tools_set_mode, values: { mode: read } }
+
+  - id: email
+    title: Ask before the agent emails anyone new
+    controlclaw.setting: { tool: email_set_agent_outbound, values: { mode: ask } }
+
+  - id: morning-brief
+    title: Schedule the morning brief at 08:00
+    run: { apply: scripts/brief-apply.sh, verify: scripts/brief-verify.sh, timeout: 120 }

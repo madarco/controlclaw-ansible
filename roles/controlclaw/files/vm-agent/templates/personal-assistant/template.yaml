@@ -1,0 +1,52 @@
+# Personal assistant: one person's general helper. It answers anything, browses and runs tasks.
+# docs/plans/agent-templates.md, "System templates".
+name: personal-assistant
+description: One person's general helper.
+
+# What a person does after the template is applied. Each item names a page of the console (`go`);
+# the console ticks an item off by itself where it can tell.
+todo:
+  - id: channel
+    title: Connect a channel
+    why: So its person can talk to it, on Telegram, WhatsApp or Slack.
+    go: connect-channel
+  - id: meetings
+    title: Turn on Meetings, with always listening
+    why: It joins from the calendar and from invites, listens, takes notes and reminds. This needs your confirmation code.
+    go: turn-on-meetings
+  - id: email-person
+    title: Add its person to the allowed recipients
+    why: It may email its person freely; anyone else is asked for first.
+    go: email-rules
+  - id: google
+    title: Connect Google
+    why: For the calendar and the inbox.
+    go: connect-google
+    optional: true
+  - id: meet-sign-in
+    title: Sign it in to Meet
+    why: So it joins meetings as itself and not as a guest.
+    go: meet-sign-in
+    optional: true
+  - id: phone
+    title: Give it a phone number
+    why: So it can take and make calls.
+    go: phone-number
+    optional: true
+
+steps:
+  - id: soul
+    title: Write the agent's instructions
+    file: { path: SOUL.md, from: files/SOUL.md, ifMissing: true, fill: true }
+
+  - id: agents
+    title: Write how the agent works
+    file: { path: AGENTS.md, from: files/AGENTS.md, ifMissing: true, fill: true }
+
+  - id: controlclaw-tools
+    title: Let the agent read its ControlClaw settings, not change them
+    controlclaw.setting: { tool: agent_tools_set_mode, values: { mode: read } }
+
+  - id: email
+    title: Ask before the agent emails anyone new
+    controlclaw.setting: { tool: email_set_agent_outbound, values: { mode: ask } }

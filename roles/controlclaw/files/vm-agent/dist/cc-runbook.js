@@ -4455,8 +4455,8 @@ var require_resolve_block_scalar = __commonJS({
       const lines = scalar.source ? splitLines(scalar.source) : [];
       let chompStart = lines.length;
       for (let i = lines.length - 1; i >= 0; --i) {
-        const content = lines[i][1];
-        if (content === "" || content === "\r")
+        const content2 = lines[i][1];
+        if (content2 === "" || content2 === "\r")
           chompStart = i;
         else
           break;
@@ -4472,8 +4472,8 @@ var require_resolve_block_scalar = __commonJS({
       let offset = scalar.offset + header.length;
       let contentStart = 0;
       for (let i = 0; i < chompStart; ++i) {
-        const [indent, content] = lines[i];
-        if (content === "" || content === "\r") {
+        const [indent, content2] = lines[i];
+        if (content2 === "" || content2 === "\r") {
           if (header.indent === 0 && indent.length > trimIndent)
             trimIndent = indent.length;
         } else {
@@ -4490,7 +4490,7 @@ var require_resolve_block_scalar = __commonJS({
           }
           break;
         }
-        offset += indent.length + content.length + 1;
+        offset += indent.length + content2.length + 1;
       }
       for (let i = lines.length - 1; i >= chompStart; --i) {
         if (lines[i][0].length > trimIndent)
@@ -4502,35 +4502,35 @@ var require_resolve_block_scalar = __commonJS({
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
       for (let i = contentStart; i < chompStart; ++i) {
-        let [indent, content] = lines[i];
-        offset += indent.length + content.length + 1;
-        const crlf = content[content.length - 1] === "\r";
+        let [indent, content2] = lines[i];
+        offset += indent.length + content2.length + 1;
+        const crlf = content2[content2.length - 1] === "\r";
         if (crlf)
-          content = content.slice(0, -1);
-        if (content && indent.length < trimIndent) {
+          content2 = content2.slice(0, -1);
+        if (content2 && indent.length < trimIndent) {
           const src = header.indent ? "explicit indentation indicator" : "first line";
           const message = `Block scalar lines must not be less indented than their ${src}`;
-          onError(offset - content.length - (crlf ? 2 : 1), "BAD_INDENT", message);
+          onError(offset - content2.length - (crlf ? 2 : 1), "BAD_INDENT", message);
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep3 + indent.slice(trimIndent) + content;
+          value += sep3 + indent.slice(trimIndent) + content2;
           sep3 = "\n";
-        } else if (indent.length > trimIndent || content[0] === "	") {
+        } else if (indent.length > trimIndent || content2[0] === "	") {
           if (sep3 === " ")
             sep3 = "\n";
           else if (!prevMoreIndented && sep3 === "\n")
             sep3 = "\n\n";
-          value += sep3 + indent.slice(trimIndent) + content;
+          value += sep3 + indent.slice(trimIndent) + content2;
           sep3 = "\n";
           prevMoreIndented = true;
-        } else if (content === "") {
+        } else if (content2 === "") {
           if (sep3 === "\n")
             value += "\n";
           else
             sep3 = "\n";
         } else {
-          value += sep3 + content;
+          value += sep3 + content2;
           sep3 = " ";
           prevMoreIndented = false;
         }
@@ -7371,7 +7371,7 @@ import { parseArgs } from "util";
 import { resolve as resolve3 } from "path";
 
 // ../templates/src/box.ts
-import { existsSync } from "fs";
+import { existsSync, readFileSync as readFileSync3 } from "fs";
 import { homedir } from "os";
 import { join as join2 } from "path";
 
@@ -7393,6 +7393,23 @@ var EXIT_NOT_RUNNABLE = 126;
 var EXIT_NOT_FOUND = 127;
 var EXIT_INTERRUPTED = 130;
 var StepFailure = class extends Error {
+};
+function cleanVar(value) {
+  return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim().slice(0, 200) : "";
+}
+function fillVars(text, vars) {
+  return text.replace(/\{\{\s*(note|name|timeZone)\s*(?:\|([^}]*))?\}\}/g, (_m, key, fallback) => vars[key] || (fallback ?? "").trim());
+}
+function cleanTimeZone(value) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_+\-/]{1,64}$/.test(value)) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value });
+    return value;
+  } catch {
+    return "UTC";
+  }
+}
+var NeedsConfirmation = class extends StepFailure {
 };
 function lastLine(result) {
   const text = (result.stderr.trim() || result.stdout.trim()).replace(/\x1b\[[0-9;]*m/g, "");
@@ -7640,6 +7657,7 @@ function makeSettingsClient(url2, doFetch = fetch, wait = (ms) => new Promise((r
       throw new StepFailure("ControlClaw sent an answer that could not be read", { cause: error62 });
     }
     if (isError && payload.code === "TOO_MANY_REQUESTS") throw new Busy();
+    if (isError && payload.code === "NO_GRANT") throw new NeedsConfirmation(typeof payload.message === "string" ? payload.message : "this change needs an owner to confirm the apply");
     if (isError) throw new StepFailure(typeof payload.message === "string" ? payload.message : "ControlClaw refused the call");
     return payload;
   };
@@ -7658,7 +7676,7 @@ function makeSettingsClient(url2, doFetch = fetch, wait = (ms) => new Promise((r
 }
 
 // ../templates/src/box.ts
-function boxContext(runId) {
+function boxContext(runId, vars = { note: "", name: "", timeZone: "UTC" }) {
   const home = process.env.HOME ?? homedir();
   const keysDir = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
   const ca = join2(keysDir, "mitm-ca.crt");
@@ -7670,6 +7688,7 @@ function boxContext(runId) {
       exec,
       settings: makeSettingsClient(process.env.CC_SETTINGS_URL ?? gateUrl(firewallIpFromKeys(keysDir))),
       runId,
+      vars,
       // Behind the organization's proxy, npm (a plugin install) hangs without the proxy's CA.
       env: existsSync(ca) && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: ca } : {}
     },
@@ -7680,6 +7699,11 @@ function boxContext(runId) {
       return result.code === 0 ? { ok: true } : { ok: false, error: lastLine(result) };
     }
   };
+}
+function varsFromFile(path) {
+  if (!path) return { note: "", name: "", timeZone: "UTC" };
+  const raw = JSON.parse(readFileSync3(path, "utf8"));
+  return { note: cleanVar(raw.note), name: cleanVar(raw.name), timeZone: cleanTimeZone(raw.timeZone) };
 }
 
 // ../templates/src/cli-shared.ts
@@ -7710,7 +7734,7 @@ function unexpected(err) {
 // ../templates/src/load.ts
 var import_yaml = __toESM(require_dist(), 1);
 import { createHash } from "crypto";
-import { existsSync as existsSync2, readFileSync as readFileSync3, realpathSync, statSync } from "fs";
+import { existsSync as existsSync2, readFileSync as readFileSync4, realpathSync, statSync } from "fs";
 import { basename, dirname, join as join3, resolve, sep } from "path";
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/classic/external.js
@@ -10281,8 +10305,8 @@ var Doc = class {
       arg(this, { execution: "async" });
       return;
     }
-    const content = arg;
-    const lines = content.split("\n").filter((x) => x);
+    const content2 = arg;
+    const lines = content2.split("\n").filter((x) => x);
     const minIndent = Math.min(...lines.map((x) => x.length - x.trimStart().length));
     const dedented = lines.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
     for (const line2 of dedented) {
@@ -10291,9 +10315,9 @@ var Doc = class {
   }
   compile() {
     const F = Function;
-    const content = this?.content ?? [``];
+    const content2 = this?.content ?? [``];
     const factory = new F(...Object.keys(this.closed), `return function (${this.args.join(", ")}) {
-${content.join("\n")}
+${content2.join("\n")}
 };`);
     return factory(...Object.values(this.closed));
   }
@@ -27418,6 +27442,8 @@ var fileSpec = external_exports.strictObject({
   path: target,
   from: inFolder,
   ifMissing: external_exports.boolean().default(false),
+  /** Replace `{{note}}` and `{{name}}` in the file's text with the agent's note and name. */
+  fill: external_exports.boolean().default(false),
   mode: mode.optional()
 });
 var lineSpec = external_exports.strictObject({
@@ -27447,6 +27473,18 @@ var SPECS = {
   line: lineSpec,
   run: runSpec
 };
+var TODO_DESTINATIONS = [
+  "connect-channel",
+  "connect-google",
+  "turn-on-meetings",
+  "meet-sign-in",
+  "add-secret",
+  "add-mailbox",
+  "phone-number",
+  "company-domain-rule",
+  "email-rules",
+  "files"
+];
 var TemplateError = class extends Error {
   constructor(problems) {
     super(problems.join("\n"));
@@ -27455,7 +27493,7 @@ var TemplateError = class extends Error {
 };
 var NAME = /^[a-z0-9][a-z0-9-]*$/;
 var NEED = /^[a-z]+:[A-Za-z0-9_.-]+$/;
-var STEP_FIELDS = /* @__PURE__ */ new Set(["id", "needs", "restart", ...KINDS]);
+var STEP_FIELDS = /* @__PURE__ */ new Set(["id", "title", "optional", "needs", "restart", ...KINDS]);
 function explain(issue2, spec, kind) {
   const field = issue2.path.join(".");
   if (issue2.code === "unrecognized_keys") return issue2.keys.map((key) => `unknown field "${[...issue2.path, key].join(".")}" in ${kind}`);
@@ -27504,6 +27542,8 @@ function parseStep(raw, index, problems) {
     if (Array.isArray(raw.needs) && raw.needs.every((n) => typeof n === "string" && NEED.test(n))) needs = raw.needs;
     else problems.push(`${at}: "needs" must be a list of names like secret:HUBSPOT_TOKEN`);
   }
+  if (raw.title !== void 0 && (typeof raw.title !== "string" || !raw.title.trim() || raw.title.length > 80 || /[\r\n]/.test(raw.title))) problems.push(`${at}: "title" must be one line of at most 80 characters`);
+  if (raw.optional !== void 0 && typeof raw.optional !== "boolean") problems.push(`${at}: "optional" must be true or false`);
   if (raw.restart !== void 0 && raw.restart !== "openclaw") problems.push(`${at}: "restart" can only be openclaw, not ${shown(raw.restart)}`);
   const parsed = SPECS[kind].safeParse(raw[kind]);
   if (!parsed.success) {
@@ -27513,12 +27553,46 @@ function parseStep(raw, index, problems) {
   }
   for (const field of secretsOf(kind, parsed.data)) problems.push(`${at}: "${field}" looks like a secret. A template holds no secrets: name it in "needs", or refer to it as \${NAME}`);
   if (problems.length > before) return null;
-  return { id, kind, spec: parsed.data, needs, restart: raw.restart === "openclaw" ? "openclaw" : null };
+  return { id, title: typeof raw.title === "string" ? raw.title.trim() : null, optional: raw.optional === true, kind, spec: parsed.data, needs, restart: raw.restart === "openclaw" ? "openclaw" : null };
+}
+function plainLine(value, max) {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= max && !/[\r\n<>]/.test(value) && !/https?:\/\/|www\./i.test(value);
+}
+function parseTodo(raw, problems) {
+  if (raw === void 0) return [];
+  if (!Array.isArray(raw)) {
+    problems.push(`"todo" must be a list`);
+    return [];
+  }
+  const items = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [index, entry] of raw.entries()) {
+    const at = isObject(entry) && typeof entry.id === "string" && NAME.test(entry.id) ? `todo "${entry.id}"` : `todo ${index + 1}`;
+    if (!isObject(entry)) {
+      problems.push(`${at}: must be a group of fields with id, title, why and go`);
+      continue;
+    }
+    const before = problems.length;
+    for (const key of Object.keys(entry)) if (!["id", "title", "why", "go", "secret", "optional"].includes(key)) problems.push(`${at}: unknown field "${key}"`);
+    if (typeof entry.id !== "string" || !NAME.test(entry.id)) problems.push(`${at}: "id" ${entry.id === void 0 ? "is missing" : "must be lowercase letters, digits and dashes"}`);
+    else if (seen.has(entry.id)) problems.push(`${at}: this id is used twice`);
+    if (!plainLine(entry.title, 80)) problems.push(`${at}: "title" must be one line of plain text, at most 80 characters, with no link`);
+    if (!plainLine(entry.why, 160)) problems.push(`${at}: "why" must be one line of plain text, at most 160 characters, with no link`);
+    if (typeof entry.go !== "string" || !TODO_DESTINATIONS.includes(entry.go)) problems.push(`${at}: "go" must be one of ${TODO_DESTINATIONS.join(", ")}`);
+    const secret = entry.secret;
+    if (entry.go === "add-secret" ? typeof secret !== "string" || !/^[A-Z][A-Z0-9_]{1,63}$/.test(secret) : secret !== void 0)
+      problems.push(`${at}: "secret" ${entry.go === "add-secret" ? "must be the secret's name, like GITHUB_TOKEN" : "is only for go: add-secret"}`);
+    if (entry.optional !== void 0 && typeof entry.optional !== "boolean") problems.push(`${at}: "optional" must be true or false`);
+    if (problems.length > before) continue;
+    seen.add(entry.id);
+    items.push({ id: entry.id, title: entry.title.trim(), why: entry.why.trim(), go: entry.go, secret: typeof secret === "string" ? secret : null, optional: entry.optional === true });
+  }
+  return items;
 }
 function parseTemplate(raw) {
   const problems = [];
   if (!isObject(raw)) throw new TemplateError(["the template must be a group of fields: name, steps"]);
-  for (const key of Object.keys(raw)) if (!["name", "description", "uses", "steps"].includes(key)) problems.push(`unknown field "${key}"`);
+  for (const key of Object.keys(raw)) if (!["name", "description", "uses", "todo", "steps"].includes(key)) problems.push(`unknown field "${key}"`);
   if (typeof raw.name !== "string" || !NAME.test(raw.name)) problems.push(`"name" ${raw.name === void 0 ? "is missing" : "must be lowercase letters, digits and dashes"}`);
   if (raw.description !== void 0 && typeof raw.description !== "string") problems.push(`"description" must be text`);
   let uses = [];
@@ -27526,6 +27600,7 @@ function parseTemplate(raw) {
     if (Array.isArray(raw.uses) && raw.uses.every((u) => typeof u === "string" && inFolder.safeParse(u).success)) uses = raw.uses;
     else problems.push(`"uses" must be a list of bundle folders, like bundles/web-search`);
   }
+  const todo = parseTodo(raw.todo, problems);
   const steps = [];
   if (raw.steps !== void 0 && !Array.isArray(raw.steps)) problems.push(`"steps" must be a list`);
   const seen = /* @__PURE__ */ new Set();
@@ -27538,7 +27613,7 @@ function parseTemplate(raw) {
   }
   if (!uses.length && !Array.isArray(raw.steps)) problems.push(`"steps" is missing`);
   if (problems.length) throw new TemplateError(problems);
-  return { name: raw.name, description: raw.description ?? null, uses, steps };
+  return { name: raw.name, description: raw.description ?? null, uses, todo, steps };
 }
 
 // ../templates/src/load.ts
@@ -27562,7 +27637,7 @@ function readFolder(dir, label, problems) {
   }
   let raw;
   try {
-    raw = (0, import_yaml.parse)(readFileSync3(file3, "utf8"));
+    raw = (0, import_yaml.parse)(readFileSync4(file3, "utf8"));
   } catch (error62) {
     problems.push(`${label}: ${TEMPLATE_FILE} is not valid YAML: ${error62.message.split("\n")[0]}`);
     return null;
@@ -27581,10 +27656,10 @@ function stepsOf(folder, file3, bundle, label, problems) {
     for (const [field, relative] of filesOf(step)) {
       const path = fileInFolder(folder, relative);
       if (path) {
-        const content = readFileSync3(path);
-        hash2.update(content);
-        const line2 = content.toString("utf8").split("\n").findIndex((l) => tokenShapeIn(l) !== null);
-        if (line2 >= 0) problems.push(`${label}: step "${step.id}": ${relative} has ${tokenShapeIn(content.toString("utf8").split("\n")[line2] ?? "")} on line ${line2 + 1}. A template holds no secrets: name it in "needs"`);
+        const content2 = readFileSync4(path);
+        hash2.update(content2);
+        const line2 = content2.toString("utf8").split("\n").findIndex((l) => tokenShapeIn(l) !== null);
+        if (line2 >= 0) problems.push(`${label}: step "${step.id}": ${relative} has ${tokenShapeIn(content2.toString("utf8").split("\n")[line2] ?? "")} on line ${line2 + 1}. A template holds no secrets: name it in "needs"`);
       } else problems.push(`${label}: step "${step.id}": "${field}" names ${relative}, which is not a file in ${basename(folder)}/`);
     }
     return { ...step, id: bundle ? `${bundle}/${step.id}` : step.id, dir: folder, bundle, hash: hash2.digest("hex").slice(0, 16) };
@@ -27596,7 +27671,7 @@ function loadStep(dir, step) {
   const problems = [];
   const steps = stepsOf(folder, file3, null, "ensure", problems);
   if (problems.length) throw new TemplateError(problems);
-  return { name: file3.name, description: null, dir: folder, steps, hash: steps[0]?.hash ?? "" };
+  return { name: file3.name, description: null, dir: folder, steps, todo: [], hash: steps[0]?.hash ?? "" };
 }
 function loadTemplate(templateDir, options = {}) {
   const dir = resolve(templateDir);
@@ -27605,6 +27680,7 @@ function loadTemplate(templateDir, options = {}) {
   const problems = [];
   const steps = [];
   const done = /* @__PURE__ */ new Set();
+  const todo = [];
   const add = (folder, file3, bundle, label) => void steps.push(...stepsOf(folder, file3, bundle, label, problems));
   const visit2 = (folder, label, trail) => {
     const file3 = readFolder(folder, label, problems);
@@ -27623,7 +27699,10 @@ function loadTemplate(templateDir, options = {}) {
       if (done.has(bundleDir)) continue;
       done.add(bundleDir);
       const bundle = visit2(bundleDir, `bundle ${use}`, [...trail, bundleDir]);
-      if (bundle) add(bundleDir, bundle, bundle.name, `bundle ${use}`);
+      if (bundle) {
+        add(bundleDir, bundle, bundle.name, `bundle ${use}`);
+        todo.push(...bundle.todo);
+      }
     }
     return file3;
   };
@@ -27635,23 +27714,31 @@ function loadTemplate(templateDir, options = {}) {
     ids.add(step.id);
   }
   if (!template || problems.length) throw new TemplateError(problems);
+  todo.push(...template.todo);
+  const todoIds = /* @__PURE__ */ new Set();
+  for (const item of todo) {
+    if (todoIds.has(item.id)) problems.push(`todo "${item.id}": this id is used twice (in a bundle and in the template)`);
+    todoIds.add(item.id);
+  }
+  if (problems.length) throw new TemplateError(problems);
   return {
     name: template.name,
     description: template.description,
     dir,
     steps,
-    hash: createHash("sha256").update(steps.map((s) => `${s.id}:${s.hash}`).join("\n")).digest("hex").slice(0, 16)
+    todo,
+    hash: createHash("sha256").update([...steps.map((s) => `${s.id}:${s.hash}`), JSON.stringify(todo)].join("\n")).digest("hex").slice(0, 16)
   };
 }
 
 // ../templates/src/runner.ts
 import { randomBytes as randomBytes2 } from "crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync5, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync6, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
 import { dirname as dirname3, join as join5 } from "path";
 
 // ../templates/src/kinds/files.ts
 import { randomBytes } from "crypto";
-import { chmodSync, existsSync as existsSync3, lstatSync, mkdirSync, readFileSync as readFileSync4, readlinkSync, realpathSync as realpathSync2, renameSync, rmSync, statSync as statSync2, writeFileSync } from "fs";
+import { chmodSync, existsSync as existsSync3, lstatSync, mkdirSync, readFileSync as readFileSync5, readlinkSync, realpathSync as realpathSync2, renameSync, rmSync, statSync as statSync2, writeFileSync } from "fs";
 import { basename as basename2, dirname as dirname2, isAbsolute, join as join4, resolve as resolve2, sep as sep2 } from "path";
 function targetPath(path, ctx) {
   if (path.startsWith("~/")) return join4(ctx.home, path.slice(2));
@@ -27684,11 +27771,11 @@ function source(dir, relative) {
   if (!path) throw new StepFailure(`${relative} is not a file in the template folder`);
   return path;
 }
-function writeAtomic(path, content, mode2) {
+function writeAtomic(path, content2, mode2) {
   mkdirSync(dirname2(path), { recursive: true });
   const tmp = join4(dirname2(path), `.${basename2(path)}.${randomBytes(6).toString("hex")}.tmp`);
   try {
-    writeFileSync(tmp, content, { mode: mode2 ?? 420 });
+    writeFileSync(tmp, content2, { mode: mode2 ?? 420 });
     chmodSync(tmp, mode2 ?? (existsSync3(path) ? statSync2(path).mode & 511 : 420));
     renameSync(tmp, path);
   } finally {
@@ -27700,13 +27787,17 @@ function wantedMode(spec, from) {
   if (spec.mode) return parseInt(spec.mode, 8);
   return executable(from) ? 493 : void 0;
 }
+function content(spec, from, ctx) {
+  const source2 = readFileSync5(from);
+  return spec.fill ? Buffer.from(fillVars(source2.toString("utf8"), ctx.vars)) : source2;
+}
 var file2 = {
   async diff(step, ctx) {
     const path = writable(step.spec.path, ctx);
     if (!existsSync3(path)) return { holds: false, message: `${step.spec.path} is missing` };
     if (step.spec.ifMissing) return { holds: true, message: `${step.spec.path} is there (written only if missing)` };
     const from = source(step.dir, step.spec.from);
-    if (!readFileSync4(path).equals(readFileSync4(from))) return { holds: false, message: `${step.spec.path} differs from ${step.spec.from}` };
+    if (!readFileSync5(path).equals(content(step.spec, from, ctx))) return { holds: false, message: `${step.spec.path} differs from ${step.spec.from}` };
     const mode2 = wantedMode(step.spec, from);
     const has = statSync2(path).mode & 511;
     if (step.spec.mode && has !== mode2) return { holds: false, message: `${step.spec.path} has mode ${has.toString(8)}, wanted ${step.spec.mode}` };
@@ -27715,7 +27806,7 @@ var file2 = {
   },
   async apply(step, ctx) {
     const from = source(step.dir, step.spec.from);
-    writeAtomic(writable(step.spec.path, ctx), readFileSync4(from), wantedMode(step.spec, from));
+    writeAtomic(writable(step.spec.path, ctx), content(step.spec, from, ctx), wantedMode(step.spec, from));
   }
 };
 var line = {
@@ -27723,7 +27814,7 @@ var line = {
     const path = writable(step.spec.file, ctx);
     if (!existsSync3(path)) return { holds: false, message: `${step.spec.file} is missing` };
     const match = new RegExp(step.spec.match);
-    const matching = readFileSync4(path, "utf8").split(/\r?\n/).filter((l) => match.test(l));
+    const matching = readFileSync5(path, "utf8").split(/\r?\n/).filter((l) => match.test(l));
     if (!matching.length) return { holds: false, message: `${step.spec.file} has no line like ${step.spec.match}` };
     const other = matching.find((l) => l !== step.spec.line);
     return other === void 0 ? { holds: true, message: `${step.spec.file} has the line` } : { holds: false, message: `${step.spec.file} has another line like ${step.spec.match}` };
@@ -27731,7 +27822,7 @@ var line = {
   async apply(step, ctx) {
     const path = writable(step.spec.file, ctx);
     const match = new RegExp(step.spec.match);
-    const lines = (existsSync3(path) ? readFileSync4(path, "utf8") : "").split("\n");
+    const lines = (existsSync3(path) ? readFileSync5(path, "utf8") : "").split("\n");
     let found = false;
     const next = lines.map((l) => {
       if (!match.test(l.replace(/\r$/, ""))) return l;
@@ -27751,7 +27842,7 @@ async function script(relative, step, ctx) {
   const result = await ctx.exec(direct ? path : "/bin/bash", direct ? [] : [path], {
     timeoutMs: step.spec.timeout * 1e3,
     cwd: step.dir,
-    env: { ...ctx.env, CC_TEMPLATE_DIR: step.dir, CC_WORKSPACE: ctx.workspace }
+    env: { ...ctx.env, CC_TEMPLATE_DIR: step.dir, CC_WORKSPACE: ctx.workspace, CC_AGENT_NOTE: ctx.vars.note, CC_AGENT_NAME: ctx.vars.name, CC_AGENT_TIMEZONE: ctx.vars.timeZone }
   });
   logOutput(ctx, result);
   return result;
@@ -27799,12 +27890,21 @@ async function configGet(ctx, path) {
   if (/valid but unset/i.test(message)) return void 0;
   throw new StepFailure(message.split(". Run openclaw")[0] ?? message);
 }
-async function configWrite(ctx, args, stdin) {
-  const result = await cli(ctx, ["config", ...args], WRITE_MS, stdin);
-  logOutput(ctx, result);
-  if (result.code !== 0) {
-    const refused = `${result.stdout}
-${result.stderr}`.split("\n").find((l) => /validation failed|unknown config path/i.test(l));
+var CHANGED_MEANWHILE = /config (file )?changed (while|since)/i;
+var WRITE_TRIES = 6;
+var WRITE_RETRY_MS = 4e3;
+async function configWrite(ctx, args, stdin, wait = (ms) => new Promise((r) => setTimeout(r, ms))) {
+  for (let attempt = 1; ; attempt++) {
+    const result = await cli(ctx, ["config", ...args], WRITE_MS, stdin);
+    logOutput(ctx, result);
+    if (result.code === 0) return;
+    const output2 = `${result.stdout}
+${result.stderr}`;
+    if (CHANGED_MEANWHILE.test(output2) && attempt < WRITE_TRIES) {
+      await wait(ctx.retryWaitMs ?? WRITE_RETRY_MS);
+      continue;
+    }
+    const refused = output2.split("\n").find((l) => /validation failed|unknown config path/i.test(l));
     throw new StepFailure(`OpenClaw refused it: ${(refused ?? lastLine(result)).replace(/^Config validation failed:\s*/i, "").trim()}`);
   }
 }
@@ -27879,7 +27979,7 @@ var kinds = {
 };
 
 // ../templates/src/runner.ts
-var STATUSES = ["ok", "changed", "failed", "would-change"];
+var STATUSES = ["ok", "changed", "failed", "would-change", "unconfirmed"];
 var LOG_LINES = 20;
 var LOG_WIDTH = 300;
 var UnknownStep = class extends Error {
@@ -27893,7 +27993,7 @@ function isStepResult(value) {
 function readState(stateDir, template) {
   let raw;
   try {
-    raw = JSON.parse(readFileSync5(statePath(stateDir, template), "utf8"));
+    raw = JSON.parse(readFileSync6(statePath(stateDir, template), "utf8"));
   } catch {
     return null;
   }
@@ -27920,35 +28020,42 @@ async function one(step, options, template, redact, now) {
   const log = [];
   const ctx = { ...options.context, template, log: (line2) => void log.push(redact(line2).slice(0, LOG_WIDTH)) };
   const kind = kindOf(step);
-  const done = (status, message) => ({
+  const done = (status, message, phase) => ({
     id: step.id,
     kind: step.kind,
     status,
     message: redact(message),
     log: log.slice(-LOG_LINES),
     hash: step.hash,
-    at: now().toISOString()
+    at: now().toISOString(),
+    ...phase ? { phase } : {},
+    ...step.optional ? { optional: true } : {}
   });
-  const failure2 = (error62) => {
-    if (error62 instanceof StepFailure) return done("failed", error62.message);
+  const failure2 = (error62, phase) => {
+    if (error62 instanceof NeedsConfirmation && options.skipUnconfirmed) return done("unconfirmed", error62.message);
+    if (error62 instanceof StepFailure) return done("failed", error62.message, phase);
     options.onUnexpected?.(step.id, error62);
-    return done("failed", "the step stopped with an unexpected error");
+    return done("failed", "the step stopped with an unexpected error", phase);
   };
   let before;
   try {
     before = await kind.diff(step, ctx);
   } catch (error62) {
-    return { result: failure2(error62), applied: false };
+    return { result: failure2(error62, "check"), applied: false };
   }
   if (before.holds) return { result: done("ok", before.message), applied: false };
   if (options.mode === "check") return { result: done("would-change", before.message), applied: false };
-  if (options.mode === "verify") return { result: done("failed", before.message), applied: false };
+  if (options.mode === "verify") return { result: done("failed", before.message, "check"), applied: false };
   try {
     await kind.apply(step, ctx);
-    const after = await kind.diff(step, ctx);
-    return { result: after.holds ? done("changed", after.message) : done("failed", `applied, but it still does not hold: ${after.message}`), applied: true };
   } catch (error62) {
-    return { result: failure2(error62), applied: true };
+    return { result: failure2(error62, "apply"), applied: !(error62 instanceof NeedsConfirmation) };
+  }
+  try {
+    const after = await kind.diff(step, ctx);
+    return { result: after.holds ? done("changed", after.message) : done("failed", `applied, but it still does not hold: ${after.message}`, "recheck"), applied: true };
+  } catch (error62) {
+    return { result: failure2(error62, "recheck"), applied: true };
   }
 }
 async function runTemplate(template, options) {
@@ -27957,21 +28064,25 @@ async function runTemplate(template, options) {
   const startedAt = now().toISOString();
   const start = options.from ? template.steps.findIndex((s) => s.id === options.from) : 0;
   if (start < 0) throw new UnknownStep(`no step "${options.from}" in ${template.name}. The steps are: ${template.steps.map((s) => s.id).join(", ")}`);
+  const only = options.only ? new Set(options.only) : null;
+  const unknown2 = options.only?.find((id) => !template.steps.some((s) => s.id === id));
+  if (unknown2) throw new UnknownStep(`no step "${unknown2}" in ${template.name}. The steps are: ${template.steps.map((s) => s.id).join(", ")}`);
   const previous = options.stateDir ? readState(options.stateDir, template.name) : null;
-  const carried = template.steps.slice(0, start).flatMap((step) => previous?.steps.filter((r) => r.id === step.id && r.hash === step.hash && (r.status === "ok" || r.status === "changed")) ?? []).map((r) => ({ ...r, carried: true }));
+  const carried = template.steps.filter((step, i) => i < start || only && !only.has(step.id)).flatMap((step) => previous?.steps.filter((r) => r.id === step.id && r.hash === step.hash && (r.status === "ok" || r.status === "changed")) ?? []).map((r) => ({ ...r, carried: true }));
   const asked = new Set(template.steps.filter((s) => s.restart === "openclaw").map((s) => s.id));
   const ran = [];
   let failed = false;
   let restartOwed = previous?.restart === "pending" || previous?.restart === "failed";
   let interrupted2 = null;
-  for (const step of template.steps.slice(start)) {
+  for (const step of template.steps.slice(start).filter((s) => !only || only.has(s.id))) {
     const { result, applied } = await one(step, options, template.name, redact, now);
     interrupted2 = options.interrupted?.() ?? null;
     if (interrupted2) Object.assign(result, { status: "failed", message: `stopped by ${interrupted2} before the step finished` });
+    if (interrupted2) delete result.phase;
     ran.push(result);
     options.onStep?.(result);
     if (asked.has(step.id) && (result.status === "changed" || applied && result.status === "failed")) restartOwed = true;
-    if (result.status === "failed") {
+    if (result.status === "failed" && (!result.optional || interrupted2)) {
       failed = true;
       if (options.mode === "run" || interrupted2) break;
     }
@@ -27994,7 +28105,8 @@ async function runTemplate(template, options) {
     startedAt,
     finishedAt: now().toISOString(),
     result: failed ? "failed" : ran.some((r) => r.status === "would-change") ? "would-change" : ran.some((r) => r.status === "changed") ? "changed" : "ok",
-    steps: [...carried, ...ran],
+    // In the template's order, whichever of them ran now.
+    steps: [...carried, ...ran].sort((a, b) => template.steps.findIndex((s) => s.id === a.id) - template.steps.findIndex((s) => s.id === b.id)),
     needs: template.steps.flatMap((s) => s.needs.map((need) => ({ step: s.id, need }))),
     restart,
     ...interrupted2 ? { interrupted: interrupted2 } : {}
@@ -28009,19 +28121,41 @@ function summary(report) {
   const keptText = kept ? ` (${kept} before it kept from the last run)` : "";
   if (report.mode === "check") return `${count("would-change")} of ${ran.length} would change${count("failed") ? `, ${count("failed")} could not be read` : ""}${keptText}`;
   if (report.mode === "verify") return `${count("ok")} of ${ran.length} hold${keptText}`;
-  const parts = [`${count("ok")} ok`, `${count("changed")} changed`, ...count("failed") ? [`${count("failed")} failed`] : []];
+  const optionalFailed = ran.filter((r) => r.status === "failed" && r.optional).length;
+  const parts = [`${count("ok")} ok`, `${count("changed")} changed`, ...count("failed") - optionalFailed ? [`${count("failed") - optionalFailed} failed`] : [], ...optionalFailed ? [`${optionalFailed} optional failed`] : [], ...count("unconfirmed") ? [`${count("unconfirmed")} waiting for an owner to confirm`] : []];
   const restart = { "not-needed": "", done: ". OpenClaw was restarted", pending: ". OpenClaw still needs a restart, done when the run finishes", failed: ". OpenClaw could not be restarted" }[report.restart];
   return `${parts.join(", ")}${keptText}${restart}`;
 }
+var PUBLIC_FAILURE = { check: "could not be checked", apply: "could not be applied", recheck: "applied, but it does not hold" };
+function publicMessage(result, mode2) {
+  if (result.status === "ok") return "holds";
+  if (result.status === "changed") return "changed";
+  if (result.status === "would-change") return "would change";
+  if (result.status === "unconfirmed") return "an owner has to confirm";
+  if (mode2 === "verify" && result.phase === "check") return "does not hold";
+  return PUBLIC_FAILURE[result.phase ?? "apply"];
+}
+function publicReport(report) {
+  return {
+    template: report.template,
+    hash: report.hash,
+    mode: report.mode,
+    result: report.result,
+    at: report.finishedAt,
+    restart: report.restart,
+    steps: report.steps.map((r) => ({ id: r.id, kind: r.kind, status: r.status, message: report.interrupted && r.status === "failed" && !r.phase ? "stopped" : publicMessage(r, report.mode) })),
+    needs: report.needs
+  };
+}
 
 // ../templates/src/output.ts
-var LABEL = { ok: "ok", changed: "changed", failed: "FAILED", "would-change": "would change" };
+var LABEL = { ok: "ok", changed: "changed", failed: "FAILED", "would-change": "would change", unconfirmed: "waiting" };
 function stepLine(result, width) {
   return `${LABEL[result.status].padEnd(13)}${width === null ? "" : result.id.padEnd(width + 2)}${result.message}`;
 }
 function closing(report, hint) {
   const lines = [];
-  const failed = report.mode === "run" ? report.steps.find((r) => r.status === "failed" && !r.carried) : void 0;
+  const failed = report.mode === "run" ? report.steps.find((r) => r.status === "failed" && !r.carried && !r.optional) : void 0;
   if (failed) {
     if (failed.log.length) lines.push("", `Last lines from step "${failed.id}":`, ...failed.log.map((l) => `  ${l}`));
     lines.push("", `Stopped at step "${failed.id}". Fix it, then continue with: ${hint.from(failed.id)}`);
@@ -28144,6 +28278,7 @@ var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
 
   cc-runbook run [folder]                  apply every step that does not hold yet
   cc-runbook run [folder] --from <step>    continue from a step, after a failure
+  cc-runbook run [folder] --only <a,b>     run only these steps
   cc-runbook run [folder] --check          show what would change; change nothing
   cc-runbook verify [folder]               check every step; change nothing
   cc-runbook ensure <kind> <field>=<value>...   one step by hand; the same as "cc-ensure"
@@ -28151,7 +28286,10 @@ var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
   folder            the template folder (default: the current one)
   --bundles <dir>   where the folders named in "uses" are (default: next to the template folder)
   --run-id <id>     the apply an owner confirmed, for ControlClaw settings
+  --vars <file>     a JSON file with the agent's "note" and "name", for file steps with fill and for scripts
+  --skip-unconfirmed  go on past a ControlClaw setting that nobody confirmed, and report it as waiting
   --json            print the report as JSON
+  --public          with --json: only what the console is told (no messages from the box, no log lines)
 
 Exit code: 0 done, 1 a step failed, 2 --check found changes, 64 the template or the command is wrong, 130 stopped by a signal.`;
 async function main2(argv, out = console.log, err = console.error) {
@@ -28161,7 +28299,7 @@ async function main2(argv, out = console.log, err = console.error) {
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { check: { type: "boolean" }, from: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
+      options: { check: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, vars: { type: "string" }, "skip-unconfirmed": { type: "boolean" }, public: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
     });
   } catch (error62) {
     err(`${error62.message}
@@ -28175,7 +28313,7 @@ ${USAGE2}`);
     out(USAGE2);
     return values.help ? 0 : 64;
   }
-  if (command !== "run" && command !== "verify" || extra.length || command === "verify" && (values.check || values.from)) {
+  if (command !== "run" && command !== "verify" || extra.length || command === "verify" && (values.check || values.from || values.only)) {
     err(USAGE2);
     return 64;
   }
@@ -28190,18 +28328,27 @@ ${USAGE2}`);
 ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
     return 64;
   }
+  let vars;
+  try {
+    vars = varsFromFile(values.vars);
+  } catch {
+    err(`--vars: ${values.vars} is not a JSON file that can be read`);
+    return 64;
+  }
   const width = Math.max(...template.steps.map((s) => s.id.length), 4);
   const signals = watchSignals();
   try {
     const report = await runTemplate(template, {
-      ...boxContext(values["run-id"] ?? null),
+      ...boxContext(values["run-id"] ?? null, vars),
       mode: mode2,
+      skipUnconfirmed: values["skip-unconfirmed"] === true,
       from: values.from,
+      only: values.only ? values.only.split(",").map((id) => id.trim()).filter(Boolean) : void 0,
       interrupted: signals.interrupted,
       onUnexpected: unexpected(err),
       onStep: values.json ? void 0 : (result) => out(stepLine(result, width))
     });
-    if (values.json) out(JSON.stringify(report, null, 2));
+    if (values.json) out(JSON.stringify(values.public ? publicReport(report) : report, null, 2));
     else {
       const bundles = values.bundles ? ` --bundles ${values.bundles}` : "";
       for (const line2 of closing(report, { from: (step) => `cc-runbook run ${folder}${bundles} --from ${step}` })) out(line2);
