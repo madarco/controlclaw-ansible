@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.4.3",
+    "date": "2026-10-11",
+    "changes": [
+      "A request that asks the site to treat it as a different kind of request never gets a saved password, and the firewall's login page explains what a sign-in address must be."
+    ]
+  },
+  {
     "version": "1.4.2",
     "date": "2026-10-11",
     "changes": [
