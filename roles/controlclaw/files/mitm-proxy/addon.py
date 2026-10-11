@@ -2043,6 +2043,15 @@ def _plain_path(path: str) -> str | None:
     return only
 
 
+_METHOD_OVERRIDE_HEADERS = frozenset({"x-http-method-override", "x-http-method", "x-method-override"})
+
+
+def _no_method_override(names: "Iterable[str]") -> None:
+    """A `_method` field re-dispatches the request as another verb on servers that honour it."""
+    if any(name.lower() == "_method" for name in names):
+        raise _NotASignIn("method")
+
+
 class _NotASignIn(Exception):
     """This request does not have the exact shape of a sign-in. `why` is the reason on the record."""
 
@@ -2380,6 +2389,7 @@ def _sign_in_field(flow: http.HTTPFlow, placeholder: str) -> tuple[str, list[tup
         pairs = _strict_pairs(text)
         if pairs is None:
             raise _NotASignIn()
+        _no_method_override(k for k, _ in pairs)
         holders = [k for k, v in pairs if v == placeholder]
         if len(holders) != 1 or any(_carries(found, k) or (v != placeholder and _carries(found, v)) for k, v in pairs):
             raise _NotASignIn()
@@ -2387,6 +2397,7 @@ def _sign_in_field(flow: http.HTTPFlow, placeholder: str) -> tuple[str, list[tup
     doc = _strict_json(text)
     if not isinstance(doc, dict) or len(doc) > LOGIN_FIELDS_MAX:
         raise _NotASignIn()
+    _no_method_override(doc)
     holders = [k for k, v in doc.items() if isinstance(v, str) and v == placeholder]
     if len(holders) != 1 or sum(1 for t in _strings(doc) if _carries(found, t)) != 1:
         raise _NotASignIn()
@@ -2404,6 +2415,7 @@ def _google_sign_in(flow: http.HTTPFlow, placeholder: str) -> None:
     pairs = _strict_pairs(text)
     if pairs is None or len(found.findall(text)) != 1:
         raise _NotASignIn()
+    _no_method_override(k for k, _ in pairs)
     exact = 0
     for key, value in pairs:
         if _carries(found, key):
@@ -2436,6 +2448,7 @@ def login_scope(flow: http.HTTPFlow, cred: dict[str, Any], host: str, places: di
       header   a login saved as HTTP Basic, anywhere but as that header's whole password
       place    not the body of a POST or PUT
       basic    an HTTP Basic header, on a login that is not saved as one
+      method   the request asks to be run as another verb (`_method`, `X-HTTP-Method-Override`)
       body     not one of the two exact shapes a sign-in sends (`_sign_in_field`)
       no_page  the login has no sign-in page (or one that cannot be read)
       pending  a form target read off the sign-in page that the owner has not approved yet
@@ -2446,6 +2459,11 @@ def login_scope(flow: http.HTTPFlow, cred: dict[str, Any], host: str, places: di
     placeholder = cred.get("placeholder") or ""
     if flow.request.scheme != "https":
         return None, "http"
+    # Rails, Laravel and others let a request say it is really another verb: the POST the proxy
+    # checked is then run as a PUT, PATCH or DELETE on the same path, which is some other action
+    # than the sign-in. A sign-in never asks for that.
+    if any(name.lower() in _METHOD_OVERRIDE_HEADERS for name in flow.request.headers.keys()) or re.search(r"(?:^|[?&])_method=", flow.request.path.partition("?")[2], re.I):
+        return None, "method"
     if cred.get("login_auth") == "basic":
         return ("basic", None) if _only_basic_header(flow, places, placeholder) else (None, "header")
     if places["in_path"] or places["in_query"] or places["headers"] or flow.request.method not in ("POST", "PUT"):
@@ -2563,6 +2581,7 @@ _LOGIN_BLOCK_TEXT = {
     "no_page": "This login has no sign-in page, so the firewall does not know which request is the sign-in and puts the password nowhere. The request was blocked and recorded. Ask the owner to add the sign-in page to the login on the firewall page (ControlClaw, Secrets, Website logins).",
     "body": "This password placeholder only works as the whole value of one field of an ordinary sign-in form (or of one top-level field of a JSON sign-in). This request was something else: the placeholder inside a longer text, in more than one field, in a file upload, or a body the firewall does not read as a sign-in. The firewall blocked it and recorded the attempt. Type only the placeholder into the password field of the sign-in page and submit that form.",
     "field": "This password placeholder only works in the password field of the login's sign-in form. It was in another field, so the firewall blocked the request and recorded the attempt.",
+    "method": "This request asks the site to run it as another kind of request (a _method field or an X-HTTP-Method-Override header). A sign-in never does that, so the firewall blocked it and recorded the attempt.",
     "error": "The firewall could not check this request, which carries a password placeholder, so it blocked it and recorded the attempt.",
     "expired": "The owner allowed this sign-in address, but it has not been on the login's sign-in page for 30 days, so the firewall stopped using it and blocked the request. Open the login's sign-in page again and retry; if it is still blocked, ask the owner to look at the login on the firewall page (ControlClaw, Secrets, Website logins).",
     "place": "This password placeholder only works in the body of the sign-in form (a POST). It was in the address, a header or another kind of request, so the firewall blocked it and recorded the attempt. Type it into the password field of the sign-in page and submit the form.",
