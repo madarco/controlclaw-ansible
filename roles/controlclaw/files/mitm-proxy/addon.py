@@ -2405,14 +2405,23 @@ def _sign_in_field(flow: http.HTTPFlow, placeholder: str) -> tuple[str, list[tup
 
 
 def _google_sign_in(flow: http.HTTPFlow, placeholder: str) -> None:
-    """Google's sign-in (`batchexecute`): a url-encoded form whose `f.req` field is JSON, holding a
-    string that is JSON again, in which the stand-in is one whole string element. That exact shape
-    and no other; raises `_NotASignIn` otherwise."""
+    """Google's sign-in, as its page sends it (captured on a real box, T-googleshape):
+
+        POST /v3/signin/_/AccountsSignInUi/data/batchexecute?rpcids=B4hajb&…
+        Content-Type: application/x-www-form-urlencoded;charset=UTF-8
+        f.req=<JSON>&at=<token>&
+
+    The form ends with a `&`. `f.req` is the `batchexecute` envelope `[[[rpc, payload, null,
+    "generic"]]]`, and `payload` is a string that is JSON again, in which the stand-in is the whole
+    string at `[3][4][0]` (`[1,1,null,[1,null,null,null,[<stand-in>,null,1]],…]`) and nowhere else.
+    That shape and no other; raises `_NotASignIn` otherwise. If Google changes it, the sign-in is
+    refused (`body`) until the new shape is captured and added here."""
     found = _placeholder_re(placeholder)
     if _content_type(flow) != "form":
         raise _NotASignIn()
     text = _body_text(flow)
-    pairs = _strict_pairs(text)
+    # The one `&` Google's page ends the form with. Any other empty piece is refused below.
+    pairs = _strict_pairs(text[:-1] if text.endswith("&") else text)
     if pairs is None or len(found.findall(text)) != 1:
         raise _NotASignIn()
     _no_method_override(k for k, _ in pairs)
@@ -2424,17 +2433,22 @@ def _google_sign_in(flow: http.HTTPFlow, placeholder: str) -> None:
             continue
         if key != "f.req":
             raise _NotASignIn()
-        pending = [(_strict_json(value), 1)]
-        while pending:
-            node, level = pending.pop()
-            for t in _strings(node):
-                if t == placeholder:
-                    exact += 1
-                elif _carries(found, t):
-                    # A string that holds the stand-in without being it has to be JSON itself.
-                    if level >= 3 or t.strip()[:1] not in ("[", "{"):
-                        raise _NotASignIn()
-                    pending.append((_strict_json(t), level + 1))
+        envelope = _strict_json(value)
+        if not (isinstance(envelope, list) and len(envelope) == 1 and isinstance(envelope[0], list) and len(envelope[0]) == 1):
+            raise _NotASignIn()
+        call = envelope[0][0]
+        if not (isinstance(call, list) and len(call) == 4 and isinstance(call[0], str) and isinstance(call[1], str) and call[2] is None and isinstance(call[3], str)):
+            raise _NotASignIn()
+        if _carries(found, call[0]) or _carries(found, call[3]):
+            raise _NotASignIn()
+        payload = _strict_json(call[1])
+        # Where the password sits in the payload: `payload[3][4][0]`.
+        at = payload
+        for index in (3, 4):
+            at = at[index] if isinstance(at, list) and len(at) > index else None
+        if not (isinstance(at, list) and at and at[0] == placeholder) or sum(1 for t in _strings(payload) if _carries(found, t)) != 1:
+            raise _NotASignIn()
+        exact += 1
     if exact != 1:
         raise _NotASignIn()
 
@@ -2579,7 +2593,7 @@ _LOGIN_BLOCK_TEXT = {
     "page": "This password placeholder only works in the sign-in request of the login's sign-in page. This request went somewhere else on the site, so the firewall blocked it and recorded the attempt. If this is how the site signs in, ask the owner to add this address to the login on the firewall page (ControlClaw, Secrets, Website logins).",
     "pending": "The firewall read this address off the login's sign-in page, but the owner has not approved it yet, so the request was blocked and recorded. Ask the owner to open the login on the firewall page (ControlClaw, Secrets, Website logins) and tick this address under 'Read off the sign-in page'. Then sign in again.",
     "no_page": "This login has no sign-in page, so the firewall does not know which request is the sign-in and puts the password nowhere. The request was blocked and recorded. Ask the owner to add the sign-in page to the login on the firewall page (ControlClaw, Secrets, Website logins).",
-    "body": "This password placeholder only works as the whole value of one field of an ordinary sign-in form (or of one top-level field of a JSON sign-in). This request was something else: the placeholder inside a longer text, in more than one field, in a file upload, or a body the firewall does not read as a sign-in. The firewall blocked it and recorded the attempt. Type only the placeholder into the password field of the sign-in page and submit that form.",
+    "body": "The sign-in request did not look like this site's sign-in, so the firewall blocked it and recorded the attempt. The password placeholder only works as the whole value of one field of an ordinary sign-in form (or of one top-level field of a JSON sign-in): not inside a longer text, in more than one field, in a file upload, or in a body the firewall does not read as a sign-in. Type only the placeholder into the password field of the sign-in page and submit that form. If you did exactly that, the site sends its sign-in in a way the firewall does not know: do not retry, tell the owner that Activity shows the block and that they can save the login again as 'Typed into the page' (ControlClaw, Secrets, Website logins) or sign you in themselves.",
     "field": "This password placeholder only works in the password field of the login's sign-in form. It was in another field, so the firewall blocked the request and recorded the attempt.",
     "method": "This request asks the site to run it as another kind of request (a _method field or an X-HTTP-Method-Override header). A sign-in never does that, so the firewall blocked it and recorded the attempt.",
     "error": "The firewall could not check this request, which carries a password placeholder, so it blocked it and recorded the attempt.",

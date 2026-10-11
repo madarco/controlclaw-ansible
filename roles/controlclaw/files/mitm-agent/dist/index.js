@@ -35904,7 +35904,7 @@ var LoginsFirewall = class {
   async type(vmId, which) {
     const login = this.find(vmId, which);
     if (!login || login.kind === "session") return { error: "There is no such login with a password for you. Call logins_list to see the ones you may use." };
-    if (login.mode !== "type") return { error: `${login.name} is not typed in by the firewall: use login_use and type the placeholder it gives you.` };
+    if (login.mode !== "type") return { error: `${login.name} is not typed in by the firewall: use login_use and type the placeholder it gives you. If that sign-in was blocked, do not retry: tell the person what the block said. They can see it in Activity, and save the login again as "Typed into the page" (ControlClaw, Secrets, Website logins) or sign you in themselves.` };
     const target = this.target(vmId);
     if (!target) return { error: "This firewall cannot reach your agent box right now. Try again in a minute." };
     let out;
@@ -37849,13 +37849,14 @@ async function answerLoginsMcp(logins2, vmId, raw) {
         if (got.needsSignInPage) {
           return text(id, `The login ${got.name} has no sign-in page yet, so the firewall cannot tell which request is the sign-in and puts its password nowhere. Tell the person: open this login in ControlClaw (Secrets, Website logins) and fill in "Sign-in page" with the address of the page that has the password field. Then call login_use again.`, true);
         }
+        const google3 = got.sites.includes("accounts.google.com") ? " If the sign_in_page shows an error instead of the sign-in, open https://accounts.google.com/ and let Google take you to it." : "";
         if (got.placeholder === null) {
           return text(id, {
             login: got.name,
             username: got.username,
             sites: got.sites,
             sign_in_page: got.loginUrl,
-            how: "This site scrambles passwords in the page, so the password is typed in for you. Type the username, click into the password field, then call login_type with this login. Then submit.",
+            how: "This site scrambles passwords in the page, so the password is typed in for you. Type the username, click into the password field, then call login_type with this login. Then submit." + google3,
             ...got.totp ? { two_step: "This login has a two-step key: when the site asks for a code, call the login_code tool of controlclaw-logins with this login and type the code it returns." } : {}
           });
         }
@@ -37865,7 +37866,7 @@ async function answerLoginsMcp(logins2, vmId, raw) {
           password_placeholder: got.placeholder,
           sites: got.sites,
           sign_in_page: got.loginUrl,
-          how: got.auth === "basic" ? "This site signs in with HTTP Basic. Use the username and the password_placeholder as the Basic user name and password. The firewall puts the real password into the Authorization header, only on these sites. The placeholder works nowhere else: not in a form, an address or any other header." : `Open the sign_in_page exactly as given, type the username and the password_placeholder as they are into the sign-in form${got.loginUrl ? ` on the sign_in_page` : ""}, then submit. The password field must hold the placeholder and nothing else. The firewall puts the real password into that sign-in request only. The placeholder works nowhere else: put into an address, a header, or any other form or page (even on these sites), the request is blocked and recorded. The first sign-in with a new login is often blocked once: the firewall reads where the sign-in form posts off the page, and a person has to allow that address before it counts. If the sign-in is blocked, tell the person what the block said: they open the login in ControlClaw (Secrets, Website logins) and tick the address under "Read off the sign-in page", or add it under "Extra sign-in addresses". Then sign in again.`,
+          how: got.auth === "basic" ? "This site signs in with HTTP Basic. Use the username and the password_placeholder as the Basic user name and password. The firewall puts the real password into the Authorization header, only on these sites. The placeholder works nowhere else: not in a form, an address or any other header." : `Open the sign_in_page exactly as given, type the username and the password_placeholder as they are into the sign-in form${got.loginUrl ? ` on the sign_in_page` : ""}, then submit. The password field must hold the placeholder and nothing else. The firewall puts the real password into that sign-in request only. The placeholder works nowhere else: put into an address, a header, or any other form or page (even on these sites), the request is blocked and recorded. The first sign-in with a new login is often blocked once: the firewall reads where the sign-in form posts off the page, and a person has to allow that address before it counts. If the sign-in is blocked, tell the person what the block said: they open the login in ControlClaw (Secrets, Website logins) and tick the address under "Read off the sign-in page", or add it under "Extra sign-in addresses". Then sign in again.${google3}`,
           ...got.totp ? { two_step: "This login has a two-step key: when the site asks for a code, call the login_code tool of controlclaw-logins with this login and type the code it returns." } : {}
         });
       }
@@ -98764,8 +98765,8 @@ import { uptime } from "os";
 import { existsSync as existsSync17, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "ba5b43f" : "unknown",
-  builtAt: true ? "2026-10-11T07:18:57+01:00" : "unknown"
+  commit: true ? "ece1044" : "unknown",
+  builtAt: true ? "2026-10-11T10:27:49+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
