@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.4.4",
+    "date": "2026-10-11",
+    "changes": [
+      "Signing in to Google with a saved login works again; it was blocked by mistake in 1.4.3."
+    ]
+  },
+  {
     "version": "1.4.3",
     "date": "2026-10-11",
     "changes": [
