@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.4.2",
+    "date": "2026-10-11",
+    "changes": [
+      "A saved website password is now put in only at the site's sign-in, in the password field. A login needs its sign-in page, and anything else that carries the stand-in is blocked."
+    ]
+  },
+  {
     "version": "1.4.1",
     "date": "2026-10-10",
     "changes": [
