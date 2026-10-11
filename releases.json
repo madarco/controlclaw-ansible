@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.6.0",
+    "date": "2026-10-11",
+    "changes": [
+      "Agent templates: a new agent can start as a Personal assistant, Software factory, Chief of staff or Support agent, set up for you when it is created.",
+      "The agent page lists what is left for you to connect after a template, and ticks items off as you do them."
+    ]
+  },
+  {
     "version": "1.5.0",
     "date": "2026-10-11",
     "changes": [
