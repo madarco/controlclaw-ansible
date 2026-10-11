@@ -65,6 +65,7 @@ import ipaddress
 import json
 import os
 import re
+from html import unescape as html_unescape
 import socket
 import time
 import urllib.request
@@ -537,7 +538,11 @@ def credentials_for(host: str, vm_id: str | None = None) -> list[dict[str, Any]]
             # locations: one agent, the hosts they were given, and nothing else.
             if not c.get("vm_id") or c["vm_id"] != vm_id:
                 continue
-            if not any(secret_host_matches(pattern, host) for pattern in c.get("allowed_hosts", [])):
+            # mitmproxy hands over an international host name decoded; a login's sites are kept in
+            # punycode, so that form is tried too.
+            if not any(secret_host_matches(pattern, host) for pattern in c.get("allowed_hosts", [])) and not (
+                c.get("login_id") and not host.isascii() and any(secret_host_matches(pattern, _ascii_host(host) or host) for pattern in c.get("allowed_hosts", []))
+            ):
                 continue
         elif not host_matches(c.get("match_domain", ""), host):
             continue
@@ -1699,6 +1704,22 @@ LOGIN_ECHO_AGENTS_MAX = 256
 _NAVIGATION_HEADERS = frozenset({"referer", "origin", "ping-from", "ping-to"})
 _PLACEHOLDER_NEIGHBOUR = r"A-Za-z0-9_.\-"
 
+# Where a password may be put in (docs/plans/login-swap-scope.md). The proxy keeps what it learned
+# from sign-in pages here; the firewall agent reads the file, keeps the targets in its own store
+# and hands them back in `sign_in_targets`, so they outlive a restart of this box.
+LOGIN_TARGETS_PATH = os.environ.get("MITM_LOGIN_TARGETS_PATH", os.path.join(os.path.dirname(CREDS_PATH), "login-targets.json"))
+LOGIN_TARGETS_MAX = 5
+LOGIN_TARGET_TTL_S = 30 * 86400
+# A sign-in page larger than this is not read for its forms.
+LOGIN_PAGE_MAX = 1024 * 1024
+# Sign-in pages built in JavaScript have no form to read. The one everybody uses is listed here, so
+# a Google login works without its owner typing a path. host -> path prefixes.
+LOGIN_KNOWN_SIGN_IN = {"accounts.google.com": ("/v3/signin/",)}
+# A request that carries a stand-in is read only when it is small and flat. A sign-in is.
+LOGIN_BODY_MAX = 64 * 1024
+LOGIN_FIELDS_MAX = 200
+LOGIN_JSON_DEPTH_MAX = 8
+
 # vm_id -> [(expires_at, secret, placeholder, allowed_hosts)], newest last.
 _login_echoes: dict[str | None, list[tuple[float, str, str, tuple[str, ...]]]] = {}
 
@@ -1891,7 +1912,7 @@ def login_tripwire(flow: http.HTTPFlow, vm_id: str | None = None) -> dict[str, A
         found = _placeholder_re(c["placeholder"])
         if not any(found.search(t) for t in texts):
             continue
-        if any(secret_host_matches(pattern, host) for pattern in c.get("allowed_hosts", [])):
+        if _login_host(c, host) or (not host.isascii() and _login_host(c, _ascii_host(host) or host)):
             continue
         return c
     return None
@@ -1900,11 +1921,12 @@ def login_tripwire(flow: http.HTTPFlow, vm_id: str | None = None) -> dict[str, A
 def _login_destination_ok(flow: http.HTTPFlow, host: str) -> bool:
     """The swap may only go to the name the client asked for (same rule as custom secrets): the TLS
     names must match the host, and behind redsocks an IP authority is re-pointed at that name."""
-    authority = flow.request.host.lower().rstrip(".")
-    destination = host.lower().rstrip(".")
+    wire = lambda name: _ascii_host(name) or name.lower().rstrip(".")
+    authority = wire(flow.request.host)
+    destination = wire(host)
     client_sni = getattr(flow.client_conn, "sni", None)
     server_sni = getattr(flow.server_conn, "sni", None)
-    if any(sni and sni.lower().rstrip(".") != destination for sni in (client_sni, server_sni)):
+    if any(sni and wire(sni) != destination for sni in (client_sni, server_sni)):
         return False
     if authority != destination:
         try:
@@ -1918,11 +1940,22 @@ def _login_destination_ok(flow: http.HTTPFlow, host: str) -> bool:
     return True
 
 
-def _login_header_names(flow: http.HTTPFlow) -> list[str]:
-    """The request headers a password may be swapped into: `Authorization` (HTTP Basic decoded and
-    encoded again, any other scheme as it is) and custom `X-*` headers. Never `Cookie` or the
-    navigation headers, which the browser fills in by itself."""
-    return sorted({k.lower() for k in flow.request.headers.keys() if k.lower() == "authorization" or k.lower().startswith("x-")})
+def _without_stand_in(path: Any, cred: dict[str, Any]) -> Any:
+    """A record's path with the login's stand-in taken out. The stand-in is not the password, but
+    it is what the agent types to get it, and Activity is read by more people than the agent."""
+    if not isinstance(path, str) or not cred.get("placeholder"):
+        return path
+    from urllib.parse import unquote
+    found = _placeholder_re(cred["placeholder"])
+    if found.search(path):
+        return found.sub("[login stand-in]", path)
+    return "/[login stand-in]" if found.search(unquote(path)) else path
+
+
+def _tls_names_are(flow: http.HTTPFlow, host: str) -> bool:
+    want = _ascii_host(host) or host.lower().rstrip(".")
+    names = [getattr(flow.client_conn, "sni", None), getattr(flow.server_conn, "sni", None)]
+    return all(isinstance(n, str) and (_ascii_host(n) or n.lower().rstrip(".")) == want for n in names)
 
 
 def _swap_login_header(name: str, value: str, placeholder: str, secret: str) -> str:
@@ -1937,52 +1970,800 @@ def _swap_login_header(name: str, value: str, placeholder: str, secret: str) -> 
     return found.sub(lambda _: secret, value)
 
 
-def apply_login_swap(flow: http.HTTPFlow, cred: dict[str, Any], host: str) -> bool:
-    from urllib.parse import quote
-    placeholder = cred.get("placeholder") or ""
-    secret = _secret_value(cred) or ""
-    if not placeholder or not secret:
+# ----- where a password may be put in (docs/plans/login-swap-scope.md) ---------
+#
+# A login's hosts are often wide (github.com, *.google.com) and hold pages where people post
+# content. Putting the password into any request that carries the stand-in would let an agent that
+# was talked into it write the real password into a gist or a comment. So the password goes in only
+# where a sign-in sends it: the body of a POST or PUT, over https, to the login's sign-in page, to
+# a form target read off that page that the owner approved, or to an address the owner added. A
+# login saved as HTTP Basic gets it in `Authorization: Basic` and nowhere else. A login with no
+# sign-in page gets it nowhere. Anything else that carries the stand-in to the login's own hosts is
+# refused like a stand-in sent to another site.
+#
+# A sign-in address is a host, a path and, when it has one, a query: many sites route on the query
+# (`/w/index.php?title=Special:UserLogin`), where the path alone would also be every other page.
+
+# login_id -> {"page": the login_url the targets were read from, "targets": {address: last seen}}.
+# What this process read off sign-in pages. The firewall agent takes it from the file and shows it
+# to the owner; a target counts only once the owner approved it (`sign_in_targets`).
+_login_targets: dict[str, dict[str, Any]] = {}
+_login_targets_loaded = False
+
+
+def _load_login_targets() -> None:
+    global _login_targets_loaded
+    if _login_targets_loaded:
+        return
+    _login_targets_loaded = True
+    try:
+        with open(LOGIN_TARGETS_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    for login_id, entry in data.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("targets"), dict):
+            continue
+        targets: dict[str, dict[str, Any]] = {}
+        for url, seen in entry["targets"].items():
+            if isinstance(seen, dict) and isinstance(seen.get("seen"), (int, float)):
+                targets[str(url)] = {"seen": float(seen["seen"]), "field": seen.get("field") if isinstance(seen.get("field"), str) else None}
+        _login_targets[str(login_id)] = {"page": entry.get("page"), "targets": targets}
+
+
+def _save_login_targets() -> None:
+    known = {c["login_id"] for c in _login_entries()}
+    for login_id in [k for k in _login_targets if k not in known]:
+        del _login_targets[login_id]
+    tmp = LOGIN_TARGETS_PATH + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(_login_targets, fh)
+        os.replace(tmp, LOGIN_TARGETS_PATH)
+    except OSError as exc:
+        log.warning(f"[mitm] could not write {LOGIN_TARGETS_PATH}: {exc}")
+
+
+def _plain_path(path: str) -> str | None:
+    """The path without its query, or None when a server could read it as some other path: dot
+    segments, doubled or encoded slashes, backslashes, path parameters (`..;/`), an encoded percent
+    (decoded twice it can be any of these) or a fragment. Such a path matches no sign-in address."""
+    if "#" in path:
+        return None
+    only = path.split("?", 1)[0]
+    low = only.lower()
+    if not only.startswith("/") or "//" in only or "\\" in only or ";" in only:
+        return None
+    if any(t in low for t in ("%2f", "%5c", "%2e", "%00", "%25", "%3b", "%23", "%3f")):
+        return None
+    if any(seg in (".", "..") for seg in only.split("/")):
+        return None
+    return only
+
+
+class _NotASignIn(Exception):
+    """This request does not have the exact shape of a sign-in. `why` is the reason on the record."""
+
+    def __init__(self, why: str = "body") -> None:
+        super().__init__(why)
+        self.why = why
+
+
+# A form field name, a query key or a JSON member that may sit in a sign-in request. Nothing a
+# server folds into another name: no `[`, no space, no NUL, no control character.
+_FIELD_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+# What a password field is called, when the form was not read: `password`, `pwd`, `user_password`,
+# `j_password`, `wpPassword`. Never `user_login`, `comment`, `wpTextbox1`, `c`.
+_PASSWORD_NAME = re.compile(r"(?:.*[_.-])?(?:pass|passwd|password|pwd|passphrase|secret)(?:[_.-].*)?", re.I)
+_PASSWORD_CAMEL = re.compile(r"[A-Za-z0-9]*[a-z0-9](?:Password|Passwd|Pwd)")
+
+
+def _password_name(name: str) -> bool:
+    return bool(_PASSWORD_NAME.fullmatch(name) or _PASSWORD_CAMEL.fullmatch(name))
+
+
+def _fold(name: str) -> str:
+    """A field name as the servers that fold names read it: PHP makes `page.id` `page_id`, and
+    several frameworks ignore case."""
+    return name.lower().replace(".", "_")
+
+
+def _decode_once(text: str) -> str | None:
+    """`text` percent-decoded once, `+` as a space, or None when it is not well-formed UTF-8
+    percent-encoding."""
+    from urllib.parse import unquote_to_bytes
+    if re.search(r"%(?![0-9A-Fa-f]{2})", text):
+        return None
+    try:
+        return unquote_to_bytes(text.replace("+", " ")).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _strict_pairs(raw: str) -> list[tuple[str, str]] | None:
+    """The `key=value` pairs of a query string or a url-encoded form, read the one way every
+    server reads them, or None when any server could read it another way: a character a browser
+    would have encoded (a space, a control character, `;`, anything outside ASCII), a piece with
+    no `=`, a key that is not a plain name, or a key given twice (under any case, `.` as `_`)."""
+    if raw == "":
+        return []
+    if re.search(r"[^\x21-\x7e]|;", raw):
+        return None
+    pieces = raw.split("&")
+    if len(pieces) > LOGIN_FIELDS_MAX:
+        return None
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for piece in pieces:
+        key_raw, eq, value_raw = piece.partition("=")
+        if not eq:
+            return None
+        key, value = _decode_once(key_raw), _decode_once(value_raw)
+        if key is None or value is None or not _FIELD_NAME.fullmatch(key) or _fold(key) in seen:
+            return None
+        seen.add(_fold(key))
+        out.append((key, value))
+    return out
+
+
+_HOST_NAME = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _ascii_host(host: str) -> str | None:
+    """A host name in the form it has on the wire: lower case, no trailing dot, an international
+    name in punycode. None when it is not a host name."""
+    host = host.lower().rstrip(".")
+    if not host.isascii():
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+    return host if _HOST_NAME.fullmatch(host) else None
+
+
+def _sign_in_address(spec: str, default: tuple[str, int] | None = None) -> dict[str, Any] | None:
+    """A sign-in address as the proxy matches it, or None when it cannot be one.
+
+    `spec` is a full https address (the login's sign-in page, a learned form target), or, when
+    `default` is given, what the owner typed as an extra: `/path` (on `default`, the sign-in page's
+    host and port) or `host/path`. Every address is one exact path. Only an owner's extra written
+    with a trailing `/*` covers what is under it. Plain http is never a sign-in address."""
+    from urllib.parse import urlsplit
+    if not isinstance(spec, str) or not spec or len(spec) > 2048 or any(c.isspace() or ord(c) < 32 for c in spec):
+        return None
+    owner = False
+    if "://" in spec:
+        try:
+            u = urlsplit(spec)
+            port = u.port
+        except ValueError:
+            return None
+        if u.scheme != "https" or not u.hostname or u.username or u.password or u.fragment:
+            return None
+        host, port, path, query = _ascii_host(u.hostname), port or 443, u.path or "/", u.query
+    elif default is None:
+        return None
+    elif spec.startswith("/"):
+        owner = True
+        host, port = default
+        path, _, query = spec.partition("?")
+    else:
+        owner = True
+        name, slash, rest = spec.partition("/")
+        host, port = _ascii_host(name), 443
+        if not slash:
+            return None
+        path, _, query = ("/" + rest).partition("?")
+    if host is None:
+        return None
+    prefix = owner and path.endswith("/*") and not query
+    if prefix:
+        path = path[:-1]
+    # The top of a site, or everything under it, is the site: not a sign-in address an owner can
+    # add. (As a login's sign-in page it parses, so its host is known, and matches nothing.)
+    if owner and path == "/":
+        return None
+    if "#" in path or "#" in query or "*" in path or _plain_path(path) != path:
+        return None
+    pairs = _strict_pairs(query)
+    if pairs is None or ("?" in spec and not pairs):
+        return None
+    return {"host": host, "port": port, "path": path, "query": sorted(pairs), "prefix": prefix, "owner": owner}
+
+
+def _address_text(a: dict[str, Any]) -> str:
+    from urllib.parse import urlencode
+    port = "" if a["port"] == 443 else f":{a['port']}"
+    return f"https://{a['host']}{port}{a['path']}" + (f"?{urlencode(a['query'])}" if a["query"] else "")
+
+
+def _goes_to(flow: http.HTTPFlow, host: str, address: dict[str, Any]) -> bool:
+    """Whether this request is for `address`: https, its host and port, its exact path (or under
+    it, for an owner's `/*`) and exactly its query: the same keys with the same values and nothing
+    else. An address with no query takes a request with no `?` at all."""
+    if flow.request.scheme != "https" or _ascii_host(host) != address["host"] or flow.request.port != address["port"]:
         return False
+    target = flow.request.path
+    path = _plain_path(target)
+    if path is None or not (path.startswith(address["path"]) if address["prefix"] else path == address["path"]):
+        return False
+    if "?" not in target:
+        return not address["query"]
+    if not address["query"]:
+        return False
+    pairs = _strict_pairs(target.partition("?")[2])
+    return pairs is not None and sorted(pairs) == address["query"]
+
+
+def _login_page(cred: dict[str, Any]) -> dict[str, Any] | None:
+    """The login's sign-in page as an address, or None when it has none the proxy can use: none at
+    all, one it cannot read, or the top of a site (`/`), which is every visitor's page and not a
+    sign-in. `/` is not a sign-in address in any role: not as the page, not read off a page, not
+    added by the owner."""
+    page = _sign_in_address(str(cred.get("login_url") or ""))
+    return None if page is None or page["path"] == "/" else page
+
+
+def _login_host(cred: dict[str, Any], host: str) -> bool:
+    return any(secret_host_matches(pattern, host) or secret_host_matches(_ascii_pattern(pattern), host) for pattern in cred.get("allowed_hosts", []))
+
+
+def _ascii_pattern(pattern: str) -> str:
+    """A site pattern with an international name in punycode, as requests name it."""
+    star = "*." if pattern.startswith("*.") else ""
+    return star + (_ascii_host(pattern[len(star):]) or pattern[len(star):])
+
+
+def _spellings(text: str) -> list[str]:
+    """`text` as it is and as a server may read it: percent-decoded (twice), and with JSON
+    `\\uXXXX` escapes turned into their characters."""
+    from urllib.parse import unquote_plus
+    out = [text]
+    if "%" in text or "+" in text:
+        once = unquote_plus(text)
+        out.append(once)
+        if "%" in once:
+            out.append(unquote_plus(once))
+    if "\\u" in text:
+        out.append(re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), text))
+    return out
+
+
+def _login_places(flow: http.HTTPFlow, cred: dict[str, Any]) -> dict[str, Any]:
+    """Where this request carries the login's stand-in, in any spelling a server would read as it:
+    in the path, in the query (keys too), in a header (every one but the navigation headers the
+    browser fills in by itself; `Cookie` and `Proxy-Authorization` count), in the body."""
+    placeholder = cred.get("placeholder") or ""
+    found = _placeholder_re(placeholder)
+    seen = lambda text: any(found.search(t) for t in _spellings(text))
     try:
         body = flow.request.get_text(strict=False) or ""
     except ValueError:
         body = ""
+    raw = flow.request.raw_content or b""
+    # Every spelling is looked for in a body the size of a form. A large body (an upload) is only
+    # searched for the stand-in as written: it can never be a sign-in, so nothing is put in.
+    # The bytes as they are, too: the declared charset is the client's to choose, and a body
+    # declared UTF-16 that is plain ASCII would otherwise read here as noise.
+    plain = raw.decode("latin-1")
+    in_body = (seen(body) or seen(plain)) if len(raw) <= 4 * LOGIN_BODY_MAX else bool(found.search(body) or found.search(plain))
+    if not in_body and raw and b"\x00" in raw and len(raw) <= 4 * LOGIN_BODY_MAX:
+        # A form sent as UTF-16 reads as the stand-in to a server that honours the charset.
+        in_body = any(found.search(raw.decode(codec, "ignore")) for codec in ("utf-16-le", "utf-16-be"))
+    path_only, _, query = flow.request.path.partition("?")
+    headers = []
+    for name in sorted({k.lower() for k in flow.request.headers.keys()}):
+        if name in _NAVIGATION_HEADERS:
+            continue
+        values = flow.request.headers.get_all(name)
+        decoded = [d for d in (_basic_credentials(v) for v in values) if d is not None] if name in ("authorization", "proxy-authorization") else []
+        if any(seen(v) for v in values + decoded):
+            headers.append(name)
+    return {"body": body, "in_path": seen(path_only), "in_query": seen(query), "in_body": in_body, "headers": headers}
+
+
+def _only_basic_header(flow: http.HTTPFlow, places: dict[str, Any], placeholder: str | None = None) -> bool:
+    """The stand-in is in an HTTP Basic `Authorization` header and nowhere else. With
+    `placeholder`, it also has to be the whole password, not a part of it or the user name."""
+    if places["in_path"] or places["in_query"] or places["in_body"] or places["headers"] != ["authorization"]:
+        return False
+    decoded = [_basic_credentials(v) for v in flow.request.headers.get_all("authorization")]
+    if len(decoded) != 1 or decoded[0] is None:
+        return False
+    return placeholder is None or decoded[0].partition(":")[2] == placeholder
+
+
+def _carries(found: "re.Pattern[str]", text: str) -> bool:
+    return any(found.search(t) for t in _spellings(text))
+
+
+def _content_type(flow: http.HTTPFlow) -> str | None:
+    """`form` or `json` when the request says so the way a browser does: one `Content-Type` line,
+    exactly `application/x-www-form-urlencoded` or `application/json`, with no parameter but
+    `charset=utf-8`. Anything else is None. The type is never guessed from the body: a body two
+    servers would read as two different things is how a password ends up in the wrong field."""
+    lines = flow.request.headers.get_all("content-type")
+    if len(lines) != 1:
+        return None
+    m = re.fullmatch(r"application/(x-www-form-urlencoded|json)(?:; ?charset=(?:utf-8|UTF-8))?", lines[0])
+    return None if m is None else ("form" if m.group(1) == "x-www-form-urlencoded" else "json")
+
+
+def _body_text(flow: http.HTTPFlow) -> str:
+    """The body as UTF-8 text. Refused when it is long, compressed, not UTF-8, or starts with a
+    byte-order mark: a sign-in is none of these."""
+    raw = flow.request.raw_content or b""
+    if len(raw) > LOGIN_BODY_MAX or flow.request.headers.get("content-encoding") or flow.request.headers.get("transfer-encoding", "").lower() not in ("", "chunked"):
+        raise _NotASignIn()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _NotASignIn() from None
+    if text.startswith("\ufeff") or "\x00" in text:
+        raise _NotASignIn()
+    return text
+
+
+def _strict_json(text: str) -> Any:
+    """`text` as JSON, refused when it nests deeper than a sign-in does, gives a member twice
+    (parsers disagree on which one counts), or holds `NaN` and its kin."""
+    depth = 0
+    quoted = escaped = False
+    for ch in text:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                quoted = False
+        elif ch == '"':
+            quoted = True
+        elif ch in "[{":
+            depth += 1
+            if depth > LOGIN_JSON_DEPTH_MAX:
+                raise _NotASignIn()
+        elif ch in "]}":
+            depth -= 1
+
+    def members(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        if len({k for k, _ in items}) != len(items):
+            raise _NotASignIn()
+        return dict(items)
+
+    def constant(_name: str) -> Any:
+        raise _NotASignIn()
+
+    try:
+        return json.loads(text, object_pairs_hook=members, parse_constant=constant)
+    except (ValueError, RecursionError):
+        raise _NotASignIn() from None
+
+
+def _strings(node: Any) -> "Iterator[str]":
+    """Every string in a JSON value, at any depth. A member name comes marked, so that a name
+    that is the stand-in is never taken for a value that is."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, list):
+        for item in node:
+            yield from _strings(item)
+    elif isinstance(node, dict):
+        for key, item in node.items():
+            yield "\x00key:" + key
+            yield from _strings(item)
+
+
+def _sign_in_field(flow: http.HTTPFlow, placeholder: str) -> tuple[str, list[tuple[str, str]]]:
+    """The one field of this request that holds the stand-in as its whole value, and the form's
+    fields (empty for JSON). Raises `_NotASignIn` for every body that is not one of the two shapes
+    a browser sign-in sends:
+
+      form  `application/x-www-form-urlencoded`: plain field names, each once, and exactly one
+            field whose value is the stand-in and nothing else.
+      json  `application/json`: an object, and exactly one of its top-level members whose value is
+            the string that is the stand-in and nothing else.
+
+    The stand-in anywhere else in the body (a second field, part of a value, a field name, deeper
+    in the JSON, in an array, in any spelling but the literal one) refuses the request. Multipart,
+    XML, plain text and everything else are refused: sign-ins do not use them."""
     found = _placeholder_re(placeholder)
-    path_only, sep, query_text = flow.request.path.partition("?")
-    in_path = bool(found.search(path_only))
-    in_query = any(found.search(v) for v in flow.request.query.values())
-    in_body = bool(found.search(body))
-    header_hits = [
-        name for name in _login_header_names(flow)
-        if any(_swap_login_header(name, v, placeholder, secret) != v for v in flow.request.headers.get_all(name))
-    ]
-    if not (in_body or in_query or in_path or header_hits):
+    kind = _content_type(flow)
+    if kind is None:
+        raise _NotASignIn()
+    text = _body_text(flow)
+    if len(found.findall(text)) != 1:
+        raise _NotASignIn()
+    if kind == "form":
+        pairs = _strict_pairs(text)
+        if pairs is None:
+            raise _NotASignIn()
+        holders = [k for k, v in pairs if v == placeholder]
+        if len(holders) != 1 or any(_carries(found, k) or (v != placeholder and _carries(found, v)) for k, v in pairs):
+            raise _NotASignIn()
+        return holders[0], pairs
+    doc = _strict_json(text)
+    if not isinstance(doc, dict) or len(doc) > LOGIN_FIELDS_MAX:
+        raise _NotASignIn()
+    holders = [k for k, v in doc.items() if isinstance(v, str) and v == placeholder]
+    if len(holders) != 1 or sum(1 for t in _strings(doc) if _carries(found, t)) != 1:
+        raise _NotASignIn()
+    return holders[0], []
+
+
+def _google_sign_in(flow: http.HTTPFlow, placeholder: str) -> None:
+    """Google's sign-in (`batchexecute`): a url-encoded form whose `f.req` field is JSON, holding a
+    string that is JSON again, in which the stand-in is one whole string element. That exact shape
+    and no other; raises `_NotASignIn` otherwise."""
+    found = _placeholder_re(placeholder)
+    if _content_type(flow) != "form":
+        raise _NotASignIn()
+    text = _body_text(flow)
+    pairs = _strict_pairs(text)
+    if pairs is None or len(found.findall(text)) != 1:
+        raise _NotASignIn()
+    exact = 0
+    for key, value in pairs:
+        if _carries(found, key):
+            raise _NotASignIn()
+        if not _carries(found, value):
+            continue
+        if key != "f.req":
+            raise _NotASignIn()
+        pending = [(_strict_json(value), 1)]
+        while pending:
+            node, level = pending.pop()
+            for t in _strings(node):
+                if t == placeholder:
+                    exact += 1
+                elif _carries(found, t):
+                    # A string that holds the stand-in without being it has to be JSON itself.
+                    if level >= 3 or t.strip()[:1] not in ("[", "{"):
+                        raise _NotASignIn()
+                    pending.append((_strict_json(t), level + 1))
+    if exact != 1:
+        raise _NotASignIn()
+
+
+def login_scope(flow: http.HTTPFlow, cred: dict[str, Any], host: str, places: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Whether the password may go into this request. `(scope, None)` when it may: `basic` (the
+    HTTP Basic header of a login saved as one) or `page` (a sign-in address). `(None, why)` when it
+    may not:
+
+      http     not https: a password is never put into plain http
+      header   a login saved as HTTP Basic, anywhere but as that header's whole password
+      place    not the body of a POST or PUT
+      basic    an HTTP Basic header, on a login that is not saved as one
+      body     not one of the two exact shapes a sign-in sends (`_sign_in_field`)
+      no_page  the login has no sign-in page (or one that cannot be read)
+      pending  a form target read off the sign-in page that the owner has not approved yet
+      expired  an approved target that has not been on the sign-in page for 30 days
+      field    a sign-in address, but not the password field
+      page     not a sign-in address
+    """
+    placeholder = cred.get("placeholder") or ""
+    if flow.request.scheme != "https":
+        return None, "http"
+    if cred.get("login_auth") == "basic":
+        return ("basic", None) if _only_basic_header(flow, places, placeholder) else (None, "header")
+    if places["in_path"] or places["in_query"] or places["headers"] or flow.request.method not in ("POST", "PUT"):
+        return None, "basic" if _only_basic_header(flow, places) else "place"
+    here = _ascii_host(host) or ""
+    try:
+        # Google's sign-in is built in JavaScript: there is no form to read, so its path and its
+        # one body shape are known here.
+        for known in LOGIN_KNOWN_SIGN_IN.get(here, ()):
+            path = _plain_path(flow.request.path)
+            if flow.request.port == 443 and path is not None and path.startswith(known):
+                _google_sign_in(flow, placeholder)
+                return "page", None
+        field, pairs = _sign_in_field(flow, placeholder)
+    except _NotASignIn as refused:
+        return None, refused.why
+    # The sign-in page names the host that bare extra addresses are on, even when it is the top
+    # of a site and so no sign-in address itself.
+    base = _sign_in_address(str(cred.get("login_url") or ""))
+    if base is None:
+        return None, "no_page"
+    page = _login_page(cred)
+    known_fields = _login_fields(cred)
+
+    def at(address: dict[str, Any]) -> tuple[str | None, str | None]:
+        # The form may not name one of the address's own query keys with another value: a server
+        # that reads the form before the address (PHP's `$_REQUEST`, MediaWiki) would follow it.
+        routing = {_fold(k): (k, v) for k, v in address["query"]}
+        for k, v in pairs:
+            if _fold(k) in routing and (k, v) != routing[_fold(k)]:
+                return None, "page"
+        # The password field: the one the sign-in form has, when the form was read; otherwise a
+        # field that is named like one.
+        want = known_fields.get(_address_text(address))
+        if field != want if want is not None else not _password_name(field):
+            return None, "field"
+        return "page", None
+
+    if page is not None and _goes_to(flow, host, page):
+        return at(page)
+    refused = set(cred.get("refused_targets") or [])
+    for target in cred.get("sign_in_targets") or []:
+        address = None if target in refused else _sign_in_address(str(target))
+        if address and address["path"] != "/" and _login_host(cred, address["host"]) and _goes_to(flow, host, address):
+            return at(address)
+    # Checked again here, whatever the firewall page let through: only on the host the owner
+    # named (a bare path is the sign-in page's own host and port), one exact path unless it was
+    # written with `/*`, and never the top of a site or everything under it.
+    for extra in cred.get("sign_in_paths") or []:
+        address = _sign_in_address(str(extra), (base["host"], base["port"]))
+        if address and _login_host(cred, address["host"]) and _goes_to(flow, host, address):
+            return at(address)
+    for target in cred.get("expired_targets") or []:
+        address = _sign_in_address(str(target))
+        if address and _goes_to(flow, host, address):
+            return None, "expired"
+    for target in _login_pending(cred):
+        address = _sign_in_address(target)
+        if address and _goes_to(flow, host, address):
+            return None, "pending"
+    return None, "page"
+
+
+def _login_fields(cred: dict[str, Any]) -> dict[str, str]:
+    """address -> the name of the password field of the sign-in form that posts there, for the
+    forms that were read: what the firewall agent kept, and what this process read since. Knowing
+    it only ever narrows: the password then goes into that field and no other."""
+    _load_login_targets()
+    out = {str(u): str(f) for u, f in (cred.get("sign_in_fields") or {}).items() if isinstance(f, str) and f}
+    mine = _login_targets.get(str(cred.get("login_id")))
+    if mine and mine.get("page") == cred.get("login_url"):
+        for url, entry in mine["targets"].items():
+            if entry.get("field"):
+                out.setdefault(url, entry["field"])
+    return out
+
+
+def _login_pending(cred: dict[str, Any]) -> set[str]:
+    """Form targets read off the sign-in page that the owner has not approved: what the firewall
+    agent already knows of, and what this process read since. Only used to say why a request was
+    refused."""
+    _load_login_targets()
+    out = {str(u) for u in cred.get("pending_targets") or []}
+    mine = _login_targets.get(str(cred.get("login_id")))
+    if mine and mine.get("page") == cred.get("login_url"):
+        out |= set(mine["targets"])
+    return out - set(cred.get("refused_targets") or []) - {str(u) for u in cred.get("sign_in_targets") or []}
+
+
+def login_out_of_scope(flow: http.HTTPFlow, vm_id: str | None = None) -> tuple[dict[str, Any], str] | None:
+    """A login whose stand-in this request carries to one of its own hosts, but not where a
+    sign-in sends it. `(login, why)`, or None."""
+    host = flow.request.pretty_host
+    for cred in credentials_for(host, vm_id):
+        if not cred.get("login_id") or not cred.get("placeholder"):
+            continue
+        # A short stand-in (a PIN) can turn up in a page's own requests by chance. It is not put in
+        # outside a sign-in either (`apply_login_swap`), but it is not an alarm.
+        if len(cred["placeholder"]) < LOGIN_SHORT:
+            continue
+        places = _login_places(flow, cred)
+        if not (places["in_path"] or places["in_query"] or places["in_body"] or places["headers"]):
+            continue
+        scope, why = login_scope(flow, cred, host, places)
+        if scope is None:
+            return cred, why or "page"
+    return None
+
+
+_LOGIN_BLOCK_TEXT = {
+    "http": "This request is plain http. The firewall never puts a password into a connection that is not encrypted, so it blocked the request and recorded the attempt. Use the site's https address.",
+    "header": "This login is saved as an HTTP Basic login: its password placeholder only works as the password of an HTTP Basic Authorization header. It was somewhere else in the request, so the firewall blocked it and recorded the attempt.",
+    "page": "This password placeholder only works in the sign-in request of the login's sign-in page. This request went somewhere else on the site, so the firewall blocked it and recorded the attempt. If this is how the site signs in, ask the owner to add this address to the login on the firewall page (ControlClaw, Secrets, Website logins).",
+    "pending": "The firewall read this address off the login's sign-in page, but the owner has not approved it yet, so the request was blocked and recorded. Ask the owner to open the login on the firewall page (ControlClaw, Secrets, Website logins) and tick this address under 'Read off the sign-in page'. Then sign in again.",
+    "no_page": "This login has no sign-in page, so the firewall does not know which request is the sign-in and puts the password nowhere. The request was blocked and recorded. Ask the owner to add the sign-in page to the login on the firewall page (ControlClaw, Secrets, Website logins).",
+    "body": "This password placeholder only works as the whole value of one field of an ordinary sign-in form (or of one top-level field of a JSON sign-in). This request was something else: the placeholder inside a longer text, in more than one field, in a file upload, or a body the firewall does not read as a sign-in. The firewall blocked it and recorded the attempt. Type only the placeholder into the password field of the sign-in page and submit that form.",
+    "field": "This password placeholder only works in the password field of the login's sign-in form. It was in another field, so the firewall blocked the request and recorded the attempt.",
+    "error": "The firewall could not check this request, which carries a password placeholder, so it blocked it and recorded the attempt.",
+    "expired": "The owner allowed this sign-in address, but it has not been on the login's sign-in page for 30 days, so the firewall stopped using it and blocked the request. Open the login's sign-in page again and retry; if it is still blocked, ask the owner to look at the login on the firewall page (ControlClaw, Secrets, Website logins).",
+    "place": "This password placeholder only works in the body of the sign-in form (a POST). It was in the address, a header or another kind of request, so the firewall blocked it and recorded the attempt. Type it into the password field of the sign-in page and submit the form.",
+    "basic": "This login is not saved as an HTTP Basic login, so its password placeholder does not work in an Authorization header. The firewall blocked the request and recorded the attempt. If the site signs in with HTTP Basic, ask the owner to save the login again as HTTP Basic on the firewall page (ControlClaw, Secrets, Website logins).",
+}
+
+# A sign-in page is read for its forms only up to this many characters once decoded, and only for
+# this long. A page built to make a parser slow teaches nothing and costs the proxy nothing.
+LOGIN_PAGE_TEXT_MAX = 256 * 1024
+LOGIN_PARSE_BUDGET_S = 0.2
+_LOGIN_TAG_MAX = 4096
+# Elements whose content is text, not markup: a form written inside one is not a form.
+_RAW_TEXT = ("script", "style", "textarea", "template", "title", "noscript", "xmp", "iframe", "noembed", "noframes", "plaintext")
+_ATTR = re.compile(r"""([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>`]+)))?""")
+_USER_FIELD = re.compile(r"user|email|e-mail|login|account|ident|name", re.I)
+# What a sign-up or a change-of-password form looks like. Such a form is not offered to the owner.
+_NOT_SIGN_IN_FIELD = re.compile(r"confirm|repeat|retype|again|verify|new[-_ ]?pass|password[-_]?2|pass2|pw2", re.I)
+_NOT_SIGN_IN_FORM = re.compile(r"regist|sign[-_ ]?up|join|create[-_ ]?account|new[-_ ]?user|enroll|subscribe", re.I)
+
+
+def password_form_targets(html: str) -> list[tuple[str, str]] | None:
+    """`(action, name of the password field)` for each POST form on a sign-in page that is a
+    sign-in form: one named password field that is not for a new password, a field for a user name
+    or an email, and nothing that makes it look like a sign-up (more than two fields to type in, a
+    field to confirm or repeat something, "register", "signup" or "join" in its action, id or name).
+
+    None when the page cannot be trusted to say where its forms go (`<base href>`), is too long, or
+    took too long. A scanner of its own rather than `html.parser`: that one is quadratic on unclosed
+    comments and tags, and this runs on the proxy's event loop. Every step moves forward, a tag is
+    read at most `_LOGIN_TAG_MAX` characters far, and the whole thing stops at the time budget."""
+    if len(html) > LOGIN_PAGE_TEXT_MAX:
+        return None
+    deadline = time.monotonic() + LOGIN_PARSE_BUDGET_S
+    actions: list[tuple[str, str]] = []
+    form: dict[str, Any] | None = None
+
+    def close() -> None:
+        nonlocal form
+        if form and form["method"] == "post" and form["passwords"] == 1 and form["field"] and form["user"] and not form["new"] and form["typed"] <= 2:
+            actions.append((form["action"], form["field"]))
+        form = None
+
+    low = html.lower()
+    i, steps = 0, 0
+    while True:
+        i = html.find("<", i)
+        if i < 0:
+            break
+        steps += 1
+        if steps % 64 == 0 and time.monotonic() > deadline:
+            return None
+        if low.startswith("<!--", i):
+            end = html.find("-->", i + 4)
+            if end < 0:
+                break
+            i = end + 3
+            continue
+        end = html.find(">", i + 1, i + _LOGIN_TAG_MAX)
+        if end < 0:
+            i += 1
+            continue
+        tag = html[i + 1:end]
+        i = end + 1
+        m = re.match(r"/?([a-zA-Z][a-zA-Z0-9]*)", tag)
+        if not m:
+            continue
+        name = m.group(1).lower()
+        if tag.startswith("/"):
+            if name == "form":
+                close()
+            continue
+        if name == "textarea" and form is not None:
+            form["typed"] += 1
+        if name in _RAW_TEXT:
+            end = low.find("</" + name, i)
+            if end < 0:
+                break
+            i = end
+            continue
+        # Attribute values are character data: `&amp;` in an action is `&`.
+        attrs = {a.group(1).lower(): html_unescape(a.group(2) or a.group(3) or a.group(4) or "") for a in _ATTR.finditer(tag[m.end():])}
+        if name == "base" and "href" in attrs:
+            return None
+        if name == "form":
+            close()
+            form = {"action": attrs.get("action", ""), "method": attrs.get("method", "get").strip().lower(), "passwords": 0, "field": "", "user": False, "typed": 0,
+                    "new": bool(_NOT_SIGN_IN_FORM.search(" ".join(attrs.get(k, "") for k in ("action", "id", "name", "class"))))}
+        elif name in ("input", "textarea", "select") and form is not None:
+            kind = attrs.get("type", "text").strip().lower() if name == "input" else name
+            label = " ".join(attrs.get(k, "") for k in ("name", "id", "autocomplete"))
+            if _NOT_SIGN_IN_FIELD.search(label):
+                form["new"] = True
+            if kind == "password":
+                form["passwords"] += 1
+                form["field"] = attrs.get("name", "")
+                if attrs.get("autocomplete", "").strip().lower() == "new-password":
+                    form["new"] = True
+            elif kind in ("text", "email", "tel", "url", "number", "search", "date", "textarea", "select"):
+                form["typed"] += 1
+                if kind in ("text", "email", "tel") and (kind == "email" or _USER_FIELD.search(label)):
+                    form["user"] = True
+    close()
+    return actions
+
+
+def learn_login_targets(flow: http.HTTPFlow) -> None:
+    """Many sites post the password to another address than the page (GitHub: `/login` posts to
+    `/session`). When the agent loads a login's sign-in page, the sign-in form on it says where:
+    that address is written down for the login. It does not count yet: the firewall agent shows it
+    to the owner, and the password goes there only once the owner approved it."""
+    if not flow.response or flow.request.method != "GET" or flow.response.status_code != 200:
+        return
+    vm_id = flow.metadata.get("cc_vm_id")
+    host = flow.request.pretty_host
+    # The page has to come from the site itself. `Host:` is the agent's to write, and behind the
+    # transparent redirect the connection goes to whatever address the agent dialled; the TLS name
+    # on both sides is what the upstream certificate was checked against. No TLS name, no lesson.
+    if flow.request.scheme != "https" or not _tls_names_are(flow, host):
+        return
+    logins = [c for c in credentials_for(host, vm_id) if c.get("login_id") and c.get("login_url") and c.get("login_auth") != "basic"]
+    if not logins or "html" not in (flow.response.headers.get("content-type") or "").lower():
+        return
+    # The page itself, query and all: `?title=User:Mallory` is not `?title=Special:UserLogin`, and
+    # a page saved with no query is not that path with one.
+    pages = [(c, _login_page(c)) for c in logins]
+    logins = [c for c, page in pages if page is not None and _goes_to(flow, host, page)]
+    if not logins or not flow.response.raw_content or len(flow.response.raw_content) > LOGIN_PAGE_MAX:
+        return
+    from urllib.parse import urljoin
+    try:
+        actions = password_form_targets(flow.response.get_text(strict=False) or "")
+    except Exception:  # a page that cannot be read teaches nothing
+        return
+    if not actions:
+        return
+    page_url = "https://" + (_ascii_host(host) or host.lower()) + ("" if flow.request.port == 443 else f":{flow.request.port}") + flow.request.path.split("#", 1)[0]
+    now = time.time()
+    changed = False
+    _load_login_targets()
+    for cred in logins:
+        refused = set(cred.get("refused_targets") or [])
+        entry = _login_targets.get(cred["login_id"])
+        if not entry or entry.get("page") != cred["login_url"]:
+            entry = _login_targets[cred["login_id"]] = {"page": cred["login_url"], "targets": {}}
+            changed = True
+        targets = entry["targets"]
+        for action, field in actions:
+            address = _sign_in_address(urljoin(page_url, action.strip()).split("#", 1)[0])
+            # The top of a site is not a sign-in address a page can teach.
+            if address is None or address["path"] == "/" or not _login_host(cred, address["host"]):
+                continue
+            target = _address_text(address)
+            if target in refused:
+                continue
+            # Written again at most once a day for a target already known.
+            known = targets.get(target)
+            if known is None or known["seen"] + 86400 < now or known.get("field") != field:
+                targets[target] = {"seen": now, "field": field}
+                changed = True
+        for stale in [u for u, entry in targets.items() if entry["seen"] + LOGIN_TARGET_TTL_S <= now or u in refused]:
+            del targets[stale]
+            changed = True
+        while len(targets) > LOGIN_TARGETS_MAX:
+            del targets[min(targets, key=lambda u: targets[u]["seen"])]
+            changed = True
+    if changed:
+        _save_login_targets()
+
+
+def apply_login_swap(flow: http.HTTPFlow, cred: dict[str, Any], host: str) -> bool:
+    placeholder = cred.get("placeholder") or ""
+    secret = _secret_value(cred) or ""
+    if not placeholder or not secret:
+        return False
+    places = _login_places(flow, cred)
+    if not (places["in_body"] or places["in_query"] or places["in_path"] or places["headers"]):
+        return False
+    # `request` refuses an out-of-scope request before it gets here. Checked again so that no
+    # other caller can put a password where a sign-in would not.
+    try:
+        scope, _why = login_scope(flow, cred, host, places)
+    except Exception:  # a request the check cannot read gets no password
+        return False
+    if scope is None:
         return False
     if not _login_destination_ok(flow, host):
         return False
-    if in_path:
-        # The placeholder's characters need no escaping in a path; the password does.
-        flow.request.path = found.sub(lambda _: quote(secret, safe=""), path_only) + sep + query_text
-    if in_query:
-        for k in list(flow.request.query.keys()):
-            values = flow.request.query.get_all(k)
-            if any(found.search(v) for v in values):
-                flow.request.query.set_all(k, [swap_login_text(v, placeholder, secret, _value_kind(v)) for v in values])
-    for name in header_hits:
-        # Per name, all values at once, so a repeated header keeps every value.
-        flow.request.headers.set_all(name, [_swap_login_header(name, v, placeholder, secret) for v in flow.request.headers.get_all(name)])
-    if in_body:
-        kind = _body_kind(flow.request.headers.get("content-type") or "", body)
-        if kind == "form":
+    if scope == "basic":
+        flow.request.headers.set_all("authorization", [_swap_login_header("authorization", v, placeholder, secret) for v in flow.request.headers.get_all("authorization")])
+        flow.metadata.setdefault("cc_login_in", []).append("header")
+    else:
+        # `login_scope` has read the body as exactly one of these two, with the stand-in once.
+        body = _body_text(flow)
+        if _content_type(flow) == "form":
             flow.request.set_text(swap_login_form(body, placeholder, secret))
         else:
-            flow.request.set_text(swap_login_text(body, placeholder, secret, kind))
-    # Where the password went, for the log record: the AI review treats a password in a path or a
-    # query, or outside a sign-in, as something to look at (never the values, only the places).
-    places = flow.metadata.setdefault("cc_login_in", [])
-    for hit, place in ((in_path, "path"), (in_query, "query"), (bool(header_hits), "header"), (in_body, "body")):
-        if hit and place not in places:
-            places.append(place)
+            flow.request.set_text(swap_login_text(body, placeholder, secret, "json"))
+        flow.metadata.setdefault("cc_login_in", []).append("body")
+    # For the log record and the AI review: where the password went and why it was allowed there
+    # (never the values).
+    flow.metadata["cc_login_scope"] = scope
     return True
 
 
@@ -3590,7 +4371,19 @@ async def request(flow: http.HTTPFlow) -> None:
         flow.metadata["cc_rule"] = UPDATE_RULE
         return
 
-    tripped = login_tripwire(flow, vm_id)
+    # Fail closed. If the check itself fails on a request (a body built to break it), the request
+    # is refused like any other stand-in out of place: an exception here must never let it through
+    # unchecked, past the organisation's rules and the AI review that come after.
+    misplaced = None
+    try:
+        tripped = login_tripwire(flow, vm_id)
+        if tripped is None:
+            misplaced = login_out_of_scope(flow, vm_id)
+    except Exception as exc:  # RecursionError and MemoryError included
+        log.warning("[mitm] login check failed host=%s: %s", host, type(exc).__name__)
+        tripped = None
+        logins = [c for c in _login_entries() if c.get("vm_id") == vm_id and _login_host(c, host)] or [c for c in _login_entries() if c.get("vm_id") == vm_id]
+        misplaced = (logins[0] if logins else {"login_name": "login"}, "error")
     if tripped is not None:
         flow.metadata["cc_effect"] = "block"
         flow.metadata["cc_rule"] = LOGIN_TRIPWIRE_RULE
@@ -3601,9 +4394,25 @@ async def request(flow: http.HTTPFlow) -> None:
             {"Content-Type": "application/json"},
         )
         rec = _http_record(flow, "block")
-        rec.update({"status": BLOCK_STATUS, "login": str(tripped.get("login_name") or "login")[:64]})
+        rec.update({"status": BLOCK_STATUS, "login": str(tripped.get("login_name") or "login")[:64], "path": _without_stand_in(rec.get("path"), tripped)})
         _log_once(flow, rec)
         log.warning("[mitm] login=%s host=%s verdict=tripwire", tripped.get("login_id"), host)
+        return
+
+    if misplaced is not None:
+        cred, why = misplaced
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = LOGIN_TRIPWIRE_RULE
+        flow.response = http.Response.make(
+            BLOCK_STATUS,
+            json.dumps({"error": "login_not_on_sign_in_page", "host": host, "message": _LOGIN_BLOCK_TEXT[why]}),
+            {"Content-Type": "application/json"},
+        )
+        rec = _http_record(flow, "block")
+        # `login_why` tells Activity this was the login's own site, and what the owner can do.
+        rec.update({"status": BLOCK_STATUS, "login": str(cred.get("login_name") or "login")[:64], "login_why": why, "path": _without_stand_in(rec.get("path"), cred)})
+        _log_once(flow, rec)
+        log.warning("[mitm] login=%s host=%s verdict=tripwire why=%s", cred.get("login_id"), host, why)
         return
 
     rule = match_rule(host, method, path, vm_id)
@@ -3785,7 +4594,8 @@ def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
     rec["swapped"] = [p for _, p in flow.metadata.get("cc_applied", []) if not p.startswith("CC-SEC-") and p not in login_pairs] + flow.metadata.get("cc_secret_swaps", [])
     if flow.metadata.get("cc_login_swaps"):
         rec["login"] = flow.metadata["cc_login_swaps"][0][:64]
-        rec["login_in"] = list(flow.metadata.get("cc_login_in") or [])
+        rec["login_in"] = list(dict.fromkeys(flow.metadata.get("cc_login_in") or []))
+        rec["login_scope"] = flow.metadata.get("cc_login_scope")
     if flow.metadata.get("cc_granted"):
         rec["permission_id"] = flow.metadata["cc_granted"]
     req_raw = flow.request.raw_content
@@ -3809,6 +4619,10 @@ def response(flow: http.HTTPFlow) -> None:
         _phone_settle_tasks.add(task)
         task.add_done_callback(_phone_settle_tasks.discard)
     voice_response(flow)
+    try:
+        learn_login_targets(flow)
+    except Exception as exc:  # a page that breaks the reader teaches nothing, and costs nothing else
+        log.warning("[mitm] reading a sign-in page failed: %s", type(exc).__name__)
     redact_login_response(flow)
     if flow.metadata.get("cc_exit_http"):
         rec = _residential_http_record(flow)
