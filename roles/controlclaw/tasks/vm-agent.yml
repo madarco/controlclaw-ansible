@@ -102,6 +102,24 @@
   when: not cc_skip.vm_agent | default(false) | bool
   notify: restart controlclaw-agent
 
+# The template runner (controlclaw packages/templates) is one more file of the vm-agent bundle.
+# `cc-runbook` applies an agent template; `cc-ensure <kind> …` does one step by hand. Both run as
+# the box user and need no privilege of their own. The short name is not `cc`: that is the C
+# compiler, and a file of that name in /usr/local/bin would break every native npm build.
+- name: Put the template runner on the PATH (cc-runbook, cc-ensure)
+  ansible.builtin.copy:
+    dest: "/usr/local/bin/{{ item.name }}"
+    content: |
+      #!/bin/sh
+      exec /usr/bin/node /opt/controlclaw/agent/dist/cc-runbook.js {{ item.args }}"$@"
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - { name: cc-runbook, args: '' }
+    - { name: cc-ensure, args: 'ensure ' }
+  when: box_role == 'openclaw'
+
 - name: Install vm-agent production dependencies
   ansible.builtin.command:
     cmd: pnpm install --prod
