@@ -1,5 +1,16 @@
 [
   {
+    "version": "1.11.0",
+    "date": "2026-10-12",
+    "changes": [
+      "Applying a template to an agent that is already running now asks for a confirmation code from your chat channel.",
+      "Code messages from your firewall now show the code and the firewall's own facts first, and any text typed in the console separately below.",
+      "Each request your firewall sends to an agent now works once and only for that agent, so a copied request cannot be reused.",
+      "New agents start with the skills your organization marks for them on the Skills page.",
+      "Update your firewall before your agents: an updated agent does not accept requests from an older firewall. Update everything does this in the right order."
+    ]
+  },
+  {
     "version": "1.10.0",
     "date": "2026-10-12",
     "changes": [
