@@ -92,9 +92,9 @@ var require_node_gyp_build = __commonJS({
         var debug = getFirst(path.join(dir, "build/Debug"), matchBuild);
         if (debug) return debug;
       }
-      var prebuild = resolve3(dir);
+      var prebuild = resolve4(dir);
       if (prebuild) return prebuild;
-      var nearby = resolve3(path.dirname(process.execPath));
+      var nearby = resolve4(path.dirname(process.execPath));
       if (nearby) return nearby;
       var target = [
         "platform=" + platform,
@@ -110,18 +110,18 @@ var require_node_gyp_build = __commonJS({
         // eslint-disable-line
       ].filter(Boolean).join(" ");
       throw new Error("No native build was found for " + target + "\n    loaded from: " + dir + "\n");
-      function resolve3(dir2) {
-        var tuples = readdirSync6(path.join(dir2, "prebuilds")).map(parseTuple);
+      function resolve4(dir2) {
+        var tuples = readdirSync8(path.join(dir2, "prebuilds")).map(parseTuple);
         var tuple2 = tuples.filter(matchTuple(platform, arch)).sort(compareTuples)[0];
         if (!tuple2) return;
         var prebuilds = path.join(dir2, "prebuilds", tuple2.name);
-        var parsed = readdirSync6(prebuilds).map(parseTags);
+        var parsed = readdirSync8(prebuilds).map(parseTags);
         var candidates = parsed.filter(matchTags(runtime, abi));
         var winner = candidates.sort(compareTags(runtime))[0];
         if (winner) return path.join(prebuilds, winner.file);
       }
     };
-    function readdirSync6(dir) {
+    function readdirSync8(dir) {
       try {
         return fs.readdirSync(dir);
       } catch (err) {
@@ -129,7 +129,7 @@ var require_node_gyp_build = __commonJS({
       }
     }
     function getFirst(dir, filter) {
-      var files2 = readdirSync6(dir).filter(filter);
+      var files2 = readdirSync8(dir).filter(filter);
       return files2[0] && path.join(dir, files2[0]);
     }
     function matchBuild(name) {
@@ -2537,7 +2537,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net2 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes4, createHash: createHash12 } = __require("crypto");
+    var { randomBytes: randomBytes5, createHash: createHash13 } = __require("crypto");
     var { Duplex, Readable: Readable3 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -3088,7 +3088,7 @@ var require_websocket = __commonJS({
         }
       }
       const defaultPort = isSecure ? 443 : 80;
-      const key = randomBytes4(16).toString("base64");
+      const key = randomBytes5(16).toString("base64");
       const request = isSecure ? https.request : http.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
@@ -3218,7 +3218,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash12("sha1").update(key + GUID).digest("base64");
+        const digest = createHash13("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3587,7 +3587,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash12 } = __require("crypto");
+    var { createHash: createHash13 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3894,7 +3894,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash12("sha1").update(key + GUID).digest("base64");
+        const digest = createHash13("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -4876,19 +4876,19 @@ var require_yazl = __commonJS({
       }
       return result;
     }
-    function bufferAlloc(size) {
+    function bufferAlloc(size2) {
       bufferAlloc = modern;
       try {
-        return bufferAlloc(size);
+        return bufferAlloc(size2);
       } catch (e) {
         bufferAlloc = legacy;
-        return bufferAlloc(size);
+        return bufferAlloc(size2);
       }
-      function modern(size2) {
-        return Buffer.allocUnsafe(size2);
+      function modern(size3) {
+        return Buffer.allocUnsafe(size3);
       }
-      function legacy(size2) {
-        return new Buffer(size2);
+      function legacy(size3) {
+        return new Buffer(size3);
       }
     }
     function bufferFrom(something, encoding) {
@@ -4950,7 +4950,7 @@ var decoder = new TextDecoder();
 var strictDecoder = new TextDecoder("utf-8", { fatal: true });
 var MAX_INT32 = 2 ** 32;
 function concat(...buffers) {
-  const size = buffers.reduce((acc, { length }) => acc + length, 0), buf = new Uint8Array(size);
+  const size2 = buffers.reduce((acc, { length }) => acc + length, 0), buf = new Uint8Array(size2);
   let i2 = 0;
   for (const buffer of buffers)
     buf.set(buffer, i2), i2 += buffer.length;
@@ -5992,6 +5992,13 @@ var CONTROL_PLANE_ROUTES = {
     "GET /search/status",
     "GET /meetings/status",
     "GET /connectors/status",
+    // The skills report: names, versions and hashes, no content. The one write switches a skill
+    // that is already on this agent on or off (`skills.entries`); it cannot add or change a skill,
+    // and what the agent can reach stays with the firewall (docs/plans/skills-directory.md, Trust).
+    // The console records who switched (an owner or admin) on its Activity page; this box cannot
+    // know, since the control plane's token names no person.
+    "GET /skills",
+    "POST /skills/enabled",
     // Carries nothing: it makes the agent ask the console now whether a template preview or apply
     // is waiting, which it asks every two minutes anyway (templates.ts).
     "POST /templates/poke"
@@ -6634,13 +6641,13 @@ function readUniqueCookie(header3, name) {
 
 // src/http.ts
 async function readJsonBody(req, limit = 16384) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     let data = "";
     let done = false;
     const finish = (v2) => {
       if (done) return;
       done = true;
-      resolve3(v2);
+      resolve4(v2);
     };
     req.on("data", (chunk) => {
       data += chunk.toString("utf8");
@@ -6854,9 +6861,9 @@ var MeetingVoiceLog = class {
     if (!existsSync3(this.file)) return [];
     const fd = openSync(this.file, "r");
     try {
-      const size = fstatSync(fd).size;
-      if (size < this.offset) this.offset = 0;
-      const length = Math.min(size - this.offset, MAX_READ);
+      const size2 = fstatSync(fd).size;
+      if (size2 < this.offset) this.offset = 0;
+      const length = Math.min(size2 - this.offset, MAX_READ);
       if (length <= 0) return [];
       const buffer = Buffer.alloc(length);
       readSync(fd, buffer, 0, length, this.offset);
@@ -6893,9 +6900,9 @@ function readPhoneUsage(dir) {
   const fd = openSync(file2, "r");
   let text2;
   try {
-    const size = fstatSync(fd).size, length = Math.min(size, MAX_READ);
+    const size2 = fstatSync(fd).size, length = Math.min(size2, MAX_READ);
     const buffer = Buffer.alloc(length);
-    readSync(fd, buffer, 0, length, size - length);
+    readSync(fd, buffer, 0, length, size2 - length);
     text2 = buffer.toString("utf8");
   } finally {
     closeSync(fd);
@@ -6929,15 +6936,15 @@ function localWakeInstalled() {
 }
 function checkWakeNames(words, installed = localWakeInstalled()) {
   if (!installed) return Promise.resolve({ words, heard: [], unheard: [], local: false });
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     execFile("/usr/bin/python3", [DETECTOR, "--check", ...words], { timeout: 3e4, maxBuffer: 65536, encoding: "utf8" }, (error62, stdout) => {
       try {
         if (error62) throw error62;
         const parsed = JSON.parse(stdout);
         const heard = (parsed.heard ?? []).map((h2) => h2.name).filter((n2) => typeof n2 === "string" && words.includes(n2));
-        resolve3({ words, heard, unheard: words.filter((w2) => !heard.includes(w2)), local: true });
+        resolve4({ words, heard, unheard: words.filter((w2) => !heard.includes(w2)), local: true });
       } catch {
-        resolve3({ words, heard: [], unheard: [], local: false });
+        resolve4({ words, heard: [], unheard: [], local: false });
       }
     });
   });
@@ -9442,8 +9449,8 @@ var $ZodCheckMaxSize = /* @__PURE__ */ $constructor("$ZodCheckMaxSize", (inst, d
   (_a4 = inst._zod.def).when ?? (_a4.when = _whenHasSize);
   inst._zod.check = (payload) => {
     const input2 = payload.value;
-    const size = input2.size;
-    if (size <= def.maximum)
+    const size2 = input2.size;
+    if (size2 <= def.maximum)
       return;
     payload.issues.push({
       origin: getSizableOrigin(input2),
@@ -9462,8 +9469,8 @@ var $ZodCheckMinSize = /* @__PURE__ */ $constructor("$ZodCheckMinSize", (inst, d
   (_a4 = inst._zod.def).when ?? (_a4.when = _whenHasSize);
   inst._zod.check = (payload) => {
     const input2 = payload.value;
-    const size = input2.size;
-    if (size >= def.minimum)
+    const size2 = input2.size;
+    if (size2 >= def.minimum)
       return;
     payload.issues.push({
       origin: getSizableOrigin(input2),
@@ -9482,10 +9489,10 @@ var $ZodCheckSizeEquals = /* @__PURE__ */ $constructor("$ZodCheckSizeEquals", (i
   (_a4 = inst._zod.def).when ?? (_a4.when = _whenHasSize);
   inst._zod.check = (payload) => {
     const input2 = payload.value;
-    const size = input2.size;
-    if (size === def.size)
+    const size2 = input2.size;
+    if (size2 === def.size)
       return;
-    const tooBig = size > def.size;
+    const tooBig = size2 > def.size;
     payload.issues.push({
       origin: getSizableOrigin(input2),
       ...tooBig ? { code: "too_big", maximum: def.size } : { code: "too_small", minimum: def.size },
@@ -10713,7 +10720,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject3 = isObject2;
+  const isObject4 = isObject2;
   const catchall = def.catchall;
   let value2;
   const memo2 = globalConfig.memoizer;
@@ -10721,7 +10728,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     value2 ?? (value2 = _normalized.value);
     const input2 = payload.value;
-    if (!isObject3(input2)) {
+    if (!isObject4(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -10857,7 +10864,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return doc.compile();
   };
   let fastpass;
-  const isObject3 = isObject2;
+  const isObject4 = isObject2;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -10866,7 +10873,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value2 ?? (value2 = _normalized.value);
     const input2 = payload.value;
-    if (!isObject3(input2)) {
+    if (!isObject4(input2)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -12216,7 +12223,7 @@ var recursive = /* @__PURE__ */ new WeakMap();
 var NONE = 0;
 var ASSUMED = 1;
 var PROVEN = 2;
-function isRecursive(inst, stack, resolve3) {
+function isRecursive(inst, stack, resolve4) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
     return cached2 ? PROVEN : NONE;
@@ -12226,7 +12233,7 @@ function isRecursive(inst, stack, resolve3) {
   let result = NONE;
   const check2 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve3);
+      const answer = isRecursive(child, stack, resolve4);
       if (answer > result)
         result = answer;
     }
@@ -12237,7 +12244,7 @@ function isRecursive(inst, stack, resolve3) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve3) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve4) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -12301,7 +12308,7 @@ function isRecursive(inst, stack, resolve3) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve3 ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve4 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -22261,11 +22268,11 @@ function _minSize(minimum, params) {
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _size(size, params) {
+function _size(size2, params) {
   return new $ZodCheckSizeEquals({
     check: "size_equals",
     ...normalizeParams(params),
-    size
+    size: size2
   });
 }
 // @__NO_SIDE_EFFECTS__
@@ -25514,8 +25521,8 @@ var ZodFile = /* @__PURE__ */ $constructor("ZodFile", (inst, def) => {
   $ZodFile.init(inst, def);
   ZodType.init(inst, def);
   inst._zod.processJSONSchema = (ctx, json5, params) => fileProcessor(inst, ctx, json5, params);
-  inst.min = (size, params) => inst.check(_minSize(size, params));
-  inst.max = (size, params) => inst.check(_maxSize(size, params));
+  inst.min = (size2, params) => inst.check(_minSize(size2, params));
+  inst.max = (size2, params) => inst.check(_maxSize(size2, params));
   inst.mime = (types, params) => inst.check(_mime(Array.isArray(types) ? types : [types], params));
 });
 function file(params) {
@@ -27161,7 +27168,7 @@ async function phoneSetupStep(code, run3) {
 
 // src/exec.ts
 import { execFile as execFile2 } from "child_process";
-var defaultExec = (file2, args, timeoutMs, stdin, opts) => new Promise((resolve3, reject) => {
+var defaultExec = (file2, args, timeoutMs, stdin, opts) => new Promise((resolve4, reject) => {
   const env2 = { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw", ...opts?.env };
   const child = execFile2(file2, args, { timeout: timeoutMs, env: env2, maxBuffer: opts?.maxBuffer }, (err, stdout, stderr) => {
     if (err) {
@@ -27169,7 +27176,7 @@ var defaultExec = (file2, args, timeoutMs, stdin, opts) => new Promise((resolve3
       e.stdout = String(stdout ?? "");
       e.stderr = String(stderr ?? "");
       reject(e);
-    } else resolve3({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    } else resolve4({ stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
   });
   if (child.stdin) {
     child.stdin.on("error", () => void 0);
@@ -27296,13 +27303,13 @@ async function whenBack(gw, timeoutMs) {
 }
 async function awaitRestart(gw) {
   if (gw.connected && gw.onDisconnected) {
-    await new Promise((resolve3) => {
+    await new Promise((resolve4) => {
       const timer = setTimeout(done, RESTART_BEGIN_WAIT_MS);
       const off = gw.onDisconnected(done);
       function done() {
         clearTimeout(timer);
         off();
-        resolve3();
+        resolve4();
       }
     });
   }
@@ -27356,11 +27363,11 @@ var GatewayClient = class {
   /** Resolves true once the handshake is done (at once if it already is), false after `timeoutMs`. */
   whenConnected(timeoutMs) {
     if (this._connected) return Promise.resolve(true);
-    return new Promise((resolve3) => {
+    return new Promise((resolve4) => {
       const done = (ok) => {
         clearTimeout(timer);
         off();
-        resolve3(ok);
+        resolve4(ok);
       };
       const timer = setTimeout(() => done(false), timeoutMs);
       const off = this.onConnected(() => done(true));
@@ -27401,12 +27408,12 @@ var GatewayClient = class {
   }
   send(ws, method, params, timeoutMs) {
     const id = String(++this.seq);
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`gateway call ${method} timed out`));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve3, reject, timer });
+      this.pending.set(id, { resolve: resolve4, reject, timer });
       try {
         ws.send(JSON.stringify({ type: "req", id, method, params }));
       } catch (err) {
@@ -27618,7 +27625,7 @@ var ConfigActivation = class {
   }
   /** Resolves with the outcome of the next check to finish. For tests and logs. */
   nextVerdict() {
-    return new Promise((resolve3) => this.waiters.push(resolve3));
+    return new Promise((resolve4) => this.waiters.push(resolve4));
   }
   stop() {
     if (this.timer) clearTimeout(this.timer);
@@ -27639,7 +27646,7 @@ var ConfigActivation = class {
     }).then((outcome) => {
       this.running = null;
       if (this.changes !== seen) this.schedule();
-      for (const resolve3 of this.waiters.splice(0)) resolve3(outcome);
+      for (const resolve4 of this.waiters.splice(0)) resolve4(outcome);
       return outcome;
     });
   }
@@ -27713,7 +27720,7 @@ var ConfigActivation = class {
     }
   }
   sleep() {
-    return new Promise((resolve3) => setTimeout(resolve3, this.pollMs));
+    return new Promise((resolve4) => setTimeout(resolve4, this.pollMs));
   }
 };
 
@@ -27729,7 +27736,7 @@ var SupersededError = class extends Error {
     super("Replaced by newer settings");
   }
 };
-var defaultSleep = (ms) => new Promise((resolve3) => setTimeout(resolve3, ms));
+var defaultSleep = (ms) => new Promise((resolve4) => setTimeout(resolve4, ms));
 function updateRunning(status) {
   return status.phase === "resolving" || status.phase === "installing" || status.phase === "running";
 }
@@ -28155,7 +28162,7 @@ var PhoneService = class {
         }
       } catch {
       }
-      await new Promise((resolve3) => setTimeout(resolve3, 2e3));
+      await new Promise((resolve4) => setTimeout(resolve4, 2e3));
     }
     throw new PhoneSetupError(
       configured2 ? "listener_unavailable" : "activation_timeout"
@@ -28183,7 +28190,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync34, existsSync as existsSync28, writeFileSync as writeFileSync22, rmSync as rmSync10 } from "fs";
+import { readFileSync as readFileSync35, existsSync as existsSync30, writeFileSync as writeFileSync23, rmSync as rmSync11 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash5, randomBytes as randomBytes2 } from "crypto";
@@ -28335,9 +28342,9 @@ function env() {
   return { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" };
 }
 function run(cmd, args, timeout, maxBuffer = 4 * 1024 * 1024) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     execFile3(cmd, args, { timeout, maxBuffer, env: env(), encoding: "utf-8" }, (err, stdout, stderr) => {
-      resolve3({
+      resolve4({
         stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
         error: err ? String(stderr ?? "").trim().split("\n")[0] || err.message : null
       });
@@ -28412,9 +28419,9 @@ function readFileTail(lines) {
   let fd = null;
   try {
     fd = openSync2(path, "r");
-    const size = fstatSync2(fd).size;
-    const start = Math.max(0, size - TAIL_BYTES);
-    const buf = Buffer.alloc(size - start);
+    const size2 = fstatSync2(fd).size;
+    const start = Math.max(0, size2 - TAIL_BYTES);
+    const buf = Buffer.alloc(size2 - start);
     readSync2(fd, buf, 0, buf.length, start);
     let text2 = buf.toString("utf-8");
     if (start > 0) text2 = text2.slice(text2.indexOf("\n") + 1);
@@ -28424,7 +28431,7 @@ function readFileTail(lines) {
       const mapped = mapFileRecord(line2);
       if (mapped) out.push(mapped);
     }
-    return { path, size, lines: out.slice(-lines) };
+    return { path, size: size2, lines: out.slice(-lines) };
   } catch {
     return null;
   } finally {
@@ -28443,15 +28450,15 @@ function followFile(start, onLine) {
         offset = 0;
         partial2 = "";
       }
-      const size = statSync(path).size;
-      if (size < offset) {
+      const size2 = statSync(path).size;
+      if (size2 < offset) {
         offset = 0;
         partial2 = "";
       }
-      if (size === offset) return;
+      if (size2 === offset) return;
       const fd = openSync2(path, "r");
       try {
-        const buf = Buffer.alloc(Math.min(size - offset, TAIL_BYTES));
+        const buf = Buffer.alloc(Math.min(size2 - offset, TAIL_BYTES));
         const n2 = readSync2(fd, buf, 0, buf.length, offset);
         offset += n2;
         partial2 += buf.toString("utf-8", 0, n2);
@@ -29301,12 +29308,12 @@ function parseDashboardOutput(stdout, hostname3, err) {
   return { reason: err ? `the OpenClaw CLI failed: ${err.message.split("\n")[0]}` : "the OpenClaw CLI printed nothing usable", retryable: false };
 }
 function runDashboard(hostname3, timeoutMs) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     execFile4(
       openclawBin(),
       ["dashboard", "--json", "--no-open"],
       { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } },
-      (err, stdout) => resolve3(parseDashboardOutput(String(stdout ?? ""), hostname3, err))
+      (err, stdout) => resolve4(parseDashboardOutput(String(stdout ?? ""), hostname3, err))
     );
   });
 }
@@ -33132,8 +33139,8 @@ function header2(entry, typeflag = TYPEFLAG[entry.type], name = entry.path) {
   writeString(h2, 148, `${sum.toString(8).padStart(6, "0")}\0 `, 8);
   return h2;
 }
-function padding(size) {
-  const rest = size % BLOCK;
+function padding(size2) {
+  const rest = size2 % BLOCK;
   return rest === 0 ? new Uint8Array(0) : new Uint8Array(BLOCK - rest);
 }
 function longLink(value2, typeflag) {
@@ -33159,8 +33166,8 @@ function tarHeader(entry) {
   );
   return out;
 }
-function tarPadding(size) {
-  const p2 = padding(size);
+function tarPadding(size2) {
+  const p2 = padding(size2);
   return p2.length > 0 ? [p2] : [];
 }
 function tarEnd() {
@@ -33202,10 +33209,10 @@ var TarReader = class {
       }
       this.zeroBlocks = 0;
       if (readString(head, 257, 6).replace(/\0.*$/, "") !== "ustar") throw new Error("this archive is not a tar file we wrote");
-      const size = readOctal(head, 124, 12);
-      const bodyBlocks = Math.ceil(size / BLOCK) * BLOCK;
+      const size2 = readOctal(head, 124, 12);
+      const bodyBlocks = Math.ceil(size2 / BLOCK) * BLOCK;
       if (this.buffer.length < BLOCK + bodyBlocks) return out;
-      const body2 = this.buffer.subarray(BLOCK, BLOCK + size);
+      const body2 = this.buffer.subarray(BLOCK, BLOCK + size2);
       const flag = readString(head, 156, 1);
       const path = this.longName ?? readString(head, 0, 100);
       this.buffer = this.buffer.subarray(BLOCK + bodyBlocks);
@@ -33223,7 +33230,7 @@ var TarReader = class {
       out.push({
         path,
         type,
-        size: type === "file" ? size : 0,
+        size: type === "file" ? size2 : 0,
         mode: readOctal(head, 100, 8) & 4095,
         mtime: readOctal(head, 136, 12),
         ...type === "link" ? { target: longTarget ?? readString(head, 157, 100) } : {},
@@ -33669,7 +33676,7 @@ This conversation has no messages to show.
     for (const f2 of files2) lazy2(`workspace/${f2.rel}`, file2(f2), { mtime: f2.mtime, compress: !STORED.test(f2.rel) });
     zip.end();
     if (closed || out.destroyed) return { entries, completed: false };
-    return await new Promise((resolve3, reject) => {
+    return await new Promise((resolve4, reject) => {
       const stop = () => {
         if (aborted2) return;
         aborted2 = true;
@@ -33678,7 +33685,7 @@ This conversation has no messages to show.
         output2.destroy();
         for (const entry of reading) entry.destroy();
         reading.clear();
-        resolve3({ entries, completed: false });
+        resolve4({ entries, completed: false });
       };
       out.once("close", () => {
         if (!out.writableFinished) stop();
@@ -33689,7 +33696,7 @@ This conversation has no messages to show.
         reject(err);
       });
       zip.outputStream.once("end", () => {
-        if (!aborted2) out.once("finish", () => resolve3({ entries, completed: true }));
+        if (!aborted2) out.once("finish", () => resolve4({ entries, completed: true }));
       });
       zip.outputStream.pipe(out);
     });
@@ -33987,8 +33994,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "60422a6" : "unknown",
-  builtAt: true ? "2026-10-12T13:17:53+01:00" : "unknown"
+  commit: true ? "70c857e" : "unknown",
+  builtAt: true ? "2026-10-12T14:28:17+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -34070,7 +34077,7 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -34128,11 +34135,11 @@ import { readFileSync as readFileSync9 } from "fs";
 import { connect } from "tls";
 function ownCertificateServes(hostname3, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 5e3;
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     const socket = connect({ host: "127.0.0.1", port: opts.port ?? 443, servername: hostname3, rejectUnauthorized: true, timeout: timeoutMs });
     const done = (ok) => {
       socket.destroy();
-      resolve3(ok);
+      resolve4(ok);
     };
     socket.once("secureConnect", () => done(true));
     socket.once("error", () => done(false));
@@ -34176,7 +34183,7 @@ async function reportHandleCertificate(keysDir2) {
       }
     } catch {
     }
-    await new Promise((resolve3) => setTimeout(resolve3, 5e3));
+    await new Promise((resolve4) => setTimeout(resolve4, 5e3));
   }
 }
 
@@ -34363,11 +34370,11 @@ function readFile7(path) {
 }
 var sleep4 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 function probe(host, port, timeoutMs = 3e3) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     const sock = net.connect({ host, port });
     const done = (ok) => {
       sock.destroy();
-      resolve3(ok);
+      resolve4(ok);
     };
     sock.setTimeout(timeoutMs);
     sock.once("connect", () => done(true));
@@ -34927,14 +34934,14 @@ async function gatewayHealthz(port, timeoutMs = 1e4) {
 async function resolveHost(host, timeoutMs = 5e3) {
   if (isIP(host)) return host;
   try {
-    const found = await Promise.race([lookup(host, { family: 4 }), new Promise((resolve3) => setTimeout(() => resolve3(null), timeoutMs).unref())]);
+    const found = await Promise.race([lookup(host, { family: 4 }), new Promise((resolve4) => setTimeout(() => resolve4(null), timeoutMs).unref())]);
     return found?.address ?? null;
   } catch {
     return null;
   }
 }
 function handshake(socket, timeoutMs, also = []) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     let settled = false;
     const done = (ok) => {
       if (settled) return;
@@ -34942,7 +34949,7 @@ function handshake(socket, timeoutMs, also = []) {
       clearTimeout(timer);
       socket.destroy();
       for (const s2 of also) s2.destroy();
-      resolve3(ok);
+      resolve4(ok);
     };
     const timer = setTimeout(() => done(false), timeoutMs);
     socket.once("secureConnect", () => done(true));
@@ -34954,7 +34961,7 @@ function tlsReachable(host, ip, timeoutMs = 8e3, tls = {}) {
   return handshake(tlsConnect({ host: ip, port: 443, servername: host, ...tls }), timeoutMs);
 }
 function proxyTunnelReachable(proxyIp, proxyPort, host, ip, timeoutMs = 8e3, tls = {}) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     let settled = false;
     let head = "";
     const done = (ok) => {
@@ -34962,7 +34969,7 @@ function proxyTunnelReachable(proxyIp, proxyPort, host, ip, timeoutMs = 8e3, tls
       settled = true;
       clearTimeout(timer);
       if (!ok) socket.destroy();
-      resolve3(ok);
+      resolve4(ok);
     };
     const started = Date.now();
     const socket = netConnect({ host: proxyIp, port: proxyPort });
@@ -34980,7 +34987,7 @@ Host: ${ip}:443\r
       settled = true;
       clearTimeout(timer);
       const left = Math.max(1, timeoutMs - (Date.now() - started));
-      void handshake(tlsConnect({ socket, servername: host, ...tls }), left, [socket]).then(resolve3);
+      void handshake(tlsConnect({ socket, servername: host, ...tls }), left, [socket]).then(resolve4);
     };
     socket.on("data", onData);
     socket.once("error", () => done(false));
@@ -36609,17 +36616,17 @@ var ChannelsService = class {
   }
   /** `p`'s value if it settles inside `ms`, otherwise null. Never rejects: `p` reports its own end. */
   waitFor(p2, ms) {
-    return new Promise((resolve3) => {
-      const timer = setTimeout(() => resolve3(null), ms);
+    return new Promise((resolve4) => {
+      const timer = setTimeout(() => resolve4(null), ms);
       timer.unref?.();
       void p2.then(
         (v2) => {
           clearTimeout(timer);
-          resolve3(v2);
+          resolve4(v2);
         },
         () => {
           clearTimeout(timer);
-          resolve3(null);
+          resolve4(null);
         }
       );
     });
@@ -37695,14 +37702,14 @@ var CaptionTap = class {
     });
     if (!page || !/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/page\//.test(page.webSocketDebuggerUrl)) return false;
     const ws = (this.opts.connect ?? ((url3) => new wrapper_default(url3, { maxPayload: 4 * 1024 * 1024 })))(page.webSocketDebuggerUrl);
-    await new Promise((resolve3, reject) => {
+    await new Promise((resolve4, reject) => {
       const timer = setTimeout(() => {
         ws.close();
         reject(new Error("Caption tap timed out"));
       }, 5e3);
       ws.on("open", () => {
         clearTimeout(timer);
-        resolve3();
+        resolve4();
       });
       ws.on("error", () => {
         clearTimeout(timer);
@@ -37748,14 +37755,14 @@ var CaptionTap = class {
     const ws = this.ws;
     if (!ws) return Promise.resolve(null);
     const id = ++this.id;
-    return new Promise((resolve3) => {
+    return new Promise((resolve4) => {
       const timer = setTimeout(() => {
         this.waiting.delete(id);
-        resolve3(null);
+        resolve4(null);
       }, 5e3);
       this.waiting.set(id, (r2) => {
         clearTimeout(timer);
-        resolve3(r2);
+        resolve4(r2);
       });
       ws.send(JSON.stringify({ id, method, params }));
     });
@@ -38526,7 +38533,7 @@ var MeetingService = class {
       runtime.tap?.close();
       for (const sessionId of runtime.record.sessionIds)
         await this.opts.gateway.call("googlemeet.leave", { sessionId }, 6e4);
-      if (runtime.record.mode === "bidi") await new Promise((resolve3) => setTimeout(resolve3, this.opts.voiceFlushMs ?? 2e3));
+      if (runtime.record.mode === "bidi") await new Promise((resolve4) => setTimeout(resolve4, this.opts.voiceFlushMs ?? 2e3));
       await this.capture(runtime);
     } catch {
       cleanupFailed = true;
@@ -38783,7 +38790,7 @@ function notesTries(stderr) {
 function summarizeMeeting2(captions, signal) {
   const full = JSON.stringify(captions.map(({ at: at2, speaker, text: text3 }) => ({ at: at2, speaker, text: text3 })));
   const text2 = full.length <= 48e3 ? full : full.slice(0, 24e3) + "\n[Middle omitted from summary input; full transcript is saved.]\n" + full.slice(-24e3);
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const child = spawn2(
       process.execPath,
       ["--input-type=module", "-e", NOTES_PROGRAM],
@@ -38809,7 +38816,7 @@ function summarizeMeeting2(captions, signal) {
         if (typeof result.text !== "string" || !result.text.trim() || result.text.length > 3e4)
           throw new Error();
         console.log(`[meetings] notes written: ${notesTries(stderr)}`);
-        resolve3(
+        resolve4(
           (full.length > 48e3 ? "Partial summary: the middle of this long transcript was omitted. Read the full transcript below.\n\n" : "") + result.text
         );
       } catch {
@@ -38873,14 +38880,14 @@ var MeetingMic = class {
     const url3 = (await response.json()).webSocketDebuggerUrl;
     if (typeof url3 !== "string" || !/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\//.test(url3)) throw new Error("Meeting browser debugger not found");
     const ws = (this.opts.connect ?? ((u2) => new wrapper_default(u2, { maxPayload: 4 * 1024 * 1024 })))(url3);
-    await new Promise((resolve3, reject) => {
+    await new Promise((resolve4, reject) => {
       const timer = setTimeout(() => {
         ws.close();
         reject(new Error("Meeting browser debugger timed out"));
       }, 5e3);
       ws.on("open", () => {
         clearTimeout(timer);
-        resolve3();
+        resolve4();
       });
       ws.on("error", () => {
         clearTimeout(timer);
@@ -38905,11 +38912,11 @@ var MeetingMic = class {
       }, this.opts.retryMs ?? 1e3);
       this.retry.unref?.();
     });
-    const answered = await new Promise((resolve3) => {
-      const timer = setTimeout(() => resolve3(false), 5e3);
+    const answered = await new Promise((resolve4) => {
+      const timer = setTimeout(() => resolve4(false), 5e3);
       this.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, void 0, () => {
         clearTimeout(timer);
-        resolve3(true);
+        resolve4(true);
       });
     });
     if (!answered) throw new Error("Meeting browser debugger did not answer");
@@ -38985,11 +38992,11 @@ async function signedInAccounts(cdp = "http://127.0.0.1:9223") {
     throw new Error("Meeting browser debugger not found");
   const ws = new wrapper_default(target.webSocketDebuggerUrl, { maxPayload: 1024 * 1024 });
   try {
-    await new Promise((resolve3, reject) => {
+    await new Promise((resolve4, reject) => {
       const timer = setTimeout(() => reject(new Error("Meeting browser debugger timed out")), 5e3);
       ws.on("open", () => {
         clearTimeout(timer);
-        resolve3();
+        resolve4();
       });
       ws.on("error", () => {
         clearTimeout(timer);
@@ -38997,9 +39004,9 @@ async function signedInAccounts(cdp = "http://127.0.0.1:9223") {
       });
     });
     let id = 0;
-    const read = () => new Promise((resolve3) => {
+    const read = () => new Promise((resolve4) => {
       const mine = ++id;
-      const timer = setTimeout(() => resolve3(null), 5e3);
+      const timer = setTimeout(() => resolve4(null), 5e3);
       const onMessage = (data) => {
         let msg;
         try {
@@ -39011,7 +39018,7 @@ async function signedInAccounts(cdp = "http://127.0.0.1:9223") {
         clearTimeout(timer);
         ws.off("message", onMessage);
         const value2 = msg.result?.result?.value;
-        resolve3(typeof value2 === "string" ? value2 : null);
+        resolve4(typeof value2 === "string" ? value2 : null);
       };
       ws.on("message", onMessage);
       ws.send(JSON.stringify({ id: mine, method: "Runtime.evaluate", params: {
@@ -39031,7 +39038,7 @@ async function signedInAccounts(cdp = "http://127.0.0.1:9223") {
       const text2 = await read();
       const accounts = text2 === null ? null : parseListAccounts(text2);
       if (accounts) return accounts;
-      await new Promise((resolve3) => setTimeout(resolve3, text2 === null ? 300 : 1500));
+      await new Promise((resolve4) => setTimeout(resolve4, text2 === null ? 300 : 1500));
     }
     throw new Error("Google did not answer who is signed in");
   } finally {
@@ -40317,8 +40324,8 @@ async function withBrowser(fn) {
   const version2 = await (await fetch(`${CDP}/json/version`, { signal: AbortSignal.timeout(CALL_MS) })).json();
   if (!version2.webSocketDebuggerUrl) throw new Error("the browser has no DevTools endpoint");
   const ws = new WebSocket(version2.webSocketDebuggerUrl);
-  await new Promise((resolve3, reject) => {
-    ws.addEventListener("open", () => resolve3(), { once: true });
+  await new Promise((resolve4, reject) => {
+    ws.addEventListener("open", () => resolve4(), { once: true });
     ws.addEventListener("error", () => reject(new Error("the browser's DevTools endpoint did not answer")), { once: true });
   });
   let next = 0;
@@ -40331,9 +40338,9 @@ async function withBrowser(fn) {
     if (msg.error) w2.reject(new Error(msg.error.message ?? "DevTools error"));
     else w2.resolve(msg.result ?? {});
   });
-  const send2 = (method, params = {}, sessionId) => new Promise((resolve3, reject) => {
+  const send2 = (method, params = {}, sessionId) => new Promise((resolve4, reject) => {
     const id = ++next;
-    waiting.set(id, { resolve: resolve3, reject });
+    waiting.set(id, { resolve: resolve4, reject });
     ws.send(JSON.stringify({ id, method, params, ...sessionId ? { sessionId } : {} }));
     setTimeout(() => {
       if (waiting.delete(id)) reject(new Error(`${method} timed out`));
@@ -40636,7 +40643,7 @@ var AgentMailService = class {
       return { ok: true };
     }
     try {
-      await new Promise((resolve3) => setTimeout(resolve3, 250));
+      await new Promise((resolve4) => setTimeout(resolve4, 250));
       const until = Date.now() + 3e5;
       while (Date.now() < until) {
         try {
@@ -40649,7 +40656,7 @@ var AgentMailService = class {
           }
         } catch {
         }
-        await new Promise((resolve3) => setTimeout(resolve3, 2e3));
+        await new Promise((resolve4) => setTimeout(resolve4, 2e3));
       }
       throw new Error(
         "AgentMail settings were saved but OpenClaw did not activate them"
@@ -49024,12 +49031,12 @@ var BackupService = class {
       this.busy = null;
     }
   }
-  async put(url3, path, size) {
+  async put(url3, path, size2) {
     const res = await this.fetchImpl(url3, {
       method: "PUT",
       // Explicit, because the body is a stream: without it undici would send it chunked and S3
       // answers 411 to that. It is also the only bound the store has on what we are about to send.
-      headers: { "content-length": String(size), "content-type": "application/octet-stream" },
+      headers: { "content-length": String(size2), "content-type": "application/octet-stream" },
       body: Readable2.toWeb(createReadStream2(path)),
       // Node wants to be told we will not read the response until the body is sent.
       ...{ duplex: "half" }
@@ -49137,14 +49144,14 @@ var BackupService = class {
     const throwIfConsumeFailed = () => {
       if (consumeError) throw consumeError;
     };
-    const write = (plain) => new Promise((resolve3, reject) => {
-      if (gunzip.write(plain)) return resolve3();
+    const write = (plain) => new Promise((resolve4, reject) => {
+      if (gunzip.write(plain)) return resolve4();
       const done = (err) => {
         gunzip.off("drain", onDrain);
         gunzip.off("error", onError);
         gunzip.off("close", onClose);
         if (err) reject(err);
-        else resolve3();
+        else resolve4();
       };
       const onDrain = () => done();
       const onClose = () => done();
@@ -50381,14 +50388,14 @@ function parseSshdLine(line2) {
   return { user: m2[1], fromIp: m2[2], fingerprint: m2[3], at: Number.isFinite(at2) ? at2 : null };
 }
 function journal(cursorPath) {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     execFile5(
       "journalctl",
       ["-u", "ssh", "-u", "sshd", "--no-pager", "-q", "-o", "short-iso", `--cursor-file=${cursorPath}`],
       { timeout: POLL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
       (err, stdout) => {
-        if (err && !stdout) return resolve3([]);
-        resolve3(String(stdout ?? "").split("\n").filter(Boolean));
+        if (err && !stdout) return resolve4([]);
+        resolve4(String(stdout ?? "").split("\n").filter(Boolean));
       }
     );
   });
@@ -51151,7 +51158,7 @@ function parse5(body2) {
   return { port, path: path + (bounded ? body2.query : ""), method, headers, body: decoded, bounded };
 }
 function replayHook(d2) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const req = httpRequest2(
       {
         host: "127.0.0.1",
@@ -51176,7 +51183,7 @@ function replayHook(d2) {
         res.on("aborted", () => reject(new Error("listener reply truncated")));
         res.on(
           "end",
-          () => resolve3({
+          () => resolve4({
             status: res.statusCode ?? 502,
             ...d2.bounded ? {
               bodyB64: Buffer.concat(chunks).toString("base64"),
@@ -51349,13 +51356,13 @@ function runMeetingCheck(host, stateDir) {
     return Promise.resolve(null);
   }
   if (!source.includes("def check(")) return Promise.resolve(null);
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     execFile7("/usr/bin/python3", [MEETING_PATCH, "--check", host, stateDir], { timeout: CHECK_TIMEOUT_MS }, (err, stdout) => {
-      if (err) return resolve3({ error: true });
+      if (err) return resolve4({ error: true });
       try {
-        resolve3(JSON.parse(stdout));
+        resolve4(JSON.parse(stdout));
       } catch {
-        resolve3({ error: true });
+        resolve4({ error: true });
       }
     });
   });
@@ -51481,12 +51488,12 @@ function reasonOf(err) {
   return "error";
 }
 function withTimeout(p2, ms) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const t2 = setTimeout(() => reject(Object.assign(new Error("timeout"), { code: "ETIMEOUT" })), ms);
     p2.then(
       (v2) => {
         clearTimeout(t2);
-        resolve3(v2);
+        resolve4(v2);
       },
       (e) => {
         clearTimeout(t2);
@@ -51526,11 +51533,11 @@ async function diskOf(paths = DISK_PATHS) {
   return fullest;
 }
 function ntpSynced() {
-  return new Promise((resolve3) => {
+  return new Promise((resolve4) => {
     execFile8("timedatectl", ["show", "-p", "NTPSynchronized", "--value"], { timeout: PROBE_TIMEOUT_MS }, (err, stdout) => {
-      if (err) return resolve3(null);
+      if (err) return resolve4(null);
       const v2 = stdout.trim();
-      resolve3(v2 === "yes" ? true : v2 === "no" ? false : null);
+      resolve4(v2 === "yes" ? true : v2 === "no" ? false : null);
     });
   });
 }
@@ -51679,6 +51686,302 @@ function startCpuSampler() {
   return () => sampler.report();
 }
 
+// src/skills.ts
+import { existsSync as existsSync28, readdirSync as readdirSync6 } from "fs";
+import { lstat as lstat4, readdir as readdir3, readFile as readFile8 } from "fs/promises";
+import { join as join24 } from "path";
+
+// ../templates/src/skill-folder.ts
+import { randomBytes as randomBytes4 } from "crypto";
+import { existsSync as existsSync27, lstatSync as lstatSync2, readdirSync as readdirSync5, readFileSync as readFileSync33, realpathSync as realpathSync2, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
+import { join as join23, resolve as resolve3, sep as sep3 } from "path";
+
+// ../templates/src/skill-files.ts
+import { createHash as createHash12 } from "crypto";
+
+// ../templates/src/skill-names.ts
+var SKILL_SOURCES = ["controlclaw", "organization", "template"];
+var SKILL_LIMITS = { files: 100, fileBytes: 256 * 1024, totalBytes: 1e6 };
+var size = (bytes) => bytes >= 1e6 ? `${bytes / 1e6} MB` : `${Math.round(bytes / 1024)} KB`;
+var SKILL_LIMITS_TEXT = `at most ${SKILL_LIMITS.files} files, ${size(SKILL_LIMITS.fileBytes)} a file and ${size(SKILL_LIMITS.totalBytes)} in all`;
+
+// ../templates/src/skill-files.ts
+var SKILL_RECORD = ".controlclaw.json";
+var SKILL_NOT_CONTENT = /* @__PURE__ */ new Set([SKILL_RECORD, ".openclaw"]);
+function hashSkillFiles(files2) {
+  const hash3 = createHash12("sha256");
+  for (const file2 of [...files2].sort((a2, b2) => a2.path < b2.path ? -1 : a2.path > b2.path ? 1 : 0)) {
+    hash3.update(`${file2.path}\0${file2.executable ? "x" : "-"}\0${file2.content.length}\0`);
+    hash3.update(file2.content);
+  }
+  return hash3.digest("hex");
+}
+function skillTooBig(sizes) {
+  return sizes.length > SKILL_LIMITS.files || sizes.some((bytes) => bytes > SKILL_LIMITS.fileBytes) || sizes.reduce((sum, bytes) => sum + bytes, 0) > SKILL_LIMITS.totalBytes;
+}
+function parseSkillRecord(raw) {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r2 = raw;
+  if (typeof r2.source !== "string" || !SKILL_SOURCES.includes(r2.source)) return null;
+  if (typeof r2.id !== "string" || typeof r2.installedHash !== "string" || !/^[0-9a-f]{64}$/.test(r2.installedHash)) return null;
+  if (r2.version !== null && typeof r2.version !== "string") return null;
+  return { source: r2.source, id: r2.id, version: r2.version, installedHash: r2.installedHash, installedAt: typeof r2.installedAt === "string" ? r2.installedAt : "" };
+}
+
+// ../templates/src/skill-folder.ts
+function readSkillRecord(dir) {
+  try {
+    return parseSkillRecord(JSON.parse(readFileSync33(join23(dir, SKILL_RECORD), "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+// ../templates/src/config-retry.ts
+var CONFIG_CHANGED_MEANWHILE = /config (file )?changed (while|since)/i;
+
+// src/skills.ts
+var REPORTED_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+function isReportedSkillName(name) {
+  return typeof name === "string" && REPORTED_SKILL_NAME.test(name) && !(name in {});
+}
+var MAX_REPORTED_SKILLS = 300;
+var MAX_MANAGED_SKILLS = 100;
+var MAX_MISSING = 8;
+var MAX_MISSING_LENGTH = 100;
+var CACHE_MS = 15e3;
+var LIST_MS = 45e3;
+var WRITE_MS = 2e4;
+var WRITE_TRIES = 4;
+var WRITE_RETRY_MS = 3e3;
+function jsonFrom(stdout) {
+  const lines = stdout.split("\n");
+  for (let i2 = 0; i2 < lines.length; i2++) {
+    if (!/^\s*\{/.test(lines[i2] ?? "")) continue;
+    try {
+      return JSON.parse(lines.slice(i2).join("\n"));
+    } catch {
+    }
+  }
+  throw new Error("OpenClaw printed no skills list");
+}
+function placeOf(skill) {
+  const source = typeof skill.source === "string" ? skill.source : "";
+  if (source === "openclaw-managed") return "managed";
+  if (/workshop/.test(source)) return "workshop";
+  if (source === "openclaw-workspace") return "workspace";
+  return skill.bundled === true || source.startsWith("openclaw-") ? "openclaw" : "workspace";
+}
+function missingOf(missing) {
+  if (typeof missing !== "object" || missing === null) return [];
+  const kinds = [["bins", "bin"], ["anyBins", "bin"], ["env", "env"], ["config", "config"], ["os", "os"]];
+  return kinds.flatMap(([key, label]) => {
+    const names = missing[key];
+    return Array.isArray(names) ? names.filter((n2) => typeof n2 === "string").map((n2) => `${label}:${n2}`.slice(0, MAX_MISSING_LENGTH)) : [];
+  }).slice(0, MAX_MISSING);
+}
+async function statSkillFolder(dir) {
+  const found = [];
+  const walk = async (folder, prefix) => {
+    for (const name of (await readdir3(folder)).sort()) {
+      if (!prefix && SKILL_NOT_CONTENT.has(name)) continue;
+      const stat5 = await lstat4(join24(folder, name));
+      if (stat5.isDirectory()) {
+        if (!await walk(join24(folder, name), `${prefix}${name}/`)) return false;
+      } else if (!stat5.isFile()) return false;
+      else {
+        found.push({ path: `${prefix}${name}`, size: stat5.size, mtimeMs: stat5.mtimeMs, executable: (stat5.mode & 73) !== 0 });
+        if (skillTooBig(found.map((f2) => f2.size))) return false;
+      }
+    }
+    return true;
+  };
+  try {
+    return await walk(dir, "") && found.some((f2) => f2.path === "SKILL.md") ? found : null;
+  } catch {
+    return null;
+  }
+}
+var SkillHashes = class {
+  known = /* @__PURE__ */ new Map();
+  async of(dir) {
+    const stats = await statSkillFolder(dir);
+    const signature = stats ? stats.map((f2) => `${f2.path}:${f2.size}:${f2.mtimeMs}:${f2.executable ? "x" : "-"}`).join("|") : "";
+    const known = this.known.get(dir);
+    if (known && known.signature === signature) return known.hash;
+    let hash3 = null;
+    if (stats) {
+      try {
+        const files2 = [];
+        for (const f2 of stats) files2.push({ path: f2.path, content: await readFile8(join24(dir, f2.path)), executable: f2.executable });
+        hash3 = hashSkillFiles(files2);
+      } catch {
+        hash3 = null;
+      }
+    }
+    this.known.set(dir, { signature, hash: hash3 });
+    return hash3;
+  }
+  /** Forget the folders that are gone. */
+  keep(dirs) {
+    for (const dir of this.known.keys()) if (!dirs.has(dir)) this.known.delete(dir);
+  }
+};
+var SkillsError = class extends Error {
+  constructor(message2, status) {
+    super(message2);
+    this.status = status;
+  }
+};
+var SkillsService = class {
+  constructor(opts = {}) {
+    this.opts = opts;
+  }
+  cached = null;
+  pending = null;
+  /** Goes up with every switch, so a list that was started before one is not kept as the answer. */
+  generation = 0;
+  /** Every skill name of the last list, also the ones past the report's cut. A switch is checked against these. */
+  names = /* @__PURE__ */ new Set();
+  hashes = new SkillHashes();
+  /** One switch at a time: two `config set` at once would each refuse the other. */
+  writes = Promise.resolve();
+  get exec() {
+    return this.opts.exec ?? defaultExec;
+  }
+  get bin() {
+    return this.opts.openclawBin ?? "/usr/bin/openclaw";
+  }
+  now() {
+    return this.opts.now?.() ?? Date.now();
+  }
+  get managedDir() {
+    return join24(this.opts.home ?? process.env.HOME ?? "/home/controlclaw", ".openclaw", "skills");
+  }
+  /** The report, at most a few seconds old. Concurrent callers share one run of the CLI. */
+  async report() {
+    if (this.cached && this.now() - this.cached.at < CACHE_MS) return this.cached.report;
+    if (!this.pending) {
+      const generation2 = this.generation;
+      const run3 = this.build().then((report) => {
+        if (generation2 === this.generation) this.cached = { at: this.now(), report };
+        return report;
+      }).finally(() => {
+        if (this.pending === run3) this.pending = null;
+      });
+      this.pending = run3;
+    }
+    return this.pending;
+  }
+  async managed(name) {
+    const dir = join24(this.managedDir, name);
+    const record2 = readSkillRecord(dir);
+    return {
+      currentHash: await this.hashes.of(dir),
+      ...record2 ? { installed: { source: record2.source, id: record2.id.slice(0, 200), version: record2.version?.slice(0, 64) ?? null, hash: record2.installedHash } } : {}
+    };
+  }
+  async build() {
+    let listed;
+    try {
+      const { stdout } = await this.exec(this.bin, ["skills", "list", "--json"], LIST_MS, void 0, { maxBuffer: 8 * 1024 * 1024 });
+      const answer = jsonFrom(stdout);
+      listed = Array.isArray(answer.skills) ? answer.skills : [];
+    } catch (err) {
+      throw new SkillsError(`OpenClaw could not list its skills: ${execFailureLine(err)}`.slice(0, 300), 502);
+    }
+    const managedNames = this.managedNames();
+    const read = new Set(managedNames);
+    const skills2 = [];
+    const seen = /* @__PURE__ */ new Set();
+    const names = /* @__PURE__ */ new Set();
+    const off = /* @__PURE__ */ new Set();
+    for (const skill of listed) {
+      if (!isReportedSkillName(skill.name)) continue;
+      const where = placeOf(skill);
+      if (seen.has(`${where}:${skill.name}`)) continue;
+      seen.add(`${where}:${skill.name}`);
+      names.add(skill.name);
+      if (skill.disabled === true) off.add(skill.name);
+      skills2.push({
+        name: skill.name,
+        where,
+        enabled: skill.disabled !== true,
+        eligible: skill.eligible === true,
+        missing: missingOf(skill.missing),
+        // Past the managed folder's cap a folder is listed but not read.
+        ...where === "managed" && read.has(skill.name) ? await this.managed(skill.name) : {}
+      });
+    }
+    for (const name of managedNames) {
+      if (seen.has(`managed:${name}`)) continue;
+      skills2.push({ name, where: "managed", enabled: !off.has(name), eligible: false, missing: [], ...names.has(name) ? { hidden: true } : {}, ...await this.managed(name) });
+      names.add(name);
+    }
+    this.hashes.keep(new Set(managedNames.map((name) => join24(this.managedDir, name))));
+    this.names = names;
+    const order = { managed: 0, openclaw: 1, workshop: 2, workspace: 3 };
+    skills2.sort((a2, b2) => order[a2.where] - order[b2.where] || (a2.name < b2.name ? -1 : a2.name > b2.name ? 1 : 0));
+    return { at: new Date(this.now()).toISOString(), skills: skills2.slice(0, MAX_REPORTED_SKILLS), truncated: skills2.length > MAX_REPORTED_SKILLS };
+  }
+  /** Folders in the managed folder that hold a `SKILL.md`, by name. OpenClaw's own `.openclaw-install-backups` is not one. */
+  managedNames() {
+    try {
+      return readdirSync6(this.managedDir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && isReportedSkillName(entry.name) && existsSync28(join24(this.managedDir, entry.name, "SKILL.md"))).map((entry) => entry.name).sort().slice(0, MAX_MANAGED_SKILLS);
+    } catch {
+      return [];
+    }
+  }
+  /**
+   * Switches one skill on or off, and answers as soon as OpenClaw has taken it: the caller reads the
+   * report again by itself. Only a skill the agent has: the name becomes part of a config path.
+   */
+  async setEnabled(name, enabled) {
+    if (!isReportedSkillName(name) || typeof enabled !== "boolean") throw new SkillsError("name and enabled are required", 400);
+    if (!this.names.size) await this.report();
+    if (!this.names.has(name)) throw new SkillsError("This agent has no skill with that name.", 404);
+    const write = this.writes.then(() => this.write(name, enabled));
+    this.writes = write.catch(() => void 0);
+    await write;
+    return { ok: true };
+  }
+  async write(name, enabled) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.exec(this.bin, ["config", "set", `skills.entries.${name}.enabled`, String(enabled), "--strict-json"], WRITE_MS);
+        break;
+      } catch (err) {
+        const line2 = execFailureLine(err);
+        if (attempt < WRITE_TRIES && CONFIG_CHANGED_MEANWHILE.test(`${err.stdout ?? ""}
+${err.stderr ?? ""}`)) {
+          await (this.opts.wait ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms))))(WRITE_RETRY_MS);
+          continue;
+        }
+        throw new SkillsError(`OpenClaw did not take the change: ${line2}`.slice(0, 300), 502);
+      }
+    }
+    this.generation++;
+    this.cached = null;
+    this.pending = null;
+  }
+};
+
+// src/routes/skills.ts
+async function handleSkills(req, res, pathname, skills2) {
+  try {
+    if (pathname === "/skills" && req.method === "GET") return sendJson(res, 200, await skills2.report());
+    if (pathname === "/skills/enabled" && req.method === "POST") {
+      const body2 = await readJsonBody(req, 1024);
+      return sendJson(res, 200, await skills2.setEnabled(body2?.name, body2?.enabled));
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    if (err instanceof SkillsError) return sendJson(res, err.status, { error: err.message });
+    console.error("[skills]", err.message);
+    sendJson(res, 500, { error: "The skills could not be read." });
+  }
+}
+
 // src/routes/access-push.ts
 function json4(res, status, body2) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -51766,8 +52069,8 @@ async function handleGbrain(req, res, url3, service) {
 }
 
 // src/templates.ts
-import { existsSync as existsSync27, mkdirSync as mkdirSync17, readdirSync as readdirSync5, readFileSync as readFileSync33, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
-import { dirname as dirname16, join as join23 } from "path";
+import { existsSync as existsSync29, mkdirSync as mkdirSync17, readdirSync as readdirSync7, readFileSync as readFileSync34, renameSync as renameSync17, rmSync as rmSync10, writeFileSync as writeFileSync22 } from "fs";
+import { dirname as dirname16, join as join25 } from "path";
 
 // ../templates/src/ids.ts
 var ORG_TEMPLATE_ID = /^org-[a-z0-9]{8,40}$/;
@@ -51790,13 +52093,17 @@ var BUNDLE_HASH = /^[a-f0-9]{64}$/;
 var BUNDLE_MAX_BYTES = 1024 * 1024;
 var UNPACK_TIMEOUT_MS = 6e4;
 var isOrgTemplate = isOrgTemplateId;
+var captureId = (raw) => {
+  const id = raw?.id;
+  return typeof id === "string" && REQUEST_ID.test(id) ? id : null;
+};
 var bundleHashOf = (raw) => {
   const hash3 = raw?.hash;
   return typeof hash3 === "string" && BUNDLE_HASH.test(hash3) ? hash3 : null;
 };
 var UNSURE_ROUNDS = 5;
 var TEMPLATE_REVIEW_MS = 45 * 6e4;
-var templateReviewPath = (stateDir) => join23(stateDir, "review.json");
+var templateReviewPath = (stateDir) => join25(stateDir, "review.json");
 var STAMP = /^[0-9TZ:.-]{1,48}$/;
 function reviewFilesOf(raw) {
   if (!Array.isArray(raw)) return [];
@@ -51809,7 +52116,7 @@ function reviewFilesOf(raw) {
 }
 function readTemplateReview(stateDir, now = /* @__PURE__ */ new Date()) {
   try {
-    const raw = JSON.parse(readFileSync33(templateReviewPath(stateDir), "utf8"));
+    const raw = JSON.parse(readFileSync34(templateReviewPath(stateDir), "utf8"));
     if (typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template) || typeof raw.at !== "string") return null;
     const age = now.getTime() - new Date(raw.at).getTime();
     if (!(age >= 0 && age < TEMPLATE_REVIEW_MS)) return null;
@@ -51823,7 +52130,7 @@ var TemplateService = class {
   constructor(opts) {
     this.opts = opts;
     try {
-      const kept = JSON.parse(readFileSync33(this.unsentPath, "utf8"));
+      const kept = JSON.parse(readFileSync34(this.unsentPath, "utf8"));
       if (kept && typeof kept === "object") this.unsent = kept;
     } catch {
     }
@@ -51856,7 +52163,7 @@ var TemplateService = class {
     this.poked = true;
   }
   get unsentPath() {
-    return join23(this.opts.stateDir, "unsent.json");
+    return join25(this.opts.stateDir, "unsent.json");
   }
   keep(result) {
     this.unsent = result;
@@ -51880,11 +52187,11 @@ var TemplateService = class {
     (this.opts.log ?? ((l2) => console.log(l2)))(`[templates] ${line2}`);
   }
   get markerPath() {
-    return join23(this.opts.stateDir, "applied.json");
+    return join25(this.opts.stateDir, "applied.json");
   }
   marker() {
     try {
-      const raw = JSON.parse(readFileSync33(this.markerPath, "utf8"));
+      const raw = JSON.parse(readFileSync34(this.markerPath, "utf8"));
       if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
       return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {} };
     } catch {
@@ -51894,8 +52201,8 @@ var TemplateService = class {
   write(path, value2) {
     mkdirSync17(dirname16(path), { recursive: true, mode: 448 });
     const tmp = `${path}.tmp`;
-    writeFileSync21(tmp, JSON.stringify(value2), { mode: 384 });
-    renameSync16(tmp, path);
+    writeFileSync22(tmp, JSON.stringify(value2), { mode: 384 });
+    renameSync17(tmp, path);
   }
   async call(method, body2, path = "") {
     const base = this.opts.base();
@@ -51910,10 +52217,10 @@ var TemplateService = class {
     if (!path) return response.json();
     const reader = response.body?.getReader();
     const chunks = [];
-    let size = 0;
+    let size2 = 0;
     for (let part = await reader?.read(); part && !part.done; part = await reader?.read()) {
-      size += part.value.byteLength;
-      if (size > BUNDLE_MAX_BYTES) {
+      size2 += part.value.byteLength;
+      if (size2 > BUNDLE_MAX_BYTES) {
         await reader?.cancel().catch(() => void 0);
         throw Object.assign(new Error("the template is too large"), { status: 413 });
       }
@@ -51932,15 +52239,15 @@ var TemplateService = class {
    */
   async folder(template, hash3) {
     if (!isOrgTemplate(template)) {
-      const dir2 = join23(this.opts.templatesDir, template);
-      return existsSync27(join23(dir2, "template.yaml")) ? { dir: dir2 } : { dir: null, why: "missing" };
+      const dir2 = join25(this.opts.templatesDir, template);
+      return existsSync29(join25(dir2, "template.yaml")) ? { dir: dir2 } : { dir: null, why: "missing" };
     }
     if (!hash3) return { dir: null, why: "broken" };
-    const kept = join23(this.opts.stateDir, "org", `${template}.json`);
-    const dir = join23(this.opts.stateDir, "org", template);
+    const kept = join25(this.opts.stateDir, "org", `${template}.json`);
+    const dir = join25(this.opts.stateDir, "org", template);
     const remove = (path) => {
       try {
-        rmSync9(path, { recursive: true, force: true });
+        rmSync10(path, { recursive: true, force: true });
       } catch {
       }
     };
@@ -51958,7 +52265,7 @@ var TemplateService = class {
         return unpack(true);
       }
     };
-    if (existsSync27(kept) && await unpack()) return { dir };
+    if (existsSync29(kept) && await unpack()) return { dir };
     let text2;
     try {
       text2 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(template)}`);
@@ -51968,8 +52275,8 @@ var TemplateService = class {
     }
     try {
       mkdirSync17(dirname16(kept), { recursive: true, mode: 448 });
-      writeFileSync21(`${kept}.tmp`, text2, { mode: 384 });
-      renameSync16(`${kept}.tmp`, kept);
+      writeFileSync22(`${kept}.tmp`, text2, { mode: 384 });
+      renameSync17(`${kept}.tmp`, kept);
     } catch (error62) {
       this.log(`${template}: its files could not be kept on this agent (${error62.code ?? "error"})`);
       return { dir: null, why: "unsure" };
@@ -51985,7 +52292,7 @@ var TemplateService = class {
   }
   /** Runs the runner and returns what it printed for the console, whatever its exit code. */
   async runbook(command, template, dir, assignment, only) {
-    const vars = join23(this.opts.stateDir, "vars.json");
+    const vars = join25(this.opts.stateDir, "vars.json");
     this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
     const args = [this.opts.runbook, command === "check" ? "run" : command, dir, "--vars", vars, "--json", "--public"];
     if (isOrgTemplate(template)) args.push("--as", template);
@@ -52014,7 +52321,7 @@ var TemplateService = class {
       this.log(`the control plane refused the result (${status}); not sent again`);
     }
     this.unsent = null;
-    rmSync9(this.unsentPath, { force: true });
+    rmSync10(this.unsentPath, { force: true });
   }
   /** What the control plane says about this agent now, or null when the answer cannot be read. */
   async assignment() {
@@ -52034,6 +52341,7 @@ var TemplateService = class {
       rerun: template && steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null,
       request,
       bundle: template ? bundleHashOf(raw.bundle) : null,
+      capture: captureId(raw.capture),
       ..."review" in raw ? { review: typeof raw.review === "string" && TEMPLATE_ID.test(raw.review) ? raw.review : null } : {}
     };
   }
@@ -52065,13 +52373,14 @@ var TemplateService = class {
     }
     this.dropReview(assignment.review === void 0 ? void 0 : assignment.review ?? (assignment.request?.kind === "preview" ? assignment.request.template : null));
     if (assignment.request) await this.asked(assignment.request, assignment);
+    if (assignment.capture) await this.capture(assignment.capture);
     this.tidy([assignment.template, assignment.request?.template, this.marker()?.template]);
   }
   /** Removes the copies of the organization's templates this agent no longer has and is not being asked about. */
   tidy(wanted) {
-    const folder = join23(this.opts.stateDir, "org");
+    const folder = join25(this.opts.stateDir, "org");
     try {
-      for (const name of readdirSync5(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync9(join23(folder, name), { recursive: true, force: true });
+      for (const name of readdirSync7(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync10(join25(folder, name), { recursive: true, force: true });
     } catch {
     }
   }
@@ -52105,14 +52414,43 @@ var TemplateService = class {
     setTimeout(() => void this.verify(), this.opts.verifyAfterMs ?? 3 * 6e4).unref();
     return this.send();
   }
+  /**
+   * Save as template: reads what this agent is set up with (`cc-runbook capture`, which only reads
+   * and never touches memory, credentials or anything outside the workspace) and sends it to the
+   * console, because an owner or admin asked for exactly that. Never by itself, and each request
+   * once. What is sent is a list of facts; the console checks each and builds the template, and
+   * takes this agent's own template from its own copy, not from here.
+   */
+  async capture(id) {
+    const done = join25(this.opts.stateDir, "capture.json");
+    try {
+      if (JSON.parse(readFileSync34(done, "utf8")).id === id) return;
+    } catch {
+    }
+    this.log("reading this agent's setup for Save as template");
+    let body2 = { id, failed: true };
+    try {
+      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "capture"], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
+      const observed = JSON.parse(stdout);
+      if (Array.isArray(observed.files) && Array.isArray(observed.plugins) && Array.isArray(observed.config)) body2 = { id, observed };
+    } catch (error62) {
+      this.log(`could not read the setup: ${error62.message}`);
+    }
+    this.write(done, { id });
+    try {
+      await this.call("POST", body2, "/capture");
+    } catch (error62) {
+      this.log(`the console did not take what was read: ${error62.message}`);
+    }
+  }
   get handledPath() {
-    return join23(this.opts.stateDir, "request.json");
+    return join25(this.opts.stateDir, "request.json");
   }
   /** A preview or an apply an owner or admin asked for in the console. Each request once. */
   async asked(request, assignment) {
     let handled = null;
     try {
-      handled = JSON.parse(readFileSync33(this.handledPath, "utf8")).id ?? null;
+      handled = JSON.parse(readFileSync34(this.handledPath, "utf8")).id ?? null;
     } catch {
     }
     if (handled === request.id || this.marker()?.request === request.id) return;
@@ -52145,7 +52483,7 @@ var TemplateService = class {
   async review(request, dir, assignment) {
     const path = templateReviewPath(this.opts.stateDir);
     try {
-      const vars = join23(this.opts.stateDir, "vars.json");
+      const vars = join25(this.opts.stateDir, "vars.json");
       this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
       const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "review", dir, "--vars", vars, ...isOrgTemplate(request.template) ? ["--as", request.template] : []], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
       const files2 = reviewFilesOf(JSON.parse(stdout).files);
@@ -52153,7 +52491,7 @@ var TemplateService = class {
       this.write(path, { template: request.template, requestId: request.id, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(), files: files2 });
       return Object.fromEntries(files2.flatMap((f2) => f2.exists && f2.stamp ? [[f2.step, f2.stamp]] : []));
     } catch {
-      if (readTemplateReview(this.opts.stateDir)?.template !== request.template) rmSync9(path, { force: true });
+      if (readTemplateReview(this.opts.stateDir)?.template !== request.template) rmSync10(path, { force: true });
       return {};
     }
   }
@@ -52166,9 +52504,9 @@ var TemplateService = class {
     if (wanted === void 0) return;
     const path = templateReviewPath(this.opts.stateDir);
     try {
-      if (JSON.parse(readFileSync33(path, "utf8")).template !== wanted) rmSync9(path, { force: true });
+      if (JSON.parse(readFileSync34(path, "utf8")).template !== wanted) rmSync10(path, { force: true });
     } catch {
-      rmSync9(path, { force: true });
+      rmSync10(path, { force: true });
     }
   }
   /**
@@ -52199,7 +52537,7 @@ var TemplateService = class {
   }
   async check(marker) {
     try {
-      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null, request: null, bundle: null };
+      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null, request: null, bundle: null, capture: null };
       const { dir } = await this.folder(marker.template, marker.hash ?? null);
       if (!dir) return;
       const report = await this.runbook("verify", marker.template, dir, assignment);
@@ -52226,15 +52564,15 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var MEETING_REQUEST_POLL_MS = 1e4;
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
-var POOL_UNCLAIMED = existsSync28("/etc/controlclaw/pool-unclaimed");
+var POOL_UNCLAIMED = existsSync30("/etc/controlclaw/pool-unclaimed");
 var poolHealthy = false;
-if (POOL_UNCLAIMED && !existsSync28(`${KEYS_DIR2}/saas_public_key.pem`)) {
+if (POOL_UNCLAIMED && !existsSync30(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
-  writeFileSync22(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+  writeFileSync23(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync34(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync35(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -52242,7 +52580,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync34(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync35(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -52257,10 +52595,10 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   if (POOL_UNCLAIMED) {
-    for (let i2 = 0; i2 < 300 && !existsSync28(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
-      await new Promise((resolve3) => setTimeout(resolve3, 1e3));
+    for (let i2 = 0; i2 < 300 && !existsSync30(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+      await new Promise((resolve4) => setTimeout(resolve4, 1e3));
     }
-    if (!existsSync28(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    if (!existsSync30(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
     const egress = await enableTransparentEgress(KEYS_DIR2);
     if (!egress) return;
     const hostname4 = readKeyFile(KEYS_DIR2, "vm_hostname");
@@ -52380,7 +52718,7 @@ var healthDeps = {
   },
   mitmPrivateIp: () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip"),
   tcpProbe: probe,
-  rebootRequired: () => existsSync28("/var/run/reboot-required"),
+  rebootRequired: () => existsSync30("/var/run/reboot-required"),
   gateway: () => gateway,
   watchdog: () => watchdog?.status() ?? null,
   // CPU use for the agent page's meters: one read of /proc/stat every 10 s, from boot.
@@ -52420,9 +52758,10 @@ var MEETINGS_DIR = `${OPENCLAW_HOME}/workspace/meetings`;
 var workspaceExporter = new WorkspaceExporter({
   openclawHome: OPENCLAW_HOME,
   agentName: () => agentNameOf(readKeyFile(KEYS_DIR2, "vm_hostname")),
-  meetings: () => existsSync28(MEETINGS_DIR) ? new MeetingArchive(MEETINGS_DIR, `${STATE_DIR}/meeting-deletions.json`).list() : [],
+  meetings: () => existsSync30(MEETINGS_DIR) ? new MeetingArchive(MEETINGS_DIR, `${STATE_DIR}/meeting-deletions.json`).list() : [],
   calls: () => phoneCalls.calls().map((c2) => callDetail(c2, phoneCallLog))
 });
+var skills = new SkillsService();
 var files = new FilesService({
   root: process.env.FILES_ROOT ?? process.env.HOME ?? "/home/controlclaw",
   vmId: readKeyFile(KEYS_DIR2, "vm_id"),
@@ -52431,8 +52770,8 @@ var files = new FilesService({
   templateReview: () => readTemplateReview(`${STATE_DIR}/templates`)
 });
 async function reportFileWrite(write) {
-  const size = write.size === null ? "" : ` (${humanBytes(write.size)})`;
-  await reportOwnAction("files", write.op, `files.${write.op} \xB7 ${write.path}${size}`, "console", true);
+  const size2 = write.size === null ? "" : ` (${humanBytes(write.size)})`;
+  await reportOwnAction("files", write.op, `files.${write.op} \xB7 ${write.path}${size2}`, "console", true);
 }
 async function reportOwnAction(tag2, action, line2, agentId, ok) {
   const base = saasBaseUrl(KEYS_DIR2);
@@ -52657,6 +52996,10 @@ var server = createServer2(async (req, res) => {
     res.end(JSON.stringify({ ok: r2.trusted, installed: r2.installed, message: r2.message }));
     return;
   }
+  if (url3.pathname === "/skills" || url3.pathname === "/skills/enabled") {
+    await handleSkills(req, res, url3.pathname, skills);
+    return;
+  }
   if (url3.pathname === "/logs" && req.method === "GET") {
     await handleLogs(url3, res);
     return;
@@ -52711,16 +53054,16 @@ server.listen(PORT, BIND, () => {
   }) : null;
   if (meetingFollowUp) setInterval(() => void meetingFollowUp.tick().catch(() => void 0), MEETING_REQUEST_POLL_MS).unref();
   const reserveMeetingBrowser = (reserved) => {
-    if (reserved) writeFileSync22(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
-    else rmSync10(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
+    if (reserved) writeFileSync23(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
+    else rmSync11(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
   };
   const meetingBrowser = async (start, voice = false, signedIn = false) => {
     const marker = `${STATE_DIR}/meeting-browser-voice`;
-    if (start && voice) writeFileSync22(marker, "bidi", { mode: 384 });
-    else rmSync10(marker, { force: true });
+    if (start && voice) writeFileSync23(marker, "bidi", { mode: 384 });
+    else rmSync11(marker, { force: true });
     const signed = `${STATE_DIR}/meeting-browser-signed`;
-    if (start && signedIn) writeFileSync22(signed, "signed", { mode: 384 });
-    else rmSync10(signed, { force: true });
+    if (start && signedIn) writeFileSync23(signed, "signed", { mode: 384 });
+    else rmSync11(signed, { force: true });
     meetingMic?.close();
     meetingMic = null;
     await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
@@ -52740,18 +53083,18 @@ server.listen(PORT, BIND, () => {
         }
       } catch {
       }
-      await new Promise((resolve3) => setTimeout(resolve3, 250));
+      await new Promise((resolve4) => setTimeout(resolve4, 250));
     }
     throw new Error("Meeting browser did not become ready");
   };
-  if (client && existsSync28("/etc/systemd/user/cc-meeting-signin.service")) meetingSignin = new MeetingSignin({
+  if (client && existsSync30("/etc/systemd/user/cc-meeting-signin.service")) meetingSignin = new MeetingSignin({
     statePath: `${STATE_DIR}/meeting-signin.json`,
     profileDir: `${STATE_DIR}/meeting-profile`,
     account: () => google?.account() ?? null,
     connected: () => google?.connected() ?? false,
     window: async (start, url3) => {
-      if (start && url3) writeFileSync22(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
-      else rmSync10(`${STATE_DIR}/meeting-signin-url`, { force: true });
+      if (start && url3) writeFileSync23(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
+      else rmSync11(`${STATE_DIR}/meeting-signin-url`, { force: true });
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-signin.service"], 15e3);
     },
     browser: (start) => meetingBrowser(start, false, true),
@@ -52782,7 +53125,7 @@ server.listen(PORT, BIND, () => {
       let inboxId = agentmail?.status()?.inboxId;
       if (!inboxId) {
         try {
-          inboxId = JSON.parse(readFileSync34(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
+          inboxId = JSON.parse(readFileSync35(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
         } catch {
         }
       }
