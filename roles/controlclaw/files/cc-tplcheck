@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+"""The one tool of a Final check's coding agent: read-only questions about the agent under test.
+
+No privilege of its own. It posts `{verb, arg}` to the mitm-agent with this session's token, over
+the unix socket the session was given (CC_TPLCHECK_SOCK, CC_TPLCHECK_TOKEN), and returns the
+answer. The mitm-agent checks the verb against a fixed read-only list and asks the agent.
+
+`cc-tplcheck --mcp` serves it as an MCP tool on stdin and stdout: the coding agent runs with no
+built-in tool at all (no shell, no file read), and this is the only tool it is offered. The plain
+form, `cc-tplcheck <verb> [arg]`, is for a person debugging inside a session.
+"""
+import http.client
+import json
+import os
+import socket
+import sys
+
+SOCK, TOKEN = os.environ.get("CC_TPLCHECK_SOCK", ""), os.environ.get("CC_TPLCHECK_TOKEN", "")
+
+
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost", timeout=180)
+        self.path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(180)
+        self.sock.connect(self.path)
+
+
+def ask(verb, arg=None):
+    body = {"verb": verb}
+    if arg is not None:
+        body["arg"] = arg
+    try:
+        conn = UnixConnection(SOCK)
+        conn.request("POST", "/run", body=json.dumps(body), headers={"authorization": "Bearer " + TOKEN, "content-type": "application/json"})
+        answer = json.loads(conn.getresponse().read())
+        conn.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        return False, "The firewall did not answer. This test may have ended."
+    return bool(answer.get("ok")), str(answer.get("text", ""))
+
+
+def mcp():
+    def send(message):
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+
+    for line in sys.stdin:
+        try:
+            request = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(request, dict) or "id" not in request:
+            continue  # a notification: nothing to answer
+        method, params, rid = request.get("method"), request.get("params") or {}, request["id"]
+        if method == "initialize":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"protocolVersion": params.get("protocolVersion", "2024-11-05"), "capabilities": {"tools": {}}, "serverInfo": {"name": "tplcheck", "version": "1"}}})
+        elif method == "ping":
+            send({"jsonrpc": "2.0", "id": rid, "result": {}})
+        elif method == "tools/list":
+            _, text = ask("help")
+            send({"jsonrpc": "2.0", "id": rid, "result": {"tools": [{
+                "name": "run",
+                "description": "One read-only question about the agent under test. Nothing is changed.\n\n" + text,
+                "inputSchema": {"type": "object", "properties": {"verb": {"type": "string", "description": "The command, one word."}, "arg": {"type": "string", "description": "Its argument, for the commands that take one."}}, "required": ["verb"], "additionalProperties": False},
+            }]}})
+        elif method == "tools/call":
+            args = params.get("arguments") or {}
+            verb, arg = args.get("verb"), args.get("arg")
+            if params.get("name") != "run" or not isinstance(verb, str) or (arg is not None and not isinstance(arg, str)):
+                send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "run takes a verb and at most one argument."}], "isError": True}})
+                continue
+            ok, text = ask(verb, arg if arg else None)
+            send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": text}], "isError": not ok}})
+        else:
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
+
+
+if not SOCK.startswith("/run/ccdoctor-sock/") or not TOKEN:
+    sys.stderr.write("cc-tplcheck works only inside a test of an agent.\n")
+    sys.exit(2)
+if sys.argv[1:] == ["--mcp"]:
+    mcp()
+    sys.exit(0)
+args = sys.argv[1:] or ["help"]
+if len(args) > 2:
+    sys.stderr.write("Too many arguments. Run: cc-tplcheck help\n")
+    sys.exit(2)
+ok, text = ask(args[0], args[1] if len(args) > 1 else None)
+print(text)
+sys.exit(0 if ok else 1)

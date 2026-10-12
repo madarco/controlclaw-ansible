@@ -22,6 +22,21 @@
     group: root
     mode: '0644'
 
+# A Final check's two unix sockets (controlclaw docs/plans/template-ai-sessions.md): the mitm-agent
+# makes a folder per session here, and the session's unit gets only that folder, read-only.
+- name: Doctor | folder for a Final check's sockets
+  ansible.builtin.copy:
+    dest: /etc/tmpfiles.d/ccdoctor-sock.conf
+    content: "d /run/ccdoctor-sock 2750 {{ controlclaw_user }} ccdoctor -\n"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Doctor | create the sockets folder now
+  ansible.builtin.command: systemd-tmpfiles --create /etc/tmpfiles.d/ccdoctor-sock.conf
+  changed_when: false
+  when: not ci_test
+
 - name: Doctor | install root brokers
   ansible.builtin.copy:
     src: "{{ item }}"
@@ -64,6 +79,17 @@
   loop:
     - { src: cc-fw-repair, mode: '0755' }
     - { src: cc-fwdoctor, mode: '0755' }
+
+# A Final check of an agent after a template was applied (controlclaw
+# docs/plans/template-ai-sessions.md). The coding agent calls cc-tplcheck, which only talks to the
+# mitm-agent on loopback; the mitm-agent passes a fixed list of read-only commands to the agent.
+- name: Doctor | the Final check's client
+  ansible.builtin.copy:
+    src: cc-tplcheck
+    dest: /usr/local/bin/cc-tplcheck
+    owner: root
+    group: root
+    mode: '0755'
 
 - name: Doctor | one sudoers line for the firewall repair helper
   ansible.builtin.copy:

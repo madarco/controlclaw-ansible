@@ -1,12 +1,52 @@
 #!/usr/bin/python3
 """Runs without privilege inside the session unit; tmux and CLI share its cgroup."""
-import json, os, re, shlex, subprocess, sys, time
+import json, os, re, shlex, socket as sockets, subprocess, sys, threading, time
 from pathlib import Path
 sid=sys.argv[1]
 if not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',sid): sys.exit(1)
 work=Path('/run/ccdoctor')/sid
 os.environ['SHELL']='/bin/bash'
 socket=str(work/'tmux.sock')
+CHECK_SOCKS=Path('/run/ccdoctor-sock')/sid
+CHECK_MODEL_PORT=7802
+if len(sys.argv)>2 and sys.argv[2]=='forward':
+    # A Final check has a network namespace of its own. Claude Code needs its model at an http
+    # address, so this relays 127.0.0.1:7802 in here to the mitm-agent's bridge socket, byte for byte.
+    def pump(a,b):
+        try:
+            while True:
+                chunk=a.recv(65536)
+                if not chunk: break
+                b.sendall(chunk)
+        except OSError: pass
+        finally:
+            for s in (a,b):
+                try: s.shutdown(sockets.SHUT_RDWR)
+                except OSError: pass
+    server=sockets.socket(sockets.AF_INET,sockets.SOCK_STREAM)
+    server.setsockopt(sockets.SOL_SOCKET,sockets.SO_REUSEADDR,1)
+    server.bind(('127.0.0.1',CHECK_MODEL_PORT)); server.listen(16)
+    while True:
+        client,_=server.accept()
+        try:
+            upstream=sockets.socket(sockets.AF_UNIX,sockets.SOCK_STREAM); upstream.connect(str(CHECK_SOCKS/'model.sock'))
+        except OSError:
+            client.close(); continue
+        threading.Thread(target=pump,args=(client,upstream),daemon=True).start()
+        threading.Thread(target=pump,args=(upstream,client),daemon=True).start()
+def confined(env):
+    """Whether a Final check is as shut in as it has to be. Checked from inside, before the model runs."""
+    def reaches(host,port):
+        try:
+            sockets.create_connection((host,port),timeout=2).close(); return True
+        except OSError: return False
+    if any(reaches(h,p) for h,p in [('1.1.1.1',443),('8.8.8.8',53),('127.0.0.1',22),('127.0.0.1',2019),('127.0.0.1',3100),('127.0.0.1',8080)]): return 'network'
+    if any(k in env for k in ('ANTHROPIC_API_KEY','OPENAI_API_KEY','AI_GATEWAY_API_KEY')) or re.match(r'(sk-|vck_|eyJ)',env.get('ANTHROPIC_AUTH_TOKEN','')): return 'key'
+    if any(Path(p).exists() for p in ('/opt/controlclaw','/etc/shadow','/etc/caddy','/var/lib','/var/log')) or [p.name for p in Path('/run/ccdoctor').iterdir()]!=[sid]: return 'files'
+    for attempt in range(40):
+        if reaches('127.0.0.1',CHECK_MODEL_PORT): return None
+        time.sleep(.1)
+    return 'bridge'
 if len(sys.argv)>2 and sys.argv[2]=='cli':
     data=json.loads((work/'request.json').read_text())
     env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':str(work),'TERM':'xterm-256color',
@@ -21,7 +61,16 @@ if len(sys.argv)>2 and sys.argv[2]=='cli':
     config=work/'.codex'
     config.mkdir(exist_ok=True)
     (config/'config.toml').write_text('check_for_update = false\n[analytics]\nenabled = false\n')
-    if cli=='claude':
+    check=data.get('target')=='check'
+    if check:
+        # No built-in tool at all (no shell, no file read): the one tool is cc-tplcheck, over MCP.
+        # Anything else the model asks for is refused without a question.
+        env.update({'CC_TPLCHECK_SOCK':str(CHECK_SOCKS/'tools.sock'),'ANTHROPIC_SMALL_FAST_MODEL':model,'ANTHROPIC_DEFAULT_HAIKU_MODEL':model})
+        (work/'mcp.json').write_text(json.dumps({'mcpServers':{'tplcheck':{'command':'/usr/local/bin/cc-tplcheck','args':['--mcp'],
+          'env':{'CC_TPLCHECK_SOCK':env['CC_TPLCHECK_SOCK'],'CC_TPLCHECK_TOKEN':env['CC_TPLCHECK_TOKEN']}}}}))
+        args=['/usr/local/bin/claude','-p','--output-format','stream-json','--verbose','--tools','','--strict-mcp-config',
+          '--mcp-config',str(work/'mcp.json'),'--allowedTools','mcp__tplcheck__run','--permission-mode','dontAsk','--model',model,'--',prompt]
+    elif cli=='claude':
         args=['/usr/local/bin/claude','--dangerously-skip-permissions']
         if mode=='chat': args += ['-p','--output-format','stream-json','--verbose']
         if resume: args += ['--resume',resume]
@@ -76,17 +125,29 @@ if len(sys.argv)>2 and sys.argv[2]=='cli':
         # including prompts starting with '-' or '@'.
         if prompt: args += ['\n'+prompt]
     try:
-        if mode=='chat':
+        if check:
+            # Fail closed: a check that can reach anything it should not is not started.
+            why=confined(env)
+            with (work/'output.jsonl').open('w') as out: out.write(json.dumps({'type':'cc_unconfined','check':why} if why else {'type':'cc_confined'})+'\n')
+            if why:
+                (work/'exit-code').write_text('3'); sys.exit(3)
+            with (work/'output.jsonl').open('a') as out:
+                result=subprocess.run(args,env=env,cwd=work,stdout=out,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL)
+        elif mode=='chat':
             with (work/'output.jsonl').open('w') as out:
                 result=subprocess.run(args,env=env,cwd=work,stdout=out,stderr=subprocess.STDOUT,stdin=subprocess.DEVNULL)
         else: result=subprocess.run(args,env=env,cwd=work)
         (work/'exit-code').write_text(str(result.returncode))
     finally:
-        for name in ('key','request.json','.codex/auth.json','.pi/agent/auth.json'):
+        for name in ('key','request.json','mcp.json','.codex/auth.json','.pi/agent/auth.json'):
             (work/name).unlink(missing_ok=True)
     sys.exit(result.returncode)
 (work/'exit-code').unlink(missing_ok=True)
 (work/'output.jsonl').write_text('')
+try:
+    if json.loads((work/'request.json').read_text()).get('target')=='check':
+        subprocess.Popen(['/usr/local/lib/cc-doctor-worker',sid,'forward'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+except (OSError,ValueError): pass
 command=shlex.join(['/usr/local/lib/cc-doctor-worker',sid,'cli'])
 subprocess.run(['/usr/bin/tmux','-S',socket,'new-session','-d','-s','doctor-'+sid,'-x','120','-y','35',command],check=True)
 offset=0
