@@ -28183,7 +28183,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync33, existsSync as existsSync28, writeFileSync as writeFileSync22, rmSync as rmSync10 } from "fs";
+import { readFileSync as readFileSync34, existsSync as existsSync28, writeFileSync as writeFileSync22, rmSync as rmSync10 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash5, randomBytes as randomBytes2 } from "crypto";
@@ -33987,8 +33987,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d4905da" : "unknown",
-  builtAt: true ? "2026-10-12T11:47:21+01:00" : "unknown"
+  commit: true ? "60422a6" : "unknown",
+  builtAt: true ? "2026-10-12T13:17:53+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -34070,7 +34070,7 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -49588,6 +49588,9 @@ var FilesService = class {
   get vmId() {
     return this.opts.vmId;
   }
+  templateReview() {
+    return this.opts.templateReview?.() ?? null;
+  }
   get exporter() {
     return this.opts.exporter ?? null;
   }
@@ -50049,6 +50052,10 @@ async function dispatch(req, res, url3, service, cors, session) {
       { error: "Your pass for this agent can read its files but not change them.", code: "read_only" },
       cors
     );
+    return;
+  }
+  if (path === "/files/template-review" && req.method === "GET") {
+    sendJson(res, 200, service.templateReview() ?? { template: null, files: [] }, cors);
     return;
   }
   if (path === "/files/list" && req.method === "GET") {
@@ -51294,7 +51301,7 @@ async function handleKill(req, res, url3) {
 }
 
 // src/routes/health-summary.ts
-import { statfs } from "fs/promises";
+import { stat as stat4, statfs } from "fs/promises";
 import { execFile as execFile8 } from "child_process";
 import { lookup as lookup2 } from "dns/promises";
 import os from "os";
@@ -51497,16 +51504,26 @@ async function timed(fn) {
     return { ok: false, ms: Date.now() - start, reason: reasonOf(err) };
   }
 }
-async function diskOf() {
-  try {
-    const s2 = await statfs("/");
-    const total = s2.blocks * s2.bsize;
-    const free = s2.bavail * s2.bsize;
-    if (total <= 0) return null;
-    return { usedPct: Math.round((total - free) / total * 1e3) / 10, freeBytes: free };
-  } catch {
-    return null;
+var DISK_PATHS = ["/", `${process.env.HOME ?? "/home/controlclaw"}/.openclaw`];
+async function diskOf(paths = DISK_PATHS) {
+  const seen = /* @__PURE__ */ new Set();
+  let fullest = null;
+  for (const path of paths) {
+    try {
+      const { dev } = await stat4(path);
+      if (seen.has(dev)) continue;
+      seen.add(dev);
+      const s2 = await statfs(path);
+      const total = s2.blocks * s2.bsize;
+      const free = s2.bavail * s2.bsize;
+      const used = (s2.blocks - s2.bfree) * s2.bsize;
+      if (total <= 0 || used + free <= 0) continue;
+      const usedPct = Math.round(used / (used + free) * 1e3) / 10;
+      if (!fullest || usedPct > fullest.usedPct) fullest = { usedPct, freeBytes: free, totalBytes: total, volume: path === "/" ? "system" : "data" };
+    } catch {
+    }
   }
+  return fullest;
 }
 function ntpSynced() {
   return new Promise((resolve3) => {
@@ -51536,6 +51553,7 @@ async function healthSummary(deps) {
     openclaw: { state: deps.openclawState(), gateway: deps.gatewayConnected(), ...watch ? { answers: watch.gatewayAnswers } : {} },
     disk,
     memory: { usedPct: Math.round((total - os.freemem()) / total * 1e3) / 10, totalBytes: total },
+    cpu: deps.cpu?.() ?? null,
     load1: Math.round(os.loadavg()[0] * 100) / 100,
     cpus: os.cpus().length,
     clock: { ntpSynced: synced },
@@ -51605,6 +51623,60 @@ async function handleHealthRoutes(req, res, pathname, deps) {
     return sendJson(res, 200, await modelProbe(deps));
   }
   sendJson(res, 404, { error: "Not found" });
+}
+
+// src/cpu-sampler.ts
+import { readFileSync as readFileSync32 } from "fs";
+var CPU_SAMPLE_MS = 1e4;
+var CPU_MISSED_WINDOWS = 2;
+function parseProcStat(text2) {
+  const line2 = text2.split("\n", 1)[0] ?? "";
+  if (!/^cpu\s/.test(line2)) return null;
+  const n2 = line2.trim().split(/\s+/).slice(1, 9).map(Number);
+  if (n2.length < 4 || n2.some((v2) => !Number.isFinite(v2) || v2 < 0)) return null;
+  const total = n2.reduce((a2, b2) => a2 + b2, 0);
+  return { idle: n2[3] + (n2[4] ?? 0), total };
+}
+function cpuPct(prev, next) {
+  const total = next.total - prev.total;
+  if (!(total > 0)) return null;
+  const busy = 1 - (next.idle - prev.idle) / total;
+  return Math.round(Math.min(1, Math.max(0, busy)) * 1e3) / 10;
+}
+var readProcStat = () => readFileSync32("/proc/stat", "utf8");
+function createCpuSampler(read = readProcStat, now = () => performance.now()) {
+  let prev = null;
+  let last = null;
+  let samples = 0;
+  let missed = 0;
+  const use = () => {
+    if (!prev || !last) return null;
+    const usedPct = cpuPct(prev, last);
+    return usedPct === null ? null : { usedPct, windowMs: Math.round(last.at - prev.at) };
+  };
+  return {
+    sample() {
+      let s2 = null;
+      try {
+        s2 = parseProcStat(read());
+      } catch {
+        s2 = null;
+      }
+      prev = s2 ? last : null;
+      last = s2 ? { ...s2, at: now() } : null;
+      if (++samples > 1) missed = use() ? 0 : missed + 1;
+    },
+    use,
+    report() {
+      return use() ?? (missed >= CPU_MISSED_WINDOWS ? { unavailable: true } : null);
+    }
+  };
+}
+function startCpuSampler() {
+  const sampler = createCpuSampler();
+  sampler.sample();
+  setInterval(() => sampler.sample(), CPU_SAMPLE_MS).unref();
+  return () => sampler.report();
 }
 
 // src/routes/access-push.ts
@@ -51694,7 +51766,7 @@ async function handleGbrain(req, res, url3, service) {
 }
 
 // src/templates.ts
-import { existsSync as existsSync27, mkdirSync as mkdirSync17, readdirSync as readdirSync5, readFileSync as readFileSync32, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
+import { existsSync as existsSync27, mkdirSync as mkdirSync17, readdirSync as readdirSync5, readFileSync as readFileSync33, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
 import { dirname as dirname16, join as join23 } from "path";
 
 // ../templates/src/ids.ts
@@ -51723,11 +51795,35 @@ var bundleHashOf = (raw) => {
   return typeof hash3 === "string" && BUNDLE_HASH.test(hash3) ? hash3 : null;
 };
 var UNSURE_ROUNDS = 5;
+var TEMPLATE_REVIEW_MS = 45 * 6e4;
+var templateReviewPath = (stateDir) => join23(stateDir, "review.json");
+var STAMP = /^[0-9TZ:.-]{1,48}$/;
+function reviewFilesOf(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    const f2 = entry;
+    if (!f2 || typeof f2.step !== "string" || !STEP_ID.test(f2.step) || typeof f2.path !== "string" || typeof f2.text !== "string") return [];
+    if (!f2.path || f2.path.startsWith("/") || f2.path.split("/").includes("..")) return [];
+    return [{ step: f2.step, title: typeof f2.title === "string" ? f2.title.slice(0, 120) : f2.step, path: f2.path, text: f2.text, exists: f2.exists === true, stamp: typeof f2.stamp === "string" && STAMP.test(f2.stamp) ? f2.stamp : null }];
+  });
+}
+function readTemplateReview(stateDir, now = /* @__PURE__ */ new Date()) {
+  try {
+    const raw = JSON.parse(readFileSync33(templateReviewPath(stateDir), "utf8"));
+    if (typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template) || typeof raw.at !== "string") return null;
+    const age = now.getTime() - new Date(raw.at).getTime();
+    if (!(age >= 0 && age < TEMPLATE_REVIEW_MS)) return null;
+    const files2 = reviewFilesOf(raw.files).map(({ stamp: _stamp, ...file2 }) => file2);
+    return files2.length ? { template: raw.template, at: raw.at, files: files2 } : null;
+  } catch {
+    return null;
+  }
+}
 var TemplateService = class {
   constructor(opts) {
     this.opts = opts;
     try {
-      const kept = JSON.parse(readFileSync32(this.unsentPath, "utf8"));
+      const kept = JSON.parse(readFileSync33(this.unsentPath, "utf8"));
       if (kept && typeof kept === "object") this.unsent = kept;
     } catch {
     }
@@ -51788,7 +51884,7 @@ var TemplateService = class {
   }
   marker() {
     try {
-      const raw = JSON.parse(readFileSync32(this.markerPath, "utf8"));
+      const raw = JSON.parse(readFileSync33(this.markerPath, "utf8"));
       if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
       return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {} };
     } catch {
@@ -51928,7 +52024,7 @@ var TemplateService = class {
     const stepIds = (list) => Array.isArray(list) ? list.filter((id) => typeof id === "string" && STEP_ID.test(id)) : [];
     const steps = stepIds(raw.rerun?.steps);
     const asked = raw.request;
-    const request = asked && typeof asked.id === "string" && REQUEST_ID.test(asked.id) && (asked.kind === "preview" || asked.kind === "apply") && typeof asked.template === "string" && TEMPLATE_ID.test(asked.template) ? { id: asked.id, kind: asked.kind, template: asked.template, steps: stepIds(asked.steps), runId: typeof asked.runId === "string" ? asked.runId : null, bundle: bundleHashOf(asked.bundle) } : null;
+    const request = asked && typeof asked.id === "string" && REQUEST_ID.test(asked.id) && (asked.kind === "preview" || asked.kind === "apply") && typeof asked.template === "string" && TEMPLATE_ID.test(asked.template) ? { id: asked.id, kind: asked.kind, template: asked.template, steps: stepIds(asked.steps), runId: typeof asked.runId === "string" ? asked.runId : null, bundle: bundleHashOf(asked.bundle), look: asked.kind === "preview" && asked.look === true } : null;
     return {
       template,
       note: typeof raw.note === "string" ? raw.note : "",
@@ -51937,7 +52033,8 @@ var TemplateService = class {
       runId: typeof raw.runId === "string" ? raw.runId : null,
       rerun: template && steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null,
       request,
-      bundle: template ? bundleHashOf(raw.bundle) : null
+      bundle: template ? bundleHashOf(raw.bundle) : null,
+      ..."review" in raw ? { review: typeof raw.review === "string" && TEMPLATE_ID.test(raw.review) ? raw.review : null } : {}
     };
   }
   /** Applies the template if that is still to do, and sends whatever the console has not had. One at a time; never throws. */
@@ -51966,6 +52063,7 @@ var TemplateService = class {
     } else {
       this.settled = true;
     }
+    this.dropReview(assignment.review === void 0 ? void 0 : assignment.review ?? (assignment.request?.kind === "preview" ? assignment.request.template : null));
     if (assignment.request) await this.asked(assignment.request, assignment);
     this.tidy([assignment.template, assignment.request?.template, this.marker()?.template]);
   }
@@ -52014,7 +52112,7 @@ var TemplateService = class {
   async asked(request, assignment) {
     let handled = null;
     try {
-      handled = JSON.parse(readFileSync32(this.handledPath, "utf8")).id ?? null;
+      handled = JSON.parse(readFileSync33(this.handledPath, "utf8")).id ?? null;
     } catch {
     }
     if (handled === request.id || this.marker()?.request === request.id) return;
@@ -52023,12 +52121,55 @@ var TemplateService = class {
       this.write(this.handledPath, { id: request.id });
       return;
     }
-    this.log(`previewing ${request.template}`);
     const folder = await this.folder(request.template, request.bundle);
+    if (request.look) {
+      const kept2 = folder.dir ? await this.review(request, folder.dir, assignment) : {};
+      this.write(this.handledPath, { id: request.id });
+      await this.call("POST", { kind: "preview", template: request.template, requestId: request.id, kept: kept2 }).catch((error62) => this.log(`the second look was not taken: ${error62.message}`));
+      return;
+    }
+    this.log(`previewing ${request.template}`);
     const report = folder.dir && request.steps.length ? await this.runbook("check", request.template, folder.dir, assignment, request.steps) : null;
     this.write(this.handledPath, { id: request.id });
     this.keep({ kind: "preview", template: request.template, requestId: request.id, ...folder.dir === null ? folder.why === "missing" ? { missing: true } : { broken: true } : report ? { report } : request.steps.length ? { broken: true } : {} });
-    return this.send();
+    await this.send();
+    if (!folder.dir) return;
+    const kept = await this.review(request, folder.dir, assignment);
+    if (Object.keys(kept).length) await this.call("POST", { kind: "preview", template: request.template, requestId: request.id, kept }).catch((error62) => this.log(`when the kept files were written was not taken: ${error62.message}`));
+  }
+  /**
+   * Keeps, for the Files page, the files the previewed template would not overwrite, each with the
+   * template's own text (`cc-runbook review`). Returns when each of those the agent has was last
+   * written. Best effort: without it the preview is as it was before.
+   */
+  async review(request, dir, assignment) {
+    const path = templateReviewPath(this.opts.stateDir);
+    try {
+      const vars = join23(this.opts.stateDir, "vars.json");
+      this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
+      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "review", dir, "--vars", vars, ...isOrgTemplate(request.template) ? ["--as", request.template] : []], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
+      const files2 = reviewFilesOf(JSON.parse(stdout).files);
+      if (!files2.length) throw new Error("nothing to review");
+      this.write(path, { template: request.template, requestId: request.id, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(), files: files2 });
+      return Object.fromEntries(files2.flatMap((f2) => f2.exists && f2.stamp ? [[f2.step, f2.stamp]] : []));
+    } catch {
+      if (readTemplateReview(this.opts.stateDir)?.template !== request.template) rmSync9(path, { force: true });
+      return {};
+    }
+  }
+  /**
+   * Drops what was kept for the Files page once the console no longer has that preview: it was
+   * cancelled, confirmed, or grew too old. `wanted` is the template the console still shows a
+   * preview of; a console that does not say (an older one) leaves it to the time limit.
+   */
+  dropReview(wanted) {
+    if (wanted === void 0) return;
+    const path = templateReviewPath(this.opts.stateDir);
+    try {
+      if (JSON.parse(readFileSync33(path, "utf8")).template !== wanted) rmSync9(path, { force: true });
+    } catch {
+      rmSync9(path, { force: true });
+    }
   }
   /**
    * Steps an owner or admin asked for again in the console (a setting to confirm or set again, a
@@ -52093,7 +52234,7 @@ if (POOL_UNCLAIMED && !existsSync28(`${KEYS_DIR2}/saas_public_key.pem`)) {
   writeFileSync22(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync33(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync34(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -52101,7 +52242,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync33(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync34(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }
@@ -52242,6 +52383,8 @@ var healthDeps = {
   rebootRequired: () => existsSync28("/var/run/reboot-required"),
   gateway: () => gateway,
   watchdog: () => watchdog?.status() ?? null,
+  // CPU use for the agent page's meters: one read of /proc/stat every 10 s, from boot.
+  cpu: startCpuSampler(),
   stalled: (now, minMs) => {
     if (approvalsOpen() > 0) stalls.waiting(now);
     return stalls.oldest(now, minMs);
@@ -52284,7 +52427,8 @@ var files = new FilesService({
   root: process.env.FILES_ROOT ?? process.env.HOME ?? "/home/controlclaw",
   vmId: readKeyFile(KEYS_DIR2, "vm_id"),
   exporter: workspaceExporter,
-  onWrite: (write) => void reportFileWrite(write).catch((err) => console.error("[files]", err.message))
+  onWrite: (write) => void reportFileWrite(write).catch((err) => console.error("[files]", err.message)),
+  templateReview: () => readTemplateReview(`${STATE_DIR}/templates`)
 });
 async function reportFileWrite(write) {
   const size = write.size === null ? "" : ` (${humanBytes(write.size)})`;
@@ -52638,7 +52782,7 @@ server.listen(PORT, BIND, () => {
       let inboxId = agentmail?.status()?.inboxId;
       if (!inboxId) {
         try {
-          inboxId = JSON.parse(readFileSync33(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
+          inboxId = JSON.parse(readFileSync34(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
         } catch {
         }
       }
