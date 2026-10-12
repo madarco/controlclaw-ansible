@@ -1054,7 +1054,10 @@ var CONTROL_PLANE_ROUTES = {
     "GET /backup/plan",
     "GET /search/status",
     "GET /meetings/status",
-    "GET /connectors/status"
+    "GET /connectors/status",
+    // Carries nothing: it makes the agent ask the console now whether a template preview or apply
+    // is waiting, which it asks every two minutes anyway (templates.ts).
+    "POST /templates/poke"
   ]),
   gbrain: /* @__PURE__ */ new Set(["GET /health", "GET /status", "POST /start", "POST /stop", "POST /restart", "POST /mitm-ca/refresh", "GET /logs", "GET /update"])
 };
@@ -6196,8 +6199,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "c8e4f82" : "unknown",
-  builtAt: true ? "2026-10-11T23:37:06+01:00" : "unknown"
+  commit: true ? "43d5626" : "unknown",
+  builtAt: true ? "2026-10-12T01:32:06+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6279,7 +6282,7 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 

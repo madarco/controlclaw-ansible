@@ -5991,7 +5991,10 @@ var CONTROL_PLANE_ROUTES = {
     "GET /backup/plan",
     "GET /search/status",
     "GET /meetings/status",
-    "GET /connectors/status"
+    "GET /connectors/status",
+    // Carries nothing: it makes the agent ask the console now whether a template preview or apply
+    // is waiting, which it asks every two minutes anyway (templates.ts).
+    "POST /templates/poke"
   ]),
   gbrain: /* @__PURE__ */ new Set(["GET /health", "GET /status", "POST /start", "POST /stop", "POST /restart", "POST /mitm-ca/refresh", "GET /logs", "GET /update"])
 };
@@ -33984,8 +33987,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "c8e4f82" : "unknown",
-  builtAt: true ? "2026-10-11T23:37:06+01:00" : "unknown"
+  commit: true ? "43d5626" : "unknown",
+  builtAt: true ? "2026-10-12T01:32:06+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -34067,7 +34070,7 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -51694,11 +51697,13 @@ async function handleGbrain(req, res, url3, service) {
 import { existsSync as existsSync27, mkdirSync as mkdirSync17, readFileSync as readFileSync32, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
 import { dirname as dirname16, join as join23 } from "path";
 var TEMPLATE_POLL_MS = 2 * 6e4;
+var TEMPLATE_IDLE_POLL_MS = 15 * 6e4;
 var TEMPLATE_VERIFY_MS = 6 * 60 * 6e4;
 var RUN_TIMEOUT_MS = 45 * 6e4;
 var VERIFY_TIMEOUT_MS = 10 * 6e4;
 var CALL_MS2 = 2e4;
 var TEMPLATE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+var REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
 var STEP_ID = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
 var TemplateService = class {
   constructor(opts) {
@@ -51716,6 +51721,19 @@ var TemplateService = class {
    */
   unsent = null;
   settled = false;
+  /** When the console was last asked, so an idle agent asks only now and then. */
+  askedAt = 0;
+  /** The console said something is waiting, and the console has not been asked since. */
+  poked = false;
+  again = false;
+  /**
+   * The console's poke. Remembered, so it is not lost when it arrives while a round is running (that
+   * round may have asked just before the request was made) or while OpenClaw is not connected: the
+   * next round asks, and a round that is running is followed by another.
+   */
+  poke() {
+    this.poked = true;
+  }
   get unsentPath() {
     return join23(this.opts.stateDir, "unsent.json");
   }
@@ -51727,10 +51745,15 @@ var TemplateService = class {
   get done() {
     return this.settled && !this.unsent;
   }
-  /** True while there is a reason to ask the control plane: a template was applied, so an owner may ask for steps again. */
+  /**
+   * Whether to ask the console on this round (rounds are two minutes apart). Every round while its
+   * own template is still to apply or a result is still to send. After that only now and then: an
+   * owner may ask for a preview or an apply on any agent, also one with no template, and the console
+   * pokes the agent when one does.
+   */
   get asks() {
-    const marker = this.marker();
-    return !this.settled || !!this.unsent || !!marker && !marker.missing;
+    if (!this.settled || this.unsent || this.poked) return true;
+    return (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime() - this.askedAt >= TEMPLATE_IDLE_POLL_MS;
   }
   log(line2) {
     (this.opts.log ?? ((l2) => console.log(l2)))(`[templates] ${line2}`);
@@ -51742,7 +51765,7 @@ var TemplateService = class {
     try {
       const raw = JSON.parse(readFileSync32(this.markerPath, "utf8"));
       if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
-      return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {} };
+      return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {} };
     } catch {
       return null;
     }
@@ -51769,7 +51792,8 @@ var TemplateService = class {
   async runbook(command, dir, assignment, only) {
     const vars = join23(this.opts.stateDir, "vars.json");
     this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
-    const args = [this.opts.runbook, command, dir, "--vars", vars, "--json", "--public"];
+    const args = [this.opts.runbook, command === "check" ? "run" : command, dir, "--vars", vars, "--json", "--public"];
+    if (command === "check") args.push("--check", ...only ? ["--only", only.join(",")] : []);
     if (command === "run") args.push("--skip-unconfirmed", ...assignment.runId ? ["--run-id", assignment.runId] : [], ...only ? ["--only", only.join(",")] : []);
     let stdout = "";
     try {
@@ -51796,56 +51820,98 @@ var TemplateService = class {
     this.unsent = null;
     rmSync9(this.unsentPath, { force: true });
   }
+  /** What the control plane says about this agent now, or null when the answer cannot be read. */
   async assignment() {
     const raw = await this.call("GET");
-    if (!raw || typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template)) return null;
-    const steps = raw.rerun && Array.isArray(raw.rerun.steps) ? raw.rerun.steps.filter((id) => typeof id === "string" && STEP_ID.test(id)) : [];
+    if (!raw || typeof raw !== "object") return null;
+    const template = typeof raw.template === "string" && TEMPLATE_ID.test(raw.template) ? raw.template : null;
+    const stepIds = (list) => Array.isArray(list) ? list.filter((id) => typeof id === "string" && STEP_ID.test(id)) : [];
+    const steps = stepIds(raw.rerun?.steps);
+    const asked = raw.request;
+    const request = asked && typeof asked.id === "string" && REQUEST_ID.test(asked.id) && (asked.kind === "preview" || asked.kind === "apply") && typeof asked.template === "string" && TEMPLATE_ID.test(asked.template) ? { id: asked.id, kind: asked.kind, template: asked.template, steps: stepIds(asked.steps), runId: typeof asked.runId === "string" ? asked.runId : null } : null;
     return {
-      template: raw.template,
+      template,
       note: typeof raw.note === "string" ? raw.note : "",
       name: typeof raw.name === "string" ? raw.name : "",
       timeZone: typeof raw.timeZone === "string" ? raw.timeZone : "UTC",
       runId: typeof raw.runId === "string" ? raw.runId : null,
-      rerun: steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null
+      rerun: template && steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null,
+      request
     };
   }
   /** Applies the template if that is still to do, and sends whatever the console has not had. One at a time; never throws. */
   tick() {
     this.running ??= this.once().catch((error62) => this.log(`could not finish: ${error62.message}`)).finally(() => {
       this.running = null;
+      if (this.poked && !this.again) {
+        this.again = true;
+        void this.tick().finally(() => this.again = false);
+      }
     });
     return this.running;
   }
   async once() {
     if (this.unsent) await this.send();
+    this.poked = false;
+    const assignment = await this.assignment();
+    this.askedAt = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime();
+    if (!assignment) return;
     const marker = this.marker();
     if (marker) {
       this.settled = true;
-      if (!marker.missing) await this.rerun(marker);
-      return;
+      if (!marker.missing) await this.rerun(marker, assignment);
+    } else if (!this.settled) {
+      if (!assignment.template) this.settled = true;
+      else await this.apply(assignment.template, assignment);
     }
-    if (this.settled) return;
-    const assignment = await this.assignment();
-    if (!assignment?.template) {
-      this.settled = true;
-      return;
-    }
-    const dir = join23(this.opts.templatesDir, assignment.template);
+    if (assignment.request) await this.asked(assignment.request, assignment);
+  }
+  /**
+   * Applies a template in full and reports it: the one chosen at create, or one an owner applied
+   * to the running agent (`requestId`). Recorded, so it is applied once.
+   */
+  async apply(template, assignment, requestId) {
+    const dir = join23(this.opts.templatesDir, template);
     const now = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
+    const from = requestId ? { request: requestId } : {};
     if (!existsSync27(join23(dir, "template.yaml"))) {
-      this.log(`${assignment.template} is not on this agent`);
-      this.keep({ kind: "run", template: assignment.template, missing: true });
-      this.write(this.markerPath, { template: assignment.template, at: now, missing: true });
+      this.log(`${template} is not on this agent`);
+      this.keep({ kind: "run", template, missing: true, ...requestId ? { requestId } : {} });
+      this.write(this.markerPath, { template, at: now, missing: true, ...from });
       this.settled = true;
       return this.send();
     }
-    this.log(`applying ${assignment.template}`);
+    this.log(`applying ${template}`);
     const report = await this.runbook("run", dir, assignment);
-    this.keep({ kind: "run", template: assignment.template, ...report ? { report } : { broken: true } });
-    this.write(this.markerPath, { template: assignment.template, at: now });
+    this.keep({ kind: "run", template, ...report ? { report } : { broken: true }, ...requestId ? { requestId } : {} });
+    this.write(this.markerPath, { template, at: now, ...from });
     this.settled = true;
-    this.log(report ? `applied ${assignment.template}: ${String(report.result)}` : `${assignment.template}: the runner gave no report`);
+    this.log(report ? `applied ${template}: ${String(report.result)}` : `${template}: the runner gave no report`);
     setTimeout(() => void this.verify(), this.opts.verifyAfterMs ?? 3 * 6e4).unref();
+    return this.send();
+  }
+  get handledPath() {
+    return join23(this.opts.stateDir, "request.json");
+  }
+  /** A preview or an apply an owner or admin asked for in the console. Each request once. */
+  async asked(request, assignment) {
+    let handled = null;
+    try {
+      handled = JSON.parse(readFileSync32(this.handledPath, "utf8")).id ?? null;
+    } catch {
+    }
+    if (handled === request.id || this.marker()?.request === request.id) return;
+    if (request.kind === "apply") {
+      await this.apply(request.template, { ...assignment, runId: request.runId }, request.id);
+      this.write(this.handledPath, { id: request.id });
+      return;
+    }
+    const dir = join23(this.opts.templatesDir, request.template);
+    this.log(`previewing ${request.template}`);
+    const has = existsSync27(join23(dir, "template.yaml"));
+    const report = has && request.steps.length ? await this.runbook("check", dir, assignment, request.steps) : null;
+    this.write(this.handledPath, { id: request.id });
+    this.keep({ kind: "preview", template: request.template, requestId: request.id, ...!has ? { missing: true } : report ? { report } : request.steps.length ? { broken: true } : {} });
     return this.send();
   }
   /**
@@ -51853,9 +51919,8 @@ var TemplateService = class {
    * failed step to try again). Which steps, and with which values, is the console's to say: the
    * agent runs exactly the ones it is given, under the grant it is given, and reports them.
    */
-  async rerun(marker) {
-    const assignment = await this.assignment();
-    if (!assignment || assignment.template !== marker.template || !assignment.rerun) return;
+  async rerun(marker, assignment) {
+    if (assignment.template !== marker.template || !assignment.rerun) return;
     const request = `${assignment.rerun.runId ?? ""}:${assignment.rerun.at}:${assignment.rerun.steps.join(",")}`;
     if (marker.rerun === request) return;
     const dir = join23(this.opts.templatesDir, marker.template);
@@ -51875,7 +51940,7 @@ var TemplateService = class {
     const dir = join23(this.opts.templatesDir, marker.template);
     if (!existsSync27(join23(dir, "template.yaml"))) return;
     try {
-      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null };
+      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null, request: null };
       const report = await this.runbook("verify", dir, assignment);
       if (report) await this.call("POST", { kind: "verify", template: marker.template, report });
     } catch (error62) {
@@ -52029,6 +52094,7 @@ var phone = null;
 var gmailWatch = null;
 var gmailWake = null;
 var gateway = null;
+var templateService = null;
 var stalls = new StallTracker();
 var approvalsOpen = () => 0;
 var watchdog = null;
@@ -52311,6 +52377,12 @@ var server = createServer2(async (req, res) => {
     await handleRestart(res);
     return;
   }
+  if (url3.pathname === "/templates/poke" && req.method === "POST") {
+    templateService?.poke();
+    if (templateService && gateway?.connected) void templateService.tick();
+    sendJson(res, 202, { ok: true });
+    return;
+  }
   if (url3.pathname === "/status" && req.method === "GET") {
     handleStatus(res, drive?.summary() ?? null, gateway);
     return;
@@ -52531,7 +52603,7 @@ server.listen(PORT, BIND, () => {
     if (!POOL_UNCLAIMED) startWatchdog();
   }
   if (process.env.CC_SERVICE !== "gbrain" && !POOL_UNCLAIMED) {
-    const templates = new TemplateService({
+    const templates = templateService = new TemplateService({
       base: () => saasBaseUrl(KEYS_DIR2),
       getToken: makeBoxTokenSigner(KEYS_DIR2),
       exec: defaultExec,
