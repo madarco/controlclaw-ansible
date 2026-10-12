@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Has OpenClaw's memory search read the shared notes folder.
+
+Adds /var/lib/controlclaw-notes/sets to memory.search.extraPaths, keeping whatever is there. Run as
+the agent's user by the role (tasks/shared-notes.yml). Prints one line:
+
+  changed            the path was added; OpenClaw has to be restarted
+  ok                 the path was there already; nothing was written
+  skipped: <why>     what OpenClaw answered could not be read for certain, or it refused the
+                     write; the list is as it was
+
+The list is changed only when it was read for certain: OpenClaw answered with a JSON list and
+nothing else, or said in its own words that the key is not set. A warning line, an error, or an
+OpenClaw that is not installed is "skipped", never an empty list: a person's own paths are not
+written over on a guess. The next Update tries again.
+
+Exit code: always 0. Notes that are not searched yet are no reason to fail a box's provisioning.
+"""
+import json
+import os
+import subprocess
+import sys
+
+NOTES = "/var/lib/controlclaw-notes/sets"
+# Where an earlier build of this role kept the notes. Only test boxes ever had it; it is taken out when ours goes in.
+LEGACY = "/opt/controlclaw/shared-notes"
+KEY = "memory.search.extraPaths"
+BIN = os.environ.get("OPENCLAW_BIN", "/usr/bin/openclaw")
+# How long one call of the CLI may take. A test sets it short.
+SECONDS = int(os.environ.get("CC_NOTES_OPENCLAW_SECONDS", "180"))
+UNSET = f"Config path is valid but unset: {KEY}."
+
+
+def openclaw(*args):
+    return subprocess.run([BIN, *args], capture_output=True, text=True, timeout=SECONDS)
+
+
+def current():
+    """The list as it is, or a string saying why it could not be read for certain."""
+    if not os.access(BIN, os.X_OK):
+        return "OpenClaw is not installed"
+    try:
+        got = openclaw("config", "get", KEY)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"OpenClaw did not answer ({type(error).__name__})"
+    if got.returncode != 0:
+        # OpenClaw's own sentence for a key nobody set, and nothing but it.
+        said = [line.strip() for line in got.stderr.splitlines() if line.strip()]
+        if got.stdout.strip() == "" and len(said) == 1 and said[0].startswith(UNSET):
+            return []
+        return f"OpenClaw could not read the setting (exit {got.returncode})"
+    try:
+        value = json.loads(got.stdout)
+    except ValueError:
+        return "OpenClaw's answer was not a JSON list and nothing else"
+    if not isinstance(value, list) or not all(isinstance(item, str) or (isinstance(item, dict) and isinstance(item.get("path"), str)) for item in value):
+        return "OpenClaw's answer was not a list of paths"
+    return value
+
+
+def main():
+    paths = current()
+    if isinstance(paths, str):
+        print(f"skipped: {paths}")
+        return 0
+    if any(item == NOTES or (isinstance(item, dict) and item.get("path") == NOTES) for item in paths):
+        print("ok")
+        return 0
+    kept = [item for item in paths if item != LEGACY and not (isinstance(item, dict) and item.get("path") == LEGACY)]
+    try:
+        done = openclaw("config", "set", KEY, json.dumps(kept + [NOTES]), "--strict-json")
+    except (OSError, subprocess.SubprocessError) as error:
+        # A write that did not answer in time may or may not have landed: the next Update reads the list again.
+        print(f"skipped: OpenClaw did not answer the write ({type(error).__name__})")
+        return 0
+    if done.returncode != 0:
+        last = (done.stderr.strip() or done.stdout.strip()).splitlines()[-1:] or [""]
+        print(f"skipped: OpenClaw refused the setting ({last[0][:160]})")
+        return 0
+    print("changed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

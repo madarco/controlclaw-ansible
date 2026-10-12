@@ -437,7 +437,16 @@ luks_binds: >-
         'clickclack:/var/lib/clickclack:clickclack:0700'] if box_role == 'mitm' else [])
     + (['gbrain:' ~ gbrain_home ~ ':' ~ gbrain_user ~ ':0750',
         'postgresql:/var/lib/postgresql:postgres:0700'] if box_role == 'gbrain' else [])
+    + (['notes:/var/lib/controlclaw-notes:root:0755'] if box_role == 'openclaw' else [])
   }}
+
+# An agent's shared notes (tasks/shared-notes.yml) are inside the container when the box has one:
+# the `notes` bind above, LAST in the list, so every other bind is in place before it is tried.
+# cc-secure stops at a bind that fails, before it starts tang, and that script is not this change's
+# to alter; the role makes the one thing that could fail it (the mount point not being a folder)
+# impossible before the container is mounted (tasks/main.yml, before disk-encryption.yml).
+# False in a CI run, which has no container even with disk_encryption on.
+shared_notes_in_container: "{{ (disk_encryption | bool) and box_role == 'openclaw' and not (ci_test | default(false) | bool) }}"
 
 # The units that read a path inside the container, and therefore wait for it. Caddy and ssh are
 # deliberately absent: they are how a locked box is reached and fixed.

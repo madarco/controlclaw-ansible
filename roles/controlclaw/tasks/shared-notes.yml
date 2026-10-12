@@ -1,0 +1,122 @@
+---
+# Shared notes (controlclaw apps/saas/docs/features/shared-notes.md): Markdown an organization
+# writes once, for its agents to search.
+#
+# Included AFTER openclaw.yml: the last step here talks to OpenClaw, which that file installs,
+# brings up to date and repairs (`doctor --fix`, T-107) first.
+#
+# Three things on an agent box:
+#   1. /var/lib/controlclaw-notes, root:root 0755, with `sets` (a set of notes is a folder in it;
+#      the agent's user reads it and cannot write it) and `work` (root's alone, where the helper
+#      builds a set). NOT under /opt/controlclaw: that folder can be the agent's user's own, and
+#      whoever owns a folder can rename what is in it and put a link there, which a helper that runs
+#      as root would then follow. The helper refuses to run unless every folder down to these is a
+#      real folder of root's that nobody else can write.
+#   2. cc-notes, the root helper that writes a set, and the one sudoers line that lets the agent's
+#      user run it. The vm-agent calls it when the console hands the agent a set. Read the header of
+#      files/cc-notes for what this protects against and what it does not: the folder is safe from
+#      accidental edits, not from an agent that sets out to change its notes.
+#   3. memory.search.extraPaths names the `sets` folder, so OpenClaw's memory search reads the notes.
+#      Set here, once, and never when a set is put: a change to memory.search takes a gateway
+#      restart (checked on OpenClaw 2026.9.9, 12 October 2026), and a set that arrives later is
+#      picked up from the folder by the running gateway with none.
+#
+# A set's one "always loaded" file is NOT wired up. OpenClaw's bootstrap-extra-files hook only loads
+# files inside the workspace, under a short list of names (checked the same day), and we do not
+# write in an agent's workspace.
+#
+# The helper's refusals are tested by tests/cc-notes.test.sh, and the search-path script by
+# tests/cc-notes-search-path.test.sh.
+
+# On an agent whose disk is encrypted the notes are inside the encrypted part: `luks_binds` has
+# `notes`, so cc-secure mounts a root-owned folder of the container at /var/lib/controlclaw-notes
+# (disk-encryption.yml, which ran before this and whose `cc-secure mount` adds a bind that is new on
+# an Update, with no reboot). The marker tells the helper and the vm-agent that on this box the
+# folder counts only while it is that mount: with the disk locked the helper refuses, and no set is
+# written on the plain disk.
+- name: Shared notes | Say whether the notes are inside the encrypted part
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/notes-in-container
+    content: "The shared notes of this agent are in the encrypted part of its disk, mounted at /var/lib/controlclaw-notes.\n"
+    owner: root
+    group: root
+    mode: '0644'
+  when: shared_notes_in_container | bool
+
+- name: Shared notes | No marker on an agent whose disk is not encrypted
+  ansible.builtin.file:
+    path: /etc/controlclaw/notes-in-container
+    state: absent
+  when: not (shared_notes_in_container | bool)
+
+# Not on the plain disk of an agent with an encrypted one: stop here, with the reason, if the mount
+# is not there. disk-encryption.yml has already refused to go on with a locked box.
+- name: Shared notes | The notes folder is the mounted one (encrypted disk)
+  ansible.builtin.command: mountpoint -q /var/lib/controlclaw-notes
+  changed_when: false
+  when: shared_notes_in_container | bool
+
+- name: Shared notes | The parent only root can write, and the notes folder in it
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /var/lib/controlclaw-notes, mode: '0755' }
+    - { path: /var/lib/controlclaw-notes/sets, mode: '0755' }
+    # Where the helper builds a set: root's alone.
+    - { path: /var/lib/controlclaw-notes/work, mode: '0700' }
+
+# Where a build of this role that was never released kept the notes. Only test boxes have it.
+- name: Shared notes | Remove the folders of an earlier build
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/controlclaw/shared-notes
+    - /opt/controlclaw/shared-notes.work
+
+- name: Shared notes | Install the root helper and the search-path script
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - cc-notes
+    - cc-notes-search-path
+
+# Exactly this program, as root, and nothing else. `visudo -cf` checks the file before it is
+# anywhere sudo reads.
+- name: Shared notes | Let the agent's user run the helper
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-notes
+    owner: root
+    group: root
+    mode: '0440'
+    validate: /usr/sbin/visudo -cf %s
+    content: |
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/sbin/cc-notes
+
+# The script adds the folder to whatever paths are there, and only when it read them for certain
+# (its header says how). "ok" and "skipped" write nothing, so a box that has the path is not
+# restarted by an Update, and a box whose OpenClaw answered oddly keeps its paths and is tried
+# again by the next one. The script never fails the play.
+- name: Shared notes | Have memory search read the notes folder
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/cc-notes-search-path]
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment:
+    HOME: "{{ controlclaw_home }}"
+  register: shared_notes_search
+  changed_when: shared_notes_search.stdout | trim == 'changed'
+  notify: restart openclaw
+
+- name: Shared notes | Say so when the search path was left alone
+  ansible.builtin.debug:
+    msg: "Shared notes: memory search was not changed ({{ shared_notes_search.stdout | default('') | trim }}). The next Update tries again."
+  when: (shared_notes_search.stdout | default('') | trim).startswith('skipped')

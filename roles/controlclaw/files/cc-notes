@@ -1,0 +1,275 @@
+#!/bin/bash
+# cc-notes: the one thing that writes the shared notes folder on an agent.
+#
+#   cc-notes put <set> <folder>    replace the set with the Markdown files under <folder>
+#   cc-notes remove <set>          delete the set
+#   cc-notes list                  the names of the sets that are there
+#
+# Shared notes are Markdown an organization writes once and its agents search (controlclaw
+# apps/saas/docs/features/shared-notes.md). They live in /var/lib/controlclaw-notes/sets/<set>/,
+# which is root's, under a folder only root can write: the agent's user reads the files and cannot
+# write them, and cannot rename or replace the folders either. This helper runs as root, by a
+# sudoers line, and is how a set gets there.
+#
+# WHAT THIS PROTECTS, AND WHAT IT DOES NOT. The agent's user may run this helper, and the agent runs
+# as that user. OpenClaw's own service has NoNewPrivileges, so sudo is refused in the agent's shell;
+# a process the agent starts outside that service (through its user's own service manager) can run
+# it. So the folder is protected from accidental edits, and NOT from an agent that sets out to
+# change its notes. Nothing here is signed. The console compares each set's hash with the one it
+# sent and says "changed on this agent" when they differ.
+#
+# What the helper itself makes sure of, whoever calls it:
+#   - a set's name is lowercase letters, digits and dashes, so it is one folder and nothing else;
+#   - at most 60 sets;
+#   - only ordinary files named .md are taken, never a link, a pipe, a device or a file that can be run;
+#   - the folder is listed and read as the caller, not as root, and each read has a time limit, so
+#     it cannot be used to read a file the caller may not read (a file swapped for a link while the
+#     helper runs) or be made to wait for ever (a file swapped for a pipe);
+#   - a set is at most 200 files, 256 KB a file and 2 MB in all, a path of at most 8 parts, and the
+#     folder it is read from holds at most 600 files and folders, empty ones counted;
+#   - what it writes belongs to root, 0644 in folders that are 0755;
+#   - it runs only when the notes folder, the work folder and every folder above them are real
+#     folders (no link anywhere in the path) that belong to root and that nobody else can write.
+#     Otherwise whoever owns a folder above could put a link in their place, and a helper that
+#     runs as root would then write and delete wherever the link points;
+#   - on an agent whose disk is encrypted, the notes are inside the encrypted part, and it does
+#     nothing while that part is locked: no set is ever written on the plain disk;
+#   - the set is built in a folder beside the notes folder, which nothing indexes, and moved in
+#     whole, so a reader never sees half a set. A run that is killed between taking the old set out
+#     and putting the new one in loses nothing: the next run puts the old set back. One run at a time.
+set -euo pipefail
+umask 022
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+# Somewhere every caller may be: what runs as the caller below starts from here.
+cd /
+
+# Everything of this helper is under BASE, which the role makes root:root 0755 in /var/lib. Not
+# under /opt/controlclaw: on some boxes that folder is the agent's user's own.
+BASE=/var/lib/controlclaw-notes
+ROOT="$BASE/sets"
+# Where a set is built and where a replaced one waits to be deleted. Beside ROOT, on the same
+# disk, so moving a set in is one rename; not inside it, so memory search never reads half a set.
+WORK="$BASE/work"
+LOCK="$BASE/lock"
+# On an agent whose disk is encrypted the role writes this file, and BASE is a folder of the
+# encrypted part, mounted here when the disk is open (cc-secure, the `notes` bind). While the disk
+# is locked BASE is an empty folder on the plain disk, and nothing must be written there.
+IN_CONTAINER=/etc/controlclaw/notes-in-container
+# The encrypted container itself. A box that has one is such an agent whether or not the marker is
+# there: a marker that went missing must not make the helper write on the plain disk.
+CONTAINER_IMAGE=/var/lib/controlclaw/secure.img
+# Seconds to wait for another run. Well under the time the vm-agent gives a call.
+LOCK_SECONDS=20
+MAX_SETS=60
+MAX_FILES=200
+# The parts of a file's path, as the console allows, and everything a listing may name: files and folders, empty ones too.
+MAX_DEPTH=8
+MAX_ENTRIES=600
+MAX_LISTING_BYTES=262144
+MAX_FILE_BYTES=262144
+MAX_TOTAL_BYTES=2000000
+# Seconds one file may take to read, and the listing of the folder.
+READ_SECONDS=10
+LIST_SECONDS=30
+NAME='^[a-z0-9][a-z0-9-]{0,63}$'
+# A path inside a set: plain names, no part starting with a dot or a dash, ending in .md.
+PART='[A-Za-z0-9_]([A-Za-z0-9._ -]*[A-Za-z0-9._-])?'
+
+# die <message> [exit code]
+die() { echo "cc-notes: $1" >&2; exit "${2:-1}"; }
+[ "$(id -u)" = 0 ] || die "must run as root (sudo -n /usr/local/sbin/cc-notes ...)" 64
+
+# Runs a command as whoever called sudo, with a time limit. Run by root itself (the role, a person
+# on the box), it is root's.
+as_caller() {
+  local seconds="$1"
+  shift
+  if [ -n "${SUDO_UID:-}" ] && [ "$SUDO_UID" != 0 ]; then
+    # 9>&-: what runs as the caller does not inherit the lock.
+    timeout --kill-after=2 "$seconds" setpriv --reuid="$SUDO_UID" --regid="${SUDO_GID:-$SUDO_UID}" --clear-groups -- "$@" 9>&-
+  else
+    timeout --kill-after=2 "$seconds" "$@" 9>&-
+  fi
+}
+
+set_name() {
+  [[ "${1:-}" =~ $NAME ]] || die "a set's name is lowercase letters, digits and dashes" 64
+  printf '%s' "$1"
+}
+
+sets() {
+  [ -d "$ROOT" ] || return 0
+  find "$ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep -E "$NAME" | sort || true
+}
+
+# A folder this helper may work in: it and every folder above it, up to /, is a real folder (not a
+# link), root's, and not writable by its group or by others. Checked from the top down, so by the
+# time a folder is looked at nobody but root could have changed the path to it.
+trusted() {
+  local path="$1" at="" part
+  [[ "$path" = /* ]] || die "$path is not an absolute path" 70
+  local IFS=/
+  for part in / ${path#/}; do
+    [ "$part" = / ] && at=/ || at="${at%/}/$part"
+    [ -d "$at" ] && [ ! -L "$at" ] || die "$at is not a folder (a link is not one). Nothing was done." 70
+    [ "$(stat -c %u "$at")" = 0 ] || die "$at does not belong to root. Nothing was done." 70
+    [ -z "$(find "$at" -maxdepth 0 -perm /022)" ] || die "$at can be written by others than root. Nothing was done." 70
+  done
+}
+
+# On an agent with an encrypted disk: only while the notes folder is the mounted one.
+unlocked() {
+  [ ! -e "$IN_CONTAINER" ] && [ ! -L "$IN_CONTAINER" ] && [ ! -e "$CONTAINER_IMAGE" ] && [ ! -L "$CONTAINER_IMAGE" ] && return 0
+  mountpoint -q "$BASE" || die "the agent's disk is locked: its notes are in the encrypted part, which is not open. Nothing was done." 69
+}
+
+# Everything this helper works in is looked at before anything is made or written: the parent, the
+# two folders when they are there, and the lock, which is an ordinary file with one name or not
+# there yet. Whatever is wrong, nothing is done.
+checked() {
+  unlocked
+  trusted "$BASE"
+  local dir
+  for dir in "$ROOT" "$WORK"; do
+    if [ -e "$dir" ] || [ -L "$dir" ]; then trusted "$dir"; fi
+  done
+  if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
+    [ -f "$LOCK" ] && [ ! -L "$LOCK" ] || die "$LOCK is not an ordinary file. Nothing was done." 70
+    [ "$(stat -c '%u %h' "$LOCK")" = "0 1" ] || die "$LOCK is not root's own file. Nothing was done." 70
+  fi
+}
+
+# The lock: an ordinary file of root's in BASE. BASE was checked, so nobody but root can have
+# changed what the name points at since.
+lock() {
+  # Root's alone, 0600: a file the caller could open, the caller could lock, and hold every run up.
+  local was
+  was="$(umask)"
+  umask 077
+  exec 9>>"$LOCK"
+  umask "$was"
+  chmod 0600 "$LOCK"
+  [ "$(stat -L -c '%u %h' /proc/self/fd/9)" = "0 1" ] || die "$LOCK is not root's own file. Nothing was done." 70
+  flock -w "$LOCK_SECONDS" 9 || die "another cc-notes is running" 75
+}
+
+# Before anything is written: the folders are what they must be, one run at a time, and what an
+# interrupted run left is dealt with. A set that was taken out to be replaced, when its replacement
+# never arrived, is put back; everything else in the work folder is removed.
+prepare() {
+  checked
+  lock
+  # Again, now that this run holds the lock: the disk can have been locked while it waited, and
+  # what follows makes folders and writes files.
+  unlocked
+  local dir kept name
+  for dir in "$ROOT" "$WORK"; do
+    [ -e "$dir" ] || mkdir -m 0755 "$dir"
+    trusted "$dir"
+  done
+  chmod 0700 "$WORK"
+  for kept in "$WORK"/old.*; do
+    [ -d "$kept" ] && [ ! -L "$kept" ] || continue
+    name="${kept##*/old.}"
+    if [[ "$name" =~ $NAME ]] && [ ! -e "$ROOT/$name" ] && [ ! -L "$ROOT/$name" ]; then mv -T "$kept" "$ROOT/$name"; fi
+  done
+  find "$WORK" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
+case "${1:-}" in
+  list)
+    [ $# -eq 1 ] || die "usage: cc-notes list" 64
+    checked
+    sets
+    ;;
+
+  remove)
+    [ $# -eq 2 ] || die "usage: cc-notes remove <set>" 64
+    set="$(set_name "$2")"
+    prepare
+    # Moved out first, so the set is gone in one step, then deleted.
+    if [ -e "$ROOT/$set" ] || [ -L "$ROOT/$set" ]; then
+      gone="$(mktemp -d "$WORK/gone-XXXXXX")"
+      mv -T "$ROOT/$set" "$gone/set"
+      rm -rf "$gone"
+    fi
+    ;;
+
+  put)
+    [ $# -eq 3 ] || die "usage: cc-notes put <set> <folder>" 64
+    set="$(set_name "$2")"
+    src="$3"
+    # Asked as the caller, with one answer for every way it can fail: root does not say whether a
+    # path the caller cannot see is there.
+    src="$(as_caller "$READ_SECONDS" sh -c '[ -d "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] && cd -- "$1" && pwd -P' sh "$src" 2>/dev/null)" && [ -n "$src" ] || die "the folder is not one the caller can read" 64
+    prepare
+    if [ ! -d "$ROOT/$set" ] && [ "$(sets | wc -l)" -ge "$MAX_SETS" ]; then
+      die "an agent holds at most $MAX_SETS sets of notes" 65
+    fi
+    new="$(mktemp -d "$WORK/new-XXXXXX")"
+    trap 'rm -rf "$new"' EXIT
+    mkdir "$new/set"
+    files=0
+    total=0
+    # The folder is the caller's, and the caller can change it while this runs. So it is listed and
+    # read AS THE CALLER, never as root, and nothing is believed twice: what kind of thing an entry
+    # is comes from the listing, and its size from the copy root made. Every entry is looked at, and
+    # one that is not an ordinary .md file refuses the set.
+    listing="$new/listing"
+    # No more of the listing is kept than a set at its limits could need.
+    as_caller "$LIST_SECONDS" find "$src" -mindepth 1 -printf '%y %P\0' | head -c $((MAX_LISTING_BYTES + 1)) > "$listing"
+    [ "${PIPESTATUS[0]}" = 0 ] && [ "$(stat -c %s "$listing")" -le "$MAX_LISTING_BYTES" ] || die "the folder could not be listed, or holds too much to be a set" 65
+    entries=0
+    while IFS= read -r -d '' entry; do
+      kind="${entry%% *}"
+      rel="${entry#* }"
+      entries=$((entries + 1))
+      [ "$entries" -le "$MAX_ENTRIES" ] || die "the folder holds more than $MAX_ENTRIES files and folders" 65
+      # A file's path has at most MAX_DEPTH parts, its name counted; so a folder's has one fewer.
+      slashes="${rel//[^\/]/}"
+      parts=$(( ${#slashes} + 1 ))
+      [ "$kind" != d ] || parts=$((parts + 1))
+      [ "$parts" -le "$MAX_DEPTH" ] || die "$rel: a file's path has at most $MAX_DEPTH parts" 65
+      # Every part of the path is a plain name, whatever the entry is.
+      [[ "$rel" =~ ^($PART/)*$PART$ ]] || die "$rel: name files and folders with letters, digits, dots, dashes, underscores and spaces" 65
+      [ "$kind" != d ] || continue
+      [ "$kind" = f ] || die "$rel is not an ordinary file" 65
+      [[ "$rel" =~ \.[mM][dD]$ ]] || die "$rel: a set holds Markdown files, named .md" 65
+      files=$((files + 1))
+      [ "$files" -le "$MAX_FILES" ] || die "a set has at most $MAX_FILES files" 65
+      install -d -o root -g root -m 0755 "$new/set/$(dirname "$rel")"
+      # One byte more than a file may be, so a larger one is seen without being read to its end.
+      # With a time limit: a file swapped for a pipe after the listing must not hold this up.
+      as_caller "$READ_SECONDS" head -c $((MAX_FILE_BYTES + 1)) -- "$src/$rel" > "$new/set/$rel" || die "$rel could not be read" 65
+      size="$(stat -c %s "$new/set/$rel")"
+      [ "$size" -le "$MAX_FILE_BYTES" ] || die "$rel is larger than $((MAX_FILE_BYTES / 1024)) KB" 65
+      total=$((total + size))
+      [ "$total" -le "$MAX_TOTAL_BYTES" ] || die "a set is at most 2 MB" 65
+      chmod 0644 "$new/set/$rel"
+    done < "$listing"
+    [ "$files" -gt 0 ] || die "the folder has no Markdown files" 65
+    chmod 0755 "$new/set"
+    # Moved in: the old set goes to the work folder under its own name, the new one takes its
+    # place, and only then is the old one deleted. Killed between the two moves, the old set is
+    # still in the work folder, and the next run puts it back (prepare).
+    # Reading the caller's folder took time. Once more before anything of a set is moved: the folder
+    # it was built in is on the same disk as the notes folder, so with the disk locked meanwhile
+    # there is nothing here to move, and nothing is put on the plain disk.
+    unlocked
+    [ -d "$new/set" ] || die "the agent's disk was locked while the set was being read. Nothing was done." 69
+    trap - EXIT
+    if [ -L "$ROOT/$set" ]; then
+      rm -f "$ROOT/$set"
+    elif [ -e "$ROOT/$set" ]; then
+      mv -T "$ROOT/$set" "$WORK/old.$set"
+    fi
+    mv -T "$new/set" "$ROOT/$set"
+    rm -rf "$WORK/old.$set" "$new"
+    echo "put $set: $files files"
+    ;;
+
+  *)
+    die "usage: cc-notes put <set> <folder> | remove <set> | list" 64
+    ;;
+esac
