@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.10.0",
+    "date": "2026-10-12",
+    "changes": [
+      "An agent's page has a Skills tab: what it has, where each skill came from, and a switch for each.",
+      "A template can carry skills, and you can save an agent's setup as a template of your own."
+    ]
+  },
+  {
     "version": "1.9.0",
     "date": "2026-10-12",
     "changes": [
