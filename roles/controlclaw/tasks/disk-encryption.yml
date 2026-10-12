@@ -353,6 +353,10 @@
 - name: Disk encryption | tang serves this box's key database again
   ansible.builtin.command: /usr/local/bin/cc-secure mount
   changed_when: false
+  # 3: everything required is mounted and tang is serving; a directory marked optional is not, and
+  # cc-secure has said which. That must not fail an Update.
+  register: cc_secure_mount
+  failed_when: cc_secure_mount.rc not in [0, 3]
   environment:
     CC_SECURE_MOUNT: "{{ luks_secure_mount }}"
     CC_SECURE_IMG: "{{ luks_image_path }}"
@@ -487,3 +491,14 @@
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure unbind *
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure rekey
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure reseal
+      {% if box_role == 'openclaw' %}
+      # Making an agent's own storage larger (docs/plans/agent-storage-growth.md). `size` reads and
+      # changes nothing. `grow` takes one argument, one to four digits, and nothing else: the pattern
+      # is a regular expression over the whole argument list, so `grow 30 x` and `grow -5` do not
+      # match. cc-secure checks the number again against the limit it works out itself, and can only
+      # make the container larger. Agents only: a firewall's and a brain's containers stay as built.
+      # A sudoers argument written as a regular expression (`^…$`) needs sudo 1.9.10 or newer:
+      # Ubuntu 24.04 has 1.9.15. An older sudo would read it as a literal and match nothing.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure size
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure ^grow [0-9]{1,4}$
+      {% endif %}

@@ -127,9 +127,14 @@ def main(argv):
     if verb == "secure-mount" and arg is None:
         if not os.path.exists("/usr/local/sbin/cc-secure") and not os.path.exists("/usr/local/bin/cc-secure"):
             fail("this firewall has no disk encryption")
-        code, out = run(["cc-secure", "mount"], timeout=90)
+        # Longer than cc-secure's own wait for its lock (90 s), so this does not give up first.
+        code, out = run(["cc-secure", "mount"], timeout=120)
         print(out or "mounted", flush=True)
-        if code:
+        # 3: mounted, tang serving, and a directory marked optional could not be mounted. cc-secure
+        # has named it above; that is not a failed mount.
+        if code == 3:
+            print("mounted, without the optional directories named above", flush=True)
+        elif code:
             fail("cc-secure mount failed; read the disk service's logs")
         return
     fail("unknown command")

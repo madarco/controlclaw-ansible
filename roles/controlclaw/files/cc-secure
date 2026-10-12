@@ -56,6 +56,35 @@ loopdev() {
 is_mounted() { mountpoint -q "$SECURE"; }
 is_open()    { [ -e "/dev/mapper/$MAPPER" ]; }
 
+# One change to the container at a time. `grow` resizes the mapping while `bind`, `unbind` and
+# `rekey` write the LUKS header, and cc-secure-daemon's beat runs those once a minute without asking
+# anybody. Each of them, and `mount`, takes this lock for as long as it runs; the reads (`status`,
+# `list`, `size`) do not. It is on /run, so a reboot clears it, and it is released when this process
+# exits.
+#
+# The lock file is in a directory only root can enter. `flock` works on a descriptor opened for
+# reading, so a lock file other users can open is one any of them can hold for ever: the box user
+# would only need `flock /run/cc-secure.lock sleep infinity` to make every bind, rekey and grow time
+# out, with no sudo. (An earlier build of this change made the file root 0644 in /run; it is removed
+# here, and whoever still holds it holds nothing.)
+LOCK_DIR=${CC_SECURE_LOCK_DIR:-/run/cc-secure}
+LOCK="$LOCK_DIR/lock"
+LOCK_WAIT_S=${CC_SECURE_LOCK_WAIT_S:-90}
+# How long `bind` waits for a partner's tang. It is the only network step done under the lock, and
+# it is shorter than the lock wait, so the command waiting behind a dead partner still gets its turn.
+BIND_TIMEOUT_S=${CC_SECURE_BIND_TIMEOUT_S:-60}
+take_lock() {
+  ( umask 077; mkdir -p "$LOCK_DIR" ) || die "cannot make $LOCK_DIR; nothing was changed"
+  # /run is root's, so nobody else can have put a link here; refuse one all the same.
+  [ -d "$LOCK_DIR" ] && [ ! -L "$LOCK_DIR" ] || die "$LOCK_DIR is not a directory; nothing was changed"
+  if [ "$(id -u)" = 0 ]; then chown root:root "$LOCK_DIR"; fi
+  chmod 0700 "$LOCK_DIR"
+  rm -f /run/cc-secure.lock
+  exec 9>"$LOCK"
+  chmod 0600 "$LOCK"
+  flock -w "$LOCK_WAIT_S" 9 || die "another change to the container is still running; nothing was changed"
+}
+
 # ---------------------------------------------------------------------------- create
 
 cmd_init() {
@@ -132,8 +161,22 @@ cmd_open_with() {
   log "opened with the recovery passphrase"
 }
 
+# What `mount` exits with when everything required is mounted and an optional entry is not.
+MOUNT_OPTIONAL_FAILED=3
+
+# One bind mount of a directory inside the container. Returns non-zero at the first step that fails
+# and leaves the rest to the caller.
+bind_entry() {
+  local sub=$1 dst=$2 owner=$3 mode=$4 src="$SECURE/$1"
+  mkdir -p "$src" "$dst" || return 1
+  chown "${owner:-root}:${owner:-root}" "$src" || return 1
+  chmod "${mode:-0750}" "$src" || return 1
+  mountpoint -q "$dst" || mount --bind "$src" "$dst" || return 1
+}
+
 cmd_mount() {
   is_open || die "container is not open"
+  take_lock
   is_mounted || { mkdir -p "$SECURE"; mount -o discard "/dev/mapper/$MAPPER" "$SECURE"; }
   mkdir -p "$SECURE/keys" "$SECURE/state" "$TANG_DB"
   chmod 0711 "$SECURE"          # traversable by _tang; see cmd_init
@@ -143,15 +186,34 @@ cmd_mount() {
   # shadowed, so a service that somehow starts before us writes to an empty directory rather than
   # failing on a missing path — and the play's own assert (disk-encryption.yml) is what stops that
   # being mistaken for success.
-  local spec src dst owner mode
+  #
+  # One entry that cannot be mounted (an owner that does not exist on this box, a target that
+  # cannot be made) must not stop the others, or tangd below: a box whose partners cannot bind to
+  # it is a worse outcome than one missing directory. Every entry is tried, the ones that failed are
+  # named, and the command exits non-zero at the end so the caller knows.
+  #
+  # An entry is required unless its spec ends in a fifth field, `optional`. The box's keys, its
+  # state and the agent's home are required: a box that came up without them would write its
+  # identity or its owner's data on the plain disk. An optional entry (shared notes, say) is one
+  # the box can run without, and its failure exits $MOUNT_OPTIONAL_FAILED instead of 1, which
+  # cc-secure-daemon reads as "ready, with this missing".
+  local spec sub dst owner mode kind failed="" failed_optional=""
   local IFS_SAVE=$IFS
   for spec in ${CC_SECURE_BINDS:-}; do
-    IFS=: read -r sub dst owner mode <<< "$spec"
-    src="$SECURE/$sub"
-    mkdir -p "$src" "$dst"
-    chown "${owner:-root}:${owner:-root}" "$src"
-    chmod "${mode:-0750}" "$src"
-    mountpoint -q "$dst" || mount --bind "$src" "$dst"
+    IFS=: read -r sub dst owner mode kind <<< "$spec"
+    case "$sub" in
+      keys|state|openclaw|gbrain|mitm-ca|connector|clickclack|postgresql)
+        # Every entry the role ships today, on every kind of box: the box's identity and state,
+        # the agent's or the brain's home, and the firewall's own stores (its CA, the connector's
+        # credentials, team chat, the brain's database). Whatever the list says, a box does not
+        # come up without them: it would write them on the plain disk instead. Only an entry that
+        # is not one of these can be optional.
+        if [ "${kind:-}" = optional ]; then log "ignoring :optional on $sub: it is always required"; kind=""; fi ;;
+    esac
+    if ! bind_entry "$sub" "$dst" "$owner" "$mode"; then
+      if [ "${kind:-}" = optional ]; then failed_optional="$failed_optional $dst"; else failed="$failed $dst"; fi
+      log "ERROR: could not mount $SECURE/$sub at $dst; carrying on with the rest"
+    fi
   done
   IFS=$IFS_SAVE
 
@@ -184,6 +246,11 @@ cmd_mount() {
     else
       log "tang is serving on 127.0.0.1:${TANGD_PORT}"
     fi
+  fi
+  [ -z "$failed" ] || die "mounted at $SECURE, but these could not be mounted:$failed$failed_optional"
+  if [ -n "$failed_optional" ]; then
+    log "mounted at $SECURE, but these optional directories could not be mounted:$failed_optional"
+    exit "$MOUNT_OPTIONAL_FAILED"
   fi
   log "mounted at $SECURE"
 }
@@ -294,6 +361,255 @@ clevis_slots() {
   clevis luks list -d "$loop" 2>/dev/null | sed -n 's/^\([0-9]\+\): tang .*"url":"\([^"]*\)".*/\1\t\2/p'
 }
 
+# Every keyslot in the LUKS header, one number per line. Not `clevis luks list`: that shows tokens,
+# and a keyslot can exist without one.
+luks_keyslots() {
+  cryptsetup luksDump --dump-json-metadata "$1" | python3 -c '
+import json, sys
+print("\n".join(sorted(json.load(sys.stdin).get("keyslots", {}), key=int)))'
+}
+
+# The keyslots some token names, one per line.
+luks_token_keyslots() {
+  cryptsetup luksDump --dump-json-metadata "$1" | python3 -c '
+import json, sys
+slots = set()
+for t in json.load(sys.stdin).get("tokens", {}).values():
+    slots.update(str(k) for k in t.get("keyslots", []))
+print("\n".join(sorted(slots, key=int)))'
+}
+
+# Remove every keyslot that no token names, except slot 0, and print the slots removed
+# (comma-separated).
+#
+# This container has two kinds of keyslot and no other: slot 0, the passphrase in the key file that
+# is sealed to the recovery key, and one slot per partner, each with its clevis token. clevis adds a
+# keyslot and then imports the token that says how to open it; stopped between the two, it leaves a
+# keyslot nothing can use and nothing lists (`clevis luks list` shows tokens, so `unbind` cannot
+# find it). A LUKS2 header has a fixed number of slots, so they would add up until no partner could
+# be bound at all. Measured with clevis 20: a kill a few seconds after the partner answers leaves
+# one every time.
+#
+# Run under the lock: at the start of every bind, which clears whatever an earlier one left however
+# it was stopped (a kill -9 of this script included), and after a bind that failed or was stopped.
+# Never slot 0, never a slot a token names.
+drop_tokenless_keyslots() {
+  local loop=$1 now tokens slot removed=""
+  if ! now=$(luks_keyslots "$loop") || ! tokens=$(luks_token_keyslots "$loop"); then
+    log "ERROR: cannot read the LUKS header of $loop"
+    return 1
+  fi
+  for slot in $now; do
+    [ "$slot" != 0 ] || continue
+    printf '%s\n' "$tokens" | grep -qx "$slot" && continue
+    # The key file opens slot 0, which stays: cryptsetup checks it before it removes anything.
+    if ! cryptsetup luksKillSlot --batch-mode --key-file "$KEYFILE" "$loop" "$slot" >&2; then
+      log "ERROR: keyslot $slot has no token and could not be removed (cryptsetup refused; its reason is above)"
+      return 2
+    fi
+    log "removed keyslot $slot, which had no token (left by a bind that did not finish)"
+    removed=${removed:+$removed,}$slot
+  done
+  printf '%s' "$removed"
+}
+
+# Everything still running in a session, as pids. Empty when it is gone.
+# A process that has ended and only waits for its parent to collect it (state Z) is not running:
+# it holds nothing and can do nothing, and waiting for it would be waiting for somebody else.
+session_pids() { ps -e -o sid=,pid=,stat= 2>/dev/null | awk -v s="$1" '$1 == s && $3 !~ /^Z/ {print $2}'; }
+
+# Wait until a session has no process left, at most $2 tenths of a second. 0 when it is empty.
+session_gone() {
+  local sid=$1 tenths=$2
+  while [ -n "$(session_pids "$sid")" ]; do
+    [ "$tenths" -gt 0 ] || return 1
+    sleep 0.1; tenths=$(( tenths - 1 ))
+  done
+}
+
+# Where a running bind's session is written down: in the lock's directory, which only root can
+# enter. One line, the session id. Written when the bind starts and removed when it has ended.
+BIND_RECORD="$LOCK_DIR/bind.sid"
+
+# A bind whose cc-secure was killed outright (kill -9, a crash) left clevis running in a session of
+# its own with nobody waiting for it: in its curl, for as long as the partner does not answer, and
+# then in cryptsetup. Whenever that partner did answer, it would add a keyslot to the header with
+# no lock held, in the middle of whatever was going on by then. So every command that changes the
+# container stops such a leftover first, under the lock, and only then reads the header.
+#
+# It is found by the session that was written down, not by what its processes look like: clevis
+# runs as `/bin/bash -e /usr/bin/clevis-luks-bind …`, its children are curl, jose and cryptsetup,
+# and a match on argv positions found only the last of them. A recorded session is only believed
+# while one of its processes still carries the mark every bind is started with (CC_SECURE_BIND in
+# its environment), so a session id the kernel has handed to something else is left alone.
+#
+# For a bind started by a version from before the record: a process of root's whose command line
+# names clevis's bind or its luksAddKey on this device. Its whole session only when that session is
+# the bind's own (its leader is one of the matches); otherwise that process and nothing else.
+stop_leftover_bind() {
+  local loop=$1 sid="" p stale
+  if [ -s "$BIND_RECORD" ]; then
+    sid=$(tr -cd '0-9' < "$BIND_RECORD" | head -c 12)
+    if [ -n "$sid" ] && [ -n "$(marked_session_pids "$sid")" ]; then
+      log "stopping a bind that an earlier cc-secure left running (session $sid, pids: $(session_pids "$sid" | paste -sd, -))"
+      kill -KILL -- "-$sid" 2>/dev/null || true
+      stop_bind "$sid" "an earlier partner"
+    fi
+    rm -f "$BIND_RECORD"
+  fi
+  stale=$(unrecorded_bind_pids "$loop")
+  if [ -n "$stale" ]; then
+    log "stopping a bind from before this version that is still running (pids: $(printf '%s' "$stale" | paste -sd, -))"
+    for p in $stale; do
+      sid=$(ps -o sid= -p "$p" 2>/dev/null | tr -d ' ') || true
+      # A command line proves little, so this kills as little as it can. The whole session only
+      # when it is the bind's own: the session's leader is itself one of the matches (a bind
+      # started with setsid). Anything else, a match inside some other session, loses only itself.
+      if [ -n "$sid" ] && printf '%s\n' "$stale" | grep -qx "$sid" && [ "$sid" != "$(ps -o sid= -p $$ | tr -d ' ')" ]; then
+        kill -KILL -- "-$sid" 2>/dev/null || true
+        stop_bind "$sid" "an earlier partner"
+      else
+        kill -KILL "$p" 2>/dev/null || true
+      fi
+    done
+    local tenths=100
+    while [ -n "$(unrecorded_bind_pids "$loop")" ] && [ "$tenths" -gt 0 ]; do sleep 0.1; tenths=$(( tenths - 1 )); done
+  fi
+}
+
+# The processes of a session that carry the mark a bind is started with.
+marked_session_pids() {
+  local p
+  for p in $(session_pids "$1"); do
+    # The braces: a process that ended since the list was made is not an error worth a line.
+    if { tr '\0' '\n' < "/proc/$p/environ"; } 2>/dev/null | grep -qx 'CC_SECURE_BIND=1'; then echo "$p"; fi
+  done
+}
+
+# clevis's bind, or its `cryptsetup luksAddKey`, on this device, wherever in the command line the
+# name stands. Never this script.
+unrecorded_bind_pids() {
+  # Root's processes only: anybody can put these words in a command line, and nobody but root can
+  # run the bind.
+  ps -e -o pid=,uid=,args= 2>/dev/null | awk -v dev="$1" -v self="$$" '
+    $1 == self || $2 != 0 { next }
+    {
+      line = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", line)
+      names = (line ~ /(^|[ \/])clevis-luks-bind( |$)/) || (line ~ /(^|[ \/])clevis luks bind( |$)/) || (line ~ /(^|[ \/])cryptsetup luksAddKey( |$)/)
+      if (!names) next
+      for (i = 3; i <= NF; i++) if ($i == dev) { print $1; break }
+    }'
+}
+
+# Run `clevis luks bind` for at most $BIND_TIMEOUT_S, and return only when nothing it started is
+# still running. 124 when it had to be stopped.
+#
+# Stopping clevis is not stopping the bind. clevis is a shell script; the work is done by its
+# children, and the one that matters, `cryptsetup luksAddKey`, does not die on SIGTERM while it is
+# deriving a key. Measured on a real container with the default argon2id slot: `timeout` returned
+# when the clevis shell died, luksAddKey carried on under PID 1, and it wrote its keyslot 1.3 s
+# after this script had read the header, said "nothing was changed" and released the lock. So the
+# bind gets a session of its own, the whole session is stopped (TERM, then KILL), and the header is
+# only read once the session is empty.
+#
+# `9>&-`: nothing in that session inherits the lock. The lock is held by this script, which does
+# not return from here while any of it is alive: if a process survives SIGKILL (stuck in the
+# kernel), this says that the bind may still complete and keeps waiting, lock held, until it is
+# gone. Whoever started this command can give up on it; the header is not called unchanged.
+run_bind() {
+  local loop=$1 url=$2 thp=$3 pid sid tenths rc=0
+  # A signal to this script (the daemon's own timeout, a `timeout` in front of sudo) must not leave
+  # the bind running behind it: see stop_bind.
+  BIND_SID=""
+  BIND_URL=$url
+  BIND_THP=$thp
+  trap 'bind_interrupted "$BIND_URL"' TERM INT HUP
+  CC_SECURE_BIND=1 setsid clevis luks bind -y -d "$loop" -k "$KEYFILE" tang "{\"url\":\"$url\",\"thp\":\"$thp\"}" 9>&- &
+  pid=$!
+  # Started from a script, setsid is not a group leader and does not fork: its pid is the session.
+  BIND_SID=$pid
+  sid=$pid
+  # Written down at once, so that whatever happens to this script, the next one knows what to stop.
+  # A rename, so a reader never finds half a number.
+  ( umask 077; printf '%s\n' "$sid" > "$BIND_RECORD.tmp" && mv -f "$BIND_RECORD.tmp" "$BIND_RECORD" ) 2>/dev/null || true
+
+  tenths=$(awk -v s="$BIND_TIMEOUT_S" 'BEGIN { printf "%d", s * 10 }')
+  while kill -0 "$pid" 2>/dev/null && [ "$tenths" -gt 0 ]; do sleep 0.1; tenths=$(( tenths - 1 )); done
+  if kill -0 "$pid" 2>/dev/null; then
+    rc=124
+    stop_bind "$sid" "$url"
+  fi
+  # Reaped only now: a `wait` before the kills would sit for ever on a leader that ignores TERM.
+  wait "$pid" 2>/dev/null || { [ "$rc" -eq 124 ] || rc=$?; }
+  # It ended by itself, but what it started may not have: its curl, a cryptsetup still at work.
+  if [ -n "$(session_pids "$sid")" ]; then
+    rc=124
+    stop_bind "$sid" "$url"
+  fi
+  # Nothing of it is left, so there is nothing for a later command to stop.
+  rm -f "$BIND_RECORD"
+  BIND_SID=""
+  # Not back to the default yet: the caller still has to read the header and remove what a stopped
+  # bind left, and removing a keyslot takes a second or two of key derivation. A TERM in that
+  # second (the daemon's timeout arriving just after the bind's own) would end this script with
+  # the leftover keyslot still there. It is all local work with an end, so it is not interrupted;
+  # cmd_bind restores the default when it is done.
+  trap '' TERM INT HUP
+  return "$rc"
+}
+
+# Stop everything in the bind's session and return only when it is empty: TERM, three seconds, KILL.
+# If something survives KILL (stuck in the kernel) say that the bind may still complete and keep
+# waiting, with the lock held, until it is gone.
+stop_bind() {
+  local sid=$1 url=$2 p
+  kill -TERM -- "-$sid" 2>/dev/null || true
+  session_gone "$sid" 30 && return 0
+  kill -KILL -- "-$sid" 2>/dev/null || true
+  for p in $(session_pids "$sid"); do kill -KILL "$p" 2>/dev/null || true; done
+  session_gone "$sid" 100 && return 0
+  log "ERROR: the bind to $url was stopped but part of it is still running (pids: $(session_pids "$sid" | paste -sd, -)); it may still complete. Keeping the lock until it is gone."
+  until session_gone "$sid" 600; do :; done
+  log "the stopped bind to $url has now ended"
+}
+
+# This script was told to stop in the middle of a bind. Stopping here and leaving clevis running
+# would be the same fault as before, one level up: its cryptsetup would write a keyslot after the
+# lock was gone. So the bind's session is stopped first, what it left is removed, and only then
+# does the script go.
+bind_interrupted() {
+  trap '' TERM INT HUP
+  local removed="" loop slot=""
+  loop=$(loopdev)
+  if [ -n "${BIND_SID:-}" ]; then
+    kill -KILL -- "-$BIND_SID" 2>/dev/null || true
+    stop_bind "$BIND_SID" "$1"
+    rm -f "$BIND_RECORD"
+  fi
+  removed=$(drop_tokenless_keyslots "$loop" 2>/dev/null) || true
+  # clevis can have finished at the very moment it was stopped: keyslot and token both written,
+  # and nothing recorded here. That is a working binding; saying "stopped" and leaving it unlisted
+  # would be a slot this box does not know it has.
+  slot=$(finished_unrecorded_slot "$loop" "$1")
+  if [ -n "$slot" ]; then
+    record_binding "$loop" "$slot" "$1" "${BIND_THP:-}" "${BIND_STALE:-}"
+    die "interrupted during the bind to $1, which had just finished: slot $slot is kept and recorded"
+  fi
+  die "interrupted during the bind to $1; the bind was stopped${removed:+ and keyslot(s) $removed, which it had added with no token, removed}"
+}
+
+# A clevis slot for this URL that the header has and the record of bindings does not: the slot of a
+# bind that finished without being written down. Empty when there is none.
+finished_unrecorded_slot() {
+  local loop=$1 url=$2 slot
+  for slot in $(clevis_slots "$loop" | awk -F'\t' -v u="$url" '$2 == u {print $1}'); do
+    if [ -z "$(bindings_read | SLOT="$slot" python3 -c 'import json,os,sys; print(json.load(sys.stdin).get(os.environ["SLOT"],{}).get("url",""))')" ]; then
+      echo "$slot"; return 0
+    fi
+  done
+}
+
+
 # Bind a new partner. The thumbprint is REQUIRED and clevis checks it against what the URL
 # advertises: a wrong one is refused outright, which is what stops a control plane pointing a box at
 # a tang it controls. Whoever calls this has already checked that the thumbprint is signed by the
@@ -301,8 +617,12 @@ clevis_slots() {
 cmd_bind() {
   local url=${1:?usage: cc-secure bind <url> <thumbprint>} thp=${2:?}
   is_mounted || die "container is not mounted"
+  take_lock
   [ -s "$KEYFILE" ] || die "no $KEYFILE; cannot add a slot"
   local loop; loop=$(loopdev)
+  # Before anything else, also before the answer "already bound": a bind that an earlier cc-secure
+  # left running is stopped, or it would outlive this call and write the header later.
+  stop_leftover_bind "$loop"
 
   # Idempotent on the URL, because that is what identifies a partner box. A partner whose tang key
   # changed keeps the same URL, so re-binding it replaces the slot rather than adding a second one.
@@ -318,19 +638,53 @@ cmd_bind() {
   # taken out the working slot, leaving a box that can no longer open itself. Caught by testing a
   # refused re-bind, which is exactly the case that matters.
   local before after slot
+  # What an earlier bind may have left in the header: one that was killed outright cleaned up
+  # nothing. (Whatever of it was still running was stopped above.)
+  drop_tokenless_keyslots "$loop" >/dev/null || die "the keyslots could not be checked or cleaned (the reason is above); nothing else was changed"
   before=$(clevis_slots "$loop" | cut -f1 | sort | paste -sd, -)
-  clevis luks bind -y -d "$loop" -k "$KEYFILE" tang "{\"url\":\"$url\",\"thp\":\"$thp\"}" \
-    || die "bind to $url refused (wrong thumbprint, or the partner is unreachable); nothing was changed"
+  # The one step under the lock that talks to another machine: clevis fetches the partner's
+  # advertisement with curl and no timeout, so a partner that accepts the connection and never
+  # answers (a dead box, or a URL somebody chose for that) would hold the lock, and with it every
+  # bind, rekey and grow on this box, for ever. So it gets $BIND_TIMEOUT_S (see run_bind).
+  local rc=0 removed
+  BIND_STALE=$stale
+  run_bind "$loop" "$url" "$thp" || rc=$?
   after=$(clevis_slots "$loop" | cut -f1 | sort | paste -sd, -)
   slot=$(comm -13 <(printf '%s\n' "$before" | tr ',' '\n' | sed '/^$/d' | sort) \
                   <(printf '%s\n' "$after"  | tr ',' '\n' | sed '/^$/d' | sort) | head -1)
+  if [ "$rc" -ne 0 ]; then
+    # A bind that was stopped, or failed, part-way. clevis adds the keyslot first and its token
+    # second, so there are three places it can have got to.
+    removed=$(drop_tokenless_keyslots "$loop") || die "bind to $url did not finish, and the keyslots could not be checked or cleaned afterwards (the reason is above); run list"
+    local why="refused (wrong thumbprint, or the partner is unreachable)"
+    if [ "$rc" -eq 124 ]; then why="did not answer in ${BIND_TIMEOUT_S} s"; fi
+    if [ -n "$slot" ] && [ "$(clevis_slots "$loop" | awk -F'\t' -v s="$slot" '$1 == s {print $2}')" = "$url" ]; then
+      # Both were written before it was stopped: that is a finished binding, so it is kept.
+      log "bind to $url $why, but slot $slot was already written with its token; keeping it"
+    elif [ -n "$removed" ]; then
+      die "bind to $url $why after it had added keyslot(s) $removed with no token; removed them, so nothing is changed"
+    else
+      die "bind to $url $why; nothing was changed"
+    fi
+  fi
   [ -n "$slot" ] || die "bind reported success but no new slot appeared"
+  record_binding "$loop" "$slot" "$url" "$thp" "$stale"
+  trap - TERM INT HUP
+}
+
+# Write a new binding down, and drop the slot it replaces. Used by a bind that ended normally and
+# by one that was told to stop at the instant it finished: a re-bind after a partner's tang key
+# changed must leave one slot for that URL either way.
+record_binding() {
+  local loop=$1 slot=$2 url=$3 thp=$4 stale=$5
   bindings_write "$slot" "$url" "$thp" add
   log "bound slot $slot to $url"
-
   # Only now is it safe to drop the old one, and only if the new slot is genuinely a different slot.
   if [ -n "$stale" ] && [ "$stale" != "$slot" ]; then
-    clevis luks unbind -d "$loop" -s "$stale" -f && bindings_write "$stale" "" "" remove \
+    # </dev/null: clevis's `cryptsetup luksKillSlot -q` reads its standard input when that is not
+    # a terminal, and waits for ever on one that stays open (seen with a caller that passed its
+    # own pipe on). With nothing to read it removes the slot, which is what -f asks for.
+    clevis luks unbind -d "$loop" -s "$stale" -f </dev/null && bindings_write "$stale" "" "" remove \
       && log "removed the stale slot $stale for $url"
   fi
 }
@@ -339,6 +693,8 @@ cmd_bind() {
 cmd_unbind() {
   local what=${1:?usage: cc-secure unbind <url|thumbprint>}
   is_mounted || die "container is not mounted (the record of what is bound lives inside it)"
+  take_lock
+  stop_leftover_bind "$(loopdev)"
   local loop slot; loop=$(loopdev)
 
   slot=$(clevis_slots "$loop" | awk -F'\t' -v u="$what" '$2 == u {print $1; exit}')
@@ -356,7 +712,9 @@ print(next((s for s, v in m.items() if v.get("thp") == w or v.get("url") == w), 
   if [ "$bound" -le 1 ] && [ "${CC_SECURE_ALLOW_LAST_UNBIND:-0}" != "1" ]; then
     die "refusing to remove the last partner binding; set CC_SECURE_ALLOW_LAST_UNBIND=1 if that is really meant"
   fi
-  clevis luks unbind -d "$loop" -s "$slot" -f
+  # </dev/null: see record_binding. The daemon runs this with a pipe for standard input that it
+  # never closes.
+  clevis luks unbind -d "$loop" -s "$slot" -f </dev/null
   bindings_write "$slot" "" "" remove
   log "unbound slot $slot ($what)"
 }
@@ -388,6 +746,8 @@ cmd_rekey() {
   is_mounted || die "container is not mounted"
   [ -s "$KEYFILE" ] || die "no $KEYFILE"
   [ -s "$RECOVERY_PUB" ] || die "no recovery public key; a rekey would leave no way back in"
+  take_lock
+  stop_leftover_bind "$(loopdev)"
   local loop tmp; loop=$(loopdev)
   tmp=$(mktemp -p /dev/shm cc-secure.XXXXXX); chmod 0600 "$tmp"
   head -c 32 /dev/urandom | base64 -w0 > "$tmp"
@@ -404,8 +764,131 @@ cmd_reseal() {
   is_mounted || die "container is not mounted"
   [ -s "$KEYFILE" ] || die "no $KEYFILE"
   [ -s "$RECOVERY_PUB" ] || die "no recovery public key"
+  take_lock
+  stop_leftover_bind "$(loopdev)"
   seal_to_recovery "$KEYFILE" || die "could not seal to the new recovery key"
   log "re-sealed to the current recovery key"
+}
+
+# ---------------------------------------------------------------------------- size / grow
+
+# How much of the server's disk is kept for the system when working out how large the container may
+# get: packages, logs, an Update's downloads, and room for the swap file that is already counted.
+RESERVE_GB=10
+GIB=1073741824
+
+# The sizes, as JSON on one line. Reads only: it opens nothing and changes nothing, so it is safe
+# behind a sudoers line and on a box whose container is locked.
+#
+#   sizeGb     the container's size (the image file's length; it is sparse)
+#   fsBytes / usedBytes / freeBytes   the filesystem inside, when mounted
+#   diskBytes  the server disk the image sits on
+#   systemUsedBytes   what that disk holds apart from the image
+#   maxGb      the largest size `grow` accepts now (never below sizeGb)
+#   pending    a grow was interrupted: the filesystem is smaller than the container. `grow <sizeGb>`
+#              finishes it.
+cmd_size() {
+  [ -f "$IMG" ] || { printf '{"present":false}\n'; return 0; }
+  local img_bytes img_alloc disk_total disk_used mounted=false fs_bytes=0 fs_used=0 fs_free=0 dm_bytes=0
+  img_bytes=$(stat -c %s "$IMG")
+  img_alloc=$(( $(stat -c %b "$IMG") * 512 ))
+  read -r disk_total disk_used < <(df -B1 --output=size,used "$(dirname "$IMG")" | tail -1)
+  if is_mounted; then
+    mounted=true
+    read -r fs_bytes fs_used fs_free < <(df -B1 --output=size,used,avail "$SECURE" | tail -1)
+    dm_bytes=$(blockdev --getsize64 "/dev/mapper/$MAPPER" 2>/dev/null || echo 0)
+  fi
+  IMG_BYTES=$img_bytes IMG_ALLOC=$img_alloc DISK_TOTAL=$disk_total DISK_USED=$disk_used MOUNTED=$mounted \
+  FS_BYTES=$fs_bytes FS_USED=$fs_used FS_FREE=$fs_free DM_BYTES=$dm_bytes FS_DEV_BYTES=$(fs_device_bytes) \
+  RESERVE_GB=$RESERVE_GB python3 -c '
+import json, os
+e = lambda k: int(os.environ[k])
+G = 2**30
+size_gb = e("IMG_BYTES") // G
+system_used = max(0, e("DISK_USED") - e("IMG_ALLOC"))
+max_gb = max(size_gb, (e("DISK_TOTAL") - system_used - e("RESERVE_GB") * G) // G)
+mounted = os.environ["MOUNTED"] == "true"
+out = {"present": True, "mounted": mounted, "sizeGb": size_gb, "maxGb": max_gb, "reserveGb": e("RESERVE_GB"),
+       "diskBytes": e("DISK_TOTAL"), "systemUsedBytes": system_used, "imageBytes": e("IMG_ALLOC")}
+if mounted:
+    out.update(fsBytes=e("FS_BYTES"), usedBytes=e("FS_USED"), freeBytes=e("FS_FREE"),
+               # The filesystem ends where its device ends once a grow has finished.
+               pending=e("FS_DEV_BYTES") < e("DM_BYTES") or e("DM_BYTES") + 64 * 2**20 < e("IMG_BYTES"))
+print(json.dumps(out, separators=(",", ":")))'
+}
+
+# The filesystem's own size in bytes (block count x block size), 0 when the mapping is not open.
+# Not `df`: that reports the size less the filesystem's overhead, which cannot be compared with a
+# device.
+fs_device_bytes() {
+  is_open || { echo 0; return 0; }
+  dumpe2fs -h "/dev/mapper/$MAPPER" 2>/dev/null | awk -F: '
+    /^Block count/ {c=$2} /^Block size/ {b=$2} END {gsub(/ /,"",c); gsub(/ /,"",b); print (c && b) ? c*b : 0}'
+}
+
+# Make the container larger, to <gb> GiB, while it is mounted and in use.
+#
+# Four steps, each of which leaves every layer at least as large as the one above it, so stopping
+# after any of them (a power cut included) leaves a valid container with a filesystem smaller than
+# its device. Running `grow` again with the same number finishes the job. None of the steps writes
+# the LUKS header or a keyslot: the partner bindings and the recovery blob stay as they were.
+#
+#   1. truncate          the image file gets longer; it is sparse, so nothing is allocated
+#   2. losetup -c        the loop device takes the file's new size
+#   3. cryptsetup resize the mapping takes the loop device's size. It asks for a passphrase because
+#                        an active LUKS2 mapping keeps its volume key in the kernel keyring; the key
+#                        file is inside the container, so it is readable exactly when a grow is allowed
+#   4. resize2fs         ext4 grows while mounted
+#
+# It never makes anything smaller. The limit is worked out here, on the box (see cmd_size): the
+# caller passes a number and nothing else.
+cmd_grow() {
+  [ $# -eq 1 ] || die "usage: cc-secure grow <gb>"
+  local gb=$1
+  [[ "$gb" =~ ^[1-9][0-9]{0,3}$ ]] || die "the size must be a whole number of GiB"
+  [ -f "$IMG" ] || die "no container at $IMG"
+  is_mounted || die "container is not mounted"
+  [ -s "$KEYFILE" ] || die "no $KEYFILE; cannot resize"
+  take_lock
+  local loop
+  loop=$(losetup -j "$IMG" -O NAME --noheadings 2>/dev/null | head -1 | tr -d ' ')
+  [ -n "$loop" ] || die "no loop device for $IMG"
+  stop_leftover_bind "$loop"
+
+  local target=$(( gb * GIB )) img_bytes info max_gb pending
+  img_bytes=$(stat -c %s "$IMG")
+  # Each of these would end the script without a word under `set -e`.
+  info=$(cmd_size) || die "could not read the container's sizes; nothing was changed"
+  max_gb=$(printf '%s' "$info" | python3 -c 'import json,sys; print(json.load(sys.stdin)["maxGb"])') \
+    || die "could not read the container's sizes; nothing was changed"
+  pending=$(printf '%s' "$info" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("pending", False)).lower())') \
+    || die "could not read the container's sizes; nothing was changed"
+
+  if [ "$target" -lt "$img_bytes" ]; then
+    die "the storage is $(( img_bytes / GIB )) GiB and cannot be made smaller"
+  elif [ "$target" -eq "$img_bytes" ]; then
+    # The same size again is only useful to finish a grow that was interrupted.
+    [ "$pending" = true ] || die "the storage is already ${gb} GiB"
+    log "finishing an interrupted grow to ${gb}G"
+  else
+    [ "$gb" -le "$max_gb" ] || die "no room: this server's disk allows at most ${max_gb} GiB"
+    log "growing the container from $(( img_bytes / GIB ))G to ${gb}G"
+    truncate -s "$target" "$IMG" || die "could not extend $IMG"
+  fi
+
+  losetup -c "$loop" || die "the loop device did not take the new size; run grow $gb again"
+  cryptsetup resize --key-file "$KEYFILE" "$MAPPER" || die "the mapping did not take the new size; run grow $gb again"
+  resize2fs "/dev/mapper/$MAPPER" >/dev/null 2>&1 || die "the filesystem did not grow; run grow $gb again"
+
+  # Read it back rather than trust the exit codes.
+  local dm_bytes fs_dev
+  dm_bytes=$(blockdev --getsize64 "/dev/mapper/$MAPPER")
+  fs_dev=$(fs_device_bytes)
+  [ "$(stat -c %s "$IMG")" -ge "$target" ] || die "the image is smaller than ${gb}G after the grow"
+  [ $(( dm_bytes + 64 * 1048576 )) -ge "$target" ] || die "the mapping is smaller than ${gb}G after the grow; run grow $gb again"
+  [ "$fs_dev" -ge "$dm_bytes" ] || die "the filesystem is smaller than its device after the grow; run grow $gb again"
+  log "the container is ${gb}G"
+  cmd_size
 }
 
 # ---------------------------------------------------------------------------- status
@@ -437,5 +920,7 @@ case "${1:-}" in
   rekey)        shift; cmd_rekey "$@" ;;
   reseal)       shift; cmd_reseal "$@" ;;
   status)       shift; cmd_status "$@" ;;
-  *) die "usage: cc-secure {init|open|open-with <file>|mount|umount|tang-keygen|thumbprint|bind <url> <thp>|unbind <thp>|list|rekey|reseal|status}" ;;
+  size)         shift; cmd_size "$@" ;;
+  grow)         shift; cmd_grow "$@" ;;
+  *) die "usage: cc-secure {init|open|open-with <file>|mount|umount|tang-keygen|thumbprint|bind <url> <thp>|unbind <thp>|list|rekey|reseal|status|size|grow <gb>}" ;;
 esac

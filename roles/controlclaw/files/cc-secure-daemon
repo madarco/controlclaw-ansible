@@ -25,7 +25,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
-const { execFileSync, execFile } = require("node:child_process");
+const { execFileSync, execFile, spawnSync } = require("node:child_process");
 
 const CC_SECURE = "/usr/local/bin/cc-secure";
 const SECURE = process.env.CC_SECURE_MOUNT || "/opt/controlclaw/secure";
@@ -123,6 +123,20 @@ const SH_ENV = {
   CC_SECURE_RECOVERY_JWE: RECOVERY_BLOB,
 };
 const sh = (args, opts) => execFileSync(CC_SECURE, args, { encoding: "utf8", env: SH_ENV, ...opts });
+/** What `cc-secure mount` exits with when only an optional directory could not be mounted. */
+const MOUNT_OPTIONAL_FAILED = 3;
+/**
+ * `cc-secure mount`, with everything it says sent on to the journal whatever it exits with. Its
+ * stderr is read here (to name a missing optional directory), and a pipe that is only looked at on
+ * failure would drop the lines of a mount that exits 0, "tangd.socket would not start" among them.
+ */
+function mountNow() {
+  const r = spawnSync(CC_SECURE, ["mount"], { encoding: "utf8", env: SH_ENV, stdio: ["ignore", "inherit", "pipe"] });
+  const said = String(r.stderr || "");
+  if (said) process.stderr.write(said);
+  const missing = (/these optional directories could not be mounted:(.*)/.exec(said) || [])[1];
+  return { status: r.status, signal: r.signal, missing };
+}
 
 /**
  * The same, without stopping the world — and everything on the report beat has to use it.
@@ -138,11 +152,18 @@ const sh = (args, opts) => execFileSync(CC_SECURE, args, { encoding: "utf8", env
  * pair at over four minutes with no end, three connections queued on each gate, neither box able to
  * bind and neither able to open the other (T-97).
  *
- * A timeout on top, because a child that never exits must not stall the report loop either. Killing
- * a bind is safe: `cc-secure bind` adds the new slot before it removes any stale one, so an
- * interrupted run leaves the box exactly as openable as it was.
+ * A timeout on top, because a child that never exits must not stall the report loop either. It is
+ * a last resort and not how a slow bind is ended: `cc-secure bind` gives the partner 60 s itself,
+ * and when it is told to stop (this timeout sends SIGTERM) it stops clevis and everything clevis
+ * started before it goes, and removes a keyslot that was left with no token. It also adds the new
+ * slot before it removes a stale one, so an interrupted run leaves the box as openable as it was.
  */
-const SH_TIMEOUT_MS = 120_000;
+// Longer than the longest thing `cc-secure bind` does on its own: 90 s waiting for the lock, 60 s
+// for the partner to answer, up to 15 s stopping a bind that did not, then the header clean-up. At
+// 120 s this timeout could land in the middle of that and kill cc-secure while its clevis was
+// still adding a keyslot. cc-secure now stops the bind when it is told to stop, and this no longer
+// asks it to.
+const SH_TIMEOUT_MS = 240_000;
 const shAsync = (args, opts) =>
   new Promise((resolve, reject) => {
     execFile(CC_SECURE, args, { encoding: "utf8", env: SH_ENV, timeout: SH_TIMEOUT_MS, ...opts }, (err, stdout) =>
@@ -341,7 +362,8 @@ function tangIsDown(what) {
   tangDownAt = Date.now();
   log(`ERROR: ${what} arrived but nothing is listening on 127.0.0.1:${TANGD_PORT};` +
       " this box publishes no thumbprint and cannot open its partner. Trying to start tang again.");
-  shAsync(["mount"], { stdio: "inherit" }).catch((e) => log(`could not restart tang: ${e.message}`));
+  // Exit 3 is "mounted, tang started, an optional directory is missing": tang was restarted.
+  shAsync(["mount"], { stdio: "inherit" }).catch((e) => { if (e.code !== MOUNT_OPTIONAL_FAILED) log(`could not restart tang: ${e.message}`); });
 }
 
 // ---------------------------------------------------------------- the tang gate
@@ -622,7 +644,17 @@ async function main() {
   const finish = () => {
     if (done) return;
     done = true;
-    sh(["mount"], { stdio: "inherit" });
+    // `cc-secure mount` exits 3 when the container is mounted, tang is serving and only a directory
+    // marked optional (shared notes, say) could not be bind-mounted. That is a box that can run:
+    // without this, one broken optional entry kept READY from ever being sent, and with it OpenClaw
+    // and the vm-agent, which wait for this unit. Any other failure is still a failure.
+    const mounted = mountNow();
+    if (mounted.status !== 0 && mounted.status !== MOUNT_OPTIONAL_FAILED) {
+      throw new Error(`cc-secure mount failed (${mounted.status ?? mounted.signal})`);
+    }
+    if (mounted.status === MOUNT_OPTIONAL_FAILED) {
+      log(`ERROR: the container is open, but not everything in it could be mounted:${mounted.missing || " (see above)"}. Starting without it.`);
+    }
     // Not closed: from here it answers that the disk is open (`serveDisk`).
     disk.open();
     notify("READY=1");
