@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.7.0",
+    "date": "2026-10-12",
+    "changes": [
+      "A template can be applied to an agent that already runs: you see what would change first, then confirm once."
+    ]
+  },
+  {
     "version": "1.6.0",
     "date": "2026-10-11",
     "changes": [
