@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.9.0",
+    "date": "2026-10-12",
+    "changes": [
+      "The agent page shows CPU, memory and disk use.",
+      "When you apply a template to an agent that already has instructions, you can review and edit them on the agent.",
+      "The disk figure now reads the way df does, and the fuller of the server's disk and the agent's own storage is shown."
+    ]
+  },
+  {
     "version": "1.8.0",
     "date": "2026-10-12",
     "changes": [
