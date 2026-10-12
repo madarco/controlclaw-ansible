@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.8.0",
+    "date": "2026-10-12",
+    "changes": [
+      "Your organization can keep its own agent templates and create or set up agents from them.",
+      "A template's file steps write only inside the agent's workspace; anything else is a script you can read before confirming."
+    ]
+  },
+  {
     "version": "1.7.0",
     "date": "2026-10-12",
     "changes": [
