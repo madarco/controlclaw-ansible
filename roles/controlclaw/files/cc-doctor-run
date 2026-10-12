@@ -72,6 +72,8 @@ def main():
     metadata = BASE / (sid+'.json')
     now = time.time()
     if metadata.exists():
+        # A Final check is one turn: its session id is never run a second time.
+        if check: raise ValueError()
         old = json.loads(metadata.read_text())
         if old.get('ended') or old['cli'] != cli or old['agent'] != str(ip) or now >= old['deadline']: raise ValueError()
         seconds = min(seconds, old['deadline'] - now)
@@ -174,6 +176,7 @@ def launch(sid,work,mode,seconds,lock,check=False):
           '--property=RestrictAddressFamilies=AF_UNIX AF_INET','--property=ProtectProc=invisible','--property=ProcSubset=pid',
           '--property=ProtectKernelLogs=yes','--property=ProtectKernelModules=yes','--property=ProtectClock=yes','--property=ProtectHostname=yes',
           '--property=RestrictNamespaces=yes','--property=LockPersonality=yes','--property=SystemCallArchitectures=native',
+          '--property=PrivateIPC=yes','--property=CPUQuota=150%','--property=SystemCallFilter=@system-service','--property=SystemCallErrorNumber=EPERM',
           '--property=TemporaryFileSystem=/run:ro /var:ro /opt:ro /home:ro /root:ro /srv:ro /mnt:ro /media:ro /boot:ro /etc:ro',
           '--property=BindPaths='+str(work),
           '--property=BindReadOnlyPaths='+str(SOCKS/sid)+' -/etc/passwd -/etc/group -/etc/nsswitch.conf -/etc/ld.so.cache -/etc/ld.so.conf -/etc/ld.so.conf.d -/etc/alternatives -/etc/localtime']

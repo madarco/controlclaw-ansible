@@ -43,6 +43,12 @@ def confined(env):
     if any(reaches(h,p) for h,p in [('1.1.1.1',443),('8.8.8.8',53),('127.0.0.1',22),('127.0.0.1',2019),('127.0.0.1',3100),('127.0.0.1',8080)]): return 'network'
     if any(k in env for k in ('ANTHROPIC_API_KEY','OPENAI_API_KEY','AI_GATEWAY_API_KEY')) or re.match(r'(sk-|vck_|eyJ)',env.get('ANTHROPIC_AUTH_TOKEN','')): return 'key'
     if any(Path(p).exists() for p in ('/opt/controlclaw','/etc/shadow','/etc/caddy','/var/lib','/var/log')) or [p.name for p in Path('/run/ccdoctor').iterdir()]!=[sid]: return 'files'
+    # What is left of the folders a firewall keeps things in: nothing but this session's own.
+    def listed(path):
+        try: return sorted(p.name for p in Path(path).iterdir())
+        except PermissionError: return []
+        except OSError: return ['?']
+    if not set(listed('/run'))<={'ccdoctor','ccdoctor-sock','systemd'} or listed('/run/ccdoctor-sock')!=[sid] or listed('/home') or listed('/root') or listed('/dev/shm') or listed('/opt'): return 'files'
     for attempt in range(40):
         if reaches('127.0.0.1',CHECK_MODEL_PORT): return None
         time.sleep(.1)
@@ -65,11 +71,14 @@ if len(sys.argv)>2 and sys.argv[2]=='cli':
     if check:
         # No built-in tool at all (no shell, no file read): the one tool is cc-tplcheck, over MCP.
         # Anything else the model asks for is refused without a question.
-        env.update({'CC_TPLCHECK_SOCK':str(CHECK_SOCKS/'tools.sock'),'ANTHROPIC_SMALL_FAST_MODEL':model,'ANTHROPIC_DEFAULT_HAIKU_MODEL':model})
+        env.update({'CC_TPLCHECK_SOCK':str(CHECK_SOCKS/'tools.sock'),'ANTHROPIC_SMALL_FAST_MODEL':model,'ANTHROPIC_DEFAULT_HAIKU_MODEL':model,
+          'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS':'1'})
         (work/'mcp.json').write_text(json.dumps({'mcpServers':{'tplcheck':{'command':'/usr/local/bin/cc-tplcheck','args':['--mcp'],
           'env':{'CC_TPLCHECK_SOCK':env['CC_TPLCHECK_SOCK'],'CC_TPLCHECK_TOKEN':env['CC_TPLCHECK_TOKEN']}}}}))
+        # No settings file of any kind, no skills or slash commands, and a bound on the turns.
         args=['/usr/local/bin/claude','-p','--output-format','stream-json','--verbose','--tools','','--strict-mcp-config',
-          '--mcp-config',str(work/'mcp.json'),'--allowedTools','mcp__tplcheck__run','--permission-mode','dontAsk','--model',model,'--',prompt]
+          '--mcp-config',str(work/'mcp.json'),'--allowedTools','mcp__tplcheck__run','--permission-mode','dontAsk',
+          '--setting-sources','','--disable-slash-commands','--max-turns','60','--model',model,'--',prompt]
     elif cli=='claude':
         args=['/usr/local/bin/claude','--dangerously-skip-permissions']
         if mode=='chat': args += ['-p','--output-format','stream-json','--verbose']
