@@ -72,7 +72,9 @@
     - { path: "{{ controlclaw_home }}/.openclaw/credentials", mode: '0700' }
     - { path: "{{ controlclaw_home }}/.openclaw/skills", mode: '0755' }
 
-# Skills we ship with the box, one directory per skill with a SKILL.md in it.
+# Skills we ship with the box, one directory per skill with a SKILL.md in it. Their source is
+# packages/skills in the controlclaw repo; scripts/deploy-skills.sh stages them here, each with a
+# .controlclaw.json beside its SKILL.md that the agent's skills report reads.
 #
 # `~/.openclaw/skills` is OpenClaw's *managed* tier, and that is the point: the bundled tier lives
 # inside the npm package, so anything written there is gone the next time this role runs
@@ -83,6 +85,9 @@
 # The copy is not `delete: true`: a customer may have put their own skills in the same directory,
 # and the box is theirs. Ours are replaced on every run, which is what makes an edit to a SKILL.md
 # reach existing boxes through a re-provision.
+#
+# No restart: OpenClaw watches this folder, and a running agent reads a new or changed SKILL.md on
+# its next turn (checked on a real box with 2026.9.9, 2026-10-12).
 - name: Install the bundled OpenClaw skills
   ansible.builtin.copy:
     src: openclaw-skills/
@@ -91,9 +96,6 @@
     group: "{{ controlclaw_user }}"
     mode: "0644"
     directory_mode: "0755"
-  # The gateway caches the skill set per process and nothing here bumps the in-process snapshot
-  # version, so a SKILL.md dropped in under a running gateway is not read until it restarts.
-  notify: restart openclaw
 
 # `npm install -g openclaw@latest` costs ~48s even when the package is already current, because it
 # re-resolves and re-verifies 300+ packages. That made it the most expensive task on a box booted

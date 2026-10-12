@@ -42,6 +42,7 @@
   # Includes NODE_EXTRA_CA_CERTS when secured-box installed the firewall CA.
   environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
   notify: restart openclaw
+  register: agentmail_plugin_install
   when: >-
     (agentmail_plugins.stdout[agentmail_plugins.stdout.index('{'):] | from_json).plugins
     | selectattr('id', 'equalto', 'agentmail')
@@ -134,46 +135,43 @@
   changed_when: "'changed' in agentmail_linux.stdout"
 
 
-# Gateway startup recreates its own hardlinks. A managed skill copy remains independent.
-- name: AgentMail | create managed skills directory
-  ansible.builtin.file:
-    path: "{{ controlclaw_home }}/.openclaw/skills/agentmail"
-    state: directory
-    owner: "{{ controlclaw_user }}"
-    group: "{{ controlclaw_user }}"
-    mode: "0755"
+# The skill itself is not installed here. It is packages/skills/agentmail in the controlclaw repo
+# (this plugin version's skill, calling cc-agentmail, plus the email rules section), and reaches
+# ~/.openclaw/skills/agentmail with the other bundled skills in openclaw.yml. A managed copy is
+# independent of the hardlinks the gateway recreates at startup. When agentmail_plugin_version
+# changes, update that skill from the new plugin.
 
-- name: AgentMail | read the official skill
+# That skill is this plugin version's own skill with three replacements, and nothing here derives
+# it any more. So check it, as a release check: a bump of agentmail_plugin_version with the old file
+# still staged stops the play that installs the new plugin, which is the base image build first.
+#
+# Only in a play that has just installed the plugin. The plugin's copy of the skill is a file the
+# agent's user can write, and it is not installed again while the version matches, so on a box
+# that already has the plugin it proves nothing, and an agent that edited it must never make its
+# owner's Update fail.
+- name: AgentMail | read the plugin's own skill
   ansible.builtin.slurp:
     src: "{{ agentmail_root }}/skills/agentmail/SKILL.md"
-  register: agentmail_skill
+  register: agentmail_plugin_skill
+  when: agentmail_plugin_install is changed
 
-- name: AgentMail | install the native CLI skill without hardlinks
-  ansible.builtin.copy:
-    dest: "{{ controlclaw_home }}/.openclaw/skills/agentmail/SKILL.md"
-    content: >-
-      {{ agentmail_skill.content | b64decode
+- name: AgentMail | the staged skill must be this plugin version's skill
+  ansible.builtin.assert:
+    that:
+      - lookup('ansible.builtin.file', 'openclaw-skills/agentmail/SKILL.md').startswith(agentmail_expected_skill | trim)
+    fail_msg: >-
+      packages/skills/agentmail/SKILL.md (controlclaw repo) is not the skill of AgentMail
+      {{ agentmail_plugin_version }}. Take the plugin's skills/agentmail/SKILL.md, make the three
+      replacements (see packages/skills/README.md), keep the email rules section, and stage again
+      with scripts/deploy-skills.sh.
+    quiet: true
+  vars:
+    agentmail_expected_skill: >-
+      {{ agentmail_plugin_skill.content | b64decode
          | replace('openclaw agentmail --', 'cc-agentmail')
          | replace('"bins": ["openclaw"]', '"bins": ["cc-agentmail"]')
-         | replace('Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags.', 'The ControlClaw launcher loads the inbox placeholder from the local environment file.') }}{{ agentmail_rules_note }}
-    owner: "{{ controlclaw_user }}"
-    group: "{{ controlclaw_user }}"
-    mode: "0644"
-  vars:
-    # Appended to the official skill: what the org firewall's email rules do to this inbox
-    # (controlclaw docs/plans/email-rules.md).
-    agentmail_rules_note: |
-
-
-      ## ControlClaw email rules
-
-      Your organization's firewall checks every email this inbox sends and receives:
-
-      - Reply to an email with `inboxes:messages reply` on its message ID, so the answer stays in the thread.
-      - A `451` with `email_recipient_needs_approval` means the person is new and the owner has been asked to approve them. Say you are waiting for that approval and send again later. Do not retry in a loop.
-      - A `403` with `email_refused` means the rules do not allow it (recipient not allowed, the hourly or daily limit, sending turned off). The `message` says which. Report it and stop.
-      - Mail from senders the owner has not allowed, or that fails DMARC, never reaches you. A message shown as `blocked` with no content was held back by the firewall.
-  notify: restart openclaw
+         | replace('Always put `--` after `agentmail`; it prevents OpenClaw from interpreting AgentMail flags.', 'The ControlClaw launcher loads the inbox placeholder from the local environment file.') }}
+  when: agentmail_plugin_install is changed
 
 - name: AgentMail | install the Linux CLI launcher
   ansible.builtin.copy:
