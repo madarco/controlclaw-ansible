@@ -23,6 +23,81 @@
   ansible.builtin.set_fact:
     controlclaw_node_env: "{{ {'NODE_EXTRA_CA_CERTS': mitm_ca_path} if mitm_ca_installed.stat.exists else {} }}"
 
+# The born stamp: when this box was given to its organization, as one ISO time in a root-owned
+# file. The vm-agent reads it (controlclaw packages/vm-agent/src/born.ts) to tell a new agent from
+# one that has been running: the template an agent is created with is applied without a
+# confirmation code only while it is new, and skills start the same way.
+#
+# Written ONCE, and only in two places:
+#   - here, on the FIRST PROVISIONING of a box created for its organization;
+#   - by cc-pool-local.cjs `activate`, when a box from the ready pool is claimed. A pool box is
+#     built and paired long before that, so it gets no stamp when it is warmed (pool_unclaimed).
+#
+# "First provisioning" is asked of the box itself, before this play has written anything:
+#   - /etc/controlclaw/release.json is absent. release.yml writes it as the last step of every play
+#     that succeeds, and the base image build scrubs it, so its absence is "this box has never
+#     finished a provision": the same test fast-path.yml makes. An Update (cc-reprovision re-runs
+#     this role) finds it and writes no stamp.
+#   - /opt/controlclaw/keys/vm_id is absent. The keys are written by this play into the box's own
+#     encrypted container and scrubbed from the image, so a box that has them was provisioned
+#     before, whatever its release record says: an agent from before release.json existed, on its
+#     first Update, has its keys and gets no stamp. Such an agent never has one, and the vm-agent
+#     reads a missing stamp as "not new".
+#   NOT the update pin: /etc/controlclaw/update.conf is written during the image build and stays
+#   in the image, so every box built from an image has it from its first boot.
+#
+# NEVER IN AN IMAGE BUILD (vm_id is "image-build": controlclaw apps/saas/app/(vm)/lib/base-image.ts).
+# A stamp baked into the image would be every agent's stamp: the build's time, kept by force: no,
+# so no agent would ever be new. The build also removes the file and refuses to snapshot a disk
+# that has one.
+#
+# It is early in the play on purpose: a first provisioning that fails later and is run again must
+# not find its own keys and conclude it was provisioned before. force: no keeps a stamp that is
+# there. The file is in no backup or restore (controlclaw packages/backup-envelope lists what is,
+# by path). The agent's own user can write neither the file nor its folder, and the vm-agent takes
+# no stamp that is not root's in a folder that is root's.
+- name: Born stamp | has this box finished a provision before
+  ansible.builtin.stat:
+    path: /etc/controlclaw/release.json
+  register: cc_born_release
+
+- name: Born stamp | does this box have its identity already
+  ansible.builtin.stat:
+    path: /opt/controlclaw/keys/vm_id
+  register: cc_born_identity
+
+- name: Born stamp | is this the first provisioning of a box for its organization
+  ansible.builtin.set_fact:
+    cc_born_now: >-
+      {{ box_role in ['openclaw', 'mitm', 'gbrain']
+         and (vm_id | default('')) != 'image-build'
+         and not (pool_unclaimed | default(false) | bool)
+         and not (cc_born_release.stat.exists | default(false))
+         and not (cc_born_identity.stat.exists | default(false)) }}
+
+# /etc/controlclaw is root's and nobody else can write in it (every task that makes it says root,
+# 0755): the agent's own user can neither change the stamp nor move it aside or put another in its
+# place. That is why it is here, next to release.json and update.conf, and not under
+# /opt/controlclaw, which belongs to that user.
+- name: Born stamp | make sure its folder exists and is root's
+  ansible.builtin.file:
+    path: /etc/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: cc_born_now | bool
+
+- name: Born stamp | record when this box was born (first provisioning only)
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/born
+    content: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}\n"
+    owner: root
+    group: root
+    mode: '0644'
+    force: no
+  when: cc_born_now | bool
+
 # First, and on every role: the firewall's dev-consent gate reads the file this writes, and a box
 # that failed halfway through provisioning should still be able to say what it was built from.
 - name: Record where this box's Ansible came from

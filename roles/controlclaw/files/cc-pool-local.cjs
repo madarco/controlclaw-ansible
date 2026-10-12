@@ -99,6 +99,12 @@ function activate(vars) {
   // Store the alias for future reprovisioning before removing the unclaimed gate.
   write('/etc/controlclaw/handle-hostname', vars.handle_hostname);
   write(`${keys}/access_hostname`, vars.handle_hostname, 0o644, true);
+  // The born stamp (tasks/main.yml, "Born stamp"): this box is its organization's from now, however
+  // long ago it was built. Root-owned. Written here whatever is there: a claim happens once (the
+  // pool-unclaimed gate above), and a stamp found on an unclaimed box could only be an image's or a
+  // warm's, which would be wrong. In /etc/controlclaw, which is root's: the agent's user cannot touch
+  // it. Before the service is restarted below, which reads it.
+  write('/etc/controlclaw/born', new Date().toISOString().replace(/\.\d{3}Z$/, 'Z') + '\n');
   write('/etc/controlclaw/pool-activating', vars.vm_id);
   fs.unlinkSync('/etc/controlclaw/pool-unclaimed');
   cmd(['systemctl', 'daemon-reload']);
