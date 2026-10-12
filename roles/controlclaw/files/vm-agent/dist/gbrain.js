@@ -8,7 +8,11 @@ var __require = /* @__PURE__ */ ((x2) => typeof require !== "undefined" ? requir
 
 // src/gbrain.ts
 import { createServer as createServer2 } from "http";
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
+
+// src/auth.ts
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { dirname } from "path";
 
 // ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/buffer_utils.js
 var encoder = new TextEncoder();
@@ -1014,6 +1018,111 @@ function setMitmPinnedKeyLoader(loader) {
   mitmPinnedKeyLoader = loader;
   mitmPinnedKey = null;
 }
+var ownHostnames = () => [];
+var boundLatchPath = null;
+var boundSeen = false;
+var boundWritten = false;
+var TAKEN_KEPT_MS = 15e4;
+var takenIds = /* @__PURE__ */ new Map();
+var TAKEN_MAX = 2e4;
+var AHEAD_MS = 15e4;
+var refusalSaidAt = /* @__PURE__ */ new Map();
+var TAKEN_SWEEP = 64;
+var floorIat = 0;
+var newestIat = 0;
+var newestPath = null;
+var hostUnknownSaidAt = 0;
+var wrongNameSaidAt = 0;
+function setOwnHostnames(loader) {
+  ownHostnames = loader;
+}
+function setBoundTokensLatch(path) {
+  boundLatchPath = path;
+  boundSeen = !!path && existsSync(path);
+  boundWritten = boundSeen;
+  newestPath = path ? `${path}.newest` : null;
+  floorIat = 0;
+  newestIat = 0;
+  takenIds.clear();
+  try {
+    const kept = Number(readFileSync(newestPath ?? "", "utf8").trim());
+    if (Number.isSafeInteger(kept) && kept > 0) floorIat = newestIat = Math.min(kept, Math.floor((Date.now() + AHEAD_MS) / 1e3));
+  } catch {
+  }
+}
+function firewallTokensBound() {
+  return boundSeen;
+}
+function requestPath(url2) {
+  try {
+    return new URL(url2 ?? "/", "http://box").pathname;
+  } catch {
+    return "";
+  }
+}
+function bindingProblem(req, claims, now = Date.now()) {
+  let wrongName = false;
+  const always = ALWAYS_BOUND.has(String(claims.purpose));
+  if (typeof claims.m !== "string" || typeof claims.p !== "string" || typeof claims.jti !== "string") return boundSeen || always ? "unbound" : null;
+  if (claims.m !== (req.method ?? "GET")) return "method";
+  if (claims.p !== requestPath(req.url)) return "path";
+  if (typeof claims.h !== "string") {
+    if (claims.h !== void 0 || boundSeen || always) return "host";
+  } else {
+    const mine = ownHostnames().filter((h2) => !!h2).map((h2) => h2.toLowerCase());
+    if (mine.length && !mine.includes(claims.h)) {
+      if (boundSeen || always) {
+        console.error(`[auth] refused a firewall token signed for ${claims.h.slice(0, 80)}: this box answers as ${mine.join(", ")}`);
+        return "host";
+      }
+      wrongName = true;
+      if (now - wrongNameSaidAt > 10 * 6e4) {
+        wrongNameSaidAt = now;
+        console.error(`[auth] a firewall token was signed for ${claims.h.slice(0, 80)}, and this box answers as ${mine.join(", ")}: taken for now, and this box goes on taking its firewall's older tokens until the names agree`);
+      }
+    }
+    if (!mine.length && now - hostUnknownSaidAt > 10 * 6e4) {
+      hostUnknownSaidAt = now;
+      console.error("[auth] this box has no vm_hostname or access_hostname in its keys folder, so it cannot check which host a firewall token was signed for");
+    }
+  }
+  if (claims.b !== void 0 && typeof claims.b !== "string") return "body";
+  if (typeof claims.iat !== "number" || !Number.isSafeInteger(claims.iat)) return "time";
+  if (claims.iat * 1e3 > now + AHEAD_MS) return "ahead";
+  if (claims.iat <= floorIat) return "before-restart";
+  if (req.ccTokenId === claims.jti) return null;
+  let looked = 0;
+  for (const [id, until] of takenIds) {
+    if (until >= now || ++looked > TAKEN_SWEEP) break;
+    takenIds.delete(id);
+  }
+  if (takenIds.has(claims.jti)) return "replay";
+  if (takenIds.size >= TAKEN_MAX) return "busy";
+  takenIds.set(claims.jti, (typeof claims.exp === "number" ? claims.exp * 1e3 : now + 3e4) + TAKEN_KEPT_MS);
+  req.ccBound = true;
+  req.ccTokenId = claims.jti;
+  if (typeof claims.b === "string") req.ccBodySha256 = claims.b;
+  if (!wrongName) boundSeen = true;
+  if (boundSeen && !boundWritten && boundLatchPath) {
+    try {
+      mkdirSync(dirname(boundLatchPath), { recursive: true });
+      writeFileSync(boundLatchPath, new Date(now).toISOString(), { mode: 384 });
+      boundWritten = true;
+    } catch {
+    }
+  }
+  if (claims.iat > newestIat) {
+    newestIat = claims.iat;
+    if (newestPath) {
+      try {
+        writeFileSync(`${newestPath}.tmp`, String(newestIat), { mode: 384 });
+        renameSync(`${newestPath}.tmp`, newestPath);
+      } catch {
+      }
+    }
+  }
+  return null;
+}
 function setOwnVmId(id) {
   ownVmId = id;
 }
@@ -1062,6 +1171,9 @@ var CONTROL_PLANE_ROUTES = {
     // know, since the control plane's token names no person.
     "GET /skills",
     "POST /skills/enabled",
+    // Takes a skill away: one the skills directory installed, by name. It can only narrow what the
+    // agent has been told to do; it cannot add a skill, change one or touch the agent's own.
+    "POST /skills/remove",
     // Carries nothing: it makes the agent ask the console now whether a template preview or apply
     // is waiting, which it asks every two minutes anyway (templates.ts).
     "POST /templates/poke"
@@ -1085,6 +1197,7 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
+var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket"]);
 async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -1096,6 +1209,16 @@ async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
     const p2 = payload;
     if (p2.purpose !== purpose || typeof p2.vmId !== "string") return null;
     if (ownVmId && p2.vmId !== ownVmId) return null;
+    const problem = bindingProblem(req, payload);
+    if (problem) {
+      req.ccRefused = problem;
+      const said = refusalSaidAt.get(problem) ?? 0;
+      if (Date.now() - said > 6e4) {
+        refusalSaidAt.set(problem, Date.now());
+        console.error(`[auth] refused a firewall token (${problem}) for ${req.method ?? "GET"} ${requestPath(req.url)}`);
+      }
+      return null;
+    }
     return { vmId: p2.vmId, iss: typeof p2.iss === "string" ? p2.iss : "", claims: payload };
   } catch {
     return null;
@@ -1141,10 +1264,10 @@ async function requireAuth(req, res) {
 
 // src/keys.ts
 import crypto2 from "crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync as readFileSync2, writeFileSync as writeFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync2 } from "fs";
 function readFile(path) {
   try {
-    return readFileSync(path, "utf8").trim();
+    return readFileSync2(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1152,16 +1275,16 @@ function readFile(path) {
 function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
-  if (existsSync(privPath)) {
-    return readFile(pubPath) ?? derivePublicKey(readFileSync(privPath, "utf8"));
+  if (existsSync2(privPath)) {
+    return readFile(pubPath) ?? derivePublicKey(readFileSync2(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto2.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" }
   });
-  mkdirSync(keysDir2, { recursive: true });
-  writeFileSync(privPath, privateKey, { mode: 384 });
-  writeFileSync(pubPath, publicKey, { mode: 420 });
+  mkdirSync2(keysDir2, { recursive: true });
+  writeFileSync2(privPath, privateKey, { mode: 384 });
+  writeFileSync2(pubPath, publicKey, { mode: 420 });
   console.log("[keys] generated on-box vm keypair");
   return publicKey;
 }
@@ -1223,15 +1346,15 @@ function sha256Hex(s2) {
 }
 
 // src/mitm-ca.ts
-import { readFileSync as readFileSync3, writeFileSync as writeFileSync2, existsSync as existsSync2 } from "fs";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync3, existsSync as existsSync3 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
 
 // src/box-token.ts
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync3 } from "fs";
 function readKeyFile(keysDir2, name) {
   try {
-    return readFileSync2(`${keysDir2}/${name}`, "utf-8").trim();
+    return readFileSync3(`${keysDir2}/${name}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -1257,7 +1380,7 @@ function saasBaseUrl(keysDir2) {
 // src/mitm-ca.ts
 function readFile2(path) {
   try {
-    return readFileSync3(path, "utf8").trim();
+    return readFileSync4(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1295,10 +1418,10 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
         const cfg = await res.json();
         const mitm = cfg.mitm;
         if (mitm?.caCert && mitm.caSig) {
-          let pin = existsSync2(pinPath) ? readFile2(pinPath) : null;
+          let pin = existsSync3(pinPath) ? readFile2(pinPath) : null;
           if (!pin && mitm.pubKey) {
             pin = mitm.pubKey;
-            writeFileSync2(pinPath, pin, { mode: 420 });
+            writeFileSync3(pinPath, pin, { mode: 420 });
             console.log("[mitm-ca] TOFU-pinned mitm public key (first box for this org)");
           }
           if (!pin) {
@@ -1312,7 +1435,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
             if (readFile2(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
             installCa(caSrcPath, mitm.caCert);
             trustMitmCaInProcess();
-            writeFileSync2(fprPath, fpr, { mode: 420 });
+            writeFileSync3(fprPath, fpr, { mode: 420 });
             console.log(`[mitm-ca] installed mitm CA (sha256=${fpr.slice(0, 16)}\u2026)`);
             return { trusted: true, installed: true, message: `Installed the firewall's certificate (sha256=${fpr.slice(0, 16)}\u2026).` };
           }
@@ -1333,18 +1456,18 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
   return { trusted: false, installed: false, message: last };
 }
 function installCa(caSrcPath, caCert) {
-  writeFileSync2(caSrcPath, caCert, { mode: 420 });
+  writeFileSync3(caSrcPath, caCert, { mode: 420 });
   execFileSync("sudo", ["/usr/local/bin/cc-install-ca"], { stdio: "inherit" });
 }
 
 // src/egress.ts
-import { readFileSync as readFileSync4 } from "fs";
+import { readFileSync as readFileSync5 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
 function readFile3(path) {
   try {
-    return readFileSync4(path, "utf8").trim();
+    return readFileSync5(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -1395,8 +1518,8 @@ function waitForMitmProxy(mitmIp) {
 
 // src/gbrain-activity.ts
 import { createHash } from "crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync5, renameSync, writeFileSync as writeFileSync3 } from "fs";
-import { dirname } from "path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname2 } from "path";
 var AGENT_RE = /^cc-([A-Za-z0-9_-]{1,64})$/;
 var QUEUE_MAX = 2e3;
 var BATCH = 200;
@@ -1533,16 +1656,16 @@ var BrainActivity = class {
   }
   /** The nightly summary, shipped once: the cursor is when the last shipped run finished. */
   async checkCycle() {
-    if (!existsSync3(this.opts.reportPath)) return;
-    const r2 = readCycleReport(readFileSync5(this.opts.reportPath, "utf-8"));
+    if (!existsSync4(this.opts.reportPath)) return;
+    const r2 = readCycleReport(readFileSync6(this.opts.reportPath, "utf-8"));
     if (!r2) return;
-    const last = existsSync3(this.opts.cursorPath) ? readFileSync5(this.opts.cursorPath, "utf-8").trim() : "";
+    const last = existsSync4(this.opts.cursorPath) ? readFileSync6(this.opts.cursorPath, "utf-8").trim() : "";
     if (last === r2.cycle_id) return;
     if (await this.post([r2])) {
-      mkdirSync2(dirname(this.opts.cursorPath), { recursive: true });
+      mkdirSync3(dirname2(this.opts.cursorPath), { recursive: true });
       const tmp = `${this.opts.cursorPath}.tmp`;
-      writeFileSync3(tmp, r2.cycle_id);
-      renameSync(tmp, this.opts.cursorPath);
+      writeFileSync4(tmp, r2.cycle_id);
+      renameSync2(tmp, this.opts.cursorPath);
       this.log(`shipped the nightly run of ${r2.cycle_id}`);
     }
   }
@@ -1576,7 +1699,7 @@ var BrainActivity = class {
 import { createReadStream, createWriteStream } from "fs";
 import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname as dirname2, join } from "path";
+import { dirname as dirname3, join } from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -5515,7 +5638,7 @@ var BackupService = class {
         takenAt: manifest.takenAt
       };
     } finally {
-      if (spool) await rm(dirname2(spool), { recursive: true, force: true }).catch(() => void 0);
+      if (spool) await rm(dirname3(spool), { recursive: true, force: true }).catch(() => void 0);
       if (staged) await staged.release().catch((err) => this.log(`[backup] could not drop the staged copy: ${err.message}`));
       this.busy = null;
     }
@@ -5611,7 +5734,7 @@ var BackupService = class {
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
             continue;
           }
-          await mkdir(dirname2(abs), { recursive: true, mode: 448 });
+          await mkdir(dirname3(abs), { recursive: true, mode: 448 });
           if (e.type === "link") {
             await symlink(e.target ?? "", abs).catch(() => void 0);
             continue;
@@ -5747,7 +5870,7 @@ async function swapDirectory(opts) {
       );
       if (!exists) continue;
       await rm(to, { recursive: true, force: true });
-      await mkdir(dirname2(to), { recursive: true, mode: 448 });
+      await mkdir(dirname3(to), { recursive: true, mode: 448 });
       await rename(from, to);
       moved.push({ from, to });
     }
@@ -5798,9 +5921,11 @@ async function dirSize(path) {
 }
 
 // src/http.ts
+import { createHash as createHash2 } from "crypto";
 async function readJsonBody(req, limit = 16384) {
   return new Promise((resolve) => {
-    let data = "";
+    const chunks = [];
+    let size = 0;
     let done = false;
     const finish = (v2) => {
       if (done) return;
@@ -5808,15 +5933,19 @@ async function readJsonBody(req, limit = 16384) {
       resolve(v2);
     };
     req.on("data", (chunk) => {
-      data += chunk.toString("utf8");
-      if (data.length > limit) {
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size > limit) {
         finish(null);
         req.destroy();
       }
     });
     req.on("end", () => {
+      const raw = Buffer.concat(chunks);
+      const bound = req;
+      if (bound.ccBound && createHash2("sha256").update(raw).digest("hex") !== bound.ccBodySha256) return finish(null);
       try {
-        const parsed = JSON.parse(data);
+        const parsed = JSON.parse(raw.toString("utf8"));
         finish(parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null);
       } catch {
         finish(null);
@@ -5936,7 +6065,7 @@ async function handleBackup(req, res, url2, service, kinds = AGENT_KINDS) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync6 } from "fs";
+import { readFileSync as readFileSync7 } from "fs";
 import { spawn } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -5968,7 +6097,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync6(path, "utf8");
+      raw = readFileSync7(path, "utf8");
     } catch {
       return null;
     }
@@ -5982,7 +6111,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync6(this.opts.statePath, "utf8");
+      raw = readFileSync7(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -6068,8 +6197,8 @@ async function handleUpdate(req, res, pathname, service) {
 }
 
 // src/doctor.ts
-import { verify, createHash as createHash2 } from "crypto";
-import { readFileSync as readFileSync7, existsSync as existsSync4 } from "fs";
+import { verify, createHash as createHash3 } from "crypto";
+import { readFileSync as readFileSync8, existsSync as existsSync5 } from "fs";
 
 // src/exec.ts
 import { execFile } from "child_process";
@@ -6098,12 +6227,12 @@ function execFailureLine(err) {
 // src/doctor.ts
 var DOCTOR_KEY_FILE = "/home/ccdoctor/.ssh/authorized_keys";
 function doctorAvailable() {
-  return existsSync4("/usr/local/bin/cc-doctor-key-install") && existsSync4("/etc/controlclaw/doctor-mitm-pin.pem") && doctorStatus().fingerprint !== null;
+  return existsSync5("/usr/local/bin/cc-doctor-key-install") && existsSync5("/etc/controlclaw/doctor-mitm-pin.pem") && doctorStatus().fingerprint !== null;
 }
 function doctorStatus(path = DOCTOR_KEY_FILE) {
   try {
-    const key = readFileSync7(path, "utf8").match(/ssh-ed25519 ([A-Za-z0-9+/=]+)/)?.[1];
-    return { fingerprint: key ? `SHA256:${createHash2("sha256").update(Buffer.from(key, "base64")).digest("base64").replace(/=+$/, "")}` : null };
+    const key = readFileSync8(path, "utf8").match(/ssh-ed25519 ([A-Za-z0-9+/=]+)/)?.[1];
+    return { fingerprint: key ? `SHA256:${createHash3("sha256").update(Buffer.from(key, "base64")).digest("base64").replace(/=+$/, "")}` : null };
   } catch {
     return { fingerprint: null };
   }
@@ -6114,12 +6243,12 @@ import { execSync } from "child_process";
 
 // src/software.ts
 import { uptime } from "os";
-import { existsSync as existsSync6, readFileSync as readFileSync9, realpathSync } from "fs";
-import { dirname as dirname4 } from "path";
+import { existsSync as existsSync7, readFileSync as readFileSync10, realpathSync } from "fs";
+import { dirname as dirname5 } from "path";
 
 // src/access-state.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
-import { dirname as dirname3, join as join2 } from "path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync9, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname4, join as join2 } from "path";
 var REVOKED_KEEP_MS = 12 * 60 * 6e4;
 function statePath() {
   return join2(process.env.STATE_DIR ?? "/opt/controlclaw/state", "access.json");
@@ -6130,7 +6259,7 @@ function load() {
   if (cache2?.path === path) return cache2.state;
   let state = { firewallOrigin: null, revoked: {} };
   try {
-    const raw = JSON.parse(readFileSync8(path, "utf8"));
+    const raw = JSON.parse(readFileSync9(path, "utf8"));
     state = {
       firewallOrigin: typeof raw.firewallOrigin === "string" && validFirewallOrigin(raw.firewallOrigin) ? raw.firewallOrigin : null,
       revoked: raw.revoked && typeof raw.revoked === "object" ? raw.revoked : {}
@@ -6142,10 +6271,10 @@ function load() {
 }
 function save(state) {
   const path = statePath();
-  mkdirSync3(dirname3(path), { recursive: true });
+  mkdirSync4(dirname4(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync4(tmp, JSON.stringify(state), { mode: 384 });
-  renameSync2(tmp, path);
+  writeFileSync5(tmp, JSON.stringify(state), { mode: 384 });
+  renameSync3(tmp, path);
   cache2 = { path, state };
 }
 function validFirewallOrigin(origin) {
@@ -6194,20 +6323,20 @@ function consoleMcpConfigured() {
 
 // src/meeting-voice-log.ts
 import { execFile as execFile2 } from "child_process";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, openSync, closeSync, readSync, fstatSync, rmSync, writeFileSync as writeFileSync5, renameSync as renameSync3 } from "fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync5, openSync, closeSync, readSync, fstatSync, rmSync, writeFileSync as writeFileSync6, renameSync as renameSync4 } from "fs";
 import { join as join3 } from "path";
 var MAX_READ = 4 * 1024 * 1024;
 var DETECTOR = "/opt/controlclaw/meeting-voice/cc-wake.py";
 var MODEL = "/opt/controlclaw/cc-wake/model/conf/model.conf";
 function localWakeInstalled() {
-  return existsSync5(DETECTOR) && existsSync5(MODEL);
+  return existsSync6(DETECTOR) && existsSync6(MODEL);
 }
 
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "70c857e" : "unknown",
-  builtAt: true ? "2026-10-12T14:28:17+01:00" : "unknown"
+  commit: true ? "a39425c" : "unknown",
+  builtAt: true ? "2026-10-13T00:14:43+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6223,7 +6352,7 @@ function clip(value) {
 }
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync9(path, "utf8"));
+    const parsed = JSON.parse(readFileSync10(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -6246,14 +6375,14 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
   }
   let dir;
   try {
-    dir = dirname4(realpathSync(bin));
+    dir = dirname5(realpathSync(bin));
   } catch {
     return null;
   }
   for (let i2 = 0; i2 < 4; i2++) {
     const pkg = readJson(`${dir}/package.json`);
     if (pkg?.name === "openclaw") return clip(pkg.version);
-    const parent = dirname4(dir);
+    const parent = dirname5(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -6262,7 +6391,7 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
 var VOICE_CAPABILITIES = "/opt/controlclaw/meeting-voice/capabilities.json";
 function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalled) {
   try {
-    const caps = JSON.parse(readFileSync9(path, "utf8"));
+    const caps = JSON.parse(readFileSync10(path, "utf8"));
     const families = Array.isArray(caps.speechFamilies) ? caps.speechFamilies : [];
     return [
       ...["realtime", "live"].filter((f2) => families.includes(f2)).map((f2) => `speech_${f2}`),
@@ -6278,7 +6407,7 @@ function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalle
 }
 function boxSoftware(opts = {}) {
   return {
-    rebootRequired: existsSync6("/var/run/reboot-required"),
+    rebootRequired: existsSync7("/var/run/reboot-required"),
     bootedAt: BOOTED_AT,
     agent: { ...BUILD },
     release: readRelease(opts.releasePath ?? RELEASE_PATH),
@@ -6289,7 +6418,18 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [
+      ...speechFeatures(),
+      ...consoleMcpConfigured() ? ["console_mcp"] : [],
+      ...doctorAvailable() ? ["doctor_v1"] : [],
+      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "skills_start", "skills_remove"],
+      ...firewallOrigin() ? ["open_v1"] : [],
+      ...process.env.CC_SERVICE !== "gbrain" && existsSync7(`${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`) ? ["templates_code"] : [],
+      // `fw_tokens_bound`: this box has seen its firewall's tokens bound to one request each, and
+      // from then on takes no other (auth.ts). The console shows which agents still take the older
+      // kind, and tells an agent that does not from a firewall too old to call it.
+      ...firewallTokensBound() ? ["fw_tokens_bound"] : []
+    ]
   };
 }
 
@@ -6502,7 +6642,7 @@ import { closeSync as closeSync2, fstatSync as fstatSync2, openSync as openSync2
 import { join as join5 } from "path";
 
 // src/redact.ts
-import { readFileSync as readFileSync10 } from "fs";
+import { readFileSync as readFileSync11 } from "fs";
 import { join as join4 } from "path";
 
 // ../log-redact/src/index.ts
@@ -6540,7 +6680,7 @@ function loadRedactionSecrets(keysDir2) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
-      const value = readFileSync10(join4(keysDir2, name), "utf-8").trim();
+      const value = readFileSync11(join4(keysDir2, name), "utf-8").trim();
       if (value.length >= MIN_SECRET_LENGTH) found.push(value);
     } catch {
     }
@@ -6983,14 +7123,14 @@ function getServiceStatus(service) {
 }
 
 // src/routes/access.ts
-import { createHash as createHash3, randomBytes } from "crypto";
+import { createHash as createHash4, randomBytes } from "crypto";
 import { execFile as execFile4 } from "child_process";
-import { readFileSync as readFileSync12 } from "fs";
+import { readFileSync as readFileSync13 } from "fs";
 import { join as join8 } from "path";
 
 // src/session.ts
 import crypto3 from "crypto";
-import { existsSync as existsSync7, readFileSync as readFileSync11, writeFileSync as writeFileSync6 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync12, writeFileSync as writeFileSync7 } from "fs";
 import { join as join6 } from "path";
 
 // ../origin-guard/src/index.ts
@@ -7081,17 +7221,17 @@ var secretDir = null;
 function ensureSessionSecret(keysDir2) {
   secretDir = keysDir2;
   const path = join6(keysDir2, "session_secret");
-  if (!existsSync7(path)) {
-    writeFileSync6(path, crypto3.randomBytes(32).toString("hex"), { mode: 384 });
+  if (!existsSync8(path)) {
+    writeFileSync7(path, crypto3.randomBytes(32).toString("hex"), { mode: 384 });
     console.log("[session] generated session secret");
   }
-  secret = Buffer.from(readFileSync11(path, "utf8").trim(), "hex");
+  secret = Buffer.from(readFileSync12(path, "utf8").trim(), "hex");
 }
 function rotateSessionSecret() {
   if (!secretDir) throw new Error("session secret not initialised");
   const path = join6(secretDir, "session_secret");
-  writeFileSync6(path, crypto3.randomBytes(32).toString("hex"), { mode: 384 });
-  secret = Buffer.from(readFileSync11(path, "utf8").trim(), "hex");
+  writeFileSync7(path, crypto3.randomBytes(32).toString("hex"), { mode: 384 });
+  secret = Buffer.from(readFileSync12(path, "utf8").trim(), "hex");
   clearRevoked();
   console.log("[session] rotated the session secret: every browser is signed out");
 }
@@ -7274,7 +7414,7 @@ function keysDir() {
   return process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 }
 function installId(gatewayToken, vmId) {
-  return createHash3("sha256").update(gatewayToken ?? vmId).digest("hex").slice(0, 16);
+  return createHash4("sha256").update(gatewayToken ?? vmId).digest("hex").slice(0, 16);
 }
 var FORGET_PREVIOUS_GATEWAY_JS = `
   try {
@@ -7292,7 +7432,7 @@ var FORGET_PREVIOUS_GATEWAY_JS = `
   } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
-    return readFileSync12(join8(keysDir(), name), "utf-8").trim() || null;
+    return readFileSync13(join8(keysDir(), name), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -7674,7 +7814,7 @@ function bindCookie(name, value) {
   return value ? `${name}=${value}; Path=/; Max-Age=${BIND_TTL_S}; HttpOnly; Secure; SameSite=Lax` : `${name}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
 function bindingHash(value) {
-  return createHash3("sha256").update(value).digest("base64url");
+  return createHash4("sha256").update(value).digest("base64url");
 }
 async function acceptTicket(req, token, vmId, purpose) {
   const invalid2 = { error: "This link is not valid for this agent. Open it from your ControlClaw console again." };
@@ -8049,8 +8189,8 @@ async function handleAccessPush(req, res, pathname) {
 
 // src/gbrain-gate.ts
 import { createServer, request as httpRequest } from "http";
-import { chmodSync, existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync13, renameSync as renameSync4, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname5 } from "path";
+import { chmodSync, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync14, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
+import { dirname as dirname6 } from "path";
 import { networkInterfaces } from "os";
 var GATE_PORT = 3131;
 var HELPER4 = "/usr/local/bin/cc-gbrain-token";
@@ -8099,9 +8239,9 @@ var BrainGate = class {
   entries;
   lockState = { all: false, vmIds: [] };
   load() {
-    if (!existsSync8(this.statePath)) return [];
+    if (!existsSync9(this.statePath)) return [];
     try {
-      const s2 = JSON.parse(readFileSync13(this.statePath, "utf-8"));
+      const s2 = JSON.parse(readFileSync14(this.statePath, "utf-8"));
       const lock = parseLock(s2.lock ?? null);
       if (typeof lock !== "string") this.lockState = lock;
       return Array.isArray(s2.entries) ? s2.entries.filter((e) => e && typeof e.token === "string" && typeof e.ip === "string") : [];
@@ -8111,11 +8251,11 @@ var BrainGate = class {
     }
   }
   save() {
-    mkdirSync5(dirname5(this.statePath), { recursive: true });
+    mkdirSync6(dirname6(this.statePath), { recursive: true });
     const tmp = `${this.statePath}.tmp`;
-    writeFileSync7(tmp, JSON.stringify({ version: 1, entries: this.entries, lock: this.lockState }), { mode: 384 });
+    writeFileSync8(tmp, JSON.stringify({ version: 1, entries: this.entries, lock: this.lockState }), { mode: 384 });
     chmodSync(tmp, 384);
-    renameSync4(tmp, this.statePath);
+    renameSync5(tmp, this.statePath);
   }
   /** What the firewall reads to reconcile. No tokens. */
   list() {
@@ -8241,13 +8381,15 @@ if (process.env.CC_SERVICE !== "gbrain") {
   process.exit(1);
 }
 try {
-  setSaasPublicKey(readFileSync14(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+  setSaasPublicKey(readFileSync15(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
 } catch (err) {
   console.error("Failed to load SaaS public key:", err);
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync14(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync15(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnHostnames(() => [readKeyFile(KEYS_DIR2, "vm_hostname"), readKeyFile(KEYS_DIR2, "access_hostname")]);
+  setBoundTokensLatch(`${process.env.STATE_DIR ?? "/opt/controlclaw/state"}/firewall-tokens-bound`);
 } catch {
   console.warn("No vm_id in KEYS_DIR: tokens are checked by signature only");
 }

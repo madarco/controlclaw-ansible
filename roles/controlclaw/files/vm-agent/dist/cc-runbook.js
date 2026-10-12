@@ -1506,7 +1506,7 @@ var require_stringify = __commonJS({
         props.push(doc.directives.tagString(tag));
       return props.join(" ");
     }
-    function stringify(item, ctx, onComment, onChompKeep) {
+    function stringify2(item, ctx, onComment, onChompKeep) {
       if (identity.isPair(item))
         return item.toString(ctx, onComment, onChompKeep);
       if (identity.isAlias(item)) {
@@ -1535,7 +1535,7 @@ var require_stringify = __commonJS({
 ${ctx.indent}${str}`;
     }
     exports.createStringifyContext = createStringifyContext;
-    exports.stringify = stringify;
+    exports.stringify = stringify2;
   }
 });
 
@@ -1545,7 +1545,7 @@ var require_stringifyPair = __commonJS({
     "use strict";
     var identity = require_identity();
     var Scalar = require_Scalar();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
       const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
@@ -1567,7 +1567,7 @@ var require_stringifyPair = __commonJS({
       });
       let keyCommentDone = false;
       let chompKeep = false;
-      let str = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+      let str = stringify2.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
       if (!explicitKey && !ctx.inFlow && str.length > 1024) {
         if (simpleKeys)
           throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
@@ -1619,7 +1619,7 @@ ${indent}:`;
         ctx.indent = ctx.indent.substring(2);
       }
       let valueCommentDone = false;
-      const valueStr = stringify.stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
+      const valueStr = stringify2.stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
       let ws = " ";
       if (keyComment || vsb || vcb) {
         ws = vsb ? "\n" : "";
@@ -1760,7 +1760,7 @@ var require_addPairToJSMap = __commonJS({
     "use strict";
     var log = require_log();
     var merge2 = require_merge();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var identity = require_identity();
     var toJS = require_toJS();
     function addPairToJSMap(ctx, map2, { key, value }) {
@@ -1796,7 +1796,7 @@ var require_addPairToJSMap = __commonJS({
       if (typeof jsKey !== "object")
         return String(jsKey);
       if (identity.isNode(key) && ctx?.doc) {
-        const strCtx = stringify.createStringifyContext(ctx.doc, {});
+        const strCtx = stringify2.createStringifyContext(ctx.doc, {});
         strCtx.anchors = /* @__PURE__ */ new Set();
         for (const node2 of ctx.anchors.keys())
           strCtx.anchors.add(node2.anchor);
@@ -1863,12 +1863,12 @@ var require_stringifyCollection = __commonJS({
   "../../node_modules/.pnpm/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyCollection.js"(exports) {
     "use strict";
     var identity = require_identity();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyCollection(collection, ctx, options) {
       const flow = ctx.inFlow ?? collection.flow;
-      const stringify2 = flow ? stringifyFlowCollection : stringifyBlockCollection;
-      return stringify2(collection, ctx, options);
+      const stringify3 = flow ? stringifyFlowCollection : stringifyBlockCollection;
+      return stringify3(collection, ctx, options);
     }
     function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, flowChars, itemIndent, onChompKeep, onComment }) {
       const { indent, options: { commentString } } = ctx;
@@ -1893,7 +1893,7 @@ var require_stringifyCollection = __commonJS({
           }
         }
         chompKeep = false;
-        let str2 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+        let str2 = stringify2.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
         if (comment2)
           str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment2));
         if (chompKeep && comment2)
@@ -1960,7 +1960,7 @@ ${indent}${line2}` : "\n";
         }
         if (comment)
           reqNewline = true;
-        let str = stringify.stringify(item, itemCtx, () => comment = null);
+        let str = stringify2.stringify(item, itemCtx, () => comment = null);
         reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
         if (i < items.length - 1) {
           str += ",";
@@ -3321,7 +3321,7 @@ var require_stringifyDocument = __commonJS({
   "../../node_modules/.pnpm/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyDocument.js"(exports) {
     "use strict";
     var identity = require_identity();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyDocument(doc, options) {
       const lines = [];
@@ -3336,7 +3336,7 @@ var require_stringifyDocument = __commonJS({
       }
       if (hasDirectives)
         lines.push("---");
-      const ctx = stringify.createStringifyContext(doc, options);
+      const ctx = stringify2.createStringifyContext(doc, options);
       const { commentString } = ctx.options;
       if (doc.commentBefore) {
         if (lines.length !== 1)
@@ -3358,7 +3358,7 @@ var require_stringifyDocument = __commonJS({
           contentComment = doc.contents.comment;
         }
         const onChompKeep = contentComment ? void 0 : () => chompKeep = true;
-        let body = stringify.stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
+        let body = stringify2.stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
         if (contentComment)
           body += stringifyComment.lineComment(body, "", commentString(contentComment));
         if ((body[0] === "|" || body[0] === ">") && lines[lines.length - 1] === "---") {
@@ -3366,7 +3366,7 @@ var require_stringifyDocument = __commonJS({
         } else
           lines.push(body);
       } else {
-        lines.push(stringify.stringify(doc.contents, ctx));
+        lines.push(stringify2.stringify(doc.contents, ctx));
       }
       if (doc.directives?.docEnd) {
         if (doc.comment) {
@@ -5502,7 +5502,7 @@ var require_cst_scalar = __commonJS({
 var require_cst_stringify = __commonJS({
   "../../node_modules/.pnpm/yaml@2.9.1/node_modules/yaml/dist/parse/cst-stringify.js"(exports) {
     "use strict";
-    var stringify = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
+    var stringify2 = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
     function stringifyToken(token) {
       switch (token.type) {
         case "block-scalar": {
@@ -5555,7 +5555,7 @@ var require_cst_stringify = __commonJS({
         res += stringifyToken(value);
       return res;
     }
-    exports.stringify = stringify;
+    exports.stringify = stringify2;
   }
 });
 
@@ -7285,7 +7285,7 @@ var require_public_api = __commonJS({
       }
       return doc.toJS(Object.assign({ reviver: _reviver }, options));
     }
-    function stringify(value, replacer, options) {
+    function stringify2(value, replacer, options) {
       let _replacer = null;
       if (typeof replacer === "function" || Array.isArray(replacer)) {
         _replacer = replacer;
@@ -7310,7 +7310,7 @@ var require_public_api = __commonJS({
     exports.parse = parse3;
     exports.parseAllDocuments = parseAllDocuments;
     exports.parseDocument = parseDocument;
-    exports.stringify = stringify;
+    exports.stringify = stringify2;
   }
 });
 
@@ -7791,7 +7791,7 @@ function unexpected(err) {
 }
 
 // ../templates/src/load.ts
-var import_yaml = __toESM(require_dist(), 1);
+var import_yaml2 = __toESM(require_dist(), 1);
 import { createHash as createHash2 } from "crypto";
 import { existsSync as existsSync3, readFileSync as readFileSync5, realpathSync as realpathSync2, statSync } from "fs";
 import { basename, dirname, join as join4, resolve as resolve2, sep as sep2 } from "path";
@@ -27472,6 +27472,30 @@ var SKILL_SOURCES = ["controlclaw", "organization", "template"];
 var SKILL_LIMITS = { files: 100, fileBytes: 256 * 1024, totalBytes: 1e6 };
 var size = (bytes2) => bytes2 >= 1e6 ? `${bytes2 / 1e6} MB` : `${Math.round(bytes2 / 1024)} KB`;
 var SKILL_LIMITS_TEXT = `at most ${SKILL_LIMITS.files} files, ${size(SKILL_LIMITS.fileBytes)} a file and ${size(SKILL_LIMITS.totalBytes)} in all`;
+var SKILL_DIRECTORY_LIMITS = {
+  skills: 200,
+  versions: 50,
+  uploadBytes: 2 * 1024 * 1024,
+  /** Everything an organization's skills take, every kept version counted. */
+  storedBytes: 1e8,
+  /** Checks, uploads and saves an organization may make in a minute, together. */
+  callsPerMinute: 30,
+  /** Skills every new agent of an organization can start with. */
+  defaults: 20
+};
+var SKILL_SETUP_FILE = "controlclaw.yaml";
+var NOTES_LIMITS = {
+  files: 200,
+  fileBytes: 256 * 1024,
+  totalBytes: 2e6,
+  /** The one file of a set that is in every conversation: the budget OpenClaw gives `USER.md`. */
+  alwaysChars: 4e3,
+  /** Sets an organization keeps. */
+  sets: 50,
+  /** Sets every new agent of an organization can start with. */
+  defaults: 10
+};
+var NOTES_LIMITS_TEXT = `at most ${NOTES_LIMITS.files} files, ${size(NOTES_LIMITS.fileBytes)} a file and ${size(NOTES_LIMITS.totalBytes)} in all`;
 
 // ../templates/src/schema.ts
 var KINDS = ["openclaw.plugin", "openclaw.config", "openclaw.skill", "controlclaw.setting", "file", "line", "run"];
@@ -27697,8 +27721,34 @@ function parseTemplate(raw) {
   if (problems.length) throw new TemplateError(problems);
   return { name: raw.name, description: raw.description ?? null, uses, todo, steps };
 }
+function parseSkillSetup(raw) {
+  const problems = [];
+  if (!isObject(raw)) throw new TemplateError(["it must be a group of fields: title, category, todo, steps"]);
+  for (const key of Object.keys(raw)) if (!["title", "category", "todo", "steps"].includes(key)) problems.push(`unknown field "${key}"`);
+  if (raw.title !== void 0 && !plainLine(raw.title, 60)) problems.push(`"title" must be one line of plain text, at most 60 characters, with no link`);
+  if (raw.category !== void 0 && !plainLine(raw.category, 30)) problems.push(`"category" must be one line of plain text, at most 30 characters, with no link`);
+  const todo = parseTodo(raw.todo, problems);
+  const steps = [];
+  if (raw.steps !== void 0 && !Array.isArray(raw.steps)) problems.push(`"steps" must be a list`);
+  const seen = /* @__PURE__ */ new Set();
+  for (const [index, entry] of (Array.isArray(raw.steps) ? raw.steps : []).entries()) {
+    const other = isObject(entry) ? KINDS.filter((kind) => kind !== "controlclaw.setting" && kind in entry) : [];
+    if (other.length) {
+      problems.push(`step ${isObject(entry) && typeof entry.id === "string" ? `"${entry.id}"` : index + 1}: a skill's setup has only controlclaw.setting steps, not ${other.join(", ")}. A template can carry the skill and do the rest`);
+      continue;
+    }
+    const step = parseStep(entry, index, problems);
+    if (!step || step.kind !== "controlclaw.setting") continue;
+    if (seen.has(step.id)) problems.push(`step "${step.id}": this id is used twice`);
+    seen.add(step.id);
+    steps.push(step);
+  }
+  if (problems.length) throw new TemplateError(problems);
+  return { title: typeof raw.title === "string" ? raw.title.trim() : null, category: typeof raw.category === "string" ? raw.category.trim() : null, todo, steps };
+}
 
 // ../templates/src/skill-files.ts
+var import_yaml = __toESM(require_dist(), 1);
 import { createHash } from "crypto";
 var SKILL_RECORD = ".controlclaw.json";
 var SKILL_NOT_CONTENT = /* @__PURE__ */ new Set([SKILL_RECORD, ".openclaw"]);
@@ -27710,18 +27760,46 @@ function hashSkillFiles(files) {
   }
   return hash2.digest("hex");
 }
-function skillNameIn(skillMd) {
+function skillNameOf(skillMd) {
   const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMd)?.[1];
-  const name = front?.split(/\r?\n/).map((line2) => /^name:\s*(.+?)\s*$/.exec(line2)?.[1]).find(Boolean);
-  return name ? name.replace(/^(["'])(.*)\1$/, "$2") : null;
+  const none = 'has no name. It starts with a front matter block: "---", "name: my-skill", "description: \u2026", "---"';
+  if (front === void 0) return { problem: none };
+  const lines = front.split(/\r?\n/);
+  const keys = lines.filter((line2) => /^\s*(["']?)name\1\s*:/.test(line2));
+  const plain = lines.map((line2) => /^name:\s*(.+?)\s*$/.exec(line2)?.[1]).filter((value) => !!value);
+  let parsed;
+  let yaml = true;
+  try {
+    parsed = (0, import_yaml.parse)(front);
+  } catch {
+    yaml = false;
+  }
+  if (yaml) {
+    const name = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed.name : void 0;
+    if (name === void 0) return { problem: none };
+    if (typeof name !== "string" || !name.trim()) return { problem: "has a name that is not text" };
+    const byLine = plain.map((value) => value.replace(/^(["'])(.*)\1$/, "$2"));
+    if (byLine.length !== 1 || byLine[0] !== name) return { problem: 'must give its name once, on a line of its own at the top level of the front matter: "name: my-skill"' };
+    return { name };
+  }
+  if (keys.length > 1) return { problem: "gives a name more than once in its front matter. Give it once" };
+  if (keys.length === 1 && plain.length !== 1) return { problem: 'must give its name as "name: my-skill", with no quotes around the word name and nothing before it' };
+  return plain.length === 1 ? { name: plain[0].replace(/^(["'])(.*)\1$/, "$2") } : { problem: none };
 }
 function skillSecrets(files) {
-  return files.flatMap(
-    (file3) => file3.content.toString("utf8").split("\n").flatMap((line2, index) => {
+  return files.flatMap((file3) => {
+    if (!isTextFile(file3.content)) {
+      const shape = tokenShapeIn(file3.content.toString("latin1"));
+      return shape ? [`${file3.path} has ${shape} in it`] : [];
+    }
+    return file3.content.toString("utf8").split("\n").flatMap((line2, index) => {
       const found = secretInText(line2);
       return found ? [`${file3.path} has ${found} on line ${index + 1}`] : [];
-    }).slice(0, 5)
-  );
+    }).slice(0, 5);
+  });
+}
+function isTextFile(content2) {
+  return !content2.includes(0) && Buffer.from(content2.toString("utf8"), "utf8").equals(content2);
 }
 function skillScripts(files) {
   return files.filter((file3) => file3.executable || file3.content.subarray(0, 2).toString("latin1") === "#!").map((file3) => file3.path);
@@ -27747,8 +27825,9 @@ function carriedSkill(listed2, relative3, name) {
   const folder = skillFromFiles(listed2.files);
   if ("problems" in folder) return { problems: folder.problems.map((p) => `${relative3}: ${p}`) };
   const problems = skillSecrets(folder.files).map((p) => `${relative3}/${p}. A skill holds no secrets`);
-  const named = skillNameIn(folder.files.find((f) => f.path === "SKILL.md")?.content.toString("utf8") ?? "");
-  if (named !== name) problems.push(`${relative3}/SKILL.md ${named ? `is named ${named}` : "has no name in its front matter"}, and the step installs it as ${name}. The two must be the same`);
+  const named = skillNameOf(folder.files.find((f) => f.path === "SKILL.md")?.content.toString("utf8") ?? "");
+  if ("problem" in named) problems.push(`${relative3}/SKILL.md ${named.problem}`);
+  else if (named.name !== name) problems.push(`${relative3}/SKILL.md is named ${named.name}, and the step installs it as ${name}. The two must be the same`);
   return problems.length ? { problems } : folder;
 }
 function parseSkillRecord(raw) {
@@ -27853,7 +27932,7 @@ function readFolder(dir, label, problems) {
 function parseTemplateText(text, label, problems) {
   let raw;
   try {
-    raw = (0, import_yaml.parse)(text);
+    raw = (0, import_yaml2.parse)(text);
   } catch (error62) {
     problems.push(`${label}: ${TEMPLATE_FILE} is not valid YAML: ${error62.message.split("\n")[0]}`);
     return null;
@@ -28225,8 +28304,10 @@ function installed(ctx, name, hash2) {
   if (!existsSync5(join6(dir, "SKILL.md"))) return { state: "missing" };
   const now = skillHash(dir);
   const record2 = readSkillRecord(dir);
+  if (now === hash2 && ctx.skillRecord && record2 && record2.source !== "organization") return { state: "kept" };
   if (now === hash2) return { state: "same", record: record2?.installedHash === hash2 };
-  return { state: record2?.source === "template" && record2.installedHash === now ? "outdated" : "kept" };
+  const replaceable = ctx.skillRecord ? record2?.source === "template" || record2?.source === "organization" : record2?.source === "template";
+  return { state: replaceable && record2?.installedHash === now ? "outdated" : "kept" };
 }
 function scriptsNote(files) {
   const scripts = skillScripts(files);
@@ -28263,7 +28344,7 @@ var openclawSkill = {
         if (!existsSync5(join6(managedDir(ctx, name), "SKILL.md"))) throw new StepFailure(`OpenClaw said it installed skill ${name}, but it is not in its skills folder`);
       }
       if (there.state === "missing" || there.state === "outdated" || there.state === "same" && !there.record && !readSkillRecord(managedDir(ctx, name)))
-        writeSkillRecord(managedDir(ctx, name), { source: "template", id: `${ctx.template}/${name}`, version: null, installedHash: skill.hash, installedAt: (/* @__PURE__ */ new Date()).toISOString() });
+        writeSkillRecord(managedDir(ctx, name), { ...ctx.skillRecord ? { source: "organization", id: ctx.skillRecord.id, version: ctx.skillRecord.version } : { source: "template", id: `${ctx.template}/${name}`, version: null }, installedHash: skill.hash, installedAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
     if (await enabledNow(ctx, name) !== enabled) await configWrite(ctx, ["set", `skills.entries.${name}.enabled`, JSON.stringify(enabled), "--strict-json"]);
   }
@@ -28339,6 +28420,7 @@ async function one(step, options, template, redact, now) {
     options.onUnexpected?.(step.id, error62);
     return done("failed", "the step stopped with an unexpected error", phase);
   };
+  if (options.mode === "check" && options.noScripts && step.kind === "run") return { result: { ...done("would-change", "its script is run when the template is applied"), later: true }, applied: false };
   let before;
   try {
     before = await kind.diff(step, ctx);
@@ -28429,10 +28511,11 @@ function summary(report) {
   return `${parts.join(", ")}${keptText}${restart}`;
 }
 var PUBLIC_FAILURE = { check: "could not be checked", apply: "could not be applied", recheck: "applied, but it does not hold" };
+var CHECKED_WHEN_APPLIED = "checked when applied";
 function publicMessage(result, mode2) {
   if (result.status === "ok") return result.kept ? "kept as it is" : "holds";
   if (result.status === "changed") return "changed";
-  if (result.status === "would-change") return "would change";
+  if (result.status === "would-change") return result.later ? CHECKED_WHEN_APPLIED : "would change";
   if (result.status === "unconfirmed") return "an owner has to confirm";
   if (mode2 === "verify" && result.phase === "check") return "does not hold";
   return PUBLIC_FAILURE[result.phase ?? "apply"];
@@ -28665,6 +28748,26 @@ function loadBundle(files) {
 // ../templates/src/bundle-folder.ts
 import { chmodSync as chmodSync2, lstatSync as lstatSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync2, readFileSync as readFileSync8, statSync as statSync3, writeFileSync as writeFileSync4 } from "fs";
 import { dirname as dirname4, join as join8 } from "path";
+function readBundleFolder(dir) {
+  const files = [];
+  let total = 0;
+  const walk = (folder, prefix) => {
+    for (const name of readdirSync2(folder).sort()) {
+      const path = join8(folder, name);
+      const relative3 = prefix ? `${prefix}/${name}` : name;
+      const stat = lstatSync3(path);
+      if (stat.isSymbolicLink()) throw new TemplateError([`${relative3}: is a link, and a template holds only its own files`]);
+      if (stat.isDirectory()) walk(path, relative3);
+      else if (stat.isFile()) {
+        total += stat.size;
+        if (files.length >= BUNDLE_LIMITS.files * 4 || total > BUNDLE_LIMITS.totalBytes * 4) throw new TemplateError([`${dir} is too large to be a template`]);
+        files.push({ path: relative3, executable: (stat.mode & 73) !== 0, content: readFileSync8(path, "utf8") });
+      } else throw new TemplateError([`${relative3}: is not a file`]);
+    }
+  };
+  walk(dir, "");
+  return files;
+}
 function writeBundleFolder(dir, files) {
   const problems = files.map((file3) => bundlePathProblem(file3.path)).filter((p) => p !== null);
   if (problems.length) throw new TemplateError(problems);
@@ -28825,6 +28928,180 @@ function reviewFiles(template, ctx) {
   return files;
 }
 
+// ../templates/src/skill-install.ts
+import { chmodSync as chmodSync3, mkdirSync as mkdirSync4, mkdtempSync, rmSync as rmSync4, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname5, join as join10 } from "path";
+
+// ../templates/src/skill-payload.ts
+var import_yaml4 = __toESM(require_dist(), 1);
+
+// ../templates/src/skill-directory.ts
+var import_yaml3 = __toESM(require_dist(), 1);
+var SEGMENT = /^[A-Za-z0-9_](?:[A-Za-z0-9._ -]*[A-Za-z0-9._-])?$/;
+var MAX_PATH = 200;
+var MAX_DEPTH = 8;
+function skillPathProblem(path) {
+  if (!path || path.length > MAX_PATH) return `${shownPath(path)}: a file's path is at most ${MAX_PATH} characters`;
+  if (path.includes("\\") || path.includes("\0") || path.startsWith("/") || /^[A-Za-z]:/.test(path)) return `${shownPath(path)}: must be a plain path inside the skill, with / between its parts`;
+  if (HIDDEN_CHARACTERS.test(path)) return `${shownPath(path)}: the path has a character that cannot be seen`;
+  const parts = path.split("/");
+  if (parts.length > MAX_DEPTH) return `${shownPath(path)}: at most ${MAX_DEPTH} folders deep`;
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return `${shownPath(path)}: cannot have "..", "." or an empty part in it`;
+  if (parts.some((part) => part.startsWith(".") || part.startsWith("-"))) return `${shownPath(path)}: a file or folder name cannot start with a dot or a dash`;
+  if (parts.some((part) => !SEGMENT.test(part))) return `${shownPath(path)}: name files with letters, digits, dots, dashes, underscores and spaces`;
+  return null;
+}
+var shownPath = (path) => JSON.stringify(path.length > 80 ? `${path.slice(0, 77)}...` : path);
+function descriptionIn(skillMd) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMd)?.[1];
+  if (!front) return null;
+  const clean = (text) => typeof text === "string" && text.trim() ? text.replace(/\s+/g, " ").trim().slice(0, 300) : null;
+  try {
+    const parsed = (0, import_yaml3.parse)(front);
+    const description = clean(typeof parsed === "object" && parsed !== null ? parsed.description : null);
+    if (description) return description;
+  } catch {
+  }
+  const line2 = front.split(/\r?\n/).map((l) => /^description:\s*(.+?)\s*$/.exec(l)?.[1]).find(Boolean);
+  return clean(line2?.replace(/^(["'])(.*)\1$/, "$2"));
+}
+function checkDirectorySkill(all) {
+  const problems = [];
+  const seen = /* @__PURE__ */ new Map();
+  for (const file3 of all) {
+    const problem = skillPathProblem(file3.path);
+    if (problem) problems.push(problem);
+    const key = file3.path.toLowerCase();
+    if (seen.has(key)) problems.push(`${shownPath(file3.path)}: there are two files with this path${seen.get(key) === file3.path ? "" : " (they differ only in capitals)"}`);
+    seen.set(key, file3.path);
+  }
+  for (const file3 of all) {
+    const parts = file3.path.toLowerCase().split("/");
+    for (let depth = 1; depth < parts.length; depth++) {
+      const above = seen.get(parts.slice(0, depth).join("/"));
+      if (above !== void 0) problems.push(`${shownPath(file3.path)}: ${shownPath(above)} is a file, so it cannot also be a folder`);
+    }
+  }
+  if (problems.length) return { ok: false, problems: problems.slice(0, 20) };
+  const folder = skillFromFiles(all);
+  if ("problems" in folder) return { ok: false, problems: folder.problems.map((p) => p[0]?.toUpperCase() + p.slice(1)) };
+  const text = new Map(folder.files.filter((f) => isTextFile(f.content)).map((f) => [f.path, f.content.toString("utf8")]));
+  for (const file3 of folder.files) {
+    const content2 = text.get(file3.path);
+    if (content2 === void 0) {
+      if (file3.executable || file3.content.subarray(0, 2).toString("latin1") === "#!") problems.push(`${file3.path} can be run and is not text (it has a byte that is not UTF-8, or a NUL). A script in a skill must be readable text`);
+    } else if (HIDDEN_CHARACTERS.test(content2)) problems.push(`${file3.path} has a character that cannot be seen, or that changes the order text is read in`);
+  }
+  problems.push(...skillSecrets(folder.files).map((p) => `${p}. A skill holds no secrets: name the secret, and add it under Secrets`));
+  const skillMd = text.get("SKILL.md");
+  if (skillMd === void 0) problems.push("SKILL.md must be text");
+  const named = skillMd === void 0 ? null : skillNameOf(skillMd);
+  const name = named && "name" in named ? named.name : null;
+  if (named && "problem" in named) problems.push(`SKILL.md ${named.problem}`);
+  else if (name && (!SKILL_NAME.test(name) || name in {})) problems.push(`SKILL.md names the skill ${shownPath(name)}. A skill's name is lowercase letters, digits and dashes, at most 64 characters`);
+  else if (name && BUILTIN_SKILL_NAMES.includes(name)) problems.push(`${name} is the name of a skill that comes with every agent. Give yours another name`);
+  let setup = null;
+  const setupFile = folder.files.find((f) => f.path === SKILL_SETUP_FILE);
+  if (setupFile) {
+    const raw = text.get(SKILL_SETUP_FILE);
+    if (raw === void 0) problems.push(`${SKILL_SETUP_FILE} must be text`);
+    else {
+      try {
+        setup = parseSkillSetup((0, import_yaml3.parse)(raw));
+      } catch (error62) {
+        if (error62 instanceof TemplateError) problems.push(...error62.problems.map((p) => `${SKILL_SETUP_FILE}: ${p}`));
+        else problems.push(`${SKILL_SETUP_FILE} is not valid YAML`);
+      }
+    }
+  }
+  if (problems.length || !name || skillMd === void 0) return { ok: false, problems: problems.slice(0, 40) };
+  const runnable = new Set(skillScripts(folder.files));
+  const files = folder.files.map((f) => ({ path: f.path, bytes: f.content.length, binary: !text.has(f.path), is: f.path === "SKILL.md" ? "instructions" : f.path === SKILL_SETUP_FILE ? "setup" : runnable.has(f.path) ? "runnable" : "file" })).sort((a, b) => a.path === "SKILL.md" ? -1 : b.path === "SKILL.md" ? 1 : a.path.localeCompare(b.path));
+  return {
+    ok: true,
+    skill: { name, title: setup?.title ?? name, description: descriptionIn(skillMd), category: setup?.category ?? null, hash: folder.hash, bytes: files.reduce((sum, f) => sum + f.bytes, 0), files, setup }
+  };
+}
+
+// ../templates/src/skill-payload.ts
+var SKILL_PAYLOAD_ID = /^sks-[a-z0-9]{8,40}$/;
+function isSkillPayloadId(id) {
+  return !!id && SKILL_PAYLOAD_ID.test(id);
+}
+var SKILL_PAYLOAD_MAX_BYTES = Math.ceil(SKILL_LIMITS.totalBytes * 4 / 3) + 256 * 1024;
+var ID = /^[a-z0-9-]{1,64}$/;
+function parseSkillPayload(raw) {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw;
+  const skill = r.skill;
+  if (r.kind !== "skill" || typeof r.hash !== "string" || !/^[0-9a-f]{64}$/.test(r.hash) || !skill || typeof skill !== "object") return null;
+  if (typeof skill.name !== "string" || !SKILL_NAME.test(skill.name) || typeof skill.id !== "string" || !ID.test(skill.id) || !Number.isInteger(skill.version) || skill.version < 1 || typeof skill.enabled !== "boolean") return null;
+  if (!Array.isArray(r.files) || r.files.length > SKILL_LIMITS.files + 8) return null;
+  const files = [];
+  const kept = [];
+  for (const entry of r.files) {
+    if (!entry || typeof entry.path !== "string" || typeof entry.content !== "string" || typeof entry.executable !== "boolean" || entry.encoding !== "utf8" && entry.encoding !== "base64") return null;
+    const content2 = Buffer.from(entry.content, entry.encoding);
+    if (entry.encoding === "base64" && content2.toString("base64") !== entry.content) return null;
+    files.push({ path: entry.path, executable: entry.executable, content: content2 });
+    kept.push({ path: entry.path, executable: entry.executable, content: entry.content, encoding: entry.encoding });
+  }
+  return { payload: { kind: "skill", hash: r.hash, skill: { name: skill.name, id: skill.id, version: skill.version, enabled: skill.enabled }, files: kept }, files };
+}
+function checkSkillPayload(parsed) {
+  const checked = checkDirectorySkill(parsed.files);
+  if (!checked.ok) return { ok: false, why: "invalid", problems: checked.problems };
+  if (checked.skill.name !== parsed.payload.skill.name) return { ok: false, why: "invalid", problems: [`SKILL.md names the skill ${checked.skill.name}, and it was sent as ${parsed.payload.skill.name}`] };
+  if (checked.skill.hash !== parsed.payload.hash) return { ok: false, why: "wrong-hash", problems: ["the files are not the ones that were named (the hash is different)"] };
+  return { ok: true, skill: checked.skill };
+}
+function installStepId(setup) {
+  const taken = new Set((setup?.steps ?? []).map((s) => s.id));
+  let id = "install-skill";
+  while (taken.has(id)) id += "-x";
+  return id;
+}
+function payloadTemplateYaml(skill, enabled) {
+  return (0, import_yaml4.stringify)({
+    name: "skill",
+    steps: [
+      ...(skill.setup?.steps ?? []).map((s) => ({ id: s.id, ...s.title ? { title: s.title } : {}, "controlclaw.setting": { tool: s.spec.tool, values: s.spec.values } })),
+      { id: installStepId(skill.setup), title: `Install the skill ${skill.name}`, "openclaw.skill": { name: skill.name, from: carriedSkillFolder(skill.name), enabled } }
+    ]
+  });
+}
+
+// ../templates/src/skill-install.ts
+async function installSkillPayload(parsed, skill, run2) {
+  const { payload, files } = parsed;
+  const parent = join10(run2.context.home, ".controlclaw");
+  mkdirSync4(parent, { recursive: true, mode: 448 });
+  const dir = mkdtempSync(join10(parent, "skill-"));
+  try {
+    writeFileSync5(join10(dir, "template.yaml"), payloadTemplateYaml(skill, payload.skill.enabled), { mode: 384, flag: "wx" });
+    const kept = new Set(skill.files.map((f) => f.path));
+    for (const f of files.filter((entry) => kept.has(entry.path))) {
+      const path = join10(dir, carriedSkillFolder(payload.skill.name), f.path);
+      mkdirSync4(dirname5(path), { recursive: true, mode: 448 });
+      writeFileSync5(path, f.content, { mode: f.executable ? 493 : 420, flag: "wx" });
+      chmodSync3(path, f.executable ? 493 : 420);
+    }
+    const template = { ...loadTemplate(dir), name: run2.as };
+    return await runTemplate(template, {
+      context: { ...run2.context, skillRecord: { id: payload.skill.id, version: String(payload.skill.version) } },
+      restartOpenclaw: run2.restartOpenclaw,
+      redact: run2.redact,
+      // The run's state is for this report only: the skill is not a template the agent has.
+      stateDir: join10(dir, "state"),
+      mode: run2.mode,
+      skipUnconfirmed: run2.skipUnconfirmed,
+      interrupted: run2.interrupted
+    });
+  } finally {
+    rmSync4(dir, { recursive: true, force: true });
+  }
+}
+
 // ../templates/src/cli-runbook.ts
 var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
 
@@ -28832,11 +29109,14 @@ var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
   cc-runbook run [folder] --from <step>    continue from a step, after a failure
   cc-runbook run [folder] --only <a,b>     run only these steps
   cc-runbook run [folder] --check          show what would change; change nothing
+  cc-runbook run [folder] --check --no-scripts   the same, without running the scripts of "run" steps
+  cc-runbook facts [folder]                the template's name, the hash of its files and its steps (JSON); runs nothing
   cc-runbook verify [folder]               check every step; change nothing
   cc-runbook capture                       what this agent is set up with, as facts for the console (JSON); reads only
   cc-runbook review [folder]               the files the template keeps as the agent has them, with the template's text (JSON)
   cc-runbook ensure <kind> <field>=<value>...   one step by hand; the same as "cc-ensure"
   cc-runbook unpack <file> <folder> --hash <hash>   write a template the console handed out into a new folder
+  cc-runbook skill <file> --hash <hash> --as <id>   install one skill the console's skills directory handed out
 
   folder            the template folder (default: the current one)
   --bundles <dir>   where the folders named in "uses" are (default: next to the template folder)
@@ -28847,7 +29127,7 @@ var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
   --json            print the report as JSON
   --public          with --json: only what the console is told (no messages from the box, no log lines)
 
-Exit code: 0 done, 1 a step failed, 2 --check found changes, 3 unpack: not the template that was confirmed, 64 the template or the command is wrong, 130 stopped by a signal.`;
+Exit code: 0 done, 1 a step failed, 2 --check found changes, 3 unpack, skill: not the files that were named, 64 the template or the command is wrong, 130 stopped by a signal.`;
 async function main2(argv, out = console.log, err = console.error) {
   if (argv[0] === "ensure") return main(argv, out, err);
   let parsed;
@@ -28855,7 +29135,7 @@ async function main2(argv, out = console.log, err = console.error) {
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { check: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, vars: { type: "string" }, as: { type: "string" }, hash: { type: "string" }, "skip-unconfirmed": { type: "boolean" }, public: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
+      options: { check: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, vars: { type: "string" }, as: { type: "string" }, hash: { type: "string" }, "skip-unconfirmed": { type: "boolean" }, "no-scripts": { type: "boolean" }, public: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
     });
   } catch (error62) {
     err(`${error62.message}
@@ -28870,16 +29150,21 @@ ${USAGE2}`);
     return values.help ? 0 : 64;
   }
   if (command === "capture") return positionals.length === 1 ? capture(out, err) : (err(USAGE2), 64);
+  if (command === "skill") {
+    if (extra.length || !values.hash || !isSkillPayloadId(values.as)) return err(USAGE2), 64;
+    return installSkill(resolve5(folder), { hash: values.hash, as: values.as, runId: values["run-id"] ?? null, check: values.check === true, skipUnconfirmed: values["skip-unconfirmed"] === true, public: values.public === true }, out, err);
+  }
   if (command === "unpack") return extra.length === 1 && values.hash ? unpack(resolve5(folder), resolve5(extra[0]), values.hash, out, err) : (err(USAGE2), 64);
   if (values.as !== void 0 && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(values.as)) {
     err("--as: must be lowercase letters, digits and dashes");
     return 64;
   }
-  if (command !== "run" && command !== "verify" && command !== "review" || extra.length || command !== "run" && (values.check || values.from || values.only)) {
+  if (command !== "run" && command !== "verify" && command !== "review" && command !== "facts" || extra.length || command !== "run" && (values.check || values.from || values.only) || values["no-scripts"] && !values.check) {
     err(USAGE2);
     return 64;
   }
   if (refusesRoot(err)) return 64;
+  if (command === "facts") return facts(resolve5(folder), values.bundles ? resolve5(values.bundles) : void 0, out, err);
   const mode2 = command === "verify" ? "verify" : values.check ? "check" : "run";
   let template;
   try {
@@ -28910,6 +29195,7 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
       ...boxContext(values["run-id"] ?? null, vars),
       mode: mode2,
       skipUnconfirmed: values["skip-unconfirmed"] === true,
+      noScripts: values["no-scripts"] === true,
       from: values.from,
       only: values.only ? values.only.split(",").map((id) => id.trim()).filter(Boolean) : void 0,
       interrupted: signals.interrupted,
@@ -28928,6 +29214,18 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
     return 64;
   } finally {
     signals.done();
+  }
+}
+function facts(folder, bundlesRoot, out, err) {
+  try {
+    const template = loadTemplate(folder, { bundlesRoot });
+    out(JSON.stringify({ name: template.name, hash: bundleHash(readBundleFolder(folder)), steps: template.steps.map((s) => ({ id: s.id, kind: s.kind })) }));
+    return 0;
+  } catch (error62) {
+    if (!(error62 instanceof TemplateError)) throw error62;
+    err(`The template has ${error62.problems.length === 1 ? "a problem" : `${error62.problems.length} problems`}.
+${error62.problems.map((p) => `  ${p}`).join("\n")}`);
+    return 64;
   }
 }
 async function capture(out, err) {
@@ -28965,6 +29263,44 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
   }
   out(`wrote ${files.length} file${files.length === 1 ? "" : "s"}`);
   return 0;
+}
+async function installSkill(file3, options, out, err) {
+  if (refusesRoot(err)) return 64;
+  let parsed = null;
+  try {
+    parsed = parseSkillPayload(JSON.parse(readFileSync11(file3, "utf8")));
+  } catch {
+  }
+  if (!parsed) {
+    err(`${file3} is not a skill the console handed out`);
+    return 64;
+  }
+  if (parsed.payload.hash !== options.hash) {
+    err("The skill is not the one that was named (its hash is different). Nothing was written.");
+    return 3;
+  }
+  const checked = checkSkillPayload(parsed);
+  if (!checked.ok) {
+    err(`The skill has ${checked.problems.length === 1 ? "a problem" : `${checked.problems.length} problems`}. Nothing was written.
+${checked.problems.map((p) => `  ${p}`).join("\n")}`);
+    return checked.why === "wrong-hash" ? 3 : 64;
+  }
+  const signals = watchSignals();
+  try {
+    const report = await installSkillPayload(parsed, checked.skill, { ...boxContext(options.runId), as: options.as, mode: options.check ? "check" : "run", skipUnconfirmed: options.skipUnconfirmed, interrupted: signals.interrupted });
+    out(JSON.stringify(options.public ? publicReport(report) : report, null, 2));
+    return exitCode(report);
+  } catch (error62) {
+    if (error62 instanceof TemplateError) {
+      err(`The skill has ${error62.problems.length === 1 ? "a problem" : `${error62.problems.length} problems`}. Nothing was installed.
+${error62.problems.map((p) => `  ${p}`).join("\n")}`);
+      return 64;
+    }
+    err(`The skill could not be written (${error62.code ?? (error62 instanceof Error ? error62.name : "error")}). Nothing was installed.`);
+    return 64;
+  } finally {
+    signals.done();
+  }
 }
 
 // src/cc-runbook.ts
