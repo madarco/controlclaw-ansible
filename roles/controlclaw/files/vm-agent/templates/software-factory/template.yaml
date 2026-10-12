@@ -36,7 +36,7 @@ steps:
 
   - id: local-bin
     title: Put the agent's own tools on its PATH, after the system's
-    line: { file: ~/.profile, match: '^export PATH="\$PATH:\$HOME/\.local/bin"', line: 'export PATH="$PATH:$HOME/.local/bin"' }
+    run: { apply: scripts/path-apply.sh, verify: scripts/path-verify.sh }
 
   # A download can be blocked by the firewall. The agent works without it, so the run goes on;
   # the card shows the failure and an owner can press Try again.

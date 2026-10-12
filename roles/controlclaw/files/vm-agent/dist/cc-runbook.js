@@ -7515,41 +7515,86 @@ function makeRedactor(values) {
 }
 
 // ../templates/src/secrets.ts
-var SECRET_KEY = /(api[_-]?key|token|secret|password|passwd|private[_-]?key|authorization|bearer|credential)s?$|^key$/i;
+var SECRET_WORDS = /* @__PURE__ */ new Set(["key", "keys", "apikey", "apikeys", "secret", "secrets", "token", "tokens", "password", "passwords", "passwd", "passphrase", "pass", "pwd", "pat", "credential", "credentials", "authorization", "bearer"]);
+var ABOUT_A_SECRET = /* @__PURE__ */ new Set(["file", "path", "dir", "url", "uri", "name", "names", "id", "ids", "count", "limit", "length", "len", "type", "format", "header", "prefix", "suffix", "endpoint", "ttl", "expiry", "expires", "env", "var", "hint", "label", "title", "field", "budget"]);
+var DATA_KEY = /* @__PURE__ */ new Set(["primary", "sort", "foreign", "partition", "cache", "idempotency", "hash", "public", "unique", "index", "row", "map", "object", "group", "routing", "dedupe", "range", "shard", "lookup", "natural", "surrogate", "candidate", "composite", "storage", "bucket", "s3", "item", "record", "config", "option", "setting", "property", "json", "dict", "translation", "i18n", "sorting", "order", "column", "field"]);
 var TOKEN_COUNT = /^(max|min|total|num|input|output|context|reserve|thinking|budget)[A-Za-z_-]*tokens?$|tokens?[_-]?(count|limit|budget)$/i;
+var wordsOf = (key) => key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").split(/[^A-Za-z0-9]+/).filter(Boolean).map((w) => w.toLowerCase());
 function namesSecret(key) {
-  return SECRET_KEY.test(key) && !TOKEN_COUNT.test(key);
+  if (TOKEN_COUNT.test(key)) return false;
+  const words = wordsOf(key);
+  const last = words.at(-1);
+  if (!last || ABOUT_A_SECRET.has(last)) return false;
+  if (words.some((word) => /passw(or)?d/.test(word))) return true;
+  return words.some((word, at) => SECRET_WORDS.has(word) && !((word === "key" || word === "keys") && at > 0 && DATA_KEY.has(words[at - 1])));
 }
-var REFERENCE = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/;
+var REFERENCE = /^(\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|secret:[A-Z][A-Z0-9_]{1,63})$/;
+var COMMAND = /^(\$\(|`)/;
+var PLAIN_VALUE = /^(true|false|yes|no|on|off|null|none|nil|undefined|required|optional|include|omit|same-origin|enabled|disabled|auto|default|always|never)$/i;
+var entropy = (text) => {
+  const counts = /* @__PURE__ */ new Map();
+  for (const char of text) counts.set(char, (counts.get(char) ?? 0) + 1);
+  let bits = 0;
+  for (const n of counts.values()) bits -= n / text.length * Math.log2(n / text.length);
+  return bits;
+};
+function looksSecret(value) {
+  if (typeof value !== "string") return false;
+  const text = value.trim().replace(/^(["'])(.*)\1$/, "$2");
+  if (!text || REFERENCE.test(text) || COMMAND.test(text) || PLAIN_VALUE.test(text)) return false;
+  if (/^[0-9.,_-]+$/.test(text) || /^[A-Z][A-Z0-9_]*$/.test(text) || /^(\.{0,2}|~)\//.test(text) || /^<.*>$/.test(text)) return false;
+  if (text.length < 12) return false;
+  if (/[A-Za-z]/.test(text) && /[0-9]/.test(text)) return true;
+  return text.length >= 20 && !/\s/.test(text) && entropy(text) >= 3.8;
+}
 var TOKEN_SHAPES = [
-  ["a private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ["a private key", /-----BEGIN [A-Z ]*(PRIVATE KEY|KEY BLOCK|CERTIFICATE REQUEST)-----/],
   ["an API key (sk-\u2026)", /\bsk-[A-Za-z0-9_-]{16,}/],
-  ["a GitHub token", /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/],
+  ["a Stripe key", /\b(sk|rk)_(live|test)_[A-Za-z0-9]{10,}/],
+  ["an AWS access key", /\b(AKIA|ASIA)[A-Z0-9]{16}\b/],
+  ["a Google API key", /\bAIza[0-9A-Za-z_-]{30,}/],
+  ["a signed token (JWT)", /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/],
+  // `postgres://user:pass@host`. Not `https://${USER}:${PASS}@host`, which names where they come from.
+  // `postgres://user:pass@host`, `redis://:pass@host`. Not `https://${USER}:${PASS}@host`, which names where they come from.
+  ["an address with a password in it", /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@$]*:[^\s/@$]+@/i],
+  // `curl -u a:b`, `curl -sSu a:b`, `curl --user a:b`.
+  ["a user name and password on a command line", /\bcurl\b[^\n]*\s(-[A-Za-z]*u|--user)[\s=]*["']?[^\s"'$:-][^\s"'$:]*:[^\s"'$]+/],
+  ["a password on a command line", /\bsshpass\s+-p\s*["']?(?![$"'\s])[^\s"']+/],
+  // `--password=…`, `--token …`. Not `--token "$CRM_TOKEN"`, and not `--token-file`.
+  ["a secret given to a command", /(?<![A-Za-z0-9])--(password|passwd|token|secret|api[-_]?key|access[-_]?token)(=|\s+)["']?(?![$"'\s<{-])[^\s"']{4,}/i],
+  ["a password in an environment variable", /\b(PGPASSWORD|MYSQL_PWD|GH_PAT|[A-Z][A-Z0-9_]*_(PAT|PWD|PASSWORD))=["']?(?![$"'\s<])[^\s"']+/],
+  ["a GitHub token", /\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}/],
   ["a Slack token", /\bxox[abeoprs]-[A-Za-z0-9-]{10,}/],
   ["an access token (pat-\u2026)", /\bpat-[A-Za-z0-9_-]{16,}/],
   ["a bearer token", /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/]
 ];
-function isReference(value) {
-  return typeof value === "string" && REFERENCE.test(value);
-}
 function tokenShapeIn(text) {
   for (const [name, shape] of TOKEN_SHAPES) if (shape.test(text)) return name;
   return null;
 }
-var SECRET_ASSIGNMENT = /(?<![A-Za-z0-9_.-])(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd|private[_-]?key|authorization|bearer|credential)s?|key)\1(\s*[=:]\s*)(["']?)([^\s"',;&]+)\4/gi;
-function secretInText(text) {
-  for (const match of text.matchAll(SECRET_ASSIGNMENT)) {
-    const [, , key = "", , , value = ""] = match;
-    if (namesSecret(key) && !isReference(value)) return `"${key}"`;
+var SECRET_ASSIGNMENT = /(?<![A-Za-z0-9_.-])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1(\s*[=:]\s*)(["']?)([^\s"',;&]+)\4/g;
+var ALSO_PLAIN_WORDS = /* @__PURE__ */ new Set(["pass", "pat"]);
+function onlyLooselyNamed(key) {
+  const words = wordsOf(key);
+  return !words.some((word, at) => SECRET_WORDS.has(word) && !ALSO_PLAIN_WORDS.has(word) && !((word === "key" || word === "keys") && at > 0 && DATA_KEY.has(words[at - 1])) || /passw(or)?d/.test(word));
+}
+function* secretAssignments(text) {
+  const scan = new RegExp(SECRET_ASSIGNMENT.source, "g");
+  for (let match = scan.exec(text); match; match = scan.exec(text)) {
+    const [whole, quote = "", key = "", sep3 = "", valueQuote = "", value = ""] = match;
+    if (namesSecret(key)) yield { index: match.index, whole, quote, key, sep: sep3, valueQuote, value };
+    else scan.lastIndex = match.index + quote.length + key.length;
   }
+}
+function secretInText(text) {
+  for (const found of secretAssignments(text)) if (looksSecret(found.value)) return `"${found.key}"`;
   return tokenShapeIn(text);
 }
 function secretFields(value, path = [], underSecretKey = false) {
   if (Array.isArray(value)) return value.flatMap((item, i) => secretFields(item, [...path, String(i)], underSecretKey));
   if (isObject(value)) return Object.entries(value).flatMap(([key, entry]) => secretFields(entry, [...path, key], namesSecret(key)));
-  const literal2 = typeof value === "string" && value !== "" || typeof value === "number";
-  if (!literal2 || isReference(value)) return [];
-  if (underSecretKey || typeof value === "string" && tokenShapeIn(value)) return [path.join(".") || "value"];
+  if (typeof value !== "string" || value === "") return [];
+  if (underSecretKey && looksSecret(value) || tokenShapeIn(value)) return [path.join(".") || "value"];
   return [];
 }
 
@@ -7579,10 +7624,14 @@ function makeRedact(values = []) {
   const base = makeRedactor(values);
   return (text) => {
     let out = base(text).replace(HEADER, `$1${MASK}`);
-    out = out.replace(
-      SECRET_ASSIGNMENT,
-      (whole, quote, key, sep3, valueQuote) => namesSecret(key) ? `${quote}${key}${quote}${sep3}${valueQuote}${MASK}${valueQuote}` : whole
-    );
+    let masked = "";
+    let from = 0;
+    for (const found of secretAssignments(out)) {
+      if (onlyLooselyNamed(found.key) && !looksSecret(found.value)) continue;
+      masked += `${out.slice(from, found.index)}${found.quote}${found.key}${found.quote}${found.sep}${found.valueQuote}${MASK}${found.valueQuote}`;
+      from = found.index + found.whole.length;
+    }
+    out = masked + out.slice(from);
     for (const [, shape] of TOKEN_SHAPES) out = out.replace(new RegExp(shape.source, "g"), MASK);
     return PEM_BODY.test(out.trim()) ? MASK : out;
   };
@@ -9007,16 +9056,16 @@ function cleanEnum(obj) {
 }
 function base64ToUint8Array(base643) {
   const binaryString = atob(base643);
-  const bytes = new Uint8Array(binaryString.length);
+  const bytes2 = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+    bytes2[i] = binaryString.charCodeAt(i);
   }
-  return bytes;
+  return bytes2;
 }
-function uint8ArrayToBase64(bytes) {
+function uint8ArrayToBase64(bytes2) {
   let binaryString = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binaryString += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes2.length; i++) {
+    binaryString += String.fromCharCode(bytes2[i]);
   }
   return btoa(binaryString);
 }
@@ -9025,22 +9074,22 @@ function base64urlToUint8Array(base64url3) {
   const padding = "=".repeat((4 - base643.length % 4) % 4);
   return base64ToUint8Array(base643 + padding);
 }
-function uint8ArrayToBase64url(bytes) {
-  return uint8ArrayToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+function uint8ArrayToBase64url(bytes2) {
+  return uint8ArrayToBase64(bytes2).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 function hexToUint8Array(hex3) {
   const cleanHex = hex3.replace(/^0x/, "");
   if (cleanHex.length % 2 !== 0) {
     throw new Error("Invalid hex string length");
   }
-  const bytes = new Uint8Array(cleanHex.length / 2);
+  const bytes2 = new Uint8Array(cleanHex.length / 2);
   for (let i = 0; i < cleanHex.length; i += 2) {
-    bytes[i / 2] = Number.parseInt(cleanHex.slice(i, i + 2), 16);
+    bytes2[i / 2] = Number.parseInt(cleanHex.slice(i, i + 2), 16);
   }
-  return bytes;
+  return bytes2;
 }
-function uint8ArrayToHex(bytes) {
-  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+function uint8ArrayToHex(bytes2) {
+  return Array.from(bytes2).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 var Class = class {
   constructor(..._args) {
@@ -27409,11 +27458,18 @@ function date4(params) {
 var KINDS = ["openclaw.plugin", "openclaw.config", "controlclaw.setting", "file", "line", "run"];
 var json2 = external_exports.lazy(() => external_exports.union([external_exports.string(), external_exports.number(), external_exports.boolean(), external_exports.null(), external_exports.array(json2), external_exports.record(external_exports.string(), json2)]));
 var inFolder = external_exports.string().min(1).refine((p) => !p.startsWith("/") && !p.startsWith("~") && !p.split(/[\\/]/).includes(".."), "must be a path inside the template folder");
-var PROTECTED_HOME_PATHS = [".ssh", ".controlclaw", ".openclaw/openclaw.json"];
-var target = external_exports.string().min(1).refine((p) => !p.startsWith("/") && (p.startsWith("~/") || !p.startsWith("~")), "must be a path in the workspace, or under the home folder as ~/\u2026").refine((p) => !p.split(/[\\/]/).includes(".."), "cannot have .. in it").refine(
-  (p) => !PROTECTED_HOME_PATHS.some((place) => p === `~/${place}` || p.startsWith(`~/${place}/`)),
-  "is a protected place (~/.ssh, ~/.controlclaw, OpenClaw's config). Use an openclaw.config step for the config, or a run step"
-);
+function workspacePathProblem(path) {
+  const elsewhere = "A file anywhere else is written by a run step, which is shown as a script to the person who confirms";
+  if (path.startsWith("~") || path.startsWith("/") || /^[A-Za-z]:/.test(path)) return `must be a file in the agent's workspace, like SOUL.md or notes/plan.md. ${elsewhere}`;
+  if (path.includes("\\") || path.includes("\0")) return "must be a plain path with / between its parts";
+  const parts = path.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return `must be a plain path inside the agent's workspace: no "..", no "." and no empty part. ${elsewhere}`;
+  return null;
+}
+var target = external_exports.string().min(1).superRefine((path, ctx) => {
+  const problem = workspacePathProblem(path);
+  if (problem) ctx.addIssue({ code: "custom", message: problem });
+});
 function pluginId(spec) {
   if (spec.id) return spec.id;
   const name = (spec.package ?? "").replace(/^(npm|clawhub):/, "").replace(/^@[^/]+\//, "");
@@ -27513,7 +27569,7 @@ function secretsOf(kind, spec) {
   if (kind === "openclaw.config") {
     const { path, value } = spec;
     const named = namesSecret(path.split(".").pop() ?? "");
-    return (typeof value === "string" || typeof value === "number") && named && !isReference(value) ? [path] : fields(value, [path], named);
+    return fields(value, [path], named);
   }
   if (kind === "line") return secretInText(spec.line) ? ["line"] : [];
   return [];
@@ -27635,9 +27691,12 @@ function readFolder(dir, label, problems) {
     problems.push(`${label}: no ${TEMPLATE_FILE} in ${dir}`);
     return null;
   }
+  return parseTemplateText(readFileSync4(file3, "utf8"), label, problems);
+}
+function parseTemplateText(text, label, problems) {
   let raw;
   try {
-    raw = (0, import_yaml.parse)(readFileSync4(file3, "utf8"));
+    raw = (0, import_yaml.parse)(text);
   } catch (error62) {
     problems.push(`${label}: ${TEMPLATE_FILE} is not valid YAML: ${error62.message.split("\n")[0]}`);
     return null;
@@ -27650,17 +27709,27 @@ function readFolder(dir, label, problems) {
     return null;
   }
 }
-function stepsOf(folder, file3, bundle, label, problems) {
+function folderSource(dir) {
+  return {
+    dir,
+    name: basename(dir),
+    read: (relative) => {
+      const path = fileInFolder(dir, relative);
+      return path ? readFileSync4(path) : null;
+    }
+  };
+}
+function stepsOf(source2, file3, bundle, label, problems) {
+  const folder = source2.dir;
   return file3.steps.map((step) => {
     const hash2 = createHash("sha256").update(JSON.stringify([step.kind, step.spec, step.restart]));
     for (const [field, relative] of filesOf(step)) {
-      const path = fileInFolder(folder, relative);
-      if (path) {
-        const content2 = readFileSync4(path);
+      const content2 = source2.read(relative);
+      if (content2) {
         hash2.update(content2);
         const line2 = content2.toString("utf8").split("\n").findIndex((l) => tokenShapeIn(l) !== null);
         if (line2 >= 0) problems.push(`${label}: step "${step.id}": ${relative} has ${tokenShapeIn(content2.toString("utf8").split("\n")[line2] ?? "")} on line ${line2 + 1}. A template holds no secrets: name it in "needs"`);
-      } else problems.push(`${label}: step "${step.id}": "${field}" names ${relative}, which is not a file in ${basename(folder)}/`);
+      } else problems.push(`${label}: step "${step.id}": "${field}" names ${relative}, which is not a file in ${source2.name}/`);
     }
     return { ...step, id: bundle ? `${bundle}/${step.id}` : step.id, dir: folder, bundle, hash: hash2.digest("hex").slice(0, 16) };
   });
@@ -27669,7 +27738,7 @@ function loadStep(dir, step) {
   const folder = resolve(dir);
   const file3 = parseTemplate({ name: "ensure", steps: [{ id: "ensure", ...step }] });
   const problems = [];
-  const steps = stepsOf(folder, file3, null, "ensure", problems);
+  const steps = stepsOf(folderSource(folder), file3, null, "ensure", problems);
   if (problems.length) throw new TemplateError(problems);
   return { name: file3.name, description: null, dir: folder, steps, todo: [], hash: steps[0]?.hash ?? "" };
 }
@@ -27681,7 +27750,7 @@ function loadTemplate(templateDir, options = {}) {
   const steps = [];
   const done = /* @__PURE__ */ new Set();
   const todo = [];
-  const add = (folder, file3, bundle, label) => void steps.push(...stepsOf(folder, file3, bundle, label, problems));
+  const add = (folder, file3, bundle, label) => void steps.push(...stepsOf(folderSource(folder), file3, bundle, label, problems));
   const visit2 = (folder, label, trail) => {
     const file3 = readFolder(folder, label, problems);
     if (!file3) return null;
@@ -27721,14 +27790,10 @@ function loadTemplate(templateDir, options = {}) {
     todoIds.add(item.id);
   }
   if (problems.length) throw new TemplateError(problems);
-  return {
-    name: template.name,
-    description: template.description,
-    dir,
-    steps,
-    todo,
-    hash: createHash("sha256").update([...steps.map((s) => `${s.id}:${s.hash}`), JSON.stringify(todo)].join("\n")).digest("hex").slice(0, 16)
-  };
+  return { name: template.name, description: template.description, dir, steps, todo, hash: templateHash(steps, todo) };
+}
+function templateHash(steps, todo) {
+  return createHash("sha256").update([...steps.map((s) => `${s.id}:${s.hash}`), JSON.stringify(todo)].join("\n")).digest("hex").slice(0, 16);
 }
 
 // ../templates/src/runner.ts
@@ -27739,11 +27804,11 @@ import { dirname as dirname3, join as join5 } from "path";
 // ../templates/src/kinds/files.ts
 import { randomBytes } from "crypto";
 import { chmodSync, existsSync as existsSync3, lstatSync, mkdirSync, readFileSync as readFileSync5, readlinkSync, realpathSync as realpathSync2, renameSync, rmSync, statSync as statSync2, writeFileSync } from "fs";
-import { basename as basename2, dirname as dirname2, isAbsolute, join as join4, resolve as resolve2, sep as sep2 } from "path";
+import { basename as basename2, dirname as dirname2, join as join4, resolve as resolve2, sep as sep2 } from "path";
 function targetPath(path, ctx) {
-  if (path.startsWith("~/")) return join4(ctx.home, path.slice(2));
-  if (isAbsolute(path)) throw new StepFailure(`${path} is not in the workspace or under ~/`);
-  return resolve2(ctx.workspace, path);
+  const problem = workspacePathProblem(path);
+  if (problem) throw new StepFailure(`${path} ${problem}`);
+  return join4(ctx.workspace, path);
 }
 function real(path) {
   let existing = path;
@@ -27754,15 +27819,13 @@ function real(path) {
   }
   return join4(realpathSync2(existing), ...rest);
 }
-var inside = (path, folder) => path === folder || path.startsWith(folder + sep2);
+var inside = (path, folder) => path.startsWith(folder + sep2);
 function writable(path, ctx) {
   const named = targetPath(path, ctx);
   let target2 = named;
   if (lstatSync(named, { throwIfNoEntry: false })?.isSymbolicLink()) target2 = existsSync3(named) ? realpathSync2(named) : resolve2(dirname2(named), readlinkSync(named));
   target2 = real(target2);
-  const home = real(ctx.home);
-  if (!inside(target2, home) && !inside(target2, real(ctx.workspace))) throw new StepFailure(`${path} leads outside the workspace and the home folder`);
-  if (PROTECTED_HOME_PATHS.some((p) => inside(target2, join4(home, p)))) throw new StepFailure(`${path} leads to a protected place, which a file or line step cannot write`);
+  if (!inside(target2, real(ctx.workspace))) throw new StepFailure(`${path} leads outside the agent's workspace, which a file or line step cannot write`);
   if (statSync2(target2, { throwIfNoEntry: false })?.isDirectory()) throw new StepFailure(`${path} is a folder, not a file`);
   return target2;
 }
@@ -28178,7 +28241,7 @@ var USAGE = `cc-ensure: make one thing true on this agent, with the same step ki
 
   cc-ensure openclaw.config path=agents.defaults.thinkingDefault value=medium
   cc-ensure openclaw.plugin package=@openclaw/brave-search config.maxResults=8
-  cc-ensure line file=~/.tmux.conf match='^set -g mouse' line='set -g mouse on'
+  cc-ensure line file=notes/todo.md match='^- [ ] call' line='- [ ] call Anna'
   cc-ensure file path=SOUL.md from=files/SOUL.md ifMissing=true --dir ./sales-assistant
   cc-ensure run apply=scripts/apply.sh verify=scripts/verify.sh --dir ./sales-assistant
 
@@ -28274,6 +28337,108 @@ ${USAGE}`);
 }
 
 // ../templates/src/cli-runbook.ts
+import { readFileSync as readFileSync8 } from "fs";
+
+// ../templates/src/bundle.ts
+import { createHash as createHash2 } from "crypto";
+
+// ../templates/src/ids.ts
+var HIDDEN_CHARACTERS = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
+var BUNDLE_LIMITS = { files: 40, fileBytes: 64 * 1024, totalBytes: 256 * 1024 };
+var bundlePath = (relative) => relative.replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
+
+// ../templates/src/bundle.ts
+var PATH = /^(template\.yaml|README\.md|(files|scripts)\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*)$/;
+var bytes = (text) => Buffer.byteLength(text, "utf8");
+function bundlePathProblem(path) {
+  if (!PATH.test(path)) return `${path}: a template has template.yaml, README.md, and files under files/ and scripts/, named with letters, digits, dots, dashes and underscores`;
+  if (path.split("/").some((part) => part === "." || part === "..")) return `${path}: cannot have . or .. in it`;
+  return null;
+}
+function bundleHash(files) {
+  const hash2 = createHash2("sha256");
+  for (const file3 of [...files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) {
+    hash2.update(`${file3.path}\0${file3.executable ? "x" : "-"}\0${createHash2("sha256").update(file3.content, "utf8").digest("hex")}
+`);
+  }
+  return hash2.digest("hex");
+}
+var NAMED_SECRET = /(?<![A-Za-z0-9_.-])secret:\s*[A-Z][A-Z0-9_]{1,63}(?![A-Za-z0-9_-])/g;
+function bundleSecrets(files) {
+  const found = [];
+  for (const file3 of files) {
+    const lines = file3.content.split("\n");
+    for (const [index, text] of lines.entries()) {
+      const line2 = file3.path === TEMPLATE_FILE ? text.replace(NAMED_SECRET, "${NAMED}") : text;
+      const why = secretInText(line2);
+      if (why) found.push(`${file3.path}: line ${index + 1} has ${why}, which looks like a secret. A template holds no secrets: name it in "needs", or refer to it as \${NAME}`);
+    }
+  }
+  return found;
+}
+function loadBundle(files) {
+  const problems = [];
+  if (files.length > BUNDLE_LIMITS.files) problems.push(`a template has at most ${BUNDLE_LIMITS.files} files; this one has ${files.length}`);
+  const byPath = /* @__PURE__ */ new Map();
+  let total = 0;
+  for (const file3 of files) {
+    const bad = bundlePathProblem(file3.path);
+    if (bad) problems.push(bad);
+    else if (byPath.has(file3.path)) problems.push(`${file3.path}: this file is there twice`);
+    else byPath.set(file3.path, file3);
+    const size = bytes(file3.content);
+    total += size;
+    if (size > BUNDLE_LIMITS.fileBytes) problems.push(`${file3.path}: ${Math.ceil(size / 1024)} KB, and a file may be ${BUNDLE_LIMITS.fileBytes / 1024} KB`);
+    if (file3.content.includes("\0") || file3.content.includes("\uFFFD")) problems.push(`${file3.path}: is not a text file`);
+    else {
+      const at = file3.content.split("\n").findIndex((line2) => HIDDEN_CHARACTERS.test(line2));
+      if (at >= 0) problems.push(`${file3.path}: line ${at + 1} has a control character or a character that changes the direction of the text. A template's files are plain text`);
+    }
+  }
+  for (const path of byPath.keys()) {
+    const inside2 = [...byPath.keys()].find((other) => other.startsWith(`${path}/`));
+    if (inside2) problems.push(`${path}: is a file, and ${inside2} needs it to be a folder`);
+  }
+  if (total > BUNDLE_LIMITS.totalBytes) problems.push(`the files are ${Math.ceil(total / 1024)} KB in all, and a template may be ${BUNDLE_LIMITS.totalBytes / 1024} KB`);
+  problems.push(...bundleSecrets(files));
+  const yaml = byPath.get(TEMPLATE_FILE);
+  if (!yaml) throw new TemplateError([...problems, `no ${TEMPLATE_FILE}`]);
+  const template = parseTemplateText(yaml.content, "template", problems);
+  if (!template) throw new TemplateError(problems);
+  if (template.uses.length) problems.push(`"uses": this template cannot use bundles`);
+  const source2 = {
+    dir: "",
+    name: "the template",
+    read: (relative) => {
+      const file3 = byPath.get(bundlePath(relative));
+      return file3 ? Buffer.from(file3.content, "utf8") : null;
+    }
+  };
+  const fromSteps = [];
+  const steps = stepsOf(source2, template, null, "template", fromSteps);
+  problems.push(...fromSteps.filter((p) => !/ has .* on line \d+\. A template holds no secrets/.test(p)));
+  if (problems.length) throw new TemplateError(problems);
+  return { name: template.name, description: template.description, dir: "", steps, todo: template.todo, hash: templateHash(steps, template.todo), bundleHash: bundleHash(files) };
+}
+
+// ../templates/src/bundle-folder.ts
+import { chmodSync as chmodSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync3, readdirSync, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname4, join as join6 } from "path";
+function writeBundleFolder(dir, files) {
+  const problems = files.map((file3) => bundlePathProblem(file3.path)).filter((p) => p !== null);
+  if (problems.length) throw new TemplateError(problems);
+  mkdirSync3(dir, { recursive: true, mode: 448 });
+  if (readdirSync(dir).length) throw new TemplateError([`${dir} is not empty`]);
+  for (const file3 of files) {
+    const path = join6(dir, file3.path);
+    mkdirSync3(dirname4(path), { recursive: true, mode: 448 });
+    writeFileSync3(path, file3.content, { mode: file3.executable ? 493 : 420, flag: "wx" });
+    chmodSync2(path, file3.executable ? 493 : 420);
+  }
+  for (const file3 of files) if (statSync3(join6(dir, file3.path)).size !== Buffer.byteLength(file3.content, "utf8")) throw new TemplateError([`${file3.path}: could not be written in full`]);
+}
+
+// ../templates/src/cli-runbook.ts
 var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
 
   cc-runbook run [folder]                  apply every step that does not hold yet
@@ -28282,16 +28447,18 @@ var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
   cc-runbook run [folder] --check          show what would change; change nothing
   cc-runbook verify [folder]               check every step; change nothing
   cc-runbook ensure <kind> <field>=<value>...   one step by hand; the same as "cc-ensure"
+  cc-runbook unpack <file> <folder> --hash <hash>   write a template the console handed out into a new folder
 
   folder            the template folder (default: the current one)
   --bundles <dir>   where the folders named in "uses" are (default: next to the template folder)
   --run-id <id>     the apply an owner confirmed, for ControlClaw settings
+  --as <id>         the id the console knows this template by, when it is not the template's own name
   --vars <file>     a JSON file with the agent's "note" and "name", for file steps with fill and for scripts
   --skip-unconfirmed  go on past a ControlClaw setting that nobody confirmed, and report it as waiting
   --json            print the report as JSON
   --public          with --json: only what the console is told (no messages from the box, no log lines)
 
-Exit code: 0 done, 1 a step failed, 2 --check found changes, 64 the template or the command is wrong, 130 stopped by a signal.`;
+Exit code: 0 done, 1 a step failed, 2 --check found changes, 3 unpack: not the template that was confirmed, 64 the template or the command is wrong, 130 stopped by a signal.`;
 async function main2(argv, out = console.log, err = console.error) {
   if (argv[0] === "ensure") return main(argv, out, err);
   let parsed;
@@ -28299,7 +28466,7 @@ async function main2(argv, out = console.log, err = console.error) {
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { check: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, vars: { type: "string" }, "skip-unconfirmed": { type: "boolean" }, public: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
+      options: { check: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, vars: { type: "string" }, as: { type: "string" }, hash: { type: "string" }, "skip-unconfirmed": { type: "boolean" }, public: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
     });
   } catch (error62) {
     err(`${error62.message}
@@ -28313,6 +28480,11 @@ ${USAGE2}`);
     out(USAGE2);
     return values.help ? 0 : 64;
   }
+  if (command === "unpack") return extra.length === 1 && values.hash ? unpack(resolve3(folder), resolve3(extra[0]), values.hash, out, err) : (err(USAGE2), 64);
+  if (values.as !== void 0 && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(values.as)) {
+    err("--as: must be lowercase letters, digits and dashes");
+    return 64;
+  }
   if (command !== "run" && command !== "verify" || extra.length || command === "verify" && (values.check || values.from || values.only)) {
     err(USAGE2);
     return 64;
@@ -28322,6 +28494,7 @@ ${USAGE2}`);
   let template;
   try {
     template = loadTemplate(resolve3(folder), { bundlesRoot: values.bundles ? resolve3(values.bundles) : void 0 });
+    if (values.as) template = { ...template, name: values.as };
   } catch (error62) {
     if (!(error62 instanceof TemplateError)) throw error62;
     err(`The template has ${error62.problems.length === 1 ? "a problem" : `${error62.problems.length} problems`}. Nothing was run.
@@ -28361,6 +28534,36 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
   } finally {
     signals.done();
   }
+}
+function unpack(file3, folder, hash2, out, err) {
+  if (refusesRoot(err)) return 64;
+  let files;
+  try {
+    const raw = JSON.parse(readFileSync8(file3, "utf8"));
+    if (!Array.isArray(raw.files) || !raw.files.every((f) => !!f && typeof f === "object" && typeof f.path === "string" && typeof f.content === "string" && typeof f.executable === "boolean")) throw new Error("shape");
+    files = raw.files.map((f) => ({ path: f.path, executable: f.executable, content: f.content }));
+  } catch {
+    err(`${file3} is not a template the console handed out`);
+    return 64;
+  }
+  try {
+    const bundle = loadBundle(files);
+    if (bundle.bundleHash !== hash2) {
+      err("The template is not the one that was confirmed (its hash is different). Nothing was written.");
+      return 3;
+    }
+    writeBundleFolder(folder, files);
+  } catch (error62) {
+    if (!(error62 instanceof TemplateError)) {
+      err(`The template could not be written (${error62.code ?? (error62 instanceof Error ? error62.name : "error")}). Nothing is run from it.`);
+      return 64;
+    }
+    err(`The template has ${error62.problems.length === 1 ? "a problem" : `${error62.problems.length} problems`}. Nothing was written.
+${error62.problems.map((p) => `  ${p}`).join("\n")}`);
+    return 64;
+  }
+  out(`wrote ${files.length} file${files.length === 1 ? "" : "s"}`);
+  return 0;
 }
 
 // src/cc-runbook.ts

@@ -111,17 +111,17 @@ var require_node_gyp_build = __commonJS({
       ].filter(Boolean).join(" ");
       throw new Error("No native build was found for " + target + "\n    loaded from: " + dir + "\n");
       function resolve3(dir2) {
-        var tuples = readdirSync5(path.join(dir2, "prebuilds")).map(parseTuple);
+        var tuples = readdirSync6(path.join(dir2, "prebuilds")).map(parseTuple);
         var tuple2 = tuples.filter(matchTuple(platform, arch)).sort(compareTuples)[0];
         if (!tuple2) return;
         var prebuilds = path.join(dir2, "prebuilds", tuple2.name);
-        var parsed = readdirSync5(prebuilds).map(parseTags);
+        var parsed = readdirSync6(prebuilds).map(parseTags);
         var candidates = parsed.filter(matchTags(runtime, abi));
         var winner = candidates.sort(compareTags(runtime))[0];
         if (winner) return path.join(prebuilds, winner.file);
       }
     };
-    function readdirSync5(dir) {
+    function readdirSync6(dir) {
       try {
         return fs.readdirSync(dir);
       } catch (err) {
@@ -129,7 +129,7 @@ var require_node_gyp_build = __commonJS({
       }
     }
     function getFirst(dir, filter) {
-      var files2 = readdirSync5(dir).filter(filter);
+      var files2 = readdirSync6(dir).filter(filter);
       return files2[0] && path.join(dir, files2[0]);
     }
     function matchBuild(name) {
@@ -33987,8 +33987,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "43d5626" : "unknown",
-  builtAt: true ? "2026-10-12T01:32:06+01:00" : "unknown"
+  commit: true ? "d4905da" : "unknown",
+  builtAt: true ? "2026-10-12T11:47:21+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -34070,7 +34070,7 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
-    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply"], ...firewallOrigin() ? ["open_v1"] : []]
+    features: [...speechFeatures(), ...consoleMcpConfigured() ? ["console_mcp"] : [], ...doctorAvailable() ? ["doctor_v1"] : [], ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org"], ...firewallOrigin() ? ["open_v1"] : []]
   };
 }
 
@@ -51694,8 +51694,17 @@ async function handleGbrain(req, res, url3, service) {
 }
 
 // src/templates.ts
-import { existsSync as existsSync27, mkdirSync as mkdirSync17, readFileSync as readFileSync32, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
+import { existsSync as existsSync27, mkdirSync as mkdirSync17, readdirSync as readdirSync5, readFileSync as readFileSync32, renameSync as renameSync16, rmSync as rmSync9, writeFileSync as writeFileSync21 } from "fs";
 import { dirname as dirname16, join as join23 } from "path";
+
+// ../templates/src/ids.ts
+var ORG_TEMPLATE_ID = /^org-[a-z0-9]{8,40}$/;
+function isOrgTemplateId(id) {
+  return !!id && ORG_TEMPLATE_ID.test(id);
+}
+var BUNDLE_LIMITS = { files: 40, fileBytes: 64 * 1024, totalBytes: 256 * 1024 };
+
+// src/templates.ts
 var TEMPLATE_POLL_MS = 2 * 6e4;
 var TEMPLATE_IDLE_POLL_MS = 15 * 6e4;
 var TEMPLATE_VERIFY_MS = 6 * 60 * 6e4;
@@ -51705,6 +51714,15 @@ var CALL_MS2 = 2e4;
 var TEMPLATE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
 var REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
 var STEP_ID = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
+var BUNDLE_HASH = /^[a-f0-9]{64}$/;
+var BUNDLE_MAX_BYTES = 1024 * 1024;
+var UNPACK_TIMEOUT_MS = 6e4;
+var isOrgTemplate = isOrgTemplateId;
+var bundleHashOf = (raw) => {
+  const hash3 = raw?.hash;
+  return typeof hash3 === "string" && BUNDLE_HASH.test(hash3) ? hash3 : null;
+};
+var UNSURE_ROUNDS = 5;
 var TemplateService = class {
   constructor(opts) {
     this.opts = opts;
@@ -51726,6 +51744,13 @@ var TemplateService = class {
   /** The console said something is waiting, and the console has not been asked since. */
   poked = false;
   again = false;
+  /**
+   * A periodic check in flight. A round waits for it and it never starts during a round: both
+   * unpack an organization's template into the same folder, and neither may remove it under the other.
+   */
+  verifying = null;
+  /** Rounds in which the template chosen at create could not be unpacked for a reason that says nothing about its files. */
+  unsure = 0;
   /**
    * The console's poke. Remembered, so it is not lost when it arrives while a round is running (that
    * round may have asked just before the request was made) or while OpenClaw is not connected: the
@@ -51765,7 +51790,7 @@ var TemplateService = class {
     try {
       const raw = JSON.parse(readFileSync32(this.markerPath, "utf8"));
       if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
-      return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {} };
+      return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {} };
     } catch {
       return null;
     }
@@ -51776,23 +51801,98 @@ var TemplateService = class {
     writeFileSync21(tmp, JSON.stringify(value2), { mode: 384 });
     renameSync16(tmp, path);
   }
-  async call(method, body2) {
+  async call(method, body2, path = "") {
     const base = this.opts.base();
     if (!base) throw new Error("no control plane address");
-    const response = await (this.opts.fetch ?? fetch)(`${base}/api/vm-agent/template`, {
+    const response = await (this.opts.fetch ?? fetch)(`${base}/api/vm-agent/template${path || (method === "GET" ? "?can=templates_org" : "")}`, {
       method,
       headers: { authorization: `Bearer ${await this.opts.getToken()}`, ...body2 === void 0 ? {} : { "content-type": "application/json" } },
       body: body2 === void 0 ? void 0 : JSON.stringify(body2),
       signal: AbortSignal.timeout(CALL_MS2)
     });
     if (!response.ok) throw Object.assign(new Error(`control plane answered ${response.status}`), { status: response.status });
-    return response.json();
+    if (!path) return response.json();
+    const reader = response.body?.getReader();
+    const chunks = [];
+    let size = 0;
+    for (let part = await reader?.read(); part && !part.done; part = await reader?.read()) {
+      size += part.value.byteLength;
+      if (size > BUNDLE_MAX_BYTES) {
+        await reader?.cancel().catch(() => void 0);
+        throw Object.assign(new Error("the template is too large"), { status: 413 });
+      }
+      chunks.push(part.value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  }
+  /**
+   * The folder a template runs from. A system template is a folder of this release. One of the
+   * organization's own is fetched from the console and unpacked by the runner, which writes it only
+   * if it passes the runner's checks and has the hash the console named (`hash`). The files as they
+   * were fetched are kept, and unpacked again each time, so what runs is always what was checked.
+   * Throws only when the console cannot be reached: that is tried again on the next round. Whatever
+   * goes wrong with the files themselves is an answer (`broken`), never a throw: a template that
+   * cannot be unpacked must not stop this service from reporting, or from taking a later request.
+   */
+  async folder(template, hash3) {
+    if (!isOrgTemplate(template)) {
+      const dir2 = join23(this.opts.templatesDir, template);
+      return existsSync27(join23(dir2, "template.yaml")) ? { dir: dir2 } : { dir: null, why: "missing" };
+    }
+    if (!hash3) return { dir: null, why: "broken" };
+    const kept = join23(this.opts.stateDir, "org", `${template}.json`);
+    const dir = join23(this.opts.stateDir, "org", template);
+    const remove = (path) => {
+      try {
+        rmSync9(path, { recursive: true, force: true });
+      } catch {
+      }
+    };
+    let certain = false;
+    const unpack = async (again = false) => {
+      remove(dir);
+      try {
+        await this.opts.exec(this.opts.node, [this.opts.runbook, "unpack", kept, dir, "--hash", hash3], UNPACK_TIMEOUT_MS);
+        return true;
+      } catch (error62) {
+        remove(dir);
+        const code = error62.code;
+        certain = code === 3 || code === 64;
+        if (certain || again) return false;
+        return unpack(true);
+      }
+    };
+    if (existsSync27(kept) && await unpack()) return { dir };
+    let text2;
+    try {
+      text2 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(template)}`);
+    } catch (error62) {
+      if (error62.status === 404) return { dir: null, why: "missing" };
+      throw error62;
+    }
+    try {
+      mkdirSync17(dirname16(kept), { recursive: true, mode: 448 });
+      writeFileSync21(`${kept}.tmp`, text2, { mode: 384 });
+      renameSync16(`${kept}.tmp`, kept);
+    } catch (error62) {
+      this.log(`${template}: its files could not be kept on this agent (${error62.code ?? "error"})`);
+      return { dir: null, why: "unsure" };
+    }
+    if (await unpack()) return { dir };
+    if (!certain) {
+      this.log(`${template}: its files could not be unpacked just now`);
+      return { dir: null, why: "unsure" };
+    }
+    this.log(`${template}: the files are not the ones the console named, or do not pass the check`);
+    remove(kept);
+    return { dir: null, why: "broken" };
   }
   /** Runs the runner and returns what it printed for the console, whatever its exit code. */
-  async runbook(command, dir, assignment, only) {
+  async runbook(command, template, dir, assignment, only) {
     const vars = join23(this.opts.stateDir, "vars.json");
     this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
     const args = [this.opts.runbook, command === "check" ? "run" : command, dir, "--vars", vars, "--json", "--public"];
+    if (isOrgTemplate(template)) args.push("--as", template);
     if (command === "check") args.push("--check", ...only ? ["--only", only.join(",")] : []);
     if (command === "run") args.push("--skip-unconfirmed", ...assignment.runId ? ["--run-id", assignment.runId] : [], ...only ? ["--only", only.join(",")] : []);
     let stdout = "";
@@ -51828,7 +51928,7 @@ var TemplateService = class {
     const stepIds = (list) => Array.isArray(list) ? list.filter((id) => typeof id === "string" && STEP_ID.test(id)) : [];
     const steps = stepIds(raw.rerun?.steps);
     const asked = raw.request;
-    const request = asked && typeof asked.id === "string" && REQUEST_ID.test(asked.id) && (asked.kind === "preview" || asked.kind === "apply") && typeof asked.template === "string" && TEMPLATE_ID.test(asked.template) ? { id: asked.id, kind: asked.kind, template: asked.template, steps: stepIds(asked.steps), runId: typeof asked.runId === "string" ? asked.runId : null } : null;
+    const request = asked && typeof asked.id === "string" && REQUEST_ID.test(asked.id) && (asked.kind === "preview" || asked.kind === "apply") && typeof asked.template === "string" && TEMPLATE_ID.test(asked.template) ? { id: asked.id, kind: asked.kind, template: asked.template, steps: stepIds(asked.steps), runId: typeof asked.runId === "string" ? asked.runId : null, bundle: bundleHashOf(asked.bundle) } : null;
     return {
       template,
       note: typeof raw.note === "string" ? raw.note : "",
@@ -51836,12 +51936,13 @@ var TemplateService = class {
       timeZone: typeof raw.timeZone === "string" ? raw.timeZone : "UTC",
       runId: typeof raw.runId === "string" ? raw.runId : null,
       rerun: template && steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null,
-      request
+      request,
+      bundle: template ? bundleHashOf(raw.bundle) : null
     };
   }
   /** Applies the template if that is still to do, and sends whatever the console has not had. One at a time; never throws. */
   tick() {
-    this.running ??= this.once().catch((error62) => this.log(`could not finish: ${error62.message}`)).finally(() => {
+    this.running ??= (this.verifying ?? Promise.resolve()).then(() => this.once()).catch((error62) => this.log(`could not finish: ${error62.message}`)).finally(() => {
       this.running = null;
       if (this.poked && !this.again) {
         this.again = true;
@@ -51860,29 +51961,45 @@ var TemplateService = class {
     if (marker) {
       this.settled = true;
       if (!marker.missing) await this.rerun(marker, assignment);
-    } else if (!this.settled) {
-      if (!assignment.template) this.settled = true;
-      else await this.apply(assignment.template, assignment);
+    } else if (assignment.template) {
+      await this.apply(assignment.template, assignment, void 0, assignment.bundle);
+    } else {
+      this.settled = true;
     }
     if (assignment.request) await this.asked(assignment.request, assignment);
+    this.tidy([assignment.template, assignment.request?.template, this.marker()?.template]);
+  }
+  /** Removes the copies of the organization's templates this agent no longer has and is not being asked about. */
+  tidy(wanted) {
+    const folder = join23(this.opts.stateDir, "org");
+    try {
+      for (const name of readdirSync5(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync9(join23(folder, name), { recursive: true, force: true });
+    } catch {
+    }
   }
   /**
    * Applies a template in full and reports it: the one chosen at create, or one an owner applied
    * to the running agent (`requestId`). Recorded, so it is applied once.
    */
-  async apply(template, assignment, requestId) {
-    const dir = join23(this.opts.templatesDir, template);
+  async apply(template, assignment, requestId, hash3 = null) {
+    const folder = await this.folder(template, hash3);
     const now = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
-    const from = requestId ? { request: requestId } : {};
-    if (!existsSync27(join23(dir, "template.yaml"))) {
+    const from = { ...requestId ? { request: requestId } : {}, ...hash3 ? { hash: hash3 } : {} };
+    if (folder.dir === null && folder.why === "unsure" && !requestId && this.unsure < UNSURE_ROUNDS) {
+      this.unsure++;
+      this.log(`${template} could not be unpacked just now; trying again on the next round (${this.unsure} of ${UNSURE_ROUNDS})`);
+      return;
+    }
+    if (folder.dir === null) {
       this.log(`${template} is not on this agent`);
-      this.keep({ kind: "run", template, missing: true, ...requestId ? { requestId } : {} });
-      this.write(this.markerPath, { template, at: now, missing: true, ...from });
+      this.keep({ kind: "run", template, ...folder.why === "missing" ? { missing: true } : { broken: true }, ...requestId ? { requestId } : {} });
+      if (!requestId) this.write(this.markerPath, { template, at: now, missing: true, ...from });
       this.settled = true;
       return this.send();
     }
+    const dir = folder.dir;
     this.log(`applying ${template}`);
-    const report = await this.runbook("run", dir, assignment);
+    const report = await this.runbook("run", template, dir, assignment);
     this.keep({ kind: "run", template, ...report ? { report } : { broken: true }, ...requestId ? { requestId } : {} });
     this.write(this.markerPath, { template, at: now, ...from });
     this.settled = true;
@@ -51902,16 +52019,15 @@ var TemplateService = class {
     }
     if (handled === request.id || this.marker()?.request === request.id) return;
     if (request.kind === "apply") {
-      await this.apply(request.template, { ...assignment, runId: request.runId }, request.id);
+      await this.apply(request.template, { ...assignment, runId: request.runId }, request.id, request.bundle);
       this.write(this.handledPath, { id: request.id });
       return;
     }
-    const dir = join23(this.opts.templatesDir, request.template);
     this.log(`previewing ${request.template}`);
-    const has = existsSync27(join23(dir, "template.yaml"));
-    const report = has && request.steps.length ? await this.runbook("check", dir, assignment, request.steps) : null;
+    const folder = await this.folder(request.template, request.bundle);
+    const report = folder.dir && request.steps.length ? await this.runbook("check", request.template, folder.dir, assignment, request.steps) : null;
     this.write(this.handledPath, { id: request.id });
-    this.keep({ kind: "preview", template: request.template, requestId: request.id, ...!has ? { missing: true } : report ? { report } : request.steps.length ? { broken: true } : {} });
+    this.keep({ kind: "preview", template: request.template, requestId: request.id, ...folder.dir === null ? folder.why === "missing" ? { missing: true } : { broken: true } : report ? { report } : request.steps.length ? { broken: true } : {} });
     return this.send();
   }
   /**
@@ -51923,10 +52039,10 @@ var TemplateService = class {
     if (assignment.template !== marker.template || !assignment.rerun) return;
     const request = `${assignment.rerun.runId ?? ""}:${assignment.rerun.at}:${assignment.rerun.steps.join(",")}`;
     if (marker.rerun === request) return;
-    const dir = join23(this.opts.templatesDir, marker.template);
-    if (!existsSync27(join23(dir, "template.yaml"))) return;
+    const { dir } = await this.folder(marker.template, assignment.bundle ?? marker.hash ?? null);
+    if (!dir) return;
     this.log(`running ${assignment.rerun.steps.length} step(s) of ${marker.template} again`);
-    const report = await this.runbook("run", dir, { ...assignment, runId: assignment.rerun.runId }, assignment.rerun.steps);
+    const report = await this.runbook("run", marker.template, dir, { ...assignment, runId: assignment.rerun.runId }, assignment.rerun.steps);
     this.write(this.markerPath, { ...marker, rerun: request });
     if (!report) return;
     const ran = report.steps.filter((s2) => typeof s2.id === "string" && assignment.rerun?.steps.includes(s2.id));
@@ -51936,12 +52052,16 @@ var TemplateService = class {
   /** Checks the applied template again and tells the console how many steps still hold. Never throws. */
   async verify() {
     const marker = this.marker();
-    if (!marker || marker.missing || this.running) return;
-    const dir = join23(this.opts.templatesDir, marker.template);
-    if (!existsSync27(join23(dir, "template.yaml"))) return;
+    if (!marker || marker.missing || this.running || this.verifying) return;
+    this.verifying = this.check(marker).finally(() => this.verifying = null);
+    return this.verifying;
+  }
+  async check(marker) {
     try {
-      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null, request: null };
-      const report = await this.runbook("verify", dir, assignment);
+      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null, request: null, bundle: null };
+      const { dir } = await this.folder(marker.template, marker.hash ?? null);
+      if (!dir) return;
+      const report = await this.runbook("verify", marker.template, dir, assignment);
       if (report) await this.call("POST", { kind: "verify", template: marker.template, report });
     } catch (error62) {
       this.log(`could not check ${marker.template}: ${error62.message}`);
