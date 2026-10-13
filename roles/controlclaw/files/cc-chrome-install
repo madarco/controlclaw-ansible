@@ -1,0 +1,88 @@
+#!/bin/bash
+# Install Google Chrome stable, or bring it up to date, without apt ever talking to Google.
+#
+# Chrome's apt repository used to sit in /etc/apt/sources.list.d, so every `apt update` on the box
+# asked dl.google.com. On 13 October 2026 the addresses Hetzner's Nuremberg resolves for it
+# accepted the connection and never answered HTTP/1.1, which is all apt speaks: each `apt update`
+# waited four minutes and failed, and with it every Update, every new box and the image build.
+#
+# So the repository is not in apt's normal lists any more (playbooks/install.yml removes it and
+# stops Chrome's package from putting it back). This script copies the three files apt needs
+# (the signed index, the package list, and the package when there is a newer one) into a folder on
+# the box with curl, which speaks HTTP/2 and has a time limit, from Google's two addresses in
+# turn. apt then reads that folder as a repository: it checks the index against Google's key
+# (browser-stream.yml puts it in KEY, checked by fingerprint) and every file against the index,
+# exactly as it did over the network. Nothing here is trusted because of where it came from.
+#
+# Prints "current <version>" or "installed <version>". Exit 0 on either, 1 when Chrome could not
+# be checked or installed; the role decides whether that stops the run (browser-stream.yml).
+set -u
+
+REPO="${CC_CHROME_REPO:-/var/cache/controlclaw/chrome-repo}"
+LIST="${CC_CHROME_LIST:-/etc/apt/controlclaw/google-chrome.list}"
+KEY="${CC_CHROME_KEY:-/usr/share/keyrings/google-chrome.gpg}"
+SOURCES="${CC_CHROME_SOURCES:-https://dl.google.com/linux/chrome/deb https://dl-ssl.google.com/linux/chrome/deb}"
+PACKAGE=google-chrome-stable
+INDEX=dists/stable/main/binary-amd64/Packages.gz
+
+say() { echo "cc-chrome-install: $*" >&2; }
+
+# fetch <path in the repository> <seconds>: into REPO, by rename, from the first address that answers.
+fetch() {
+  local path="$1" seconds="$2" base
+  mkdir -p "$REPO/$(dirname "$path")" || return 1
+  for base in $SOURCES; do
+    if curl -fsS --http2 --connect-timeout 10 --max-time "$seconds" -o "$REPO/$path.part" "$base/$path"; then
+      mv -f "$REPO/$path.part" "$REPO/$path" && return 0
+    fi
+  done
+  rm -f "$REPO/$path.part"
+  say "could not download $path"
+  return 1
+}
+
+# apt, reading Chrome's folder as well as the box's own lists. Never the network for Chrome.
+apt_chrome() { DEBIAN_FRONTEND=noninteractive apt-get -o "Dir::Etc::sourcelist=$LIST" "$@"; }
+
+[ -s "$KEY" ] || { say "Google's signing key is not on the box ($KEY)"; exit 1; }
+mkdir -p "$(dirname "$LIST")" "$REPO" || exit 1
+chmod 0755 "$REPO"
+printf 'deb [arch=amd64 signed-by=%s] file://%s stable main\n' "$KEY" "$REPO" > "$LIST.new" && mv -f "$LIST.new" "$LIST" || exit 1
+
+fetch dists/stable/InRelease 30 || exit 1
+fetch "$INDEX" 30 || exit 1
+
+# Only Chrome's folder is read here (sourceparts=-), and the box's other lists are left as they
+# are (List-Cleanup=0). A bad signature or a file that does not match the index fails this step.
+if ! apt_chrome update -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 -o APT::Update::Error-Mode=any >/dev/null; then
+  say "apt refused the downloaded index"
+  exit 1
+fi
+
+# Ask apt what it would download, so the file name comes from the index apt has checked and not
+# from anything read here. Nothing from Chrome's folder in the answer: Chrome is up to date.
+if ! plan=$(apt_chrome install --print-uris -y -qq "$PACKAGE" 2>/dev/null); then
+  say "apt could not work out what $PACKAGE needs"
+  exit 1
+fi
+files=$(printf '%s\n' "$plan" | grep -o "'file:/*${REPO#/}/[^']*'" | tr -d "'" | sed -E "s#^file:/*${REPO#/}/##")
+if [ -z "$files" ]; then
+  have=$(dpkg-query -W -f='${Version}' "$PACKAGE" 2>/dev/null || true)
+  [ -n "$have" ] || { say "$PACKAGE is not installed and apt has nothing to install it from"; exit 1; }
+  echo "current $have"
+  exit 0
+fi
+
+for file in $files; do
+  case "$file" in *..*) say "unexpected file name in the index"; exit 1 ;; esac
+  case "$file" in pool/*.deb) ;; *) say "unexpected file name in the index"; exit 1 ;; esac
+  fetch "$file" 600 || exit 1
+done
+if ! apt_chrome install -y "$PACKAGE" >/dev/null; then
+  say "apt could not install $PACKAGE"
+  exit 1
+fi
+# The package is of no use here once it is installed.
+rm -rf "$REPO/pool"
+want=$(dpkg-query -W -f='${Version}' "$PACKAGE" 2>/dev/null || true)
+echo "installed $want"

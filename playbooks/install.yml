@@ -93,6 +93,37 @@
         - /usr/share/keyrings/caddy-stable-archive-keyring.asc
       when: is_debian_family
 
+    # Chrome's apt repository made every `apt update` ask dl.google.com, and apt only speaks
+    # HTTP/1.1. On 13 October 2026 Google's addresses for it (as Hetzner's Nuremberg resolves them)
+    # stopped answering HTTP/1.1: each `apt update` waited four minutes and failed, so no Update
+    # ran, no new box provisioned and no image built. Chrome is now installed and updated by
+    # cc-chrome-install (tasks/browser-stream.yml), which never needs the repository here.
+    #
+    # Before the first apt call, on every kind of box: the base image has Chrome, so a firewall
+    # carries these files too. `google-chrome.sources` (and older `.list`) is written by Chrome's
+    # own package, which reads /etc/default/google-chrome first: with these two lines it leaves the
+    # repository alone, on install and from its daily cron job.
+    - name: Chrome's package does not add its apt repository
+      ansible.builtin.copy:
+        dest: /etc/default/google-chrome
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          repo_add_once="false"
+          repo_reenable_on_distupgrade="false"
+      when: is_debian_family
+
+    - name: Remove Chrome's apt repository from the lists apt update reads
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/google-chrome.sources
+        - /etc/apt/sources.list.d/google-chrome.list
+        - /etc/apt/sources.list.d/google-chrome.list.save
+      when: is_debian_family
+
     - name: Apply package pins and restart policy before upgrading older boxes
       ansible.builtin.include_tasks: ../roles/controlclaw/tasks/apt-pins.yml
       when: is_debian_family

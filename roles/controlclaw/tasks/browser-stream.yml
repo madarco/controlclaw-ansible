@@ -34,13 +34,13 @@
     lock_timeout: 300
   when: not cc_skip.browser | default(false) | bool
 
-# Chrome comes from Google's apt repository, not a downloaded .deb. The .deb declares
+# Chrome comes from Google's apt repository (through files/cc-chrome-install), not a bare .deb. The .deb declares
 # `libasound2 (>= 1.0.17)`, and Ubuntu 24.04 renamed that package to `libasound2t64` for the
 # 64-bit time_t transition. The rename carries a versioned `Provides: libasound2 (= 1.2.11-…)`,
 # which apt resolves and plain dpkg does not — so `apt: deb:` failed on every real box with
 # "Dependency is not satisfiable: libasound2 (>= 1.0.17)" (box vnc-live-2, 2026-09-20) and the
 # browser stack never installed. Going through the repository also means Chrome gets security
-# updates during the nightly maintenance dist-upgrade. Unattended-upgrades only takes Ubuntu security pockets.
+# updates on every Update, the nightly one included. Unattended-upgrades only takes Ubuntu security pockets.
 # The key is fetched once. A box that has it makes no request at all: get_url asked Google "has it
 # changed?" on every Update, and on 13 October 2026 the dl.google.com addresses that Hetzner's
 # Nuremberg resolves accepted the connection and never answered HTTP/1.1 (HTTP/2 and other Google
@@ -109,28 +109,39 @@
     - not cc_skip.browser | default(false) | bool
     - chrome_key_download is failed
 
-- name: Add the Google Chrome apt repository
-  ansible.builtin.apt_repository:
-    repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main"
-    filename: google-chrome
-    state: present
-  register: chrome_repo
+# Chrome is installed and brought up to date by its own script, not by the box's `apt update`:
+# its repository is not in apt's normal lists (playbooks/install.yml takes it out, and the header
+# of files/cc-chrome-install says why and how apt still checks every file). The nightly Update
+# runs this too, so Chrome still gets its security updates.
+- name: Install the Chrome installer
+  ansible.builtin.copy:
+    src: cc-chrome-install
+    dest: /usr/local/sbin/cc-chrome-install
+    owner: root
+    group: root
+    mode: '0755'
+  when: not cc_skip.browser | default(false) | bool
+
+- name: Install Google Chrome stable
+  ansible.builtin.command: /usr/local/sbin/cc-chrome-install
+  register: chrome_install
+  until: chrome_install.rc == 0
+  retries: 2
+  delay: 10
+  changed_when: (chrome_install.stdout | default('')).startswith('installed')
+  # As with the key: a box that runs Chrome keeps the one it has when Google does not answer, and
+  # the next Update tries again. A box with no Chrome fails here.
+  ignore_errors: "{{ chrome_binary.stat.exists | default(false) }}"
   when:
     - not cc_skip.browser | default(false) | bool
     - chrome_key_download is not failed
 
-- name: Install Google Chrome stable
-  ansible.builtin.apt:
-    name: google-chrome-stable
-    state: present
-    update_cache: true
-    # Unconditional only when this play just added Google's repository; otherwise the refresh in
-    # the play's pre_tasks stands.
-    cache_valid_time: "{{ 0 if chrome_repo is changed else 3600 }}"
-    lock_timeout: 300
+- name: Say when Chrome could not be brought up to date
+  ansible.builtin.debug:
+    msg: "Chrome could not be checked for a newer version ({{ (chrome_install.stderr_lines | default([]))[-1:] | join('') }}). The installed one stays; the next Update tries again."
   when:
     - not cc_skip.browser | default(false) | bool
-    - chrome_key_download is not failed
+    - chrome_install is failed
 
 # The renderer is where LLM-chosen web content is parsed, in a browser that holds the customer's
 # saved logins and runs as the user that owns the gateway token and the cc-install-ca sudo rule.

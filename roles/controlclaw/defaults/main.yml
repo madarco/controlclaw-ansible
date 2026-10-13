@@ -342,6 +342,8 @@ agent_update_hosts:
   - deb.nodesource.com
   - download.docker.com
   - dl.google.com
+  # the same files at Google's second address (the key and cc-chrome-install fall back to it)
+  - dl-ssl.google.com
   - dl.cloudsmith.io
   - pkgs.tailscale.com
   # rclone.yml
