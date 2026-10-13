@@ -41,18 +41,73 @@
 # "Dependency is not satisfiable: libasound2 (>= 1.0.17)" (box vnc-live-2, 2026-09-20) and the
 # browser stack never installed. Going through the repository also means Chrome gets security
 # updates during the nightly maintenance dist-upgrade. Unattended-upgrades only takes Ubuntu security pockets.
-- name: Download the Google Chrome apt repository key
-  ansible.builtin.get_url:
-    url: https://dl.google.com/linux/linux_signing_key.pub
-    dest: /usr/share/keyrings/google-chrome.asc
-    mode: '0644'
+# The key is fetched once. A box that has it makes no request at all: get_url asked Google "has it
+# changed?" on every Update, and on 13 October 2026 the dl.google.com addresses that Hetzner's
+# Nuremberg resolves accepted the connection and never answered HTTP/1.1 (HTTP/2 and other Google
+# addresses answered at once), so every Update, and the base image build, stopped here on a ten
+# second timeout. The key file was never refreshed by those requests anyway (the dearmor step
+# only ran when the .gpg was missing).
+- name: Look for the Google Chrome apt repository key
+  ansible.builtin.stat:
+    path: /usr/share/keyrings/google-chrome.gpg
+  register: chrome_key
   when: not cc_skip.browser | default(false) | bool
 
-- name: Dearmor the Google Chrome apt repository key
-  ansible.builtin.command:
-    cmd: gpg --dearmor --yes -o /usr/share/keyrings/google-chrome.gpg /usr/share/keyrings/google-chrome.asc
-    creates: /usr/share/keyrings/google-chrome.gpg
+- name: Look for an installed Chrome
+  ansible.builtin.stat:
+    path: /opt/google/chrome/chrome
+  register: chrome_binary
   when: not cc_skip.browser | default(false) | bool
+
+# A new box or an image build has to download it. curl, which speaks HTTP/2 (the path that kept
+# working), 30 seconds per request, and Google's two addresses for the same file in turn; the
+# whole thing up to five times, six seconds apart. A second source is safe because the file is
+# only kept when every key in it is one of Google's Linux package signing keys, by fingerprint
+# (EB4C… is the current one and must be there; 4CCA… is the 2007 key older copies also carry).
+# Written next to the target and renamed, so a broken download never becomes the key.
+- name: Download the Google Chrome apt repository key
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -u
+      known=" EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 4CCA1EAF950CEE4AB83976DCA040830F7FAC5991 "
+      work=$(mktemp -d /usr/share/keyrings/.google-chrome.XXXXXX) || exit 1
+      trap 'rm -rf "$work"' EXIT
+      for url in https://dl.google.com/linux/linux_signing_key.pub https://dl-ssl.google.com/linux/linux_signing_key.pub; do
+        curl -fsS --http2 --max-time 30 -o "$work/key.asc" "$url" || continue
+        fprs=$(gpg --homedir "$work" --show-keys --with-colons "$work/key.asc" 2>/dev/null \
+          | awk -F: '$1=="pub"{p=1;next} p&&$1=="fpr"{print $10;p=0}')
+        [ -n "$fprs" ] || { echo "$url: no key in the file" >&2; continue; }
+        ok=1
+        for f in $fprs; do case "$known" in *" $f "*) ;; *) ok=0; echo "$url: unknown key $f" >&2;; esac; done
+        case " $(echo $fprs) " in *" EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796 "*) ;; *) ok=0; echo "$url: Google's current key is not in the file" >&2;; esac
+        [ "$ok" = 1 ] || continue
+        gpg --homedir "$work" --dearmor < "$work/key.asc" > "$work/key.gpg" && [ -s "$work/key.gpg" ] || continue
+        chmod 0644 "$work/key.asc" "$work/key.gpg"
+        mv -f "$work/key.asc" /usr/share/keyrings/google-chrome.asc
+        mv -f "$work/key.gpg" /usr/share/keyrings/google-chrome.gpg
+        exit 0
+      done
+      exit 1
+  register: chrome_key_download
+  until: chrome_key_download.rc == 0
+  retries: 4
+  delay: 6
+  changed_when: chrome_key_download.rc == 0
+  # A box that already runs Chrome keeps running it when the key cannot be fetched: the Update
+  # goes on, and the next one tries again. A first install has no Chrome without the key, so
+  # there it fails.
+  ignore_errors: "{{ chrome_binary.stat.exists | default(false) }}"
+  when:
+    - not cc_skip.browser | default(false) | bool
+    - not (chrome_key.stat.exists and chrome_key.stat.size > 0)
+
+- name: Say when Chrome's repository key could not be fetched
+  ansible.builtin.debug:
+    msg: "Chrome's apt repository key could not be downloaded. Chrome is installed and stays as it is; the next Update tries again."
+  when:
+    - not cc_skip.browser | default(false) | bool
+    - chrome_key_download is failed
 
 - name: Add the Google Chrome apt repository
   ansible.builtin.apt_repository:
@@ -60,7 +115,9 @@
     filename: google-chrome
     state: present
   register: chrome_repo
-  when: not cc_skip.browser | default(false) | bool
+  when:
+    - not cc_skip.browser | default(false) | bool
+    - chrome_key_download is not failed
 
 - name: Install Google Chrome stable
   ansible.builtin.apt:
@@ -71,7 +128,9 @@
     # the play's pre_tasks stands.
     cache_valid_time: "{{ 0 if chrome_repo is changed else 3600 }}"
     lock_timeout: 300
-  when: not cc_skip.browser | default(false) | bool
+  when:
+    - not cc_skip.browser | default(false) | bool
+    - chrome_key_download is not failed
 
 # The renderer is where LLM-chosen web content is parsed, in a browser that holds the customer's
 # saved logins and runs as the user that owns the gateway token and the cc-install-ca sudo rule.
