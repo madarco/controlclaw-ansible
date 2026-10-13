@@ -36,6 +36,28 @@ json() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.st
 
 die() { say failed "$1"; exit 1; }
 
+# May an automatic update reboot this box, as far as its disk goes?
+#
+# An automatic update reboots the box when a package asks for it. A box whose encrypted disk has no
+# partner bound yet (a new box's first minutes: controlclaw docs/features/disk-encryption.md, "A new
+# agent pairs its disk") would come back locked, with only the owner's recovery key to open it, and
+# nobody asked for that reboot. So it is put off: the next maintenance run finishes it, and the
+# console's health check says "Restart waiting" meanwhile.
+#
+# Yes for a box with no encrypted disk, and for one with a partner (`cc-secure list` prints one line
+# per partner). Also yes for a firewall that is not supposed to have one: its partners are the
+# organization's agents, so a firewall with no agent has none by design, and putting its reboot off
+# would put it off for ever. The list it was last given is in the container's state folder.
+disk_has_partner() {
+  [ -f "${CC_SECURE_IMG:-/var/lib/controlclaw/secure.img}" ] || return 0
+  [ -n "$("${CC_SECURE:-/usr/local/bin/cc-secure}" list 2>/dev/null)" ] && return 0
+  if [ "${ROLE:-openclaw}" = mitm ]; then
+    local given="${CC_SECURE_MOUNT:-/opt/controlclaw/secure}/state/tang-partners.json"
+    [ -r "$given" ] && [ "$(tr -d '[:space:]' < "$given")" = "[]" ] && return 0
+  fi
+  return 1
+}
+
 [ -r "$CONF" ] || { logger -t cc-reprovision "no $CONF; refusing"; exit 1; }
 
 # An encrypted box whose container is not mounted must not be re-provisioned, and this check is FIRST
@@ -279,7 +301,9 @@ if [ "$rc" -eq 0 ]; then
   # restart or reboot. The next maintenance run will finish the pending reboot.
   if [ "${CC_UPDATE_MODE:-}" = auto ] && [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ]; then
     needrestart -r a >> "$LOG" 2>&1 || true
-    if [ -f /var/run/reboot-required ] && [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ]; then
+    if [ -f /var/run/reboot-required ] && ! disk_has_partner; then
+      say done "updated to ${REF:0:12}; not rebooting yet: this box's disk is still being paired"
+    elif [ -f /var/run/reboot-required ] && [ "$(date +%s)" -lt "$CC_UPDATE_DEADLINE" ]; then
       REBOOT=true say done "updated to ${REF:0:12}; rebooting"
       systemctl reboot || die "could not reboot"
     else

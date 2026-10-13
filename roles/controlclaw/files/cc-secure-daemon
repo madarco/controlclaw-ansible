@@ -465,6 +465,11 @@ async function report(ident, status) {
     locked: !status.mounted,
     thumbprint: status.thumbprint || null,
     sealed,
+    // How many partner boxes this disk is bound to (`cc-secure status` lists its key slots). 0 is a
+    // new box's first minutes: nothing but the recovery key opens it after a restart, so the console
+    // says "Pairing its disk" and holds back what would restart the server. Only said while the
+    // disk is open: a locked box cannot read its own slots, and "0" then would be a guess.
+    ...(status.mounted && Array.isArray(status.partners) ? { partners: status.partners.length } : {}),
   };
   // Every disk open and every refusal goes to the owner's Activity page. The security claim leans on
   // this: a clone catching a window is only an acceptable residual because the owner sees it happen.

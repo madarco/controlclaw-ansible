@@ -262,6 +262,17 @@
       WantedBy=multi-user.target
   notify: reload systemd for disk encryption
 
+# The vm-agent reports the feature `disk_partners` when this is there: the container daemon
+# installed above says, with every disk report, how many partners the disk is bound to
+# (controlclaw app/(vm)/lib/disk-pairing.server.ts reads the feature).
+- name: Disk encryption | say that the disk report carries the partner count
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/disk-partners
+    content: "The disk report of this box says how many partners its disk is bound to.\n"
+    owner: root
+    group: root
+    mode: '0644'
+
 - name: Disk encryption | flush handlers so the unit exists before it is used
   ansible.builtin.meta: flush_handlers
 
