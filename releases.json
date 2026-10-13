@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.13.0",
+    "date": "2026-10-13",
+    "changes": [
+      "Email rules: a new outgoing mode, Send to anyone, lets your agents email any address without asking you, up to your hourly and daily limits. Switching to it needs a confirmation code.",
+      "An agent that takes a long time to start, for example after AgentMail is set up, is no longer restarted while it starts."
+    ]
+  },
+  {
     "version": "1.12.0",
     "date": "2026-10-13",
     "changes": [
