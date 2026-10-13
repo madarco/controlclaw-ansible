@@ -1,5 +1,21 @@
 [
   {
+    "version": "1.12.0",
+    "date": "2026-10-13",
+    "changes": [
+      "Shared notes: your organization's notes now reach your agents, are kept inside each agent's encrypted disk, and your agents search them.",
+      "Add storage: you can make an agent's own storage larger from its page while it runs.",
+      "A new agent's page says Pairing its disk until your firewall can open it, and asks before a restart that would leave the disk locked.",
+      "After applying a template you can test the agent, let Doctor fix a step that failed, and let an AI write the steps Save as template cannot read.",
+      "Templates can add scheduled messages and MCP servers, and can use bundles; a bundle can also be applied to an agent that already runs.",
+      "Skills and shared notes can be installed, updated and removed on agents that already run, with one confirmation code for several agents.",
+      "A skill an agent wrote can be saved into your organization's skills.",
+      "Code messages from your firewall say what is asked on the first line and show the code on the second.",
+      "An Update no longer fails or waits when Google's download servers for Chrome are slow.",
+      "Update your firewall before your agents. Update everything does this in the right order."
+    ]
+  },
+  {
     "version": "1.11.0",
     "date": "2026-10-12",
     "changes": [
