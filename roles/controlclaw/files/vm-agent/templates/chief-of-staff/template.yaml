@@ -39,4 +39,7 @@ steps:
 
   - id: morning-brief
     title: Schedule the morning brief at 08:00
-    run: { apply: scripts/brief-apply.sh, verify: scripts/brief-verify.sh, timeout: 120 }
+    openclaw.schedule:
+      name: morning-brief
+      cron: "0 8 * * *"
+      message: "Morning brief: today's calendar, what in the inbox needs an answer, and what is still open from yesterday. Keep it short."

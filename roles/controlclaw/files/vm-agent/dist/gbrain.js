@@ -1174,6 +1174,21 @@ var CONTROL_PLANE_ROUTES = {
     // Takes a skill away: one the skills directory installed, by name. It can only narrow what the
     // agent has been told to do; it cannot add a skill, change one or touch the agent's own.
     "POST /skills/remove",
+    "POST /skills/restore",
+    // Shared notes (Markdown the agent's memory search reads). Remove takes a set away. Restore puts
+    // a set back as this agent was given it: the version and hash come from the agent's own record,
+    // so this cannot bring notes the agent was never given (templates.ts, restoreNotes).
+    "POST /notes/remove",
+    "POST /notes/restore",
+    // The agent's own storage (docs/plans/agent-storage-growth.md). The read is sizes only. The
+    // write makes the encrypted container larger and can do nothing else: it changes no keyslot,
+    // binding, recovery blob or passphrase, so who can open the disk stays as it was; it runs no new
+    // code and widens nothing the agent can reach. The box works out the limit itself and the
+    // number passes a digits-only sudoers pattern. What a hostile control plane gains is a larger
+    // container, on a box it can already stop or delete. It is not behind the firewall, like a
+    // server resize, because a full disk is when the firewall's push may already be failing.
+    "GET /storage",
+    "POST /storage/grow",
     // Carries nothing: it makes the agent ask the console now whether a template preview or apply
     // is waiting, which it asks every two minutes anyway (templates.ts).
     "POST /templates/poke"
@@ -1197,7 +1212,7 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
-var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket"]);
+var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket", "template-check", "template-repair", "template-capture"]);
 async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -6335,8 +6350,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "a39425c" : "unknown",
-  builtAt: true ? "2026-10-13T00:14:43+01:00" : "unknown"
+  commit: true ? "e89f832" : "unknown",
+  builtAt: true ? "2026-10-13T10:49:37+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6422,9 +6437,15 @@ function boxSoftware(opts = {}) {
       ...speechFeatures(),
       ...consoleMcpConfigured() ? ["console_mcp"] : [],
       ...doctorAvailable() ? ["doctor_v1"] : [],
-      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "skills_start", "skills_remove"],
+      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "templates_steps2", "templates_bundles", "templates_check", "templates_repair", "templates_capture_ai", "skills_start", "skills_remove", "skills_capture", "notes_start", "storage_grow"],
+      // `disk_partners`: this box's disk report says how many partners the disk is bound to (the
+      // role writes the marker with the container daemon that sends it). The console then knows a
+      // count will follow and may note "no partner" itself in the meantime (disk-pairing.server.ts).
+      ...existsSync7("/etc/controlclaw/disk-partners") ? ["disk_partners"] : [],
       ...firewallOrigin() ? ["open_v1"] : [],
-      ...process.env.CC_SERVICE !== "gbrain" && existsSync7(`${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`) ? ["templates_code"] : [],
+      ...process.env.CC_SERVICE !== "gbrain" && existsSync7(`${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`) ? ["templates_code", "skills_apply", ...existsSync7(process.env.CC_NOTES_HELPER ?? "/usr/local/sbin/cc-notes") ? ["notes_apply"] : []] : [],
+      // `storage_grow`: this agent answers `/storage` and `/storage/grow` (storage.ts). The role's
+      // helper and sudoers lines arrive with the same Update; a box without them answers 409.
       // `fw_tokens_bound`: this box has seen its firewall's tokens bound to one request each, and
       // from then on takes no other (auth.ts). The console shows which agents still take the older
       // kind, and tells an agent that does not from a firewall too old to call it.

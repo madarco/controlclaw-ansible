@@ -111,17 +111,17 @@ var require_node_gyp_build = __commonJS({
       ].filter(Boolean).join(" ");
       throw new Error("No native build was found for " + target2 + "\n    loaded from: " + dir + "\n");
       function resolve4(dir2) {
-        var tuples = readdirSync8(path.join(dir2, "prebuilds")).map(parseTuple);
+        var tuples = readdirSync9(path.join(dir2, "prebuilds")).map(parseTuple);
         var tuple2 = tuples.filter(matchTuple(platform, arch)).sort(compareTuples)[0];
         if (!tuple2) return;
         var prebuilds = path.join(dir2, "prebuilds", tuple2.name);
-        var parsed = readdirSync8(prebuilds).map(parseTags);
+        var parsed = readdirSync9(prebuilds).map(parseTags);
         var candidates = parsed.filter(matchTags(runtime, abi));
         var winner = candidates.sort(compareTags(runtime))[0];
         if (winner) return path.join(prebuilds, winner.file);
       }
     };
-    function readdirSync8(dir) {
+    function readdirSync9(dir) {
       try {
         return fs.readdirSync(dir);
       } catch (err) {
@@ -129,7 +129,7 @@ var require_node_gyp_build = __commonJS({
       }
     }
     function getFirst(dir, filter) {
-      var files2 = readdirSync8(dir).filter(filter);
+      var files2 = readdirSync9(dir).filter(filter);
       return files2[0] && path.join(dir, files2[0]);
     }
     function matchBuild(name) {
@@ -590,26 +590,26 @@ var require_permessage_deflate = __commonJS({
             value2 = value2[0];
             if (key === "client_max_window_bits") {
               if (value2 !== true) {
-                const num2 = +value2;
-                if (!Number.isInteger(num2) || num2 < 8 || num2 > 15) {
+                const num3 = +value2;
+                if (!Number.isInteger(num3) || num3 < 8 || num3 > 15) {
                   throw new TypeError(
                     `Invalid value for parameter "${key}": ${value2}`
                   );
                 }
-                value2 = num2;
+                value2 = num3;
               } else if (!this._isServer) {
                 throw new TypeError(
                   `Invalid value for parameter "${key}": ${value2}`
                 );
               }
             } else if (key === "server_max_window_bits") {
-              const num2 = +value2;
-              if (!Number.isInteger(num2) || num2 < 8 || num2 > 15) {
+              const num3 = +value2;
+              if (!Number.isInteger(num3) || num3 < 8 || num3 > 15) {
                 throw new TypeError(
                   `Invalid value for parameter "${key}": ${value2}`
                 );
               }
-              value2 = num2;
+              value2 = num3;
             } else if (key === "client_no_context_takeover" || key === "server_no_context_takeover") {
               if (value2 !== true) {
                 throw new TypeError(
@@ -1372,8 +1372,8 @@ var require_receiver = __commonJS({
           return;
         }
         const buf = this.consume(8);
-        const num2 = buf.readUInt32BE(0);
-        if (num2 > Math.pow(2, 53 - 32) - 1) {
+        const num3 = buf.readUInt32BE(0);
+        if (num3 > Math.pow(2, 53 - 32) - 1) {
           const error62 = this.createError(
             RangeError,
             "Unsupported WebSocket frame: payload length > 2^53 - 1",
@@ -1384,7 +1384,7 @@ var require_receiver = __commonJS({
           cb(error62);
           return;
         }
-        this._payloadLength = num2 * Math.pow(2, 32) + buf.readUInt32BE(4);
+        this._payloadLength = num3 * Math.pow(2, 32) + buf.readUInt32BE(4);
         this.haveLength(cb);
       }
       /**
@@ -2537,7 +2537,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net2 = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes5, createHash: createHash15 } = __require("crypto");
+    var { randomBytes: randomBytes5, createHash: createHash16 } = __require("crypto");
     var { Duplex, Readable: Readable3 } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -3218,7 +3218,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash15("sha1").update(key + GUID).digest("base64");
+        const digest = createHash16("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3587,7 +3587,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash15 } = __require("crypto");
+    var { createHash: createHash16 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3894,7 +3894,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash15("sha1").update(key + GUID).digest("base64");
+        const digest = createHash16("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -4258,9 +4258,9 @@ var require_dist = __commonJS({
         throw new Error("input must be buffer, number, or string, received " + typeof input2);
       }
     }
-    function bufferizeInt(num2) {
+    function bufferizeInt(num3) {
       const tmp = ensureBuffer(4);
-      tmp.writeInt32BE(num2, 0);
+      tmp.writeInt32BE(num3, 0);
       return tmp;
     }
     function _crc32(buf, previous) {
@@ -5897,14 +5897,14 @@ var require_foldFlowLines = __commonJS({
     var FOLD_FLOW = "flow";
     var FOLD_BLOCK = "block";
     var FOLD_QUOTED = "quoted";
-    function foldFlowLines(text2, indent, mode2 = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+    function foldFlowLines(text3, indent, mode2 = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
       if (!lineWidth || lineWidth < 0)
-        return text2;
+        return text3;
       if (lineWidth < minContentWidth)
         minContentWidth = 0;
       const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-      if (text2.length <= endStep)
-        return text2;
+      if (text3.length <= endStep)
+        return text3;
       const folds = [];
       const escapedFolds = {};
       let end = lineWidth - indent.length;
@@ -5921,14 +5921,14 @@ var require_foldFlowLines = __commonJS({
       let escStart = -1;
       let escEnd = -1;
       if (mode2 === FOLD_BLOCK) {
-        i2 = consumeMoreIndentedLines(text2, i2, indent.length);
+        i2 = consumeMoreIndentedLines(text3, i2, indent.length);
         if (i2 !== -1)
           end = i2 + endStep;
       }
-      for (let ch; ch = text2[i2 += 1]; ) {
+      for (let ch; ch = text3[i2 += 1]; ) {
         if (mode2 === FOLD_QUOTED && ch === "\\") {
           escStart = i2;
-          switch (text2[i2 + 1]) {
+          switch (text3[i2 + 1]) {
             case "x":
               i2 += 3;
               break;
@@ -5945,12 +5945,12 @@ var require_foldFlowLines = __commonJS({
         }
         if (ch === "\n") {
           if (mode2 === FOLD_BLOCK)
-            i2 = consumeMoreIndentedLines(text2, i2, indent.length);
+            i2 = consumeMoreIndentedLines(text3, i2, indent.length);
           end = i2 + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text2[i2 + 1];
+            const next = text3[i2 + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
               split = i2;
           }
@@ -5962,12 +5962,12 @@ var require_foldFlowLines = __commonJS({
             } else if (mode2 === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text2[i2 += 1];
+                ch = text3[i2 += 1];
                 overflow = true;
               }
               const j2 = i2 > escEnd + 1 ? i2 - 2 : escStart - 1;
               if (escapedFolds[j2])
-                return text2;
+                return text3;
               folds.push(j2);
               escapedFolds[j2] = true;
               end = j2 + endStep;
@@ -5982,39 +5982,39 @@ var require_foldFlowLines = __commonJS({
       if (overflow && onOverflow)
         onOverflow();
       if (folds.length === 0)
-        return text2;
+        return text3;
       if (onFold)
         onFold();
-      let res = text2.slice(0, folds[0]);
+      let res = text3.slice(0, folds[0]);
       for (let i3 = 0; i3 < folds.length; ++i3) {
         const fold = folds[i3];
-        const end2 = folds[i3 + 1] || text2.length;
+        const end2 = folds[i3 + 1] || text3.length;
         if (fold === 0)
           res = `
-${indent}${text2.slice(0, end2)}`;
+${indent}${text3.slice(0, end2)}`;
         else {
           if (mode2 === FOLD_QUOTED && escapedFolds[fold])
-            res += `${text2[fold]}\\`;
+            res += `${text3[fold]}\\`;
           res += `
-${indent}${text2.slice(fold + 1, end2)}`;
+${indent}${text3.slice(fold + 1, end2)}`;
         }
       }
       return res;
     }
-    function consumeMoreIndentedLines(text2, i2, indent) {
+    function consumeMoreIndentedLines(text3, i2, indent) {
       let end = i2;
       let start = i2 + 1;
-      let ch = text2[start];
+      let ch = text3[start];
       while (ch === " " || ch === "	") {
         if (i2 < start + indent) {
-          ch = text2[++i2];
+          ch = text3[++i2];
         } else {
           do {
-            ch = text2[++i2];
+            ch = text3[++i2];
           } while (ch && ch !== "\n");
           end = i2;
           start = i2 + 1;
-          ch = text2[start];
+          ch = text3[start];
         }
       }
       return end;
@@ -7275,9 +7275,9 @@ var require_stringifyNumber = __commonJS({
     function stringifyNumber({ format, minFractionDigits, tag: tag2, value: value2 }) {
       if (typeof value2 === "bigint")
         return String(value2);
-      const num2 = typeof value2 === "number" ? value2 : Number(value2);
-      if (!isFinite(num2))
-        return isNaN(num2) ? ".nan" : num2 < 0 ? "-.inf" : ".inf";
+      const num3 = typeof value2 === "number" ? value2 : Number(value2);
+      if (!isFinite(num3))
+        return isNaN(num3) ? ".nan" : num3 < 0 ? "-.inf" : ".inf";
       let n2 = Object.is(value2, -0) ? "-0" : JSON.stringify(value2);
       if (!format && minFractionDigits && (!tag2 || tag2 === "tag:yaml.org,2002:float") && /^-?\d/.test(n2) && !n2.includes("e")) {
         let i2 = n2.indexOf(".");
@@ -7317,8 +7317,8 @@ var require_float = __commonJS({
       test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
       resolve: (str8) => parseFloat(str8),
       stringify(node2) {
-        const num2 = Number(node2.value);
-        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node2);
+        const num3 = Number(node2.value);
+        return isFinite(num3) ? num3.toExponential() : stringifyNumber.stringifyNumber(node2);
       }
     };
     var float = {
@@ -7757,8 +7757,8 @@ var require_float2 = __commonJS({
       test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
       resolve: (str8) => parseFloat(str8.replace(/_/g, "")),
       stringify(node2) {
-        const num2 = Number(node2.value);
-        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node2);
+        const num3 = Number(node2.value);
+        return isFinite(num3) ? num3.toExponential() : stringifyNumber.stringifyNumber(node2);
       }
     };
     var float = {
@@ -7960,23 +7960,23 @@ var require_timestamp = __commonJS({
     function parseSexagesimal(str8, asBigInt) {
       const sign = str8[0];
       const parts = sign === "-" || sign === "+" ? str8.substring(1) : str8;
-      const num2 = (n2) => asBigInt ? BigInt(n2) : Number(n2);
-      const res = parts.replace(/_/g, "").split(":").reduce((res2, p2) => res2 * num2(60) + num2(p2), num2(0));
-      return sign === "-" ? num2(-1) * res : res;
+      const num3 = (n2) => asBigInt ? BigInt(n2) : Number(n2);
+      const res = parts.replace(/_/g, "").split(":").reduce((res2, p2) => res2 * num3(60) + num3(p2), num3(0));
+      return sign === "-" ? num3(-1) * res : res;
     }
     function stringifySexagesimal(node2) {
       let { value: value2 } = node2;
-      let num2 = (n2) => n2;
+      let num3 = (n2) => n2;
       if (typeof value2 === "bigint")
-        num2 = (n2) => BigInt(n2);
+        num3 = (n2) => BigInt(n2);
       else if (isNaN(value2) || !isFinite(value2))
         return stringifyNumber.stringifyNumber(node2);
       let sign = "";
       if (value2 < 0) {
         sign = "-";
-        value2 *= num2(-1);
+        value2 *= num3(-1);
       }
-      const _60 = num2(60);
+      const _60 = num3(60);
       const parts = [value2 % _60];
       if (value2 < 60) {
         parts.unshift(0);
@@ -12837,11 +12837,11 @@ async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedP
   const signingPayload = b64 || typeof inputPayload != "string" ? inputPayload : encodeUnencodedPayload(inputPayload);
   let resolvedKey = false;
   typeof key == "function" && (key = await key(parsedProt, jws), resolvedKey = true);
-  const entry = jwsAlgorithm(alg), data = concat(encodedProtected !== void 0 ? encode(encodedProtected) : new Uint8Array(), encode("."), typeof signingPayload == "string" ? shared[2] ??= encodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload), signature = decodeBase64url(jws.signature, "signature", JWSInvalid), k2 = await prepareKey(entry, key, "verify"), cryptoKey = await rawKey(k2, entry.subtle, "verify");
+  const entry = jwsAlgorithm(alg), data = concat(encodedProtected !== void 0 ? encode(encodedProtected) : new Uint8Array(), encode("."), typeof signingPayload == "string" ? shared[2] ??= encodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload), signature2 = decodeBase64url(jws.signature, "signature", JWSInvalid), k2 = await prepareKey(entry, key, "verify"), cryptoKey = await rawKey(k2, entry.subtle, "verify");
   entry.minRsaBits && checkModulusLength(entry.alg, cryptoKey);
   let verified = false;
   try {
-    verified = await crypto.subtle.verify(entry.signing, cryptoKey, signature, data);
+    verified = await crypto.subtle.verify(entry.signing, cryptoKey, signature2, data);
   } catch {
   }
   if (!verified)
@@ -12852,10 +12852,10 @@ async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedP
 async function verifyCompact(jws, shared, key) {
   if (jws instanceof Uint8Array && (jws = decoder.decode(jws)), typeof jws != "string")
     throw new JWSInvalid("Compact JWS must be a string or Uint8Array");
-  const { 0: protectedHeader, 1: payload, 2: signature, length } = jws.split(".");
+  const { 0: protectedHeader, 1: payload, 2: signature2, length } = jws.split(".");
   if (length !== 3)
     throw new JWSInvalid("Invalid Compact JWS");
-  return verifySignature({ payload, protected: protectedHeader, signature }, shared, key, encodeCompactUnencodedPayload);
+  return verifySignature({ payload, protected: protectedHeader, signature: signature2 }, shared, key, encodeCompactUnencodedPayload);
 }
 
 // ../../node_modules/.pnpm/jose@6.2.12/node_modules/jose/dist/webapi/lib/jwt_claims_set.js
@@ -13444,6 +13444,21 @@ var CONTROL_PLANE_ROUTES = {
     // Takes a skill away: one the skills directory installed, by name. It can only narrow what the
     // agent has been told to do; it cannot add a skill, change one or touch the agent's own.
     "POST /skills/remove",
+    "POST /skills/restore",
+    // Shared notes (Markdown the agent's memory search reads). Remove takes a set away. Restore puts
+    // a set back as this agent was given it: the version and hash come from the agent's own record,
+    // so this cannot bring notes the agent was never given (templates.ts, restoreNotes).
+    "POST /notes/remove",
+    "POST /notes/restore",
+    // The agent's own storage (docs/plans/agent-storage-growth.md). The read is sizes only. The
+    // write makes the encrypted container larger and can do nothing else: it changes no keyslot,
+    // binding, recovery blob or passphrase, so who can open the disk stays as it was; it runs no new
+    // code and widens nothing the agent can reach. The box works out the limit itself and the
+    // number passes a digits-only sudoers pattern. What a hostile control plane gains is a larger
+    // container, on a box it can already stop or delete. It is not behind the firewall, like a
+    // server resize, because a full disk is when the firewall's push may already be failing.
+    "GET /storage",
+    "POST /storage/grow",
     // Carries nothing: it makes the agent ask the console now whether a template preview or apply
     // is waiting, which it asks every two minutes anyway (templates.ts).
     "POST /templates/poke"
@@ -13467,7 +13482,7 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
-var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket"]);
+var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket", "template-check", "template-repair", "template-capture"]);
 async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -13770,9 +13785,9 @@ function openDb(file2, readOnly) {
   db.exec("PRAGMA busy_timeout=5000");
   return db;
 }
-function parseRecord(text2) {
+function parseRecord(text3) {
   try {
-    const parsed = JSON.parse(text2);
+    const parsed = JSON.parse(text3);
     const call = parsed?.version === 2 ? parsed.call : parsed;
     if (!call || typeof call.callId !== "string" || typeof call.startedAt !== "number") return null;
     return { ...call, transcript: Array.isArray(call.transcript) ? call.transcript : [] };
@@ -14360,17 +14375,17 @@ function readPhoneUsage(dir) {
   const file2 = join4(dir, "phone.jsonl");
   if (!existsSync4(file2)) return [];
   const fd = openSync(file2, "r");
-  let text2;
+  let text3;
   try {
     const size2 = fstatSync(fd).size, length = Math.min(size2, MAX_READ);
     const buffer = Buffer.alloc(length);
     readSync(fd, buffer, 0, length, size2 - length);
-    text2 = buffer.toString("utf8");
+    text3 = buffer.toString("utf8");
   } finally {
     closeSync(fd);
   }
   const out = [];
-  for (const line2 of text2.split("\n")) {
+  for (const line2 of text3.split("\n")) {
     let entry;
     try {
       entry = JSON.parse(line2);
@@ -14381,8 +14396,8 @@ function readPhoneUsage(dir) {
     if (entry.kind === "usage" && Number.isFinite(startedAt) && typeof entry.seconds === "number" && entry.seconds >= 0 && entry.seconds <= 86400)
       out.push({ startedAt, seconds: Math.round(entry.seconds) });
   }
-  if (text2.length > 1024 * 1024) {
-    const keep = text2.split("\n").filter(Boolean).slice(-5e3).join("\n") + "\n";
+  if (text3.length > 1024 * 1024) {
+    const keep = text3.split("\n").filter(Boolean).slice(-5e3).join("\n") + "\n";
     try {
       writeFileSync5(`${file2}.tmp`, keep, { mode: 384 });
       renameSync4(`${file2}.tmp`, file2);
@@ -23968,8 +23983,8 @@ function ko_default() {
 }
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/locales/lt.js
-var capitalizeFirstCharacter = (text2) => {
-  return text2.charAt(0).toUpperCase() + text2.slice(1);
+var capitalizeFirstCharacter = (text3) => {
+  return text3.charAt(0).toUpperCase() + text3.slice(1);
 };
 function getUnitTypeFromNumber(number4) {
   const abs = Math.abs(number4);
@@ -34612,10 +34627,10 @@ async function runPhonePluginMutation(exec, args) {
     );
   } catch (error62) {
     const e = error62;
-    const text2 = [e?.message, e?.stderr, e?.stdout].join("\n");
+    const text3 = [e?.message, e?.stderr, e?.stdout].join("\n");
     throw new PhoneSetupError(
       /OPENCLAW_STATE_LEASE_HELD|plugin lifecycle lease[^\n]*held by/i.test(
-        text2
+        text3
       ) ? "plugin_busy" : "plugin_install_failed"
     );
   }
@@ -34648,8 +34663,8 @@ var defaultExec = (file2, args, timeoutMs, stdin, opts) => new Promise((resolve4
 });
 function execFailureLine(err) {
   const e = err;
-  const text2 = (e.stderr || e.stdout || e.message || "").replace(/\x1b\[[0-9;]*m/g, "").trim();
-  return text2.split("\n").filter((l2) => l2.trim()).pop() ?? "command failed";
+  const text3 = (e.stderr || e.stdout || e.message || "").replace(/\x1b\[[0-9;]*m/g, "").trim();
+  return text3.split("\n").filter((l2) => l2.trim()).pop() ?? "command failed";
 }
 
 // src/gateway.ts
@@ -35359,12 +35374,12 @@ async function probePhone(input2) {
     To: input2.fromNumber
   };
   const signed = input2.publicUrl + query + Object.entries(params).sort(([a2], [b2]) => a2.localeCompare(b2)).map(([k2, v2]) => k2 + v2).join("");
-  const signature = createHmac2("sha1", input2.placeholder).update(signed).digest("base64");
+  const signature2 = createHmac2("sha1", input2.placeholder).update(signed).digest("base64");
   const response = await fetch("http://127.0.0.1:8789/voice/webhook" + query, {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
-      "x-twilio-signature": signature
+      "x-twilio-signature": signature2
     },
     body: new URLSearchParams(params).toString(),
     signal: AbortSignal.timeout(2e3),
@@ -35652,7 +35667,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync36, existsSync as existsSync31, writeFileSync as writeFileSync24, rmSync as rmSync12 } from "fs";
+import { readFileSync as readFileSync37, existsSync as existsSync31, writeFileSync as writeFileSync25, rmSync as rmSync13 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash6, randomBytes as randomBytes2 } from "crypto";
@@ -35751,8 +35766,8 @@ function makeRedactor(values) {
   }
   const sorted = [...exact].sort((a2, b2) => b2.length - a2.length);
   const secretRe = sorted.length ? new RegExp(sorted.map(escapeRegExp).join("|"), "g") : null;
-  return (text2) => {
-    let out = text2;
+  return (text3) => {
+    let out = text3;
     if (secretRe) out = out.replace(secretRe, "[redacted]");
     out = out.replace(PARAM_RE, (_m, k2) => `${k2}=[redacted]`);
     out = out.replace(BEARER_RE, "Bearer [redacted]");
@@ -35779,8 +35794,8 @@ function loadRedactionSecrets(keysDir2) {
 function setRedactionSecrets(values) {
   redactor = makeRedactor(values);
 }
-function redact(text2) {
-  return redactor(text2);
+function redact(text3) {
+  return redactor(text3);
 }
 
 // src/routes/logs.ts
@@ -35885,10 +35900,10 @@ function readFileTail(lines) {
     const start = Math.max(0, size2 - TAIL_BYTES);
     const buf = Buffer.alloc(size2 - start);
     readSync2(fd, buf, 0, buf.length, start);
-    let text2 = buf.toString("utf-8");
-    if (start > 0) text2 = text2.slice(text2.indexOf("\n") + 1);
+    let text3 = buf.toString("utf-8");
+    if (start > 0) text3 = text3.slice(text3.indexOf("\n") + 1);
     const out = [];
-    for (const line2 of text2.split("\n")) {
+    for (const line2 of text3.split("\n")) {
       if (!line2.trim()) continue;
       const mapped = mapFileRecord(line2);
       if (mapped) out.push(mapped);
@@ -40877,8 +40892,8 @@ function labelOf(entryJson) {
 }
 function decodeEvent(row) {
   try {
-    const text2 = row.event_json ?? (row.event_zstd ? zstdDecompressSync(Buffer.from(row.event_zstd)).toString("utf8") : null);
-    return text2 ? JSON.parse(text2) : null;
+    const text3 = row.event_json ?? (row.event_zstd ? zstdDecompressSync(Buffer.from(row.event_zstd)).toString("utf8") : null);
+    return text3 ? JSON.parse(text3) : null;
   } catch {
     return null;
   }
@@ -40909,14 +40924,14 @@ function turnsFromEvents(events) {
     if (message2.display === false || meta3?.hidden === true) continue;
     const provenance = message2.provenance;
     if (typeof provenance?.kind === "string" && provenance.kind.startsWith("internal")) continue;
-    const text2 = messageText(message2);
-    if (!text2 || SILENT.has(text2)) continue;
-    if (message2.role === "assistant" && message2.model === "delivery-mirror" && text2.startsWith("ControlClaw:")) continue;
-    if (message2.role === "user" && /^\/[a-z][\w-]*$/i.test(text2)) continue;
+    const text3 = messageText(message2);
+    if (!text3 || SILENT.has(text3)) continue;
+    if (message2.role === "assistant" && message2.model === "delivery-mirror" && text3.startsWith("ControlClaw:")) continue;
+    if (message2.role === "user" && /^\/[a-z][\w-]*$/i.test(text3)) continue;
     const when2 = typeof message2.timestamp === "number" ? message2.timestamp : at2;
     const transport = meta3?.transport;
     const channel = typeof transport?.channel === "string" && transport.channel ? transport.channel : void 0;
-    turns.push({ kind: "message", at: when2, role: message2.role, text: text2, sender: senderOf(message2), ...channel ? { channel } : {} });
+    turns.push({ kind: "message", at: when2, role: message2.role, text: text3, sender: senderOf(message2), ...channel ? { channel } : {} });
   }
   while (turns.length && turns[turns.length - 1].kind === "reset") turns.pop();
   return turns;
@@ -41058,11 +41073,11 @@ var WorkspaceExporter = class {
       secrets
     };
   }
-  safeList(fn, what) {
+  safeList(fn, what2) {
     try {
       return fn();
     } catch (err) {
-      console.error(`[export] ${what}:`, err.message);
+      console.error(`[export] ${what2}:`, err.message);
       return [];
     }
   }
@@ -41108,7 +41123,7 @@ var WorkspaceExporter = class {
         cb(null, aborted2 ? Readable.from([]) : make());
       });
     };
-    const text2 = (path, make, mtime) => lazy2(path, () => Readable.from([Buffer.from(make(), "utf8")]), { mtime });
+    const text3 = (path, make, mtime) => lazy2(path, () => Readable.from([Buffer.from(make(), "utf8")]), { mtime });
     const reading = /* @__PURE__ */ new Set();
     const file2 = (f2) => () => {
       const through = new PassThrough();
@@ -41120,12 +41135,12 @@ var WorkspaceExporter = class {
       source.on("close", () => reading.delete(entry));
       return through;
     };
-    text2("README.md", () => readme({ agent, files: files2.length, memory: memory.length, conversations: conversationRefs.length, meetings: meetings2.length, calls: calls.length, mounts, secrets, at: this.now() }));
+    text3("README.md", () => readme({ agent, files: files2.length, memory: memory.length, conversations: conversationRefs.length, meetings: meetings2.length, calls: calls.length, mounts, secrets, at: this.now() }));
     for (const f2 of memory) lazy2(`memory/${f2.rel.replace(/^memory\//, "daily/")}`, file2(f2), { mtime: f2.mtime });
     for (const ref of conversationRefs) {
       const folder = multiAgent ? `conversations/${slug(ref.agentId)}` : "conversations";
       const name = conversationFileName(ref.createdAt, ref.sessionKey, ref.label, ref.sessionId, ref.channels);
-      text2(`${folder}/${name}`, () => {
+      text3(`${folder}/${name}`, () => {
         const c2 = readConversation(ref);
         return c2 ? conversationMarkdown(c2, agent) : `# Conversation
 
@@ -41133,8 +41148,8 @@ This conversation has no messages to show.
 `;
       });
     }
-    for (const m2 of meetings2) text2(`meetings/${meetingFileName(m2)}`, () => meetingMarkdown(m2, agent));
-    for (const c2 of calls) text2(`calls/${callFileName(c2)}`, () => callMarkdown(c2, agent));
+    for (const m2 of meetings2) text3(`meetings/${meetingFileName(m2)}`, () => meetingMarkdown(m2, agent));
+    for (const c2 of calls) text3(`calls/${callFileName(c2)}`, () => callMarkdown(c2, agent));
     for (const f2 of files2) lazy2(`workspace/${f2.rel}`, file2(f2), { mtime: f2.mtime, compress: !STORED.test(f2.rel) });
     zip.end();
     if (closed || out.destroyed) return { entries, completed: false };
@@ -41193,8 +41208,8 @@ function conversationFileName(createdAt, sessionKey, label, sessionId, channels2
   const parts = sessionKey.split(":");
   const rest = parts[0] === "agent" ? parts.slice(2) : parts;
   const channel = channels2[0] ?? (rest[0] === "main" ? "web-chat" : rest[0]);
-  const what = slug([channel, label ?? rest.slice(rest.length > 2 ? 2 : 1).join("-")].filter(Boolean).join("-"), 60);
-  return `${ymd(createdAt)}-${what || "chat"}-${sessionId.slice(0, 8)}.md`;
+  const what2 = slug([channel, label ?? rest.slice(rest.length > 2 ? 2 : 1).join("-")].filter(Boolean).join("-"), 60);
+  return `${ymd(createdAt)}-${what2 || "chat"}-${sessionId.slice(0, 8)}.md`;
 }
 function meetingFileName(m2) {
   return `${ymdhm(Date.parse(m2.startedAt))}-${slug(m2.meetingCode ?? "meeting") || "meeting"}.md`;
@@ -41456,8 +41471,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "a39425c" : "unknown",
-  builtAt: true ? "2026-10-13T00:14:43+01:00" : "unknown"
+  commit: true ? "e89f832" : "unknown",
+  builtAt: true ? "2026-10-13T10:49:37+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -41543,9 +41558,15 @@ function boxSoftware(opts = {}) {
       ...speechFeatures(),
       ...consoleMcpConfigured() ? ["console_mcp"] : [],
       ...doctorAvailable() ? ["doctor_v1"] : [],
-      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "skills_start", "skills_remove"],
+      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "templates_steps2", "templates_bundles", "templates_check", "templates_repair", "templates_capture_ai", "skills_start", "skills_remove", "skills_capture", "notes_start", "storage_grow"],
+      // `disk_partners`: this box's disk report says how many partners the disk is bound to (the
+      // role writes the marker with the container daemon that sends it). The console then knows a
+      // count will follow and may note "no partner" itself in the meantime (disk-pairing.server.ts).
+      ...existsSync7("/etc/controlclaw/disk-partners") ? ["disk_partners"] : [],
       ...firewallOrigin() ? ["open_v1"] : [],
-      ...process.env.CC_SERVICE !== "gbrain" && existsSync7(`${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`) ? ["templates_code"] : [],
+      ...process.env.CC_SERVICE !== "gbrain" && existsSync7(`${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`) ? ["templates_code", "skills_apply", ...existsSync7(process.env.CC_NOTES_HELPER ?? "/usr/local/sbin/cc-notes") ? ["notes_apply"] : []] : [],
+      // `storage_grow`: this agent answers `/storage` and `/storage/grow` (storage.ts). The role's
+      // helper and sudoers lines arrive with the same Update; a box without them answers 409.
       // `fw_tokens_bound`: this box has seen its firewall's tokens bound to one request each, and
       // from then on takes no other (auth.ts). The console shows which agents still take the older
       // kind, and tells an agent that does not from a firewall too old to call it.
@@ -42480,8 +42501,8 @@ var LIST_METHODS = Object.keys(APPROVAL_FAMILIES).map((family) => [
   `${family}.approval.list`
 ]);
 var CONTROL_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f]/g;
-function sanitizeTitle(text2) {
-  const flat = redact(text2).replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
+function sanitizeTitle(text3) {
+  const flat = redact(text3).replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
   return flat.length > TITLE_MAX ? `${flat.slice(0, TITLE_MAX - 1)}\u2026` : flat;
 }
 function str(v2) {
@@ -42807,12 +42828,12 @@ var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|mi
 function cleanCaptions(input2) {
   const out = [];
   for (const row of input2) {
-    const text2 = row.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").split(/\n/).map((s2) => s2.trim()).filter((s2) => s2 && !UI_LINE.test(s2)).join(" ").replace(/\s+/g, " ").trim();
-    if (!text2 || UI_LINE.test(text2)) continue;
+    const text3 = row.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").split(/\n/).map((s2) => s2.trim()).filter((s2) => s2 && !UI_LINE.test(s2)).join(" ").replace(/\s+/g, " ").trim();
+    if (!text3 || UI_LINE.test(text3)) continue;
     const item = {
       at: row.at,
       speaker: row.speaker || "Unknown speaker",
-      text: text2,
+      text: text3,
       ...row.source ? { source: row.source } : {},
       ...row.updatedAt ? { updatedAt: row.updatedAt } : {}
     };
@@ -42973,8 +42994,8 @@ var SUMMARY_MAX = 600;
 var CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/g;
 var OrdersError = class extends Error {
 };
-function hash2(text2) {
-  return createHash9("sha256").update(text2).digest("hex").slice(0, 32);
+function hash2(text3) {
+  return createHash9("sha256").update(text3).digest("hex").slice(0, 32);
 }
 function ordersIn(agentsMd) {
   const from = agentsMd.indexOf(START);
@@ -42983,11 +43004,11 @@ function ordersIn(agentsMd) {
   const body2 = agentsMd.slice(from + START.length, to).replace(/\r\n/g, "\n").trim();
   return (body2.startsWith(HEADING) ? body2.slice(HEADING.length) : body2).trim();
 }
-function withOrders(agentsMd, text2) {
+function withOrders(agentsMd, text3) {
   const block = `${START}
 ${HEADING}
 
-${text2.trim()}
+${text3.trim()}
 ${END}`;
   const from = agentsMd.indexOf(START);
   const to = agentsMd.indexOf(END, from + START.length);
@@ -42998,10 +43019,10 @@ ${END}`;
 }
 function cleanOrders(value2) {
   if (typeof value2 !== "string") throw new OrdersError("Enter the meeting instructions as text.");
-  const text2 = value2.replace(/\r\n/g, "\n").replace(CONTROL, "").trim();
-  if (text2.length > MEETING_ORDERS_MAX) throw new OrdersError(`Use at most ${MEETING_ORDERS_MAX} characters.`);
-  if (text2.includes(START) || text2.includes(END)) throw new OrdersError("Remove the controlclaw:meetings marker from the text.");
-  return text2;
+  const text3 = value2.replace(/\r\n/g, "\n").replace(CONTROL, "").trim();
+  if (text3.length > MEETING_ORDERS_MAX) throw new OrdersError(`Use at most ${MEETING_ORDERS_MAX} characters.`);
+  if (text3.includes(START) || text3.includes(END)) throw new OrdersError("Remove the controlclaw:meetings marker from the text.");
+  return text3;
 }
 function line(value2, max) {
   if (typeof value2 !== "string") return null;
@@ -43024,8 +43045,8 @@ function parseReport(raw) {
   for (const item of (Array.isArray(r2.requests) ? r2.requests : []).slice(0, LIST_MAX)) {
     if (!item || typeof item !== "object") continue;
     const q2 = item;
-    const text2 = line(q2.text, MEETING_REQUEST_MAX);
-    if (text2) requests.push({ from: line(q2.from, 80) ?? "Someone in the meeting", text: text2 });
+    const text3 = line(q2.text, MEETING_REQUEST_MAX);
+    if (text3) requests.push({ from: line(q2.from, 80) ?? "Someone in the meeting", text: text3 });
   }
   return { ...summary ? { summary } : {}, done, requests };
 }
@@ -43091,32 +43112,32 @@ var MeetingFollowUpService = class {
     }
   }
   orders() {
-    const text2 = ordersIn(this.readAgents());
+    const text3 = ordersIn(this.readAgents());
     const saved = this.savedHash();
-    return { text: text2, version: hash2(text2), changedOutside: saved !== null && saved !== hash2(text2), ...existsSync12(this.agentsPath) ? {} : { waiting: true } };
+    return { text: text3, version: hash2(text3), changedOutside: saved !== null && saved !== hash2(text3), ...existsSync12(this.agentsPath) ? {} : { waiting: true } };
   }
   /** Replace the block with the owner's text. `version` is the one the page read. */
   saveOrders(raw) {
     if (Object.keys(raw).some((k2) => !["text", "version"].includes(k2))) throw new OrdersError("Invalid request");
-    const text2 = cleanOrders(raw.text);
+    const text3 = cleanOrders(raw.text);
     if (!existsSync12(this.agentsPath)) throw new OrdersError("This agent has not set up its workspace yet. Send it a first message, then save the instructions.");
     const agents = this.readAgents();
     if (raw.version !== hash2(ordersIn(agents)))
       throw new OrdersError("The instructions changed since you opened this page. Reload it, then save again.");
-    this.write(agents, text2);
+    this.write(agents, text3);
     return this.orders();
   }
-  write(agents, text2) {
+  write(agents, text3) {
     const path = this.agentsPath;
     const tmp = `${path}.cc-tmp`;
     const before = statSync2(path);
-    writeFileSync10(tmp, withOrders(agents, text2), { mode: before.mode & 511 });
+    writeFileSync10(tmp, withOrders(agents, text3), { mode: before.mode & 511 });
     try {
       chownSync(tmp, before.uid, before.gid);
     } catch {
     }
     renameSync7(tmp, path);
-    atomicJson(this.opts.statePath, { hash: hash2(text2) });
+    atomicJson(this.opts.statePath, { hash: hash2(text3) });
   }
   /**
    * The example orders, once: when AGENTS.md exists and has no block yet. A new agent has no
@@ -43201,8 +43222,8 @@ var MeetingFollowUpService = class {
   asked(record2) {
     const out = [];
     for (const a2 of (record2.asked ?? []).slice(0, LIST_MAX)) {
-      const text2 = line(a2.text, MEETING_REQUEST_MAX);
-      if (text2) out.push({ id: randomUUID(), from: line(a2.from, 80) ?? "Someone in the meeting", text: text2, state: "waiting" });
+      const text3 = line(a2.text, MEETING_REQUEST_MAX);
+      if (text3) out.push({ id: randomUUID(), from: line(a2.from, 80) ?? "Someone in the meeting", text: text3, state: "waiting" });
     }
     return out;
   }
@@ -43577,15 +43598,15 @@ var Once = class {
 };
 
 // src/channels.ts
-function exactMessage(type, text2) {
-  if (type === "telegram") return { message: text2.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"), parseMode: "HTML" };
-  const body2 = text2.replace(/`{3,}/g, (run3) => "'".repeat(run3.length));
+function exactMessage(type, text3) {
+  if (type === "telegram") return { message: text3.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"), parseMode: "HTML" };
+  const body2 = text3.replace(/`{3,}/g, (run3) => "'".repeat(run3.length));
   return { message: `\`\`\`
 ${type === "slack" ? body2.replaceAll("<", "\u2039").replaceAll(">", "\u203A") : body2}
 \`\`\`` };
 }
-function plainFallback(text2) {
-  return text2.replace(/[_*~`[\]<>|\\&]/g, " ").replace(/ {2,}/g, " ");
+function plainFallback(text3) {
+  return text3.replace(/[_*~`[\]<>|\\&]/g, " ").replace(/ {2,}/g, " ");
 }
 var CHANNEL_TYPES = ["telegram", "slack", "whatsapp"];
 var APPLY_CHANNELS = [...CHANNEL_TYPES, "clickclack"];
@@ -44069,7 +44090,7 @@ var ChannelsService = class {
     this.gateway();
     const block = channelBlock(input2);
     const patch = { channels: { [input2.type]: block } };
-    const what = block ? `applied ${input2.type}` : `removed ${input2.type}`;
+    const what2 = block ? `applied ${input2.type}` : `removed ${input2.type}`;
     const id = input2.applyId ?? randomUUID2();
     const type = input2.type;
     this.noteApply(type, { id, state: "pending", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
@@ -44077,7 +44098,7 @@ var ChannelsService = class {
     const write = this.patchConfig(patch, replacePaths).then(
       () => {
         this.noteApply(type, { id, state: "applied", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
-        this.log(`[channels] ${what}`);
+        this.log(`[channels] ${what2}`);
         if (!block && type !== "clickclack") this.forgetApproved(type);
         if (block) void this.ensurePlugin(type);
         return true;
@@ -44095,7 +44116,7 @@ var ChannelsService = class {
       return { ok: true, status: "pending", applyId: id, message: `${block ? "Applying" : "Removing"} ${type} on this agent\u2026` };
     }
     if (!finished) throw new Error(this.applies.get(type)?.error ?? `could not ${block ? "apply" : "remove"} ${type}`);
-    return { ok: true, status: "applied", applyId: id, message: what };
+    return { ok: true, status: "applied", applyId: id, message: what2 };
   }
   /** `p`'s value if it settles inside `ms`, otherwise null. Never rejects: `p` reports its own end. */
   waitFor(p2, ms) {
@@ -45035,7 +45056,7 @@ function captionPage(merge2, cont, binding) {
   const doc = Math.random().toString(36).slice(2, 10) || "d";
   const log = [];
   let seq = 0, next = 0, pending = false, clicked = 0;
-  const text2 = (el) => (el.innerText ?? el.textContent ?? "").replace(/\r/g, "");
+  const text3 = (el) => (el.innerText ?? el.textContent ?? "").replace(/\r/g, "");
   const region = () => document.querySelector('[role="region"][aria-label*="aption" i]');
   function blocksOf(root) {
     const found = /* @__PURE__ */ new Set();
@@ -45045,12 +45066,12 @@ function captionPage(merge2, cont, binding) {
       found.add(el);
     }
     if (!found.size) {
-      for (const child of root.children) if (text2(child).includes("\n")) found.add(child);
+      for (const child of root.children) if (text3(child).includes("\n")) found.add(child);
     }
     return [...found];
   }
   function parse6(el) {
-    const lines = text2(el).split("\n").map((s2) => s2.trim()).filter(Boolean);
+    const lines = text3(el).split("\n").map((s2) => s2.trim()).filter(Boolean);
     return lines.length < 2 ? null : { speaker: lines[0].slice(0, 80), text: lines.slice(1).join(" ") };
   }
   function send2() {
@@ -45103,14 +45124,14 @@ function captionPage(merge2, cont, binding) {
       }
       if (row.text === rec.shown) continue;
       rec.shown = row.text;
-      const text3 = cont(rec.done, row.text);
-      if (!text3 || text3 === rec.seen) continue;
+      const text4 = cont(rec.done, row.text);
+      if (!text4 || text4 === rec.seen) continue;
       if (rec.final) {
         rec.final = false;
         rec.startedAt = Date.now();
       }
-      rec.full = merge2(rec.full, rec.seen, text3);
-      rec.seen = text3;
+      rec.full = merge2(rec.full, rec.seen, text4);
+      rec.seen = text4;
       rec.changedAt = Date.now();
       emit(rec, false);
     }
@@ -45871,8 +45892,8 @@ var MeetingService = class {
         const ends = runtime.record.voiceEnds ??= {};
         ends[entry.reason] = (ends[entry.reason] ?? 0) + 1;
       } else if (entry.kind === "request") {
-        const asked = runtime.record.asked ??= [];
-        if (asked.length < 20) asked.push({ from: entry.from, text: entry.text });
+        const asked4 = runtime.record.asked ??= [];
+        if (asked4.length < 20) asked4.push({ from: entry.from, text: entry.text });
       } else if (entry.role === "assistant") runtime.record.transcript.push({ at: entry.at, speaker: this.botName(), text: entry.text });
       else (runtime.heard ??= []).push({ at: entry.at, speaker: "Heard by the agent", text: entry.text });
     }
@@ -46276,8 +46297,8 @@ function notesTries(stderr) {
   }).filter(Boolean).join("; ");
 }
 function summarizeMeeting2(captions, signal) {
-  const full = JSON.stringify(captions.map(({ at: at2, speaker, text: text3 }) => ({ at: at2, speaker, text: text3 })));
-  const text2 = full.length <= 48e3 ? full : full.slice(0, 24e3) + "\n[Middle omitted from summary input; full transcript is saved.]\n" + full.slice(-24e3);
+  const full = JSON.stringify(captions.map(({ at: at2, speaker, text: text4 }) => ({ at: at2, speaker, text: text4 })));
+  const text3 = full.length <= 48e3 ? full : full.slice(0, 24e3) + "\n[Middle omitted from summary input; full transcript is saved.]\n" + full.slice(-24e3);
   return new Promise((resolve4, reject) => {
     const child = spawn2(
       process.execPath,
@@ -46312,7 +46333,7 @@ function summarizeMeeting2(captions, signal) {
       }
     });
     child.stdin.on("error", () => void 0);
-    child.stdin.end(text2);
+    child.stdin.end(text3);
   });
 }
 
@@ -46457,10 +46478,10 @@ var same = (a2, b2) => a2.trim().toLowerCase() === b2.trim().toLowerCase();
 function signinUrl(account) {
   return `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(account)}&continue=${encodeURIComponent("https://meet.google.com/")}`;
 }
-function parseListAccounts(text2) {
+function parseListAccounts(text3) {
   let parsed;
   try {
-    parsed = JSON.parse(text2);
+    parsed = JSON.parse(text3);
   } catch {
     return null;
   }
@@ -46523,10 +46544,10 @@ async function signedInAccounts(cdp = "http://127.0.0.1:9223") {
     });
     const deadline = Date.now() + 15e3;
     while (Date.now() < deadline) {
-      const text2 = await read();
-      const accounts = text2 === null ? null : parseListAccounts(text2);
+      const text3 = await read();
+      const accounts = text3 === null ? null : parseListAccounts(text3);
       if (accounts) return accounts;
-      await new Promise((resolve4) => setTimeout(resolve4, text2 === null ? 300 : 1500));
+      await new Promise((resolve4) => setTimeout(resolve4, text3 === null ? 300 : 1500));
     }
     throw new Error("Google did not answer who is signed in");
   } finally {
@@ -47543,12 +47564,12 @@ var DriveService = class {
       const body2 = await res.json();
       const c2 = body2.diskCache;
       if (!c2) return null;
-      const num2 = (v2) => typeof v2 === "number" ? v2 : 0;
+      const num3 = (v2) => typeof v2 === "number" ? v2 : 0;
       return {
-        bytesUsed: num2(c2.bytesUsed),
-        uploadsQueued: num2(c2.uploadsQueued),
-        uploadsInProgress: num2(c2.uploadsInProgress),
-        erroredFiles: num2(c2.erroredFiles),
+        bytesUsed: num3(c2.bytesUsed),
+        uploadsQueued: num3(c2.uploadsQueued),
+        uploadsInProgress: num3(c2.uploadsInProgress),
+        erroredFiles: num3(c2.erroredFiles),
         outOfSpace: c2.outOfSpace === true
       };
     } catch {
@@ -47681,13 +47702,72 @@ import {
   writeFileSync as writeFileSync16
 } from "fs";
 import { dirname as dirname10 } from "path";
+
+// ../templates/src/ids.ts
+var ORG_TEMPLATE_ID = /^org-[a-z0-9]{8,40}$/;
+function isOrgTemplateId(id) {
+  return !!id && ORG_TEMPLATE_ID.test(id);
+}
+var HIDDEN_CHARACTERS = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
+var BUNDLE_LIMITS = { files: 40, fileBytes: 64 * 1024, totalBytes: 256 * 1024 };
+var CAPTURE_PRIVATE = ["USER.md", "MEMORY.md", "IDENTITY.md", "TOOLS.md", "memory"];
+var SESSION_PRIVATE = new Set([...CAPTURE_PRIVATE, "sessions", "credentials", "auth-profiles.json", ".env"].map((name) => name.toLowerCase()));
+var SCHEDULE_NAME = /^[A-Za-z0-9][A-Za-z0-9 _.,:()'&+/-]{0,59}$/;
+var MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/;
+var jobSlug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+var OPENCLAW_JOBS = ["heartbeat-main", "skill-collection-review-main", "memory-dreaming-promotion"];
+var isOpenclawJob = (name) => OPENCLAW_JOBS.includes(jobSlug(name));
+var SCHEDULE_MESSAGE_MAX = 2e3;
+var SCHEDULE_EVERY_MIN_MS = 5 * 6e4;
+var RESERVED_SECRET_NAME = /^(?:PATH|HOME|SHELL|USER|LOGNAME|ENV|BASH_ENV|IFS|NODE_.*|LD_.*|OPENCLAW_.*|CONTROLCLAW_.*|AGENTMAIL_.*)$/;
+var CONFIG_ROOTS_WITH_A_KIND = { mcp: "openclaw.mcp", cron: "openclaw.schedule", schedule: "openclaw.schedule", schedules: "openclaw.schedule", automations: "openclaw.schedule", plugins: "openclaw.plugin", skills: "openclaw.skill" };
+function configRootKind(path) {
+  const root = (path.split(".")[0] ?? "").toLowerCase();
+  return Object.hasOwn(CONFIG_ROOTS_WITH_A_KIND, root) ? CONFIG_ROOTS_WITH_A_KIND[root] : null;
+}
+function cronSet(field, low, high, names = []) {
+  const number4 = (text3) => /^\d+$/.test(text3) ? Number(text3) : names.includes(text3.toLowerCase()) ? names.indexOf(text3.toLowerCase()) + low : NaN;
+  const values = /* @__PURE__ */ new Set();
+  for (const part of field.split(",")) {
+    const match = /^(\*|\?|([A-Za-z0-9]+)(?:-([A-Za-z0-9]+))?)(?:\/(\d+))?$/.exec(part);
+    if (!match) return null;
+    const from = match[2] === void 0 ? low : number4(match[2]);
+    const to = match[2] === void 0 ? high : match[3] === void 0 ? match[4] ? high : from : number4(match[3]);
+    const step = match[4] === void 0 ? 1 : Number(match[4]);
+    if (Number.isNaN(from) || Number.isNaN(to) || from < low || to > high || from > to || step < 1) return null;
+    for (let value2 = from; value2 <= to; value2 += step) values.add(value2);
+  }
+  return [...values].sort((x2, y2) => x2 - y2);
+}
+function cronMinutesAndHours(expression) {
+  const fields = expression.trim().split(/\s+/);
+  if (fields.length !== 5) return null;
+  const minutes = cronSet(fields[0], 0, 59);
+  const hours = cronSet(fields[1], 0, 23);
+  return minutes && hours && minutes.length && hours.length ? { minutes, hours } : null;
+}
+function cronMinGapMinutes(expression) {
+  const read = cronMinutesAndHours(expression);
+  if (!read) return null;
+  const { minutes, hours } = read;
+  let gap = Infinity;
+  for (let i2 = 1; i2 < minutes.length; i2++) gap = Math.min(gap, minutes[i2] - minutes[i2 - 1]);
+  const inARow = hours.some((hour) => hours.includes((hour + 1) % 24));
+  if (inARow) gap = Math.min(gap, 60 - minutes[minutes.length - 1] + minutes[0]);
+  return gap === Infinity ? 60 : gap;
+}
+function everyMs(text3) {
+  const match = /^([1-9][0-9]{0,4})(m|h|d)$/.exec(text3.trim());
+  if (!match) return null;
+  return Number(match[1]) * { m: 6e4, h: 36e5, d: 864e5 }[match[2]];
+}
+
+// src/secrets.ts
 function parseSecretApply(raw) {
   if (!Array.isArray(raw.entries) || raw.entries.length > 100) return null;
   const entries = [];
   for (const entry of raw.entries) {
-    if (!entry || typeof entry.name !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(entry.name) || /^(?:PATH|HOME|SHELL|USER|LOGNAME|ENV|BASH_ENV|IFS|NODE_.*|LD_.*|OPENCLAW_.*|CONTROLCLAW_.*|AGENTMAIL_.*)$/.test(
-      entry.name
-    ) || typeof entry.placeholder !== "string" || !/^CC-SEC-[a-f0-9]{48}$/.test(entry.placeholder) || entries.some((e) => e.name === entry.name))
+    if (!entry || typeof entry.name !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(entry.name) || RESERVED_SECRET_NAME.test(entry.name) || typeof entry.placeholder !== "string" || !/^CC-SEC-[a-f0-9]{48}$/.test(entry.placeholder) || entries.some((e) => e.name === entry.name))
       return null;
     entries.push({ name: entry.name, placeholder: entry.placeholder });
   }
@@ -48555,13 +48635,13 @@ function parseDurationChunk(letter, number4, object2) {
         'invalid duration value: Missing number before "' + letter + '"'
       );
     }
-    let num2 = parseInt(number4, 10);
-    if (isStrictlyNaN(num2)) {
+    let num3 = parseInt(number4, 10);
+    if (isStrictlyNaN(num3)) {
       throw new Error(
         'invalid duration value: Invalid number "' + number4 + '" before "' + letter + '"'
       );
     }
-    object2[type] = num2;
+    object2[type] = num3;
   }
   return 1;
 }
@@ -52382,9 +52462,9 @@ var Recur = class _Recur {
    *        The week start weekday, defaults to SUNDAY
    * @return {String}           The ICAL day value, e.g SU,MO,...
    */
-  static numericDayToIcalDay(num2, aWeekStart) {
+  static numericDayToIcalDay(num3, aWeekStart) {
     let firstDow = aWeekStart || Time.SUNDAY;
-    let dow = num2 + firstDow - Time.SUNDAY;
+    let dow = num3 + firstDow - Time.SUNDAY;
     if (dow > 7) {
       dow -= 7;
     }
@@ -55534,8 +55614,8 @@ var MEET_LINK = /https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}(?![a-z0
 var MAX_OCCURRENCES = 2e3;
 var MAX_ICS_BYTES = 256 * 1024;
 function meetLink(...texts) {
-  for (const text2 of texts) {
-    const found = typeof text2 === "string" ? MEET_LINK.exec(text2)?.[0] : null;
+  for (const text3 of texts) {
+    const found = typeof text3 === "string" ? MEET_LINK.exec(text3)?.[0] : null;
     if (found) {
       try {
         return canonicalMeetUrl(found);
@@ -55545,10 +55625,10 @@ function meetLink(...texts) {
   }
   return null;
 }
-function parse4(text2) {
-  if (text2.length > MAX_ICS_BYTES) return null;
+function parse4(text3) {
+  if (text3.length > MAX_ICS_BYTES) return null;
   try {
-    const calendar = new ICALmodule.Component(ICALmodule.parse(text2));
+    const calendar = new ICALmodule.Component(ICALmodule.parse(text3));
     for (const zone of calendar.getAllSubcomponents("vtimezone")) ICALmodule.TimezoneService.register(zone);
     return {
       method: String(calendar.getFirstPropertyValue("method") ?? "REQUEST").toUpperCase(),
@@ -55567,8 +55647,8 @@ var recurrenceId = (event) => {
   const id = event.getFirstPropertyValue("recurrence-id");
   return id ? id.toJSDate().toISOString() : null;
 };
-function inviteUids(text2) {
-  const parsed = parse4(text2);
+function inviteUids(text3) {
+  const parsed = parse4(text3);
   if (!parsed || !["REQUEST", "PUBLISH", "CANCEL"].includes(parsed.method)) return [];
   return [...new Set(parsed.events.map((e) => value(e, "uid")).filter((uid) => uid && uid.length <= 512))];
 }
@@ -55577,8 +55657,8 @@ function expandInvites(uid, files2, from, to) {
   let cancelled = false;
   const changed = /* @__PURE__ */ new Map();
   const dropped = /* @__PURE__ */ new Set();
-  for (const text2 of files2) {
-    const parsed = parse4(text2);
+  for (const text3 of files2) {
+    const parsed = parse4(text3);
     if (!parsed || !["REQUEST", "PUBLISH", "CANCEL"].includes(parsed.method)) continue;
     for (const event of parsed.events) {
       if (value(event, "uid") !== uid) continue;
@@ -59171,12 +59251,158 @@ async function handleHealthRoutes(req, res, pathname, deps) {
   sendJson(res, 404, { error: "Not found" });
 }
 
+// src/routes/template-check.ts
+var VERB = /^[a-z]{2,20}$/;
+var ARG = /^[A-Za-z0-9_][A-Za-z0-9_.@/:+-]{0,199}$/;
+var CHECK_WINDOW_MS = 10 * 6e4;
+var CHECK_LIMITS = { facts: 20, probe: 120 };
+var asked = { facts: [], probe: [] };
+function admit(kind, now = Date.now()) {
+  const recent = asked[kind].filter((t2) => now - t2 < CHECK_WINDOW_MS);
+  asked[kind] = recent;
+  if (recent.length >= CHECK_LIMITS[kind]) return false;
+  recent.push(now);
+  return true;
+}
+async function handleTemplateCheck(req, res, url3, templates, health2) {
+  const auth = await verifyMitmRequest(req, "template-check");
+  if (!auth) {
+    sendJson(res, 401, { error: "this must come from the org firewall" });
+    return;
+  }
+  if (!templates) {
+    sendJson(res, 503, { ok: false, error: "This agent takes no templates" });
+    return;
+  }
+  if (url3.pathname === "/templates/check/facts" && req.method === "GET") {
+    if (!admit("facts")) {
+      sendJson(res, 429, { ok: false, error: "asked too often" });
+      return;
+    }
+    const facts = await templates.checkFacts();
+    if (!facts) sendJson(res, 404, { ok: false, error: "no template" });
+    else sendJson(res, 200, { ok: true, ...facts });
+    return;
+  }
+  if (url3.pathname !== "/templates/check/probe" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  if (!admit("probe")) {
+    sendJson(res, 429, { ok: false, text: "This agent has answered many questions in the last minutes. Ask again later." });
+    return;
+  }
+  const body2 = await readJsonBody(req);
+  const verb = typeof body2?.verb === "string" && VERB.test(body2.verb) ? body2.verb : null;
+  const arg = body2?.arg === void 0 ? void 0 : typeof body2.arg === "string" && ARG.test(body2.arg) ? body2.arg : null;
+  if (!verb || arg === null) {
+    sendJson(res, 200, { ok: false, text: "That command or its argument is not one this agent answers." });
+    return;
+  }
+  if (verb === "health" || verb === "model") {
+    if (arg !== void 0) {
+      sendJson(res, 200, { ok: false, text: `${verb} takes no argument.` });
+      return;
+    }
+    const answer = verb === "health" ? await healthSummary(health2) : await modelProbe(health2);
+    sendJson(res, 200, { ok: true, text: JSON.stringify(answer, null, 2) });
+    return;
+  }
+  sendJson(res, 200, await templates.probe(verb, arg));
+}
+
+// src/routes/template-repair.ts
+var SESSION = /^[A-Za-z0-9_-]{8,80}$/;
+var REPAIR_WINDOW_MS = 10 * 6e4;
+var REPAIR_LIMIT = 20;
+var asked2 = [];
+function admit2(now = Date.now()) {
+  asked2 = asked2.filter((t2) => now - t2 < REPAIR_WINDOW_MS);
+  if (asked2.length >= REPAIR_LIMIT) return false;
+  asked2.push(now);
+  return true;
+}
+async function handleTemplateRepair(req, res, url3, templates) {
+  const auth = await verifyMitmRequest(req, "template-repair");
+  if (!auth) {
+    sendJson(res, 401, { error: "this must come from the org firewall" });
+    return;
+  }
+  if (!templates) {
+    sendJson(res, 503, { ok: false, error: "This agent takes no templates" });
+    return;
+  }
+  if (!admit2()) {
+    sendJson(res, 429, { ok: false, error: "asked too often" });
+    return;
+  }
+  if (url3.pathname === "/templates/repair/facts" && req.method === "GET") {
+    const facts = await templates.repairFacts();
+    if (!facts) sendJson(res, 404, { ok: false, error: "no template" });
+    else sendJson(res, 200, { ok: true, ...facts });
+    return;
+  }
+  if (url3.pathname !== "/templates/repair/done" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  const body2 = await readJsonBody(req);
+  const session = typeof body2?.sessionId === "string" && SESSION.test(body2.sessionId) ? body2.sessionId : null;
+  if (!session) {
+    sendJson(res, 400, { ok: false, error: "a session id is needed" });
+    return;
+  }
+  sendJson(res, 200, await templates.repairDone(session));
+}
+
+// src/routes/template-capture-session.ts
+var SESSION2 = /^[A-Za-z0-9_-]{8,80}$/;
+var CAPTURE_WINDOW_MS = 10 * 6e4;
+var CAPTURE_LIMIT = 20;
+var asked3 = [];
+function admit3(now = Date.now()) {
+  asked3 = asked3.filter((t2) => now - t2 < CAPTURE_WINDOW_MS);
+  if (asked3.length >= CAPTURE_LIMIT) return false;
+  asked3.push(now);
+  return true;
+}
+async function handleTemplateCaptureSession(req, res, url3, templates) {
+  const auth = await verifyMitmRequest(req, "template-capture");
+  if (!auth) {
+    sendJson(res, 401, { error: "this must come from the org firewall" });
+    return;
+  }
+  if (!templates) {
+    sendJson(res, 503, { ok: false, error: "This agent takes no templates" });
+    return;
+  }
+  if (!admit3()) {
+    sendJson(res, 429, { ok: false, error: "asked too often" });
+    return;
+  }
+  if (url3.pathname === "/templates/capture/facts" && req.method === "GET") {
+    sendJson(res, 200, { ok: true, ...templates.captureSessionFacts() });
+    return;
+  }
+  if (url3.pathname !== "/templates/capture/done" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  const body2 = await readJsonBody(req);
+  const session = typeof body2?.sessionId === "string" && SESSION2.test(body2.sessionId) ? body2.sessionId : null;
+  if (!session) {
+    sendJson(res, 400, { ok: false, error: "a session id is needed" });
+    return;
+  }
+  sendJson(res, 200, await templates.captureSessionDone(session));
+}
+
 // src/cpu-sampler.ts
 import { readFileSync as readFileSync33 } from "fs";
 var CPU_SAMPLE_MS = 1e4;
 var CPU_MISSED_WINDOWS = 2;
-function parseProcStat(text2) {
-  const line2 = text2.split("\n", 1)[0] ?? "";
+function parseProcStat(text3) {
+  const line2 = text3.split("\n", 1)[0] ?? "";
   if (!/^cpu\s/.test(line2)) return null;
   const n2 = line2.trim().split(/\s+/).slice(1, 9).map(Number);
   if (n2.length < 4 || n2.some((v2) => !Number.isFinite(v2) || v2 < 0)) return null;
@@ -59226,23 +59452,21 @@ function startCpuSampler() {
 }
 
 // src/skills.ts
-import { existsSync as existsSync29, lstatSync as lstatSync3, readdirSync as readdirSync6, rmSync as rmSync10 } from "fs";
+import { existsSync as existsSync29, lstatSync as lstatSync4, readdirSync as readdirSync7, rmSync as rmSync11 } from "fs";
 import { lstat as lstat4, readdir as readdir3, readFile as readFile8 } from "fs/promises";
-import { join as join24 } from "path";
+import { join as join25 } from "path";
 
-// ../templates/src/skill-folder.ts
-import { randomBytes as randomBytes4 } from "crypto";
-import { existsSync as existsSync28, lstatSync as lstatSync2, readdirSync as readdirSync5, readFileSync as readFileSync34, realpathSync as realpathSync2, renameSync as renameSync17, rmSync as rmSync9, writeFileSync as writeFileSync22 } from "fs";
-import { join as join23, resolve as resolve3, sep as sep3 } from "path";
+// ../templates/src/notes-directory.ts
+import { createHash as createHash14 } from "crypto";
 
-// ../templates/src/skill-files.ts
-var import_yaml = __toESM(require_dist2(), 1);
-import { createHash as createHash13 } from "crypto";
+// ../templates/src/skill-directory.ts
+var import_yaml2 = __toESM(require_dist2(), 1);
 
 // ../templates/src/skill-names.ts
 var SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 var BUILTIN_SKILL_NAMES = ["agentmail", "apify-scraping", "google-account"];
 var carriedSkillFolder = (name) => `files/skills/${name}`;
+var carriedNotesFolder = (set2) => `files/notes/${set2}`;
 var SKILL_SOURCES = ["controlclaw", "organization", "template"];
 var SKILL_LIMITS = { files: 100, fileBytes: 256 * 1024, totalBytes: 1e6 };
 var size = (bytes) => bytes >= 1e6 ? `${bytes / 1e6} MB` : `${Math.round(bytes / 1024)} KB`;
@@ -59271,7 +59495,172 @@ var NOTES_LIMITS = {
 };
 var NOTES_LIMITS_TEXT = `at most ${NOTES_LIMITS.files} files, ${size(NOTES_LIMITS.fileBytes)} a file and ${size(NOTES_LIMITS.totalBytes)} in all`;
 
+// ../templates/src/schema.ts
+var KINDS2 = ["openclaw.plugin", "openclaw.config", "openclaw.skill", "openclaw.notes", "openclaw.schedule", "openclaw.mcp", "controlclaw.setting", "file", "line", "run"];
+var json4 = external_exports.lazy(() => external_exports.union([external_exports.string(), external_exports.number(), external_exports.boolean(), external_exports.null(), external_exports.array(json4), external_exports.record(external_exports.string(), json4)]));
+var inFolder = external_exports.string().min(1).refine((p2) => !p2.startsWith("/") && !p2.startsWith("~") && !p2.split(/[\\/]/).includes(".."), "must be a path inside the template folder");
+function workspacePathProblem(path) {
+  const elsewhere = "A file anywhere else is written by a run step, which is shown as a script to the person who confirms";
+  if (path.startsWith("~") || path.startsWith("/") || /^[A-Za-z]:/.test(path)) return `must be a file in the agent's workspace, like SOUL.md or notes/plan.md. ${elsewhere}`;
+  if (path.includes("\\") || path.includes("\0")) return "must be a plain path with / between its parts";
+  const parts = path.split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return `must be a plain path inside the agent's workspace: no "..", no "." and no empty part. ${elsewhere}`;
+  return null;
+}
+var target = external_exports.string().min(1).superRefine((path, ctx) => {
+  const problem = workspacePathProblem(path);
+  if (problem) ctx.addIssue({ code: "custom", message: problem });
+});
+function pluginId(spec) {
+  if (spec.id) return spec.id;
+  const name = (spec.package ?? "").replace(/^(npm|clawhub):/, "").replace(/^@[^/]+\//, "");
+  return name.replace(/@[^@]*$/, "") || name;
+}
+var pluginSpec = external_exports.strictObject({
+  /** The plugin's id in OpenClaw. Left out, it is the last part of the package name. No dots: it is part of a config path. */
+  id: external_exports.string().regex(/^[a-z0-9][a-z0-9_-]*$/i, "must be a plugin id (letters, digits, - and _)").optional(),
+  /** The npm package, or `clawhub:<package>` for one from ClawHub. Left out for a plugin that ships with OpenClaw. */
+  package: external_exports.string().regex(/^(npm:|clawhub:)?(@[a-z0-9._-]+\/)?[a-z0-9._-]+(@[a-z0-9._-]+)?$/i, "must be a package name, like @openclaw/voice-call or clawhub:name").optional(),
+  enabled: external_exports.boolean().default(true),
+  config: external_exports.record(external_exports.string(), json4).optional()
+}).refine((s2) => s2.id || s2.package, "needs an id or a package").refine((s2) => s2.id || !s2.package || !pluginId(s2).includes("."), "needs an id: the package name has a dot, so the plugin's id cannot be worked out from it");
+var configSpec = external_exports.strictObject({
+  // Starts with a letter, a digit or _: never with a dash, which the OpenClaw CLI would read as an option.
+  path: external_exports.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*(\.[A-Za-z0-9_@/:-]+)*$/, "must be a config path like agents.defaults.thinkingDefault").refine((path) => configRootKind(path) === null, { error: (issue2) => `is in a part of OpenClaw's config that the ${configRootKind(String(issue2.input))} step sets. Use that step` }),
+  value: json4.refine((v2) => v2 !== null, "cannot be null: a template never removes a value")
+});
+var skillSpec = external_exports.strictObject({
+  // The name is a key in OpenClaw's config, so not one every object has (`constructor`).
+  name: external_exports.string().regex(SKILL_NAME, "must be a skill name (lowercase letters, digits and dashes)").refine((name) => !(name in {}), "cannot be used as a skill name"),
+  from: inFolder.optional(),
+  enabled: external_exports.boolean().default(true)
+}).refine((s2) => s2.from === void 0 || s2.from.replace(/^(\.\/)+/, "").replace(/\/+$/, "") === carriedSkillFolder(s2.name), { message: "must be files/skills/<name>, the folder a template keeps this skill in", path: ["from"] }).refine((s2) => s2.from === void 0 || !BUILTIN_SKILL_NAMES.includes(s2.name), { message: "is the name of a skill that comes with every agent. A template cannot install its own under that name; give yours another name", path: ["name"] });
+var notesSpec = external_exports.strictObject({
+  // The set's folder on the agent. Not `_…`, and not a name every object has.
+  set: external_exports.string().regex(SKILL_NAME, "must be a name for the set (lowercase letters, digits and dashes)").refine((set2) => !(set2 in {}) && !set2.startsWith("_"), "cannot be used as a set's name"),
+  from: inFolder.optional()
+}).refine((s2) => s2.from === void 0 || s2.from.replace(/^(\.\/)+/, "").replace(/\/+$/, "") === carriedNotesFolder(s2.set), { message: "must be files/notes/<set>, the folder a template keeps this set in", path: ["from"] });
+var CRON_FIELD = /^[0-9A-Za-z*/,?#-]+$/;
+var scheduleSpec = external_exports.strictObject({
+  name: external_exports.string().regex(SCHEDULE_NAME, "must be a job's name: one line of letters, digits, spaces and dashes, at most 60 characters").refine((name) => name === name.trim() && /[a-z0-9]/i.test(name), "must be a job's name").refine((name) => !isOpenclawJob(name), "is the name of one of OpenClaw's own jobs"),
+  /** Five fields: minute, hour, day of the month, month, day of the week. */
+  cron: external_exports.string().refine((c2) => c2.trim().split(/\s+/).length === 5 && c2.trim().split(/\s+/).every((f2) => CRON_FIELD.test(f2)), "must be five cron fields, like 0 8 * * *").transform((c2) => c2.trim().split(/\s+/).join(" ")).refine((c2) => cronMinGapMinutes(c2) !== null, "must be minutes and hours a template can read: numbers, lists, ranges and steps, like 0 8 * * * or */15 9-17 * * 1-5").refine((c2) => (cronMinGapMinutes(c2) ?? 5) >= SCHEDULE_EVERY_MIN_MS / 6e4, "runs more often than every 5 minutes").optional(),
+  /** An interval: `30m`, `2h`, `1d`. */
+  every: external_exports.string().refine((e) => everyMs(e) !== null, "must be an interval like 30m, 2h or 1d").refine((e) => (everyMs(e) ?? 0) >= SCHEDULE_EVERY_MIN_MS || everyMs(e) === null, "must be at least 5m").optional(),
+  /** An IANA zone for `cron`. Left out: the zone the agent was created in. */
+  timeZone: external_exports.string().regex(/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+){0,2}$/, "must be a time zone like Europe/Rome").optional(),
+  message: external_exports.string().refine((m2) => m2.trim().length > 0, "is empty").refine((m2) => m2.length <= SCHEDULE_MESSAGE_MAX, "must be at most 2,000 characters").refine((m2) => !HIDDEN_CHARACTERS.test(m2), "has a character that cannot be seen"),
+  deliver: external_exports.enum(["announce", "none"]).default("announce"),
+  enabled: external_exports.boolean().default(true)
+}).refine((s2) => s2.cron === void 0 !== (s2.every === void 0), "needs a time: cron or every, and not both").refine((s2) => s2.timeZone === void 0 || s2.cron !== void 0, { message: "is only for cron", path: ["timeZone"] });
+var HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
+var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+var text2 = (max) => external_exports.string().min(1).max(max).refine((v2) => !/[\r\n\0]/.test(v2) && !HIDDEN_CHARACTERS.test(v2), "must be one line of plain text");
+var toolNames = external_exports.array(external_exports.string().regex(/^[A-Za-z0-9_.*:-]{1,80}$/, "must be a tool's name, or one with *")).min(1).max(100);
+var mcpSpec = external_exports.strictObject({
+  // The name is a key in OpenClaw's config, so not one every object has (`constructor`).
+  name: external_exports.string().regex(MCP_NAME, "must be a server name (letters, digits, dashes and _)").refine((name) => !(name in {}), "cannot be used as a server name").refine((name) => !name.startsWith("controlclaw-"), "starts with controlclaw-, which is for ControlClaw's own servers"),
+  url: external_exports.string().max(500).refine(httpsUrl, "must be an https address with no user name or password in it, like https://mcp.example.com/mcp").refine(publicUrl, "must be an address on the internet, not this machine or a private network").refine(noReference, "cannot have a ${NAME} in it: a secret goes in a header").optional(),
+  transport: external_exports.enum(["streamable-http", "sse"]).optional(),
+  headers: external_exports.record(external_exports.string().regex(HEADER_NAME, "must be a header's name"), text2(500)).optional(),
+  command: external_exports.string().regex(/^[A-Za-z0-9_.@+/-]{1,200}$/, "must be a program's name or path, with no spaces").refine((c2) => !c2.startsWith("-"), "must be a program's name or path").optional(),
+  args: external_exports.array(text2(500).refine(noReference, "cannot have a ${NAME} in it: a secret goes in env")).max(40).optional(),
+  env: external_exports.record(external_exports.string().regex(ENV_NAME, "must be an environment variable's name"), text2(500)).optional(),
+  tools: external_exports.strictObject({ include: toolNames.optional(), exclude: toolNames.optional() }).optional(),
+  /** Seconds one request may take. */
+  timeout: external_exports.number().int().min(1).max(600).optional(),
+  enabled: external_exports.boolean().default(true)
+}).refine((s2) => s2.url === void 0 !== (s2.command === void 0), "needs a url or a command, and not both").refine((s2) => s2.url !== void 0 || s2.transport === void 0 && s2.headers === void 0, "transport and headers are only for a server with a url").refine((s2) => s2.command !== void 0 || s2.args === void 0 && s2.env === void 0, "args and env are only for a server with a command");
+function httpsUrl(value2) {
+  try {
+    const url3 = new URL(value2);
+    return url3.protocol === "https:" && !url3.username && !url3.password && !/\s/.test(value2);
+  } catch {
+    return false;
+  }
+}
+function privateHost(hostname3) {
+  const host = hostname3.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (host === "localhost" || [".localhost", ".local", ".internal", ".lan", ".home.arpa"].some((end) => host.endsWith(end)) || host === "home.arpa" || !host.includes(".") && !host.includes(":")) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) return privateV4(Number(v4[1]), Number(v4[2]), Number(v4[3]));
+  if (!host.includes(":")) return false;
+  const groups = v6Groups(host);
+  if (!groups) return true;
+  const [a2, b2, c2, d2, e, f2, g2, h2] = groups;
+  const embedded = (hi, lo) => privateV4(hi >> 8, hi & 255, lo >> 8);
+  if (groups.every((group) => group === 0)) return true;
+  if ((a2 & 65024) === 64512 || (a2 & 65472) === 65152 || (a2 & 65472) === 65216 || (a2 & 65280) === 65280) return true;
+  if (a2 === 0 && b2 === 0 && c2 === 0 && d2 === 0 && e === 0 && (f2 === 0 || f2 === 65535)) return f2 === 0 && g2 === 0 ? true : embedded(g2, h2) || f2 === 0 && g2 === 0;
+  if (a2 === 100 && b2 === 65435 && c2 === 0 && d2 === 0 && e === 0 && f2 === 0) return embedded(g2, h2);
+  if (a2 === 100 && b2 === 65435 && c2 === 1) return true;
+  if (a2 === 8194) return embedded(b2, c2);
+  return false;
+}
+function privateV4(a2, b2, c2) {
+  return a2 === 0 || a2 === 10 || a2 === 127 || a2 === 169 && b2 === 254 || a2 === 172 && b2 >= 16 && b2 <= 31 || a2 === 192 && b2 === 168 || a2 === 100 && b2 >= 64 && b2 <= 127 || a2 === 192 && b2 === 0 && c2 === 0 || a2 === 198 && (b2 === 18 || b2 === 19) || a2 >= 224;
+}
+function v6Groups(host) {
+  let text3 = host;
+  const tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text3);
+  if (tail) text3 = `${tail[1]}${(Number(tail[2]) << 8 | Number(tail[3])).toString(16)}:${(Number(tail[4]) << 8 | Number(tail[5])).toString(16)}`;
+  const halves = text3.split("::");
+  if (halves.length > 2) return null;
+  const parse6 = (part) => part === "" ? [] : part.split(":").map((group) => /^[0-9a-f]{1,4}$/.test(group) ? parseInt(group, 16) : NaN);
+  const head = parse6(halves[0] ?? "");
+  const rest = halves.length === 2 ? parse6(halves[1] ?? "") : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  const groups = [...head, ...Array(Math.max(fill, 0)).fill(0), ...rest];
+  return groups.length === 8 && groups.every((group) => !Number.isNaN(group)) && fill >= 0 ? groups : null;
+}
+function publicUrl(value2) {
+  try {
+    return !privateHost(new URL(value2).hostname);
+  } catch {
+    return true;
+  }
+}
+function noReference(value2) {
+  return !value2.includes("${");
+}
+var settingSpec = external_exports.strictObject({
+  /** A console tool, by its name in the catalog (`apps/saas/lib/tools/catalog.ts`). */
+  tool: external_exports.string().regex(/^[a-z][a-z0-9_]*$/, "must be the name of a ControlClaw tool, like egress_create_rule"),
+  values: external_exports.record(external_exports.string(), json4).default({})
+});
+var mode = external_exports.union([external_exports.string(), external_exports.number().int().min(0)]).transform((m2) => String(m2).replace(/^0(?=[0-7]{3,4}$)/, "")).refine((m2) => /^[0-7]{3,4}$/.test(m2), "must be a file mode like 644 or 0755");
+var fileSpec = external_exports.strictObject({
+  path: target,
+  from: inFolder,
+  ifMissing: external_exports.boolean().default(false),
+  /** Replace `{{note}}` and `{{name}}` in the file's text with the agent's note and name. */
+  fill: external_exports.boolean().default(false),
+  mode: mode.optional()
+});
+var lineSpec = external_exports.strictObject({
+  file: target,
+  match: external_exports.string().min(1).refine(isRegExp, "must be a regular expression"),
+  line: external_exports.string().min(1).refine((l2) => !/[\r\n]/.test(l2), "must be one line")
+}).refine((s2) => !isRegExp(s2.match) || new RegExp(s2.match).test(s2.line), { message: "must match its own `match`, or the step would never hold", path: ["line"] });
+var runSpec = external_exports.strictObject({
+  apply: inFolder,
+  verify: inFolder,
+  /** Seconds each script may take. */
+  timeout: external_exports.number().int().min(1).max(3600).default(300)
+});
+function isRegExp(source) {
+  try {
+    new RegExp(source);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var STEP_FIELDS = /* @__PURE__ */ new Set(["id", "title", "optional", "needs", "restart", ...KINDS2]);
+
 // ../templates/src/skill-files.ts
+var import_yaml = __toESM(require_dist2(), 1);
+import { createHash as createHash13 } from "crypto";
 var SKILL_RECORD = ".controlclaw.json";
 var SKILL_NOT_CONTENT = /* @__PURE__ */ new Set([SKILL_RECORD, ".openclaw"]);
 function hashSkillFiles(files2) {
@@ -59285,6 +59674,18 @@ function hashSkillFiles(files2) {
 function skillTooBig(sizes) {
   return sizes.length > SKILL_LIMITS.files || sizes.some((bytes) => bytes > SKILL_LIMITS.fileBytes) || sizes.reduce((sum, bytes) => sum + bytes, 0) > SKILL_LIMITS.totalBytes;
 }
+function skillFromFiles(all, options = {}) {
+  const problems = [];
+  const files2 = [];
+  for (const file2 of all) {
+    const top = file2.path.split("/")[0] ?? "";
+    if (!SKILL_NOT_CONTENT.has(top)) files2.push(file2);
+    else if (!options.installed && !problems.some((p2) => p2.startsWith(`${top} `))) problems.push(`${top} is written when a skill is installed. A skill folder cannot bring its own`);
+  }
+  if (skillTooBig(files2.map((f2) => f2.content.length))) return { problems: [`it is too big: a skill is ${SKILL_LIMITS_TEXT}`] };
+  if (!files2.some((f2) => f2.path === "SKILL.md")) problems.push("it has no SKILL.md");
+  return problems.length ? { problems } : { files: files2, hash: hashSkillFiles(files2) };
+}
 function parseSkillRecord(raw) {
   if (typeof raw !== "object" || raw === null) return null;
   const r2 = raw;
@@ -59294,10 +59695,182 @@ function parseSkillRecord(raw) {
   return { source: r2.source, id: r2.id, version: r2.version, installedHash: r2.installedHash, installedAt: typeof r2.installedAt === "string" ? r2.installedAt : "" };
 }
 
+// ../templates/src/notes-directory.ts
+var NOTES_PAYLOAD_ID = /^snt-[a-z0-9]{8,40}$/;
+function isNotesPayloadId(id) {
+  return !!id && NOTES_PAYLOAD_ID.test(id);
+}
+var NOTES_PAYLOAD_MAX_BYTES = NOTES_LIMITS.totalBytes * 2 + 512 * 1024;
+function notesHash(files2, always) {
+  return createHash14("sha256").update(`${hashSkillFiles(files2.map((f2) => ({ ...f2, executable: false })))}\0always\0${always ?? ""}`).digest("hex");
+}
+function notesNameProblem(name) {
+  return SKILL_NAME.test(name) && !(name in {}) && !name.startsWith("_") ? null : "A set's name is lowercase letters, digits and dashes, at most 64 characters";
+}
+
+// ../templates/src/notes-folder.ts
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync18, readdirSync as readdirSync5, readFileSync as readFileSync34, rmSync as rmSync9, statSync as statSync3, writeFileSync as writeFileSync22 } from "fs";
+import { dirname as dirname17, join as join23 } from "path";
+function notesPlace(env2 = process.env) {
+  return { root: env2.CC_NOTES_DIR ?? "/var/lib/controlclaw-notes/sets", helper: env2.CC_NOTES_HELPER ? [env2.CC_NOTES_HELPER] : ["sudo", "-n", "/usr/local/sbin/cc-notes"] };
+}
+function notesLocked(place = notesPlace(), env2 = process.env) {
+  const marker = env2.CC_NOTES_IN_CONTAINER ?? "/etc/controlclaw/notes-in-container";
+  if (!lstatSync2(marker, { throwIfNoEntry: false })) return false;
+  const base = dirname17(place.root);
+  try {
+    return statSync3(base).dev === statSync3(dirname17(base)).dev;
+  } catch {
+    return true;
+  }
+}
+var recordPath = (home, set2) => join23(home, ".controlclaw", "notes", `${set2}.json`);
+function readNotesRecord(home, set2) {
+  if (notesNameProblem(set2)) return null;
+  try {
+    const r2 = JSON.parse(readFileSync34(recordPath(home, set2), "utf8"));
+    if (!r2 || r2.source !== "organization" && r2.source !== "template" || typeof r2.id !== "string" || typeof r2.hash !== "string" || !/^[0-9a-f]{64}$/.test(r2.hash)) return null;
+    return { source: r2.source, id: r2.id, version: typeof r2.version === "string" ? r2.version : null, payload: typeof r2.payload === "string" ? r2.payload : null, hash: r2.hash, always: typeof r2.always === "string" ? r2.always : null, installedAt: typeof r2.installedAt === "string" ? r2.installedAt : "" };
+  } catch {
+    return null;
+  }
+}
+function removeNotesRecord(home, set2) {
+  if (notesNameProblem(set2)) return;
+  rmSync9(recordPath(home, set2), { force: true });
+}
+function installedNotes(root, set2) {
+  if (notesNameProblem(set2)) return null;
+  const files2 = [];
+  let bytes = 0;
+  const walk = (folder, prefix) => {
+    for (const name of readdirSync5(folder).sort()) {
+      const path = join23(folder, name);
+      const stat5 = lstatSync2(path);
+      if (stat5.isDirectory()) {
+        if (!walk(path, `${prefix}${name}/`)) return false;
+      } else if (!stat5.isFile()) return false;
+      else {
+        bytes += stat5.size;
+        if (files2.length >= NOTES_LIMITS.files || stat5.size > NOTES_LIMITS.fileBytes || bytes > NOTES_LIMITS.totalBytes) return false;
+        files2.push({ path: `${prefix}${name}`, content: readFileSync34(path), executable: false });
+      }
+    }
+    return true;
+  };
+  try {
+    const dir = join23(root, set2);
+    if (!lstatSync2(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
+    return walk(dir, "") ? files2 : null;
+  } catch {
+    return null;
+  }
+}
+var NOTES_ON_AGENT = 60;
+function notesSets(root) {
+  try {
+    return readdirSync5(root, { withFileTypes: true }).filter((e) => e.isDirectory() && !notesNameProblem(e.name)).map((e) => e.name).sort().slice(0, NOTES_ON_AGENT);
+  } catch {
+    return [];
+  }
+}
+function signature(root, set2) {
+  const parts = [];
+  let count2 = 0;
+  const walk = (folder, prefix) => {
+    for (const name of readdirSync5(folder).sort()) {
+      const path = join23(folder, name);
+      const stat5 = lstatSync2(path, { bigint: true });
+      if (stat5.isDirectory()) {
+        if (!walk(path, `${prefix}${name}/`)) return false;
+      } else if (!stat5.isFile() || ++count2 > NOTES_LIMITS.files) return false;
+      else parts.push(`${prefix}${name}\0${stat5.ino}\0${stat5.size}\0${stat5.ctimeNs}\0${stat5.mtimeNs}`);
+    }
+    return true;
+  };
+  try {
+    const dir = join23(root, set2);
+    if (!lstatSync2(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
+    return walk(dir, "") ? parts.join("\n") : null;
+  } catch {
+    return null;
+  }
+}
+var hashed = /* @__PURE__ */ new Map();
+function notesSetHash(root, set2, always, read = installedNotes) {
+  const now = signature(root, set2);
+  const key = `${root}\0${set2}`;
+  if (now === null) {
+    hashed.delete(key);
+    return null;
+  }
+  const kept = hashed.get(key);
+  const sig2 = `${always ?? ""}
+${now}`;
+  if (kept?.signature === sig2) return kept.hash;
+  const files2 = read(root, set2);
+  const hash3 = files2 ? notesHash(files2, always) : null;
+  hashed.set(key, { signature: sig2, hash: hash3 });
+  return hash3;
+}
+function reportNotes(home, place = notesPlace(), read = installedNotes) {
+  const names = notesSets(place.root);
+  for (const key of hashed.keys()) if (key.startsWith(`${place.root}\0`) && !names.includes(key.slice(place.root.length + 1))) hashed.delete(key);
+  return names.map((name) => {
+    const record2 = readNotesRecord(home, name);
+    return { name, hash: notesSetHash(place.root, name, record2?.always ?? null, read), source: record2?.source ?? null, id: record2?.id ?? null, version: record2?.version ?? null, installedHash: record2?.hash ?? null };
+  });
+}
+
 // ../templates/src/skill-folder.ts
+import { randomBytes as randomBytes4 } from "crypto";
+import { existsSync as existsSync28, lstatSync as lstatSync3, readdirSync as readdirSync6, readFileSync as readFileSync35, realpathSync as realpathSync2, renameSync as renameSync17, rmSync as rmSync10, writeFileSync as writeFileSync23 } from "fs";
+import { join as join24, resolve as resolve3, sep as sep3 } from "path";
+var TooBig = class extends Error {
+};
+function listFolder(dir, notes = false) {
+  const limits = notes ? NOTES_LIMITS : SKILL_LIMITS;
+  const files2 = [];
+  const problems = [];
+  let bytes = 0;
+  const walk = (folder, prefix) => {
+    for (const name of readdirSync6(folder).sort()) {
+      const path = join24(folder, name);
+      const relative = `${prefix}${name}`;
+      const stat5 = lstatSync3(path);
+      if (stat5.isDirectory()) walk(path, `${relative}/`);
+      else if (!stat5.isFile()) problems.push(`${relative} is ${stat5.isSymbolicLink() ? "a link" : "not a file"}. A skill holds only files and folders`);
+      else {
+        bytes += stat5.size;
+        if (files2.length >= limits.files + 8 || stat5.size > limits.fileBytes || bytes > limits.totalBytes + 65536) throw new TooBig();
+        files2.push({ path: relative, content: readFileSync35(path), executable: (stat5.mode & 73) !== 0 });
+      }
+    }
+  };
+  try {
+    if (!lstatSync3(dir, { throwIfNoEntry: false })?.isDirectory()) return { problems: ["it is not a folder"] };
+    walk(dir, "");
+  } catch (error62) {
+    if (!(error62 instanceof TooBig)) throw error62;
+    return { problems: [notes ? `it is too big: a set of notes is ${NOTES_LIMITS_TEXT}` : `it is too big: a skill is ${SKILL_LIMITS_TEXT}`] };
+  }
+  return problems.length ? { problems } : { files: files2 };
+}
+function readSkillFolder(dir, options = {}) {
+  const listed = listFolder(dir);
+  return "problems" in listed ? listed : skillFromFiles(listed.files, options);
+}
+function skillHash(dir) {
+  try {
+    const folder = readSkillFolder(dir, { installed: true });
+    return "hash" in folder ? folder.hash : null;
+  } catch {
+    return null;
+  }
+}
 function readSkillRecord(dir) {
   try {
-    return parseSkillRecord(JSON.parse(readFileSync34(join23(dir, SKILL_RECORD), "utf8")));
+    return parseSkillRecord(JSON.parse(readFileSync35(join24(dir, SKILL_RECORD), "utf8")));
   } catch {
     return null;
   }
@@ -59313,6 +59886,7 @@ function isReportedSkillName(name) {
 }
 var MAX_REPORTED_SKILLS = 300;
 var MAX_MANAGED_SKILLS = 100;
+var MAX_REPORTED_NOTES = 60;
 var MAX_MISSING = 8;
 var MAX_MISSING_LENGTH = 100;
 var CACHE_MS = 15e3;
@@ -59351,9 +59925,9 @@ async function statSkillFolder(dir) {
   const walk = async (folder, prefix) => {
     for (const name of (await readdir3(folder)).sort()) {
       if (!prefix && SKILL_NOT_CONTENT.has(name)) continue;
-      const stat5 = await lstat4(join24(folder, name));
+      const stat5 = await lstat4(join25(folder, name));
       if (stat5.isDirectory()) {
-        if (!await walk(join24(folder, name), `${prefix}${name}/`)) return false;
+        if (!await walk(join25(folder, name), `${prefix}${name}/`)) return false;
       } else if (!stat5.isFile()) return false;
       else {
         found.push({ path: `${prefix}${name}`, size: stat5.size, mtimeMs: stat5.mtimeMs, executable: (stat5.mode & 73) !== 0 });
@@ -59372,20 +59946,20 @@ var SkillHashes = class {
   known = /* @__PURE__ */ new Map();
   async of(dir) {
     const stats = await statSkillFolder(dir);
-    const signature = stats ? stats.map((f2) => `${f2.path}:${f2.size}:${f2.mtimeMs}:${f2.executable ? "x" : "-"}`).join("|") : "";
+    const signature2 = stats ? stats.map((f2) => `${f2.path}:${f2.size}:${f2.mtimeMs}:${f2.executable ? "x" : "-"}`).join("|") : "";
     const known = this.known.get(dir);
-    if (known && known.signature === signature) return known.hash;
+    if (known && known.signature === signature2) return known.hash;
     let hash3 = null;
     if (stats) {
       try {
         const files2 = [];
-        for (const f2 of stats) files2.push({ path: f2.path, content: await readFile8(join24(dir, f2.path)), executable: f2.executable });
+        for (const f2 of stats) files2.push({ path: f2.path, content: await readFile8(join25(dir, f2.path)), executable: f2.executable });
         hash3 = hashSkillFiles(files2);
       } catch {
         hash3 = null;
       }
     }
-    this.known.set(dir, { signature, hash: hash3 });
+    this.known.set(dir, { signature: signature2, hash: hash3 });
     return hash3;
   }
   /** Forget the folders that are gone. */
@@ -59421,8 +59995,14 @@ var SkillsService = class {
   now() {
     return this.opts.now?.() ?? Date.now();
   }
+  get home() {
+    return this.opts.home ?? process.env.HOME ?? "/home/controlclaw";
+  }
   get managedDir() {
-    return join24(this.opts.home ?? process.env.HOME ?? "/home/controlclaw", ".openclaw", "skills");
+    return join25(this.home, ".openclaw", "skills");
+  }
+  get notesPlace() {
+    return this.opts.notes ?? notesPlace();
   }
   /** The report, at most a few seconds old. Concurrent callers share one run of the CLI. */
   async report() {
@@ -59440,7 +60020,7 @@ var SkillsService = class {
     return this.pending;
   }
   async managed(name) {
-    const dir = join24(this.managedDir, name);
+    const dir = join25(this.managedDir, name);
     const record2 = readSkillRecord(dir);
     return {
       currentHash: await this.hashes.of(dir),
@@ -59475,6 +60055,9 @@ var SkillsService = class {
         enabled: skill.disabled !== true,
         eligible: skill.eligible === true,
         missing: missingOf(skill.missing),
+        // In the workspace's own skills folder, which is the one place a skill is read from to be
+        // saved in the organization's skills. A skill kept in some other folder is not.
+        ...skill.source === "openclaw-workspace" ? { own: true } : {},
         // Past the managed folder's cap a folder is listed but not read.
         ...where === "managed" && read.has(skill.name) ? await this.managed(skill.name) : {}
       });
@@ -59484,16 +60067,16 @@ var SkillsService = class {
       skills2.push({ name, where: "managed", enabled: !off.has(name), eligible: false, missing: [], ...names.has(name) ? { hidden: true } : {}, ...await this.managed(name) });
       names.add(name);
     }
-    this.hashes.keep(new Set(managedNames.map((name) => join24(this.managedDir, name))));
+    this.hashes.keep(new Set(managedNames.map((name) => join25(this.managedDir, name))));
     this.names = names;
     const order = { managed: 0, openclaw: 1, workshop: 2, workspace: 3 };
     skills2.sort((a2, b2) => order[a2.where] - order[b2.where] || (a2.name < b2.name ? -1 : a2.name > b2.name ? 1 : 0));
-    return { at: new Date(this.now()).toISOString(), skills: skills2.slice(0, MAX_REPORTED_SKILLS), truncated: skills2.length > MAX_REPORTED_SKILLS };
+    return { at: new Date(this.now()).toISOString(), skills: skills2.slice(0, MAX_REPORTED_SKILLS), truncated: skills2.length > MAX_REPORTED_SKILLS, notes: reportNotes(this.home, this.notesPlace).slice(0, MAX_REPORTED_NOTES), ...notesLocked(this.notesPlace) ? { notesLocked: true } : {} };
   }
   /** Folders in the managed folder that hold a `SKILL.md`, by name. OpenClaw's own `.openclaw-install-backups` is not one. */
   managedNames() {
     try {
-      return readdirSync6(this.managedDir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && isReportedSkillName(entry.name) && existsSync29(join24(this.managedDir, entry.name, "SKILL.md"))).map((entry) => entry.name).sort().slice(0, MAX_MANAGED_SKILLS);
+      return readdirSync7(this.managedDir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && isReportedSkillName(entry.name) && existsSync29(join25(this.managedDir, entry.name, "SKILL.md"))).map((entry) => entry.name).sort().slice(0, MAX_MANAGED_SKILLS);
     } catch {
       return [];
     }
@@ -59527,15 +60110,15 @@ var SkillsService = class {
   async remove(name, expectedHash, evenIfChanged) {
     if (typeof name !== "string" || !SKILL_NAME.test(name) || name in {} || typeof expectedHash !== "string" || !/^[0-9a-f]{64}$/.test(expectedHash)) throw new SkillsError("name and expectedHash are required", 400);
     if (BUILTIN_SKILL_NAMES.includes(name)) throw new SkillsError("That skill comes with every agent. It can be switched off, not removed.", 409);
-    const dir = join24(this.managedDir, name);
-    const there = lstatSync3(dir, { throwIfNoEntry: false });
+    const dir = join25(this.managedDir, name);
+    const there = lstatSync4(dir, { throwIfNoEntry: false });
     if (!there) return { ok: true, removed: false };
     const record2 = there.isDirectory() ? readSkillRecord(dir) : null;
     if (record2?.source !== "organization") throw new SkillsError("That skill was not installed from the skills directory, so it is not removed from here.", 409);
     if (evenIfChanged !== true && await this.hashes.of(dir) !== expectedHash) return { ok: false, changed: true };
     const done = this.writes.then(async () => {
       try {
-        rmSync10(dir, { recursive: true, force: true });
+        rmSync11(dir, { recursive: true, force: true });
       } catch (err) {
         throw new SkillsError(`The skill's folder could not be removed (${err.code ?? "error"}).`, 500);
       }
@@ -59583,10 +60166,1469 @@ ${err.stderr ?? ""}`)) {
     this.cached = null;
     this.pending = null;
   }
+  /** Something outside this service changed what the report says (a set of notes was put back): the next report is read again. */
+  forget() {
+    this.generation++;
+    this.cached = null;
+  }
+  /**
+   * Removes a set of shared notes from this agent, by name, with the root helper that writes the
+   * notes folder. It only takes knowledge away, so it needs no hash and no code. A set that is not
+   * there is an answer, not an error.
+   */
+  async removeNotes(name) {
+    if (typeof name !== "string" || notesNameProblem(name)) throw new SkillsError("Name the set.", 400);
+    if (notesLocked(this.notesPlace)) throw new SkillsError("This agent's disk is locked, and its notes are in the locked part. Open the disk first.", 423);
+    const there = reportNotes(this.home, this.notesPlace).some((set2) => set2.name === name);
+    if (there) {
+      const [command = "", ...args] = this.notesPlace.helper;
+      try {
+        await this.exec(command, [...args, "remove", name], 6e4);
+      } catch (err) {
+        throw new SkillsError(`The notes could not be removed: ${execFailureLine(err)}`.slice(0, 300), 500);
+      }
+    }
+    removeNotesRecord(this.home, name);
+    this.forget();
+    return { ok: true, removed: there };
+  }
+};
+
+// src/templates.ts
+import { createHash as createHash15 } from "crypto";
+import { existsSync as existsSync30, mkdirSync as mkdirSync19, readdirSync as readdirSync8, readFileSync as readFileSync36, renameSync as renameSync18, rmSync as rmSync12, statSync as statSync5, writeFileSync as writeFileSync24 } from "fs";
+import { homedir as homedir2 } from "os";
+import { dirname as dirname19, join as join26 } from "path";
+
+// ../templates/src/skill-payload.ts
+var import_yaml3 = __toESM(require_dist2(), 1);
+var SKILL_PAYLOAD_ID = /^sks-[a-z0-9]{8,40}$/;
+function isSkillPayloadId(id) {
+  return !!id && SKILL_PAYLOAD_ID.test(id);
+}
+var SKILL_PAYLOAD_MAX_BYTES = Math.ceil(SKILL_LIMITS.totalBytes * 4 / 3) + 256 * 1024;
+
+// src/born.ts
+import { closeSync as closeSync3, constants, fstatSync as fstatSync3, openSync as openSync3, readSync as readSync3, statSync as statSync4 } from "fs";
+import { dirname as dirname18 } from "path";
+var BORN_PATH = "/etc/controlclaw/born";
+var FUTURE_SLACK_MS = 5 * 6e4;
+function bornAt(path = BORN_PATH, owner = 0) {
+  let fd = null;
+  try {
+    const folder = statSync4(dirname18(path));
+    if (!folder.isDirectory() || folder.uid !== owner || (folder.mode & 18) !== 0) return null;
+    fd = openSync3(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const stat5 = fstatSync3(fd);
+    if (!stat5.isFile() || stat5.uid !== owner || (stat5.mode & 18) !== 0 || stat5.size > 64) return null;
+    const buffer = Buffer.alloc(64);
+    const text3 = buffer.toString("utf8", 0, readSync3(fd, buffer, 0, 64, 0)).trim();
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(text3)) return null;
+    const at2 = new Date(text3);
+    return Number.isNaN(at2.getTime()) ? null : at2;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync3(fd);
+  }
+}
+var NEW_AGENT_HOURS = 1;
+function isNew(hours, options = {}) {
+  const born = bornAt(options.path, options.owner);
+  if (!born) return false;
+  const age = (options.now ?? /* @__PURE__ */ new Date()).getTime() - born.getTime();
+  return age >= -FUTURE_SLACK_MS && age < hours * 60 * 6e4;
+}
+
+// src/templates.ts
+var TEMPLATE_POLL_MS = 2 * 6e4;
+var TEMPLATE_IDLE_POLL_MS = 15 * 6e4;
+var TEMPLATE_VERIFY_MS = 6 * 60 * 6e4;
+var RUN_TIMEOUT_MS = 45 * 6e4;
+var VERIFY_TIMEOUT_MS = 10 * 6e4;
+var CALL_MS2 = 2e4;
+var TEMPLATE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+var REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
+var STEP_ID = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
+var BUNDLE_HASH = /^[a-f0-9]{64}$/;
+var BUNDLE_MAX_BYTES = 1024 * 1024;
+var UNPACK_TIMEOUT_MS = 6e4;
+var SKILL_TIMEOUT_MS = 10 * 6e4;
+var START_SKILLS_HOURS = NEW_AGENT_HOURS;
+var MAX_START_SKILLS = 30;
+var START_SKILLS_TRIES = 4;
+var isOrgTemplate = isOrgTemplateId;
+var captureId = (raw) => {
+  const id = raw?.id;
+  return typeof id === "string" && REQUEST_ID.test(id) ? id : null;
+};
+function skillCaptureOf(raw) {
+  const r2 = raw;
+  return r2 && typeof r2.id === "string" && REQUEST_ID.test(r2.id) && typeof r2.name === "string" && SKILL_NAME_RE.test(r2.name) ? { id: r2.id, name: r2.name } : null;
+}
+function startSkillsOf(raw) {
+  const r2 = raw;
+  if (!r2 || typeof r2.id !== "string" || !REQUEST_ID.test(r2.id) || !Array.isArray(r2.items)) return null;
+  const items = r2.items.slice(0, MAX_START_SKILLS).flatMap((entry) => {
+    const e = entry;
+    if (!e || typeof e.payload !== "string" || !(isSkillPayloadId(e.payload) || isNotesPayloadId(e.payload)) || typeof e.hash !== "string" || !BUNDLE_HASH.test(e.hash)) return [];
+    return [{ payload: e.payload, hash: e.hash, runId: typeof e.runId === "string" && REQUEST_ID.test(e.runId) ? e.runId : null }];
+  });
+  return items.length ? { id: r2.id, items } : null;
+}
+function skillInstallOf(raw) {
+  const r2 = raw;
+  if (!r2 || typeof r2.id !== "string" || !REQUEST_ID.test(r2.id) || typeof r2.payload !== "string" || !(isSkillPayloadId(r2.payload) || isNotesPayloadId(r2.payload)) || typeof r2.hash !== "string" || !BUNDLE_HASH.test(r2.hash)) return null;
+  return { id: r2.id, payload: r2.payload, hash: r2.hash, runId: typeof r2.runId === "string" && REQUEST_ID.test(r2.runId) ? r2.runId : null };
+}
+var notesOnAgent = (name) => {
+  try {
+    return statSync5(join26(notesPlace().root, name)).isDirectory();
+  } catch {
+    return false;
+  }
+};
+var notesHelperThere = (env2 = process.env) => existsSync30(env2.CC_NOTES_HELPER ?? "/usr/local/sbin/cc-notes");
+var overwriteTicket = (hash3) => createHash15("sha256").update(`${hash3}\0overwrite`).digest("hex");
+var what = (kind) => kind === "notes" ? "shared notes" : "skill";
+var bundleHashOf = (raw) => {
+  const hash3 = raw?.hash;
+  return typeof hash3 === "string" && BUNDLE_HASH.test(hash3) ? hash3 : null;
+};
+var UNSURE_ROUNDS = 5;
+var NotesError = class extends Error {
+  constructor(message2, status) {
+    super(message2);
+    this.status = status;
+  }
+};
+var TEMPLATE_REVIEW_MS = 45 * 6e4;
+var templateReviewPath = (stateDir) => join26(stateDir, "review.json");
+var STAMP = /^[0-9TZ:.-]{1,48}$/;
+function reviewFilesOf(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    const f2 = entry;
+    if (!f2 || typeof f2.step !== "string" || !STEP_ID.test(f2.step) || typeof f2.path !== "string" || typeof f2.text !== "string") return [];
+    if (!f2.path || f2.path.startsWith("/") || f2.path.split("/").includes("..")) return [];
+    return [{ step: f2.step, title: typeof f2.title === "string" ? f2.title.slice(0, 120) : f2.step, path: f2.path, text: f2.text, exists: f2.exists === true, stamp: typeof f2.stamp === "string" && STAMP.test(f2.stamp) ? f2.stamp : null }];
+  });
+}
+function readTemplateReview(stateDir, now = /* @__PURE__ */ new Date()) {
+  try {
+    const raw = JSON.parse(readFileSync36(templateReviewPath(stateDir), "utf8"));
+    if (typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template) || typeof raw.at !== "string") return null;
+    const age = now.getTime() - new Date(raw.at).getTime();
+    if (!(age >= 0 && age < TEMPLATE_REVIEW_MS)) return null;
+    const files2 = reviewFilesOf(raw.files).map(({ stamp: _stamp, ...file2 }) => file2);
+    return files2.length ? { template: raw.template, at: raw.at, files: files2 } : null;
+  } catch {
+    return null;
+  }
+}
+var TEMPLATE_TICKET_MS = 30 * 6e4;
+var TEMPLATE_FIRST_HOUR_MS = NEW_AGENT_HOURS * 60 * 6e4;
+var CHECKED_WHEN_APPLIED = "checked when applied";
+var SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+var AGENT_NAME_MAX = 200;
+var TIME_ZONE = /^[A-Za-z0-9_+\-/]{1,64}$/;
+var PENDING_NOTE_MAX = 400;
+function payloadHash(files2, vars, beside = false) {
+  const what2 = beside ? ["template-apply-v1-beside", files2, vars.note, vars.name, vars.timeZone] : ["template-apply-v1", files2, vars.note, vars.name, vars.timeZone];
+  return createHash15("sha256").update(JSON.stringify(what2)).digest("hex");
+}
+var varsOf = (raw) => {
+  const v2 = raw;
+  return v2 && typeof v2.note === "string" && typeof v2.name === "string" && typeof v2.timeZone === "string" ? { note: v2.note, name: v2.name, timeZone: v2.timeZone } : null;
+};
+var APPLIED_VARS = "vars.json";
+var PREVIEW_VARS = "preview-vars.json";
+var PROBE_VARS = "probe-vars.json";
+var BESIDE_VARS = "beside-vars.json";
+var MAX_BESIDE = 20;
+var TemplateService = class {
+  constructor(opts) {
+    this.opts = opts;
+    try {
+      const kept = JSON.parse(readFileSync36(this.unsentPath, "utf8"));
+      if (kept && typeof kept === "object") this.unsent = kept;
+    } catch {
+    }
+  }
+  running = null;
+  /**
+   * A result the control plane has not taken yet. Kept on disk as well: the template is applied
+   * once, so a result lost to a restart of this service could never be produced again.
+   */
+  unsent = null;
+  settled = false;
+  /** When the console was last asked, so an idle agent asks only now and then. */
+  askedAt = 0;
+  /** The console said something is waiting, and the console has not been asked since. */
+  poked = false;
+  again = false;
+  /**
+   * A periodic check in flight. A round waits for it and it never starts during a round: both
+   * unpack an organization's template into the same folder, and neither may remove it under the other.
+   */
+  verifying = null;
+  /** Rounds in which the template chosen at create could not be unpacked for a reason that says nothing about its files. */
+  unsure = 0;
+  /**
+   * The console's poke. Remembered, so it is not lost when it arrives while a round is running (that
+   * round may have asked just before the request was made) or while OpenClaw is not connected: the
+   * next round asks, and a round that is running is followed by another.
+   */
+  poke() {
+    this.poked = true;
+  }
+  get unsentPath() {
+    return join26(this.opts.stateDir, "unsent.json");
+  }
+  keep(result) {
+    this.unsent = result;
+    this.write(this.unsentPath, result);
+  }
+  /** True once the template has been applied (or there is none) and its result has been taken. */
+  get done() {
+    return this.settled && !this.unsent;
+  }
+  /**
+   * Whether to ask the console on this round (rounds are two minutes apart). Every round while its
+   * own template is still to apply or a result is still to send. After that only now and then: an
+   * owner may ask for a preview or an apply on any agent, also one with no template, and the console
+   * pokes the agent when one does.
+   */
+  get asks() {
+    if (!this.settled || this.unsent || this.poked || this.startOpen()) return true;
+    return (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime() - this.askedAt >= TEMPLATE_IDLE_POLL_MS;
+  }
+  /** A take of the starting skills that has not finished: the next round tries again, or closes it. */
+  startOpen() {
+    const latch = this.startLatch();
+    return !!latch && !latch.done;
+  }
+  log(line2) {
+    (this.opts.log ?? ((l2) => console.log(l2)))(`[templates] ${line2}`);
+  }
+  get markerPath() {
+    return join26(this.opts.stateDir, "applied.json");
+  }
+  marker() {
+    try {
+      const raw = JSON.parse(readFileSync36(this.markerPath, "utf8"));
+      if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
+      const vars = varsOf(raw.vars);
+      return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {}, ...vars ? { vars } : {} };
+    } catch {
+      return null;
+    }
+  }
+  get besidePath() {
+    return join26(this.opts.stateDir, "beside.json");
+  }
+  /** The bundles applied beside this agent's template, oldest first. */
+  beside() {
+    try {
+      const raw = JSON.parse(readFileSync36(this.besidePath, "utf8"));
+      const kept = {};
+      for (const [id, b2] of Object.entries(raw ?? {})) {
+        const vars = varsOf(b2?.vars);
+        if (!TEMPLATE_ID.test(id) || !b2 || typeof b2.at !== "string" || typeof b2.request !== "string" || !vars) continue;
+        kept[id] = { at: b2.at, request: b2.request, hash: typeof b2.hash === "string" && BUNDLE_HASH.test(b2.hash) ? b2.hash : null, vars, name: typeof b2.name === "string" && TEMPLATE_ID.test(b2.name) ? b2.name : null };
+      }
+      return kept;
+    } catch {
+      return {};
+    }
+  }
+  write(path, value2) {
+    mkdirSync19(dirname19(path), { recursive: true, mode: 448 });
+    const tmp = `${path}.tmp`;
+    writeFileSync24(tmp, JSON.stringify(value2), { mode: 384 });
+    renameSync18(tmp, path);
+  }
+  async call(method, body2, path = "", maxBytes = BUNDLE_MAX_BYTES) {
+    const base = this.opts.base();
+    if (!base) throw new Error("no control plane address");
+    const response = await (this.opts.fetch ?? fetch)(`${base}/api/vm-agent/template${path || (method === "GET" ? `?can=templates_org,templates_steps2,templates_bundles,skills_start,skills_capture,notes_start${this.coded ? `,skills_apply${notesHelperThere() ? ",notes_apply" : ""}` : ""}` : "")}`, {
+      method,
+      headers: { authorization: `Bearer ${await this.opts.getToken()}`, ...body2 === void 0 ? {} : { "content-type": "application/json" } },
+      body: body2 === void 0 ? void 0 : JSON.stringify(body2),
+      signal: AbortSignal.timeout(CALL_MS2)
+    });
+    if (!response.ok) throw Object.assign(new Error(`control plane answered ${response.status}`), { status: response.status });
+    if (!path) return response.json();
+    const reader = response.body?.getReader();
+    const chunks = [];
+    let size2 = 0;
+    for (let part = await reader?.read(); part && !part.done; part = await reader?.read()) {
+      size2 += part.value.byteLength;
+      if (size2 > maxBytes) {
+        await reader?.cancel().catch(() => void 0);
+        throw Object.assign(new Error("the template is too large"), { status: 413 });
+      }
+      chunks.push(part.value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  }
+  /**
+   * The folder a template runs from. A system template is a folder of this release. One of the
+   * organization's own is fetched from the console and unpacked by the runner, which writes it only
+   * if it passes the runner's checks and has the hash the console named (`hash`). The files as they
+   * were fetched are kept, and unpacked again each time, so what runs is always what was checked.
+   * Throws only when the console cannot be reached: that is tried again on the next round. Whatever
+   * goes wrong with the files themselves is an answer (`broken`), never a throw: a template that
+   * cannot be unpacked must not stop this service from reporting, or from taking a later request.
+   */
+  async folder(template, hash3) {
+    if (!isOrgTemplate(template)) {
+      const dir2 = join26(this.opts.templatesDir, template);
+      return existsSync30(join26(dir2, "template.yaml")) ? { dir: dir2 } : { dir: null, why: "missing" };
+    }
+    if (!hash3) return { dir: null, why: "broken" };
+    const kept = join26(this.opts.stateDir, "org", `${template}.json`);
+    const dir = join26(this.opts.stateDir, "org", template);
+    const remove = (path) => {
+      try {
+        rmSync12(path, { recursive: true, force: true });
+      } catch {
+      }
+    };
+    let certain = false;
+    const unpack = async (again = false) => {
+      remove(dir);
+      try {
+        await this.opts.exec(this.opts.node, [this.opts.runbook, "unpack", kept, dir, "--hash", hash3], UNPACK_TIMEOUT_MS);
+        return true;
+      } catch (error62) {
+        remove(dir);
+        const code = error62.code;
+        certain = code === 3 || code === 64;
+        if (certain || again) return false;
+        return unpack(true);
+      }
+    };
+    if (existsSync30(kept) && await unpack()) return { dir };
+    let text3;
+    try {
+      text3 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(template)}`);
+    } catch (error62) {
+      if (error62.status === 404) return { dir: null, why: "missing" };
+      throw error62;
+    }
+    try {
+      mkdirSync19(dirname19(kept), { recursive: true, mode: 448 });
+      writeFileSync24(`${kept}.tmp`, text3, { mode: 384 });
+      renameSync18(`${kept}.tmp`, kept);
+    } catch (error62) {
+      this.log(`${template}: its files could not be kept on this agent (${error62.code ?? "error"})`);
+      return { dir: null, why: "unsure" };
+    }
+    if (await unpack()) return { dir };
+    if (!certain) {
+      this.log(`${template}: its files could not be unpacked just now`);
+      return { dir: null, why: "unsure" };
+    }
+    this.log(`${template}: the files are not the ones the console named, or do not pass the check`);
+    remove(kept);
+    return { dir: null, why: "broken" };
+  }
+  /** Runs the runner and returns what it printed for the console, whatever its exit code. */
+  async runbook(command, template, dir, assignment, only, noScripts = false, beside = false) {
+    const vars = join26(this.opts.stateDir, command === "check" ? PREVIEW_VARS : beside ? BESIDE_VARS : APPLIED_VARS);
+    this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
+    const args = [this.opts.runbook, command === "check" ? "run" : command, dir, "--vars", vars, "--json", "--public"];
+    if (isOrgTemplate(template)) args.push("--as", template);
+    if (command === "check") args.push("--check", ...noScripts ? ["--no-scripts"] : [], ...only ? ["--only", only.join(",")] : []);
+    if (beside && command !== "verify") for (const other of await this.besideFolders(template, dir)) args.push("--beside", other);
+    if (command === "run") args.push("--skip-unconfirmed", ...assignment.runId ? ["--run-id", assignment.runId] : [], ...only ? ["--only", only.join(",")] : []);
+    if (command !== "check") args.push("--repairs");
+    let stdout = "";
+    try {
+      stdout = (await this.opts.exec(this.opts.node, args, command === "run" ? RUN_TIMEOUT_MS : VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
+    } catch (error62) {
+      stdout = error62.stdout ?? "";
+    }
+    try {
+      const report = JSON.parse(stdout);
+      return Array.isArray(report.steps) ? report : null;
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * The folders of what this agent already has, for a bundle that is applied beside it: its own
+   * template, and the other bundles on record. Not an earlier version of the same bundle, which
+   * this one replaces. Only folders that are on the box: nothing is fetched for this.
+   */
+  async besideFolders(template, dir) {
+    const at2 = (id) => isOrgTemplate(id) ? join26(this.opts.stateDir, "org", id) : join26(this.opts.templatesDir, id);
+    const name = (await this.facts(dir))?.name ?? null;
+    const marker = this.marker();
+    const ids = [...marker && !marker.missing ? [marker.template] : [], ...Object.entries(this.beside()).filter(([id, b2]) => id !== template && (!name || b2.name !== name)).map(([id]) => id)];
+    return ids.filter((id) => id !== template).map(at2).filter((folder) => existsSync30(join26(folder, "template.yaml")));
+  }
+  async send() {
+    if (!this.unsent) return;
+    try {
+      await this.call("POST", this.unsent);
+    } catch (error62) {
+      const status = error62.status;
+      if (status !== 400 && status !== 413) throw error62;
+      this.log(`the control plane refused the result (${status}); not sent again`);
+    }
+    this.unsent = null;
+    rmSync12(this.unsentPath, { force: true });
+  }
+  /** What the control plane says about this agent now, or null when the answer cannot be read. */
+  async assignment() {
+    const raw = await this.call("GET");
+    if (!raw || typeof raw !== "object") return null;
+    const template = typeof raw.template === "string" && TEMPLATE_ID.test(raw.template) ? raw.template : null;
+    const stepIds = (list) => Array.isArray(list) ? list.filter((id) => typeof id === "string" && STEP_ID.test(id)) : [];
+    const steps = stepIds(raw.rerun?.steps);
+    const asked4 = raw.request;
+    const request = asked4 && typeof asked4.id === "string" && REQUEST_ID.test(asked4.id) && (asked4.kind === "preview" || asked4.kind === "apply") && typeof asked4.template === "string" && TEMPLATE_ID.test(asked4.template) ? { id: asked4.id, kind: asked4.kind, template: asked4.template, preview: typeof asked4.preview === "string" && REQUEST_ID.test(asked4.preview) ? asked4.preview : null, steps: stepIds(asked4.steps), runId: typeof asked4.runId === "string" ? asked4.runId : null, bundle: bundleHashOf(asked4.bundle), look: asked4.kind === "preview" && asked4.look === true, beside: asked4.beside === true } : null;
+    return {
+      template,
+      note: typeof raw.note === "string" ? raw.note : "",
+      // Both go into the template's files and to its scripts. A name is one line of bounded length,
+      // so the firewall can show all of it in the code message; a time zone is a zone's name and
+      // nothing else, so it cannot carry other text.
+      name: typeof raw.name === "string" ? raw.name.replace(/[\r\n\u2028\u2029]+/g, " ").slice(0, AGENT_NAME_MAX) : "",
+      timeZone: typeof raw.timeZone === "string" && TIME_ZONE.test(raw.timeZone) ? raw.timeZone : "UTC",
+      runId: typeof raw.runId === "string" ? raw.runId : null,
+      rerun: template && steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null,
+      request,
+      bundle: template ? bundleHashOf(raw.bundle) : null,
+      capture: captureId(raw.capture),
+      skillCapture: skillCaptureOf(raw.skillCapture),
+      skills: startSkillsOf(raw.skills),
+      install: skillInstallOf(raw.install),
+      ..."review" in raw ? { review: typeof raw.review === "string" && TEMPLATE_ID.test(raw.review) ? raw.review : null } : {}
+    };
+  }
+  /** Applies the template if that is still to do, and sends whatever the console has not had. One at a time; never throws. */
+  tick() {
+    this.running ??= (this.verifying ?? Promise.resolve()).then(() => this.once()).catch((error62) => this.log(`could not finish: ${error62.message}`)).finally(() => {
+      this.running = null;
+      if (this.poked && !this.again) {
+        this.again = true;
+        void this.tick().finally(() => this.again = false);
+      }
+    });
+    return this.running;
+  }
+  async once() {
+    if (this.unsent) await this.send();
+    this.poked = false;
+    const assignment = await this.assignment();
+    this.askedAt = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime();
+    if (!assignment) return;
+    const marker = this.marker();
+    if (marker) {
+      this.settled = true;
+      if (!marker.missing) await this.rerun(marker, assignment);
+    } else if (assignment.template && this.coded && !this.firstHour()) {
+      if (!this.settled) {
+        this.log(`${assignment.template} is named for this agent, which is no longer new: not applied without a confirmation code`);
+        this.keep({ kind: "run", template: assignment.template, unconfirmed: true });
+        await this.send();
+      }
+      this.settled = true;
+    } else if (assignment.template) {
+      await this.apply(assignment.template, assignment, void 0, assignment.bundle);
+    } else {
+      this.settled = true;
+    }
+    this.dropReview(assignment.review === void 0 ? void 0 : assignment.review ?? (assignment.request?.kind === "preview" ? assignment.request.template : null));
+    if (assignment.request) await this.asked(assignment.request, assignment);
+    await this.startSkills(assignment.skills);
+    await this.install(assignment.install ?? null);
+    if (assignment.capture) await this.capture(assignment.capture);
+    if (assignment.skillCapture) await this.captureSkill(assignment.skillCapture);
+    this.tidy([assignment.template, assignment.request?.template, this.marker()?.template, ...Object.keys(this.beside())]);
+  }
+  /** Removes the copies of the organization's templates this agent no longer has and is not being asked about. */
+  tidy(wanted) {
+    const folder = join26(this.opts.stateDir, "org");
+    try {
+      for (const name of readdirSync8(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync12(join26(folder, name), { recursive: true, force: true });
+    } catch {
+    }
+  }
+  /**
+   * Applies a template in full and reports it: the one chosen at create, or one an owner applied
+   * to the running agent (`requestId`). Recorded, so it is applied once.
+   */
+  async apply(template, assignment, requestId, hash3 = null, found, beside = false) {
+    const folder = found ?? await this.folder(template, hash3);
+    if (folder.dir !== null) this.dropRepair(template);
+    const now = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
+    const from = { ...requestId ? { request: requestId } : {}, ...hash3 ? { hash: hash3 } : {} };
+    if (folder.dir === null && folder.why === "unsure" && !requestId && this.unsure < UNSURE_ROUNDS) {
+      this.unsure++;
+      this.log(`${template} could not be unpacked just now; trying again on the next round (${this.unsure} of ${UNSURE_ROUNDS})`);
+      return;
+    }
+    if (folder.dir === null) {
+      this.log(`${template} is not on this agent`);
+      this.keep({ kind: "run", template, ...folder.why === "missing" ? { missing: true } : { broken: true }, ...requestId ? { requestId } : {} });
+      if (!requestId) this.write(this.markerPath, { template, at: now, missing: true, ...from });
+      this.settled = true;
+      return this.send();
+    }
+    const dir = folder.dir;
+    if (beside && requestId) {
+      this.log(`applying the bundle ${template}`);
+      const report2 = await this.runbook("run", template, dir, assignment, void 0, false, true);
+      this.keep({ kind: "run", template, ...report2 ? { report: report2 } : { broken: true }, requestId });
+      if (!report2) {
+        this.log(`${template}: the runner gave no report`);
+        return this.send();
+      }
+      const name = (await this.facts(dir))?.name ?? null;
+      const { [template]: _again, ...others } = this.beside();
+      const kept = Object.entries(others).filter(([, b2]) => !name || b2.name !== name).slice(-(MAX_BESIDE - 1));
+      this.write(this.besidePath, Object.fromEntries([...kept, [template, { at: now, request: requestId, hash: hash3, name, vars: { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone } }]]));
+      this.log(report2 ? `applied the bundle ${template}: ${String(report2.result)}` : `${template}: the runner gave no report`);
+      setTimeout(() => void this.verify(), this.opts.verifyAfterMs ?? 3 * 6e4).unref();
+      return this.send();
+    }
+    this.log(`applying ${template}`);
+    const report = await this.runbook("run", template, dir, assignment);
+    this.keep({ kind: "run", template, ...report ? { report } : { broken: true }, ...requestId ? { requestId } : {} });
+    this.write(this.markerPath, { template, at: now, ...from, vars: { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone } });
+    let carried = [];
+    try {
+      carried = readdirSync8(join26(dir, "bundles"));
+    } catch {
+    }
+    const recorded = this.beside();
+    if (carried.length && Object.values(recorded).some((b2) => b2.name && carried.includes(b2.name))) this.write(this.besidePath, Object.fromEntries(Object.entries(recorded).filter(([, b2]) => !b2.name || !carried.includes(b2.name))));
+    this.settled = true;
+    this.log(report ? `applied ${template}: ${String(report.result)}` : `${template}: the runner gave no report`);
+    setTimeout(() => void this.verify(), this.opts.verifyAfterMs ?? 3 * 6e4).unref();
+    return this.send();
+  }
+  /**
+   * Save a skill the agent wrote into the organization's skills: reads the files of that one skill
+   * in the agent's own workspace (`cc-runbook capture --skill`, by the rules of a whole capture:
+   * no link is followed, nothing outside the skills folder, nothing of memory or credentials) and
+   * sends them to the console, because an owner or admin asked for exactly that skill and confirmed
+   * what is read. Never by itself, and each request once.
+   */
+  async captureSkill(req) {
+    const done = join26(this.opts.stateDir, "skill-capture.json");
+    try {
+      if (JSON.parse(readFileSync36(done, "utf8")).id === req.id) return;
+    } catch {
+    }
+    this.log(`reading the skill ${req.name} of this agent's own, to be saved in the organization's skills`);
+    let body2 = { id: req.id, skill: req.name, failed: true };
+    try {
+      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "capture", "--skill", req.name], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
+      const read = JSON.parse(stdout);
+      if (Array.isArray(read.files) && Array.isArray(read.leftOut)) body2 = read.found === true ? { id: req.id, skill: req.name, observed: { files: read.files, leftOut: read.leftOut } } : { id: req.id, skill: req.name, failed: true, notFound: true, leftOut: read.leftOut };
+    } catch (error62) {
+      this.log(`could not read the skill: ${error62.message}`);
+    }
+    try {
+      await this.call("POST", body2, "/capture");
+    } catch (error62) {
+      this.log(`the console did not take the skill that was read: ${error62.message}`);
+      const status = error62.status;
+      if (status === void 0 || status >= 500) return;
+    }
+    this.write(done, { id: req.id });
+  }
+  /**
+   * Save as template: reads what this agent is set up with (`cc-runbook capture`, which only reads
+   * and never touches memory, credentials or anything outside the workspace) and sends it to the
+   * console, because an owner or admin asked for exactly that. Never by itself, and each request
+   * once. What is sent is a list of facts; the console checks each and builds the template, and
+   * takes this agent's own template from its own copy, not from here.
+   */
+  async capture(id) {
+    const done = join26(this.opts.stateDir, "capture.json");
+    try {
+      if (JSON.parse(readFileSync36(done, "utf8")).id === id) return;
+    } catch {
+    }
+    this.log("reading this agent's setup for Save as template");
+    let body2 = { id, failed: true };
+    try {
+      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "capture"], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
+      const observed = JSON.parse(stdout);
+      if (Array.isArray(observed.files) && Array.isArray(observed.plugins) && Array.isArray(observed.config)) body2 = { id, observed };
+    } catch (error62) {
+      this.log(`could not read the setup: ${error62.message}`);
+    }
+    this.write(done, { id });
+    try {
+      await this.call("POST", body2, "/capture");
+    } catch (error62) {
+      this.log(`the console did not take what was read: ${error62.message}`);
+    }
+  }
+  get startSkillsPath() {
+    return join26(this.opts.stateDir, "start-skills.json");
+  }
+  /** What was taken, as it is kept: the id, the exact skills that were named then, and how far it got. */
+  startLatch() {
+    const closed = { id: "", at: "", items: [], tries: 0, done: true };
+    let text3;
+    try {
+      text3 = readFileSync36(this.startSkillsPath, "utf8");
+    } catch (error62) {
+      return error62.code === "ENOENT" ? null : closed;
+    }
+    try {
+      const raw = JSON.parse(text3);
+      const parsed = startSkillsOf({ id: raw.id, items: raw.items });
+      if (!parsed) return { id: typeof raw.id === "string" ? raw.id : "", at: "", items: [], tries: 0, done: true };
+      return { id: parsed.id, at: typeof raw.at === "string" ? raw.at : "", items: parsed.items, tries: typeof raw.tries === "number" ? raw.tries : 0, done: raw.done === true };
+    } catch {
+      return closed;
+    }
+  }
+  /**
+   * The skills a new agent starts with. Creating an agent asks for no confirmation code, so this
+   * must not become a way to install a skill on an agent that is already at work:
+   *
+   * - **Only a new agent, tested on every attempt.** "New" is the born stamp (`born.ts`): a file
+   *   only provisioning writes. Nothing kept in this service's own folder can make an agent new.
+   * - **Once, and only what was named the first time.** The first take writes down the id and the
+   *   exact skills (payload and hash). Every later attempt installs those and nothing else: what
+   *   the console says later, under the same id or another, is not read.
+   * - **This service's record can only close the window.** When the agent is no longer new the
+   *   record is marked done, whatever happened, and a record that is done stays done.
+   *
+   * Each skill is fetched and installed by itself, so one that fails does not stop the others.
+   * While the agent is new, a round in which some skill did not install is tried again a few
+   * times: a busy first boot must not leave an agent without its skills.
+   */
+  async startSkills(named) {
+    const latch = this.startLatch();
+    if (latch?.done) return;
+    const now = () => (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
+    const close = (kept) => this.write(this.startSkillsPath, { ...kept, done: true });
+    if (!(this.opts.isNew ?? (() => isNew(START_SKILLS_HOURS, { now: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))() })))()) {
+      if (latch) close(latch);
+      else if (named) {
+        close({ id: named.id, at: now(), items: named.items, tries: 0 });
+        await this.call("POST", { kind: "skills", requestId: named.id, notNew: true, skills: [] }).catch((error62) => this.log(`the console was not told that this agent is not new: ${error62.message}`));
+      }
+      return;
+    }
+    let taken = latch;
+    if (!taken) {
+      if (!named) return;
+      taken = { id: named.id, at: now(), items: named.items, tries: 0, done: false };
+      this.write(this.startSkillsPath, taken);
+    }
+    this.log(`installing what this agent starts with: ${taken.items.length} skill(s) or set(s) of notes`);
+    const results = [];
+    for (const item of taken.items) results.push({ payload: item.payload, ...await this.installSkill(item) });
+    const tries = taken.tries + 1;
+    let over = false;
+    try {
+      await this.call("POST", { kind: "skills", requestId: taken.id, skills: results });
+    } catch (error62) {
+      const status = error62.status;
+      if (status !== 400 && status !== 413) {
+        this.write(this.startSkillsPath, { ...taken, tries });
+        if (tries >= START_SKILLS_TRIES) close({ ...taken, tries });
+        throw error62;
+      }
+      this.log(`the control plane refused the skills result (${status}); not sent again`);
+      over = true;
+    }
+    const allIn = results.every((r2) => {
+      const steps = r2.report?.steps ?? [];
+      return steps.some((s2) => (s2.kind === "openclaw.skill" || s2.kind === "openclaw.notes") && (s2.status === "ok" || s2.status === "changed"));
+    });
+    if (over || allIn || tries >= START_SKILLS_TRIES) close({ ...taken, tries });
+    else this.write(this.startSkillsPath, { ...taken, tries });
+  }
+  /** One skill: fetched from the console, checked and installed by the runner. Never throws except when the console cannot be reached. */
+  async installSkill(item, run3 = "", confirmedName = null, over = {}) {
+    let text3;
+    try {
+      text3 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(item.payload)}`, isNotesPayloadId(item.payload) ? NOTES_PAYLOAD_MAX_BYTES : SKILL_PAYLOAD_MAX_BYTES);
+    } catch (error62) {
+      const status = error62.status;
+      if (status === 404) return { missing: true };
+      if (status === 413) return { broken: true };
+      throw error62;
+    }
+    if (confirmedName !== null) {
+      let named;
+      try {
+        const raw = JSON.parse(text3);
+        named = isNotesPayloadId(item.payload) ? raw.set?.name : raw.skill?.name;
+      } catch {
+      }
+      if (named !== confirmedName) {
+        this.log(`${item.payload}: the console handed out another name than the one that was confirmed (${confirmedName}); nothing was installed`);
+        return { broken: true };
+      }
+    }
+    const file2 = join26(this.opts.stateDir, "skills", `${item.payload}${run3}.json`);
+    try {
+      mkdirSync19(dirname19(file2), { recursive: true, mode: 448 });
+      writeFileSync24(file2, text3, { mode: 384 });
+      let stdout = "";
+      try {
+        const named = confirmedName !== null ? ["--name", confirmedName] : [];
+        const args = isNotesPayloadId(item.payload) ? ["notes", file2, "--hash", item.hash, "--as", item.payload, "--public", ...named] : ["skill", file2, "--hash", item.hash, "--as", item.payload, "--skip-unconfirmed", "--json", "--public", ...item.runId ? ["--run-id", item.runId] : [], ...named, ...over.replaceChanged ? ["--replace-changed"] : [], ...over.keepSwitch ? ["--keep-switch"] : [], ...over.onlyOverRecord ? ["--only-over-record", over.onlyOverRecord] : []];
+        stdout = (await this.opts.exec(this.opts.node, [this.opts.runbook, ...args], SKILL_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
+      } catch (error62) {
+        stdout = error62.stdout ?? "";
+      }
+      try {
+        const report = JSON.parse(stdout);
+        if (Array.isArray(report.steps)) return { report };
+      } catch {
+      }
+      this.log(`${item.payload}: the skill was not installed (not the files the console named, or not a valid skill)`);
+      return { broken: true };
+    } catch (error62) {
+      this.log(`${item.payload}: the skill could not be kept on this agent (${error62.code ?? "error"})`);
+      return { broken: true };
+    } finally {
+      rmSync12(file2, { force: true });
+    }
+  }
+  get skillPendingPath() {
+    return join26(this.opts.stateDir, "skill-pending.json");
+  }
+  get skillTicketPath() {
+    return join26(this.opts.stateDir, "skill-ticket.json");
+  }
+  get skillDonePath() {
+    return join26(this.opts.stateDir, "skill-done.json");
+  }
+  /** The skill this agent has prepared and is waiting for a ticket for, while it is recent. */
+  skillPending() {
+    try {
+      const raw = JSON.parse(readFileSync36(this.skillPendingPath, "utf8"));
+      const r2 = raw;
+      if (r2.kind !== "skill" && r2.kind !== "notes" || typeof r2.ref !== "string" || !REQUEST_ID.test(r2.ref) || !this.fresh(r2.at, TEMPLATE_REVIEW_MS)) return null;
+      if (typeof r2.name !== "string" || !SKILL_NAME_RE.test(r2.name) || typeof r2.hash !== "string" || !BUNDLE_HASH.test(r2.hash) || typeof r2.files !== "number") return null;
+      const kept = {
+        item: r2.item,
+        runId: typeof r2.runId === "string" && REQUEST_ID.test(r2.runId) ? r2.runId : null,
+        said: r2.said === true,
+        confirmedAt: typeof r2.confirmedAt === "string" ? r2.confirmedAt : null,
+        result: r2.result && typeof r2.result === "object" ? r2.result : null
+      };
+      if (r2.kind === "notes") {
+        if (typeof r2.item !== "string" || !isNotesPayloadId(r2.item)) return null;
+        return { kind: "notes", ref: r2.ref, name: r2.name, hash: r2.hash, payload: r2.changed === true ? overwriteTicket(r2.hash) : r2.hash, files: r2.files, always: r2.always === true, bytes: typeof r2.bytes === "number" ? r2.bytes : 0, replaces: r2.replaces === true, changed: r2.changed === true, at: r2.at, ...kept };
+      }
+      if (typeof r2.item !== "string" || !isSkillPayloadId(r2.item) || typeof r2.runnable !== "number" || r2.settings !== void 0 && typeof r2.settings !== "number") return null;
+      return { kind: "skill", ref: r2.ref, name: r2.name, hash: r2.hash, payload: r2.changed === true ? overwriteTicket(r2.hash) : r2.hash, files: r2.files, runnable: r2.runnable, settings: r2.settings ?? 0, replaces: r2.replaces === true, changed: r2.changed === true, at: r2.at, ...kept };
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * A skill for an agent that already runs (docs/features/skills.md, "Install on agents"). Such an
+   * agent never installs one on the console's word: installing takes the same confirmation code as
+   * applying a template, and the code is the firewall's to check.
+   *
+   * 1. **Prepare.** The payload is fetched and checked by the runner against the hash the console
+   *    named, installing nothing. What it is (its name from its own files, the hash, how many
+   *    files, how many can be run) is kept for the firewall, which asks for it and writes the code
+   *    message from it. The console is told the agent is ready.
+   * 2. **Install, with a ticket.** After the right code the firewall hands over a ticket for this
+   *    request and this hash. Only then, once, the same payload is fetched again, checked again
+   *    against the same hash, and installed.
+   *
+   * Each request once: a request that was installed, refused or left to expire is not taken again.
+   * An agent with no firewall has nobody to give it a ticket, and installs nothing this way.
+   */
+  async install(req) {
+    if (!this.coded) return;
+    if (!req) {
+      rmSync12(this.skillPendingPath, { force: true });
+      rmSync12(this.skillTicketPath, { force: true });
+      return;
+    }
+    let done = null;
+    try {
+      done = JSON.parse(readFileSync36(this.skillDonePath, "utf8")).id ?? null;
+    } catch {
+    }
+    if (done === req.id) return;
+    const finish = () => {
+      this.write(this.skillDonePath, { id: req.id });
+      rmSync12(this.skillPendingPath, { force: true });
+      rmSync12(this.skillTicketPath, { force: true });
+    };
+    const report = (body2) => this.call("POST", { kind: "skills", requestId: req.id, ...body2 });
+    let kept = null;
+    try {
+      kept = JSON.parse(readFileSync36(this.skillPendingPath, "utf8"));
+    } catch {
+    }
+    if (!kept || kept.ref !== req.id) {
+      rmSync12(this.skillPendingPath, { force: true });
+      rmSync12(this.skillTicketPath, { force: true });
+      const facts = await this.checkSkill(req);
+      if ("missing" in facts || "broken" in facts) {
+        await report({ skills: [{ payload: req.payload, ...facts }] });
+        finish();
+        return;
+      }
+      const { name: _name, ...counts } = facts;
+      const record2 = { ref: req.id, name: facts.name, hash: req.hash, item: req.payload, ...counts, runId: req.runId, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString() };
+      this.write(this.skillPendingPath, record2);
+      this.log(`prepared the ${what(facts.kind)} ${facts.name} for a confirmation code`);
+      await report({ prepared: true, ...facts.changed ? { changed: true } : {}, skills: [] });
+      this.write(this.skillPendingPath, { ...record2, said: true });
+      return;
+    }
+    const pending = this.skillPending();
+    if (!pending) {
+      finish();
+      return;
+    }
+    const keep = (more) => {
+      const { payload: _payload, ...record2 } = { ...pending, ...more };
+      this.write(this.skillPendingPath, record2);
+    };
+    if (pending.result) {
+      await report({ skills: [{ payload: pending.item, ...pending.result }] });
+      finish();
+      return;
+    }
+    if (!pending.confirmedAt) {
+      if (!pending.said) {
+        await report({ prepared: true, ...pending.changed ? { changed: true } : {}, skills: [] });
+        keep({ said: true });
+      }
+      let ticket = null;
+      try {
+        ticket = JSON.parse(readFileSync36(this.skillTicketPath, "utf8"));
+      } catch {
+      }
+      if (!ticket) return;
+      rmSync12(this.skillTicketPath, { force: true });
+      if (ticket.ref !== req.id || ticket.hash !== pending.hash || pending.hash !== req.hash || pending.item !== req.payload || !this.fresh(ticket.at, TEMPLATE_TICKET_MS)) return;
+      pending.confirmedAt = typeof ticket.at === "string" ? ticket.at : (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
+      keep({});
+    }
+    if (!this.fresh(pending.confirmedAt, TEMPLATE_TICKET_MS) || pending.hash !== req.hash || pending.item !== req.payload) {
+      finish();
+      return;
+    }
+    this.log(`installing the ${what(pending.kind)} ${pending.name}`);
+    const result = await this.installSkill({ payload: pending.item, hash: pending.hash, runId: pending.runId }, "", pending.name, pending.kind === "skill" ? { replaceChanged: pending.changed, keepSwitch: pending.replaces } : {});
+    keep({ result });
+    await report({ skills: [{ payload: pending.item, ...result }] });
+    finish();
+  }
+  /**
+   * What a skill payload is, without installing it: fetched, and checked by the runner against the
+   * hash the console named. The name and the counts are read from the payload the check passed.
+   */
+  async checkSkill(item) {
+    const notes = isNotesPayloadId(item.payload);
+    if (notes && notesLocked()) return { broken: true, locked: true };
+    let text3;
+    try {
+      text3 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(item.payload)}`, notes ? NOTES_PAYLOAD_MAX_BYTES : SKILL_PAYLOAD_MAX_BYTES);
+    } catch (error62) {
+      const status = error62.status;
+      if (status === 404) return { missing: true };
+      if (status === 413) return { broken: true };
+      throw error62;
+    }
+    const file2 = join26(this.opts.stateDir, "skills", `${item.payload}.check.json`);
+    try {
+      mkdirSync19(dirname19(file2), { recursive: true, mode: 448 });
+      writeFileSync24(file2, text3, { mode: 384 });
+      let stdout = "";
+      try {
+        stdout = (await this.opts.exec(this.opts.node, [this.opts.runbook, notes ? "notes" : "skill", file2, "--hash", item.hash, "--as", item.payload, "--check", "--json", "--public"], SKILL_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
+      } catch (error62) {
+        stdout = error62.stdout ?? "";
+      }
+      let steps = null;
+      try {
+        const said = JSON.parse(stdout).steps;
+        if (Array.isArray(said)) steps = said;
+      } catch {
+      }
+      if (!steps) return { broken: true };
+      if (notes) {
+        const set2 = JSON.parse(text3);
+        const count2 = Array.isArray(set2.files) ? set2.files.length : 0;
+        if (typeof set2.set?.name !== "string" || !SKILL_NAME_RE.test(set2.set.name) || count2 < 1 || count2 > 1e3 || !steps.some((s2) => s2?.kind === "openclaw.notes")) return { broken: true };
+        const bytes = (set2.files ?? []).reduce((sum, f2) => sum + (typeof f2?.content === "string" ? Buffer.byteLength(f2.content, "utf8") : 0), 0);
+        const given = readNotesRecord(this.opts.home ?? process.env.HOME ?? "/home/controlclaw", set2.set.name);
+        const replaces = given !== null || (this.opts.notesOnAgent ?? notesOnAgent)(set2.set.name);
+        const now = given?.source === "organization" ? (this.opts.notesHashOnAgent ?? ((name2, always) => notesSetHash(notesPlace().root, name2, always)))(set2.set.name, given.always ?? null) : null;
+        const changed = typeof now === "string" && now !== given?.hash;
+        return { kind: "notes", name: set2.set.name, files: count2, always: typeof set2.set.always === "string" && set2.set.always.length > 0, bytes, replaces, changed };
+      }
+      const raw = JSON.parse(text3);
+      const name = raw.skill?.name;
+      const files2 = Array.isArray(raw.files) ? raw.files : [];
+      if (typeof name !== "string" || !SKILL_NAME_RE.test(name) || files2.length > 1e3) return { broken: true };
+      const shebang = (f2) => typeof f2?.content === "string" && (f2.encoding === "base64" ? Buffer.from(f2.content.slice(0, 4), "base64").subarray(0, 2).toString("latin1") === "#!" : f2.content.startsWith("#!"));
+      const here = this.skillOnAgent(name);
+      return { kind: "skill", name, ...here, files: files2.length, runnable: files2.filter((f2) => f2?.executable === true || shebang(f2)).length, settings: steps.filter((s2) => s2?.kind === "controlclaw.setting").length };
+    } catch {
+      return { broken: true };
+    } finally {
+      rmSync12(file2, { force: true });
+    }
+  }
+  /** The folder of a skill OpenClaw manages on this agent. */
+  skillDir(name) {
+    return join26(this.opts.home ?? process.env.HOME ?? homedir2(), ".openclaw", "skills", name);
+  }
+  /** What this agent has of a skill of that name, by its own record: one the organization installed, and whether it is still those files. */
+  skillOnAgent(name) {
+    const dir = this.skillDir(name);
+    const record2 = existsSync30(join26(dir, "SKILL.md")) ? readSkillRecord(dir) : null;
+    if (record2?.source !== "organization") return { replaces: false, changed: false };
+    return { replaces: true, changed: skillHash(dir) !== record2.installedHash };
+  }
+  /**
+   * Puts a skill back as the organization installed it on this agent, after it was changed here. No
+   * confirmation code: nothing new reaches the agent. Only the version this agent's own record of
+   * the skill names is taken: the hash the console names must be the record's, the files it hands
+   * out must have that hash and that name, or nothing is written.
+   */
+  async restoreSkill(name, expectedHash, payload) {
+    if (typeof name !== "string" || !SKILL_NAME_RE.test(name) || typeof expectedHash !== "string" || !BUNDLE_HASH.test(expectedHash) || typeof payload !== "string" || !isSkillPayloadId(payload)) throw new NotesError("Name the skill, its hash and its version.", 400);
+    const dir = this.skillDir(name);
+    const record2 = existsSync30(join26(dir, "SKILL.md")) ? readSkillRecord(dir) : null;
+    if (!record2 || record2.source !== "organization") throw new NotesError("This agent has no record of being given that skill by your organization, so it is not put back from here.", 409);
+    if (record2.installedHash !== expectedHash) throw new NotesError("The skill this agent was given is not that version, so it is not put back from here.", 409);
+    if (this.skillPending()) {
+      try {
+        const asked4 = await this.call("GET");
+        if (!skillInstallOf(asked4?.install)) {
+          rmSync12(this.skillPendingPath, { force: true });
+          rmSync12(this.skillTicketPath, { force: true });
+        }
+      } catch {
+      }
+    }
+    if (this.skillPending()) throw new NotesError("An install is waiting on this agent. Finish or cancel it first.", 409);
+    let result;
+    try {
+      result = await this.installSkill({ payload, hash: record2.installedHash, runId: null }, ".restore", name, { replaceChanged: true, keepSwitch: true, onlyOverRecord: record2.installedHash });
+    } catch (error62) {
+      throw new NotesError(`The console could not be reached for the skill: ${error62.message}`.slice(0, 200), 502);
+    }
+    if ("missing" in result) throw new NotesError("The console no longer hands that version out.", 409);
+    const step = "report" in result ? result.report.steps.find((s2) => s2.kind === "openclaw.skill") ?? null : null;
+    if (!step || step.status !== "ok" && step.status !== "changed") throw new NotesError("The skill could not be put back.", 502);
+    if (step.message === "kept as it is") throw new NotesError("Another version of the skill was installed on this agent in the meantime, so it was not put back.", 409);
+    this.log(`skill ${name}: put back as it was given`);
+    return { ok: true, restored: step.status === "changed" };
+  }
+  /**
+   * Puts a set of shared notes back as this agent was given it, because an owner or admin asked for
+   * that in the console after the set was changed here.
+   *
+   * It cannot bring anything new: the version and the hash are the ones in this agent's own record
+   * of the set, written when the set was put by a hand-out this agent accepted. What the console
+   * names must be that same hash, and the files it then hands out must have it, or nothing is written.
+   */
+  async restoreNotes(name, expectedHash) {
+    if (typeof name !== "string" || typeof expectedHash !== "string") throw new NotesError("Name the set and its hash.", 400);
+    if (notesLocked()) throw new NotesError("This agent's disk is locked, and its notes are in the locked part. Open the disk first.", 423);
+    const record2 = readNotesRecord(this.opts.home ?? process.env.HOME ?? "/home/controlclaw", name);
+    if (!record2 || record2.source !== "organization" || !isNotesPayloadId(record2.payload)) throw new NotesError("This agent has no record of being given that set, so it is not put back from here.", 409);
+    if (record2.hash !== expectedHash) throw new NotesError("The set this agent was given is not that version, so it is not put back from here.", 409);
+    let result;
+    try {
+      result = await this.installSkill({ payload: record2.payload, hash: record2.hash, runId: null }, ".restore");
+    } catch (error62) {
+      throw new NotesError(`The console could not be reached for the notes: ${error62.message}`.slice(0, 200), 502);
+    }
+    if ("missing" in result) throw new NotesError("The console no longer hands that version out.", 409);
+    const step = "report" in result ? result.report.steps.find((s2) => s2.kind === "openclaw.notes") ?? null : null;
+    if (!step || step.status !== "ok" && step.status !== "changed") throw new NotesError("The notes could not be put back.", 502);
+    this.log(`notes ${name}: put back as they were given`);
+    return { ok: true, restored: step.status === "changed" };
+  }
+  get handledPath() {
+    return join26(this.opts.stateDir, "request.json");
+  }
+  /** This agent has a firewall, so an apply to it needs the firewall's ticket. */
+  get coded() {
+    return this.opts.firewall?.() === true;
+  }
+  /**
+   * Whether this agent is still new: in the first hour after it was given to its organization, by
+   * the born stamp (`born.ts`). Asked on every attempt and never kept. An agent with no stamp, which
+   * is every agent from before the stamp existed, is not new.
+   */
+  firstHour() {
+    return isNew(TEMPLATE_FIRST_HOUR_MS / 36e5, { now: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))(), ...this.opts.born });
+  }
+  get pendingPath() {
+    return join26(this.opts.stateDir, "pending.json");
+  }
+  get ticketPath() {
+    return join26(this.opts.stateDir, "ticket.json");
+  }
+  fresh(at2, ms) {
+    if (typeof at2 !== "string") return false;
+    const age = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime() - new Date(at2).getTime();
+    return age >= 0 && age < ms;
+  }
+  /** What a template is, from its own files (`cc-runbook facts`, which runs nothing). Null when it cannot be read. */
+  async facts(dir) {
+    try {
+      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "facts", dir], UNPACK_TIMEOUT_MS, void 0, { maxBuffer: 1024 * 1024 });
+      const raw = JSON.parse(stdout);
+      if (typeof raw.name !== "string" || !TEMPLATE_ID.test(raw.name) || typeof raw.hash !== "string" || !BUNDLE_HASH.test(raw.hash) || !Array.isArray(raw.steps)) return null;
+      const steps = raw.steps.filter((s2) => !!s2 && typeof s2.id === "string" && STEP_ID.test(s2.id) && typeof s2.kind === "string");
+      return steps.length === raw.steps.length ? { name: raw.name, hash: raw.hash, steps } : null;
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * For the firewall: what the preview with this id found, while it is recent. The firewall writes
+   * the code message from this answer and from nothing the console said.
+   */
+  pending(ref) {
+    const skill = this.skillPending();
+    if (skill && skill.ref === ref && !skill.confirmedAt) {
+      const { item: _item, runId: _runId, said: _said, confirmedAt: _confirmedAt, result: _result, ...facts } = skill;
+      return facts;
+    }
+    try {
+      const raw = JSON.parse(readFileSync36(this.pendingPath, "utf8"));
+      if (raw.kind !== "template" || raw.ref !== ref || !this.fresh(raw.at, TEMPLATE_REVIEW_MS)) return null;
+      if (typeof raw.template !== "string" || typeof raw.name !== "string" || typeof raw.hash !== "string" || typeof raw.steps !== "number" || typeof raw.change !== "number" || typeof raw.scripts !== "number") return null;
+      const vars = varsOf(raw.vars);
+      if (!vars || !BUNDLE_HASH.test(raw.hash)) return null;
+      const beside = raw.beside === true;
+      return { kind: "template", ref, template: raw.template, name: raw.name, hash: raw.hash, org: raw.org === true, steps: raw.steps, change: raw.change, scripts: raw.scripts, at: raw.at, filledName: vars.name.slice(0, AGENT_NAME_MAX), note: vars.note.slice(0, PENDING_NOTE_MAX), noteCut: vars.note.length > PENDING_NOTE_MAX, payload: payloadHash(raw.hash, vars, beside), ...beside ? { beside: true } : {} };
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * From the firewall, after the right code: this preview may be applied, once, with exactly the
+   * files it was a preview of and the note, name and time zone it was filled with (`payload` is the
+   * hash over all of them). Taken only for the preview this agent has on record.
+   */
+  ticket(ref, payload) {
+    const pending = this.pending(ref);
+    if (pending?.kind === "skill" || pending?.kind === "notes") {
+      if (pending.payload !== payload) return false;
+      this.write(this.skillTicketPath, { ref, hash: pending.hash, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString() });
+      this.log(`a confirmation code was given to install the ${what(pending.kind)} ${pending.name}`);
+      return true;
+    }
+    if (!pending || pending.payload !== payload) return false;
+    let vars = null;
+    try {
+      vars = varsOf(JSON.parse(readFileSync36(this.pendingPath, "utf8")).vars);
+    } catch {
+    }
+    if (!vars) return false;
+    this.write(this.ticketPath, { ref, template: pending.template, hash: pending.hash, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(), vars, beside: pending.beside === true });
+    this.log(`a confirmation code was given for ${pending.template}`);
+    return true;
+  }
+  /**
+   * Whether the firewall's ticket covers this apply: the same preview, the same template, the same
+   * files, and not too old. Used up by asking, whatever the answer: a ticket is for one apply.
+   * Answers with the note, name and time zone the preview was made with, which the apply uses: what
+   * the console says they are at the time of the apply is not what the person looked at.
+   */
+  async ticketed(request, dir) {
+    let ticket = null;
+    try {
+      ticket = JSON.parse(readFileSync36(this.ticketPath, "utf8"));
+    } catch {
+    }
+    rmSync12(this.ticketPath, { force: true });
+    const vars = varsOf(ticket?.vars);
+    if (!ticket || !vars || !request.preview || ticket.ref !== request.preview || ticket.template !== request.template || !this.fresh(ticket.at, TEMPLATE_TICKET_MS)) return null;
+    if (ticket.beside === true !== request.beside) {
+      this.log(`${request.template}: the apply is not what was confirmed (${ticket.beside ? "a bundle beside the template" : "the agent's template"})`);
+      return null;
+    }
+    const hash3 = isOrgTemplate(request.template) ? request.bundle : (await this.facts(dir))?.hash ?? null;
+    if (!hash3 || hash3 !== ticket.hash) return null;
+    rmSync12(this.pendingPath, { force: true });
+    return vars;
+  }
+  /** A preview or an apply an owner or admin asked for in the console. Each request once. */
+  async asked(request, assignment) {
+    let handled = null;
+    try {
+      handled = JSON.parse(readFileSync36(this.handledPath, "utf8")).id ?? null;
+    } catch {
+    }
+    if (handled === request.id || this.marker()?.request === request.id || Object.values(this.beside()).some((b2) => b2.request === request.id)) return;
+    if (request.kind === "apply") {
+      let found;
+      let vars = assignment;
+      if (this.coded) {
+        found = await this.folder(request.template, request.bundle);
+        const confirmed = found.dir ? await this.ticketed(request, found.dir) : null;
+        if (found.dir && !confirmed) {
+          this.log(`${request.template} was not applied: no confirmation code was given for it`);
+          this.write(this.handledPath, { id: request.id });
+          this.keep({ kind: "run", template: request.template, requestId: request.id, unconfirmed: true });
+          return this.send();
+        }
+        if (confirmed) vars = confirmed;
+      }
+      await this.apply(request.template, { ...vars, runId: request.runId }, request.id, request.bundle, found, request.beside && isOrgTemplate(request.template));
+      this.write(this.handledPath, { id: request.id });
+      return;
+    }
+    const folder = await this.folder(request.template, request.bundle);
+    if (request.look) {
+      const kept2 = folder.dir ? await this.review(request, folder.dir, assignment) : {};
+      this.write(this.handledPath, { id: request.id });
+      await this.call("POST", { kind: "preview", template: request.template, requestId: request.id, kept: kept2 }).catch((error62) => this.log(`the second look was not taken: ${error62.message}`));
+      return;
+    }
+    this.log(`previewing ${request.template}`);
+    const facts = this.coded && folder.dir ? await this.facts(folder.dir) : null;
+    const own2 = facts ? facts.steps.filter((s2) => s2.kind !== "controlclaw.setting").map((s2) => s2.id) : request.steps;
+    const noScripts = this.coded && isOrgTemplate(request.template);
+    const report = folder.dir && own2.length ? await this.runbook("check", request.template, folder.dir, assignment, own2, noScripts, request.beside && isOrgTemplate(request.template)) : null;
+    this.write(this.handledPath, { id: request.id });
+    rmSync12(this.pendingPath, { force: true });
+    rmSync12(this.ticketPath, { force: true });
+    const hash3 = isOrgTemplate(request.template) ? request.bundle : facts?.hash ?? null;
+    if (facts && hash3 && (report || !own2.length)) {
+      const said = (report?.steps ?? []).filter((s2) => typeof s2.id === "string" && own2.includes(s2.id));
+      this.write(this.pendingPath, {
+        kind: "template",
+        ref: request.id,
+        template: request.template,
+        name: facts.name,
+        hash: hash3,
+        org: isOrgTemplate(request.template),
+        steps: own2.length,
+        change: said.filter((s2) => s2.status === "would-change" && s2.message !== CHECKED_WHEN_APPLIED).length,
+        scripts: facts.steps.filter((s2) => s2.kind === "run").length,
+        at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(),
+        // Only one of the organization's own can be a bundle.
+        ...request.beside && isOrgTemplate(request.template) ? { beside: true } : {},
+        // Kept with it and not handed to the firewall: what this check was filled with.
+        vars: { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone }
+      });
+    }
+    this.keep({ kind: "preview", template: request.template, requestId: request.id, ...folder.dir === null ? folder.why === "missing" ? { missing: true } : { broken: true } : report ? { report } : request.steps.length ? { broken: true } : {} });
+    await this.send();
+    if (!folder.dir) return;
+    const kept = await this.review(request, folder.dir, assignment);
+    if (Object.keys(kept).length) await this.call("POST", { kind: "preview", template: request.template, requestId: request.id, kept }).catch((error62) => this.log(`when the kept files were written was not taken: ${error62.message}`));
+  }
+  /**
+   * Keeps, for the Files page, the files the previewed template would not overwrite, each with the
+   * template's own text (`cc-runbook review`). Returns when each of those the agent has was last
+   * written. Best effort: without it the preview is as it was before.
+   */
+  async review(request, dir, assignment) {
+    const path = templateReviewPath(this.opts.stateDir);
+    try {
+      const vars = join26(this.opts.stateDir, PREVIEW_VARS);
+      this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
+      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "review", dir, "--vars", vars, ...isOrgTemplate(request.template) ? ["--as", request.template] : []], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
+      const files2 = reviewFilesOf(JSON.parse(stdout).files);
+      if (!files2.length) throw new Error("nothing to review");
+      this.write(path, { template: request.template, requestId: request.id, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(), files: files2 });
+      return Object.fromEntries(files2.flatMap((f2) => f2.exists && f2.stamp ? [[f2.step, f2.stamp]] : []));
+    } catch {
+      if (readTemplateReview(this.opts.stateDir)?.template !== request.template) rmSync12(path, { force: true });
+      return {};
+    }
+  }
+  /**
+   * Drops what was kept for the Files page once the console no longer has that preview: it was
+   * cancelled, confirmed, or grew too old. `wanted` is the template the console still shows a
+   * preview of; a console that does not say (an older one) leaves it to the time limit.
+   */
+  dropReview(wanted) {
+    if (wanted === void 0) return;
+    const path = templateReviewPath(this.opts.stateDir);
+    try {
+      if (JSON.parse(readFileSync36(path, "utf8")).template !== wanted) rmSync12(path, { force: true });
+    } catch {
+      rmSync12(path, { force: true });
+    }
+  }
+  /**
+   * Steps an owner or admin asked for again in the console (a setting to confirm or set again, a
+   * failed step to try again). Which steps, and with which values, is the console's to say: the
+   * agent runs exactly the ones it is given, under the grant it is given, and reports them.
+   */
+  async rerun(marker, assignment) {
+    if (assignment.template !== marker.template || !assignment.rerun) return;
+    const request = `${assignment.rerun.runId ?? ""}:${assignment.rerun.at}:${assignment.rerun.steps.join(",")}`;
+    if (marker.rerun === request) return;
+    const found = await this.folder(marker.template, (this.coded ? null : assignment.bundle) ?? marker.hash ?? null);
+    const dir = found.dir;
+    if (found.dir === null && found.why === "unsure") return;
+    if (!dir) {
+      this.log(`${marker.template}: steps were not run again, the files that were applied could not be had`);
+      this.write(this.markerPath, { ...marker, rerun: request });
+      this.keep({ kind: "rerun", template: marker.template, missing: true });
+      return this.send();
+    }
+    this.log(`running ${assignment.rerun.steps.length} step(s) of ${marker.template} again`);
+    const report = await this.runbook("run", marker.template, dir, { ...this.appliedVars(marker, assignment), runId: assignment.rerun.runId }, assignment.rerun.steps);
+    this.write(this.markerPath, { ...this.marker() ?? marker, rerun: request });
+    if (!report) return;
+    const ran = report.steps.filter((s2) => typeof s2.id === "string" && assignment.rerun?.steps.includes(s2.id));
+    this.keep({ kind: "rerun", template: marker.template, report: { ...report, steps: ran } });
+    return this.send();
+  }
+  /**
+   * The note, name and time zone for running steps again and for checking them. On an agent with a
+   * firewall these are the ones the template was applied with, kept with its record: what the
+   * console says they are now could be other content, written into a file or handed to a script
+   * with no code. A record from before they were kept takes them, once, from the file the last run
+   * or check of the applied template was filled with. No preview writes that file (`PREVIEW_VARS`),
+   * so a preview made after this software was installed cannot change what a step is run again with.
+   */
+  appliedVars(marker, assignment) {
+    if (!this.coded) return assignment;
+    if (marker.vars) return marker.vars;
+    let kept = null;
+    try {
+      kept = varsOf(JSON.parse(readFileSync36(join26(this.opts.stateDir, APPLIED_VARS), "utf8")));
+    } catch {
+    }
+    const vars = kept ?? { note: "", name: assignment.name, timeZone: "UTC" };
+    this.write(this.markerPath, { ...marker, vars });
+    return vars;
+  }
+  /** Checks the applied template again and tells the console how many steps still hold. Never throws. */
+  get runbookState() {
+    return this.opts.runbookStateDir ?? process.env.CC_RUNBOOK_STATE ?? join26(process.env.HOME ?? homedir2(), ".controlclaw", "runbook");
+  }
+  dropRepair(template) {
+    const dir = join26(this.runbookState, "repair", template);
+    try {
+      rmSync12(`${dir}.json`, { force: true });
+      rmSync12(dir, { recursive: true, force: true });
+    } catch {
+      this.log(`${template}: the repair folder could not be removed; it is put out of use`);
+      try {
+        rmSync12(join26(dir, "template.yaml"), { force: true });
+      } catch {
+        this.log(`${template}: the repair folder is still in use. Remove ${dir} by hand`);
+      }
+    }
+  }
+  /**
+   * For the firewall, before a Doctor repair of a template's step (`template-repair`): the template
+   * this agent has, from its own files, and the steps that failed in its last run: the one the run
+   * stopped at first, then the ones it could do without. The firewall writes the confirmation
+   * message from this and refuses a repair of any other step.
+   */
+  async repairFacts() {
+    const marker = this.marker();
+    if (!marker || marker.missing) return null;
+    try {
+      const { dir } = await this.folder(marker.template, marker.hash ?? null);
+      const facts = dir ? await this.facts(dir) : null;
+      if (!dir || !facts) return null;
+      let failedSteps = [];
+      try {
+        const state = JSON.parse(readFileSync36(join26(this.runbookState, `${marker.template}.json`), "utf8"));
+        const failed = (state.steps ?? []).filter((s2) => s2.status === "failed" && typeof s2.id === "string" && facts.steps.some((f2) => f2.id === s2.id));
+        failedSteps = [...failed.filter((s2) => s2.optional !== true), ...failed.filter((s2) => s2.optional === true)].map((s2) => s2.id);
+      } catch {
+      }
+      return { template: marker.template, name: facts.name, hash: facts.hash, org: isOrgTemplate(marker.template), failedSteps, dir, repairDir: join26(this.runbookState, "repair", marker.template), vars: existsSync30(join26(this.opts.stateDir, APPLIED_VARS)) ? join26(this.opts.stateDir, APPLIED_VARS) : null };
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * After a Doctor repair of a step: the steps are checked again (with the repaired scripts), the
+   * console is told how each one stands and which were repaired, and what the repair changed in the
+   * template's files comes back for the firewall to show its owner. The pack is checked here by
+   * the runner (as a template, and for this box's secrets); a refused pack comes back as problems.
+   */
+  async repairDone(session) {
+    const marker = this.marker();
+    if (!marker || marker.missing) return { ok: true, pack: null };
+    let dir = null;
+    try {
+      ({ dir } = await this.folder(marker.template, marker.hash ?? null));
+    } catch {
+      dir = null;
+    }
+    if (!dir) return { ok: true, pack: null };
+    if (this.running || this.verifying) return { ok: false, problems: ["The agent is applying or checking its template just now. Read the changes again in a minute."] };
+    let vars = marker.vars ?? null;
+    if (!vars) {
+      try {
+        vars = varsOf(JSON.parse(readFileSync36(join26(this.opts.stateDir, APPLIED_VARS), "utf8")));
+      } catch {
+        vars = null;
+      }
+    }
+    if (vars) {
+      const filled = vars;
+      const check2 = (async () => {
+        const report = await this.runbook("verify", marker.template, dir, { ...filled, runId: null });
+        if (!report) return;
+        this.keep({ kind: "repair", template: marker.template, session, report });
+        await this.send().catch(() => void 0);
+      })();
+      this.verifying = check2.finally(() => this.verifying = null);
+      await this.verifying;
+    }
+    const args = [this.opts.runbook, "pack", dir, "--session", session, ...isOrgTemplate(marker.template) ? ["--as", marker.template] : []];
+    let stdout = "";
+    try {
+      stdout = (await this.opts.exec(this.opts.node, args, UNPACK_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
+    } catch (error62) {
+      stdout = error62.stdout ?? "";
+    }
+    try {
+      const raw = JSON.parse(stdout);
+      if (raw.none === true) return { ok: true, pack: null };
+      if (Array.isArray(raw.problems)) return { ok: false, problems: raw.problems.filter((p2) => typeof p2 === "string").slice(0, 20).map((p2) => p2.slice(0, 400)) };
+      if (Array.isArray(raw.files)) return { ok: true, pack: raw.files.length ? raw : null };
+    } catch {
+    }
+    return { ok: false, problems: ["The repair's changes could not be read on the agent."] };
+  }
+  /**
+   * For the firewall, before a capture session (`template-capture`): where on this agent such a
+   * session writes its template. The firewall puts the folder in its first message.
+   */
+  captureSessionFacts() {
+    return { base: join26(process.env.HOME ?? homedir2(), ".controlclaw", "capture") };
+  }
+  /**
+   * After a capture session: the template the session wrote in its own folder, checked by the
+   * runner as a template and for this box's secrets, with whether each of its steps held when the
+   * session last checked them. Null when the session wrote none; a refused one comes back as
+   * problems. Changes nothing and runs nothing of the session's.
+   */
+  async captureSessionDone(session) {
+    let stdout = "";
+    try {
+      stdout = (await this.opts.exec(this.opts.node, [this.opts.runbook, "capture-pack", "--session", session], UNPACK_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
+    } catch (error62) {
+      stdout = error62.stdout ?? "";
+    }
+    try {
+      const raw = JSON.parse(stdout);
+      if (raw.none === true) return { ok: true, pack: null };
+      if (Array.isArray(raw.problems)) return { ok: false, problems: raw.problems.filter((p2) => typeof p2 === "string").slice(0, 20).map((p2) => p2.slice(0, 400)) };
+      if (Array.isArray(raw.files)) return { ok: true, pack: raw };
+    } catch {
+    }
+    return { ok: false, problems: ["The session's template could not be read on the agent."] };
+  }
+  /**
+   * For the firewall, before a Final check: the template this agent has, from its own files. Null
+   * when it has none, or its files cannot be read just now.
+   */
+  async checkFacts() {
+    const marker = this.marker();
+    if (!marker || marker.missing) return null;
+    try {
+      const { dir } = await this.folder(marker.template, marker.hash ?? null);
+      const facts = dir ? await this.facts(dir) : null;
+      return facts ? { template: marker.template, name: facts.name, hash: facts.hash, org: isOrgTemplate(marker.template), steps: facts.steps.map((s2) => s2.id), appliedAt: marker.at } : null;
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * One read for a Final check (`cc-runbook probe`): about the template this agent has, from the
+   * files that were applied, filled with what they were applied with. Nothing is changed. `verify`
+   * runs the template's checks, so it waits its turn like the periodic check.
+   */
+  async probe(verb, arg) {
+    const marker = this.marker();
+    if (!marker || marker.missing) return { ok: false, text: "This agent has no template." };
+    if (verb === "verify" && (this.running || this.verifying)) return { ok: false, text: "The agent is applying or checking its template just now. Ask again in a minute." };
+    const run3 = async () => {
+      let dir;
+      try {
+        ({ dir } = await this.folder(marker.template, marker.hash ?? null));
+      } catch {
+        dir = null;
+      }
+      if (!dir) return { ok: false, text: "The template's files could not be read on this agent." };
+      const args = [this.opts.runbook, "probe", dir, verb, ...arg === void 0 ? [] : [arg]];
+      if (isOrgTemplate(marker.template)) args.push("--as", marker.template);
+      if (marker.vars) {
+        const vars = join26(this.opts.stateDir, PROBE_VARS);
+        this.write(vars, marker.vars);
+        args.push("--vars", vars);
+      }
+      try {
+        const { stdout } = await this.opts.exec(this.opts.node, args, VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
+        return { ok: true, text: stdout.trimEnd() };
+      } catch (error62) {
+        const failed = error62;
+        return { ok: false, text: failed.code === 1 && failed.stdout?.trim() ? failed.stdout.trimEnd() : "That could not be read on this agent." };
+      }
+    };
+    if (verb !== "verify") return run3();
+    let answer = { ok: false, text: "That could not be read on this agent." };
+    this.verifying = run3().then((a2) => void (answer = a2)).finally(() => this.verifying = null);
+    await this.verifying;
+    return answer;
+  }
+  async verify() {
+    const marker = this.marker();
+    const own2 = marker && !marker.missing ? marker : null;
+    const beside = this.beside();
+    if (!own2 && !Object.keys(beside).length || this.running || this.verifying) return;
+    this.verifying = (own2 ? this.check(own2) : Promise.resolve()).then(() => this.checkBeside(beside)).finally(() => this.verifying = null);
+    return this.verifying;
+  }
+  /** Checks each bundle that was applied beside the template, from the files that were applied. Never throws. */
+  async checkBeside(beside) {
+    for (const [id, bundle] of Object.entries(beside)) {
+      try {
+        const { dir } = await this.folder(id, bundle.hash);
+        if (!dir) continue;
+        const report = await this.runbook("verify", id, dir, { ...bundle.vars, runId: null }, void 0, false, true);
+        if (report) await this.call("POST", { kind: "verify", template: id, report });
+      } catch (error62) {
+        this.log(`could not check the bundle ${id}: ${error62.message}`);
+      }
+    }
+  }
+  async check(marker) {
+    try {
+      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null, request: null, bundle: null, capture: null, skills: null };
+      const { dir } = await this.folder(marker.template, marker.hash ?? null);
+      if (!dir) return;
+      const report = await this.runbook("verify", marker.template, dir, { ...this.appliedVars(marker, assignment), runId: assignment.runId });
+      if (report) await this.call("POST", { kind: "verify", template: marker.template, report });
+    } catch (error62) {
+      this.log(`could not check ${marker.template}: ${error62.message}`);
+    }
+  }
 };
 
 // src/routes/skills.ts
-async function handleSkills(req, res, pathname, skills2) {
+async function handleSkills(req, res, pathname, skills2, templates) {
   try {
     if (pathname === "/skills" && req.method === "GET") return sendJson(res, 200, await skills2.report());
     if (pathname === "/skills/enabled" && req.method === "POST") {
@@ -59597,43 +61639,202 @@ async function handleSkills(req, res, pathname, skills2) {
       const body2 = await readJsonBody(req, 1024);
       return sendJson(res, 200, await skills2.remove(body2?.name, body2?.expectedHash, body2?.evenIfChanged));
     }
+    if (pathname === "/notes/remove" && req.method === "POST") {
+      const body2 = await readJsonBody(req, 1024);
+      return sendJson(res, 200, await skills2.removeNotes(body2?.name));
+    }
+    if (pathname === "/skills/restore" && req.method === "POST") {
+      const body2 = await readJsonBody(req, 1024);
+      if (!templates) return sendJson(res, 503, { error: "This agent is not set up yet." });
+      const answer = await templates.restoreSkill(body2?.name, body2?.expectedHash, body2?.payload);
+      skills2.forget();
+      return sendJson(res, 200, answer);
+    }
+    if (pathname === "/notes/restore" && req.method === "POST") {
+      const body2 = await readJsonBody(req, 1024);
+      if (!templates) return sendJson(res, 503, { error: "This agent is not set up yet." });
+      const answer = await templates.restoreNotes(body2?.name, body2?.expectedHash);
+      skills2.forget();
+      return sendJson(res, 200, answer);
+    }
     sendJson(res, 404, { error: "Not found" });
   } catch (err) {
-    if (err instanceof SkillsError) return sendJson(res, err.status, { error: err.message });
+    if (err instanceof SkillsError || err instanceof NotesError) return sendJson(res, err.status, { error: err.message });
     console.error("[skills]", err.message);
     sendJson(res, 500, { error: "The skills could not be read." });
   }
 }
 
+// src/storage.ts
+var HELPER = "/usr/local/bin/cc-secure";
+var SIZE_TIMEOUT_MS = 15e3;
+var GROW_TIMEOUT_MS = 15e4;
+var MIN_TARGET_GB = 1;
+var MAX_TARGET_GB = 9999;
+var STORAGE_UNSUPPORTED_MESSAGE = "This agent was built before storage could be added. Update the agent to add storage.";
+var StorageUnsupportedError = class extends Error {
+  status = 409;
+  code = "unsupported";
+  constructor() {
+    super(STORAGE_UNSUPPORTED_MESSAGE);
+    this.name = "StorageUnsupportedError";
+  }
+};
+var StorageError = class extends Error {
+  constructor(message2, status, code) {
+    super(message2);
+    this.status = status;
+    this.code = code;
+    this.name = "StorageError";
+  }
+};
+var UNSUPPORTED_RE2 = /a password is required|a terminal is required|command not found|cc-secure: No such file|usage: cc-secure \{/i;
+function looksUnsupported2(err) {
+  const e = err;
+  if (e.code === "ENOENT") return true;
+  return UNSUPPORTED_RE2.test(`${e.stderr ?? ""}
+${e.stdout ?? ""}`);
+}
+var num2 = (v2) => typeof v2 === "number" && Number.isFinite(v2) && v2 >= 0 ? v2 : null;
+function parseSize(text3) {
+  const line2 = text3.split("\n").map((l2) => l2.trim()).filter((l2) => l2.startsWith("{")).pop();
+  if (!line2) return null;
+  let raw;
+  try {
+    raw = JSON.parse(line2);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o2 = raw;
+  if (o2.present === false) {
+    return { present: false, mounted: false, sizeGb: 0, maxGb: 0, reserveGb: 0, diskBytes: 0, systemUsedBytes: 0, imageBytes: 0, fsBytes: null, usedBytes: null, freeBytes: null, pending: false };
+  }
+  const sizeGb = num2(o2.sizeGb);
+  const maxGb = num2(o2.maxGb);
+  const diskBytes = num2(o2.diskBytes);
+  if (o2.present !== true || sizeGb === null || maxGb === null || diskBytes === null) return null;
+  if (!Number.isInteger(sizeGb) || !Number.isInteger(maxGb) || maxGb < sizeGb) return null;
+  const mounted = o2.mounted === true;
+  return {
+    present: true,
+    mounted,
+    sizeGb,
+    maxGb,
+    reserveGb: num2(o2.reserveGb) ?? 0,
+    diskBytes,
+    systemUsedBytes: num2(o2.systemUsedBytes) ?? 0,
+    imageBytes: num2(o2.imageBytes) ?? 0,
+    fsBytes: mounted ? num2(o2.fsBytes) : null,
+    usedBytes: mounted ? num2(o2.usedBytes) : null,
+    freeBytes: mounted ? num2(o2.freeBytes) : null,
+    pending: o2.pending === true
+  };
+}
+function helperReason(err) {
+  const e = err;
+  const lines = (e.stderr ?? "").split("\n").map((l2) => l2.trim()).filter((l2) => l2.startsWith("cc-secure: "));
+  const last = lines.pop();
+  if (!last) return null;
+  const text3 = last.slice("cc-secure: ".length).trim();
+  return text3 ? text3.charAt(0).toUpperCase() + text3.slice(1) + (/[.!?]$/.test(text3) ? "" : ".") : null;
+}
+function validTargetGb(v2) {
+  return typeof v2 === "number" && Number.isInteger(v2) && v2 >= MIN_TARGET_GB && v2 <= MAX_TARGET_GB;
+}
+var StorageService = class {
+  exec;
+  log;
+  growing = false;
+  constructor(opts = {}) {
+    this.exec = opts.execImpl ?? defaultExec;
+    this.log = opts.log ?? ((line2) => console.log(line2));
+  }
+  /** The sizes, read from the box now. */
+  async readStorage() {
+    let stdout;
+    try {
+      ({ stdout } = await this.exec("sudo", ["-n", HELPER, "size"], SIZE_TIMEOUT_MS));
+    } catch (err) {
+      if (looksUnsupported2(err)) throw new StorageUnsupportedError();
+      throw new StorageError(helperReason(err) ?? "The storage could not be read.", 500, "failed");
+    }
+    const info = parseSize(stdout);
+    if (!info) throw new StorageError("The storage could not be read.", 500, "failed");
+    return info;
+  }
+  /**
+   * Make the container `targetGb` GiB. One at a time on this box (cc-secure also holds a lock of
+   * its own, shared with the daemon). The number is checked here, by the sudoers pattern, and
+   * again by cc-secure against the limit it works out itself.
+   */
+  async growStorage(targetGb) {
+    if (!validTargetGb(targetGb)) throw new StorageError("The size must be a whole number of GiB.", 400, "invalid");
+    if (this.growing) throw new StorageError("The storage is already being made larger.", 409, "busy");
+    this.growing = true;
+    try {
+      let stdout;
+      try {
+        ({ stdout } = await this.exec("sudo", ["-n", HELPER, "grow", String(targetGb)], GROW_TIMEOUT_MS));
+      } catch (err) {
+        if (looksUnsupported2(err)) throw new StorageUnsupportedError();
+        const reason = helperReason(err);
+        this.log(`[storage] grow to ${targetGb} GiB did not finish: ${reason ?? "no reason given"}`);
+        throw new StorageError(reason ?? "The storage could not be made larger.", reason ? 422 : 500, reason ? "refused" : "failed");
+      }
+      this.log(`[storage] grown to ${targetGb} GiB`);
+      return parseSize(stdout) ?? await this.readStorage();
+    } finally {
+      this.growing = false;
+    }
+  }
+};
+
+// src/routes/storage.ts
+async function handleStorage(req, res, pathname, storage2) {
+  try {
+    if (pathname === "/storage" && req.method === "GET") return sendJson(res, 200, await storage2.readStorage());
+    if (pathname === "/storage/grow" && req.method === "POST") {
+      const body2 = await readJsonBody(req, 1024);
+      return sendJson(res, 200, await storage2.growStorage(body2?.targetGb));
+    }
+    sendJson(res, 404, { error: "Not found" });
+  } catch (err) {
+    if (err instanceof StorageUnsupportedError || err instanceof StorageError) return sendJson(res, err.status, { error: err.message, code: err.code });
+    console.error("[storage]", err.message);
+    sendJson(res, 500, { error: "The storage could not be read.", code: "failed" });
+  }
+}
+
 // src/routes/access-push.ts
-function json4(res, status, body2) {
+function json5(res, status, body2) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body2));
 }
 async function handleAccessPush(req, res, pathname) {
-  if (req.method !== "POST") return json4(res, 405, { error: "Method not allowed" });
-  if (!await verifyMitmRequest(req, "access")) return json4(res, 401, { error: "Unauthorized" });
+  if (req.method !== "POST") return json5(res, 405, { error: "Method not allowed" });
+  if (!await verifyMitmRequest(req, "access")) return json5(res, 401, { error: "Unauthorized" });
   const body2 = await readJsonBody(req, 64 * 1024);
-  if (!body2) return json4(res, 400, { error: "Invalid JSON body" });
+  if (!body2) return json5(res, 400, { error: "Invalid JSON body" });
   if (pathname === "/access/config") {
     const origin = typeof body2.firewallOrigin === "string" ? body2.firewallOrigin.toLowerCase() : "";
-    if (!validFirewallOrigin(origin)) return json4(res, 400, { error: "firewallOrigin must be https://<hostname>" });
+    if (!validFirewallOrigin(origin)) return json5(res, 400, { error: "firewallOrigin must be https://<hostname>" });
     setFirewallOrigin(origin);
     console.log(`[access] the firewall for Opens is ${origin}`);
-    return json4(res, 200, { ok: true, firewallOrigin: origin });
+    return json5(res, 200, { ok: true, firewallOrigin: origin });
   }
   if (pathname === "/access/revoke") {
     if (body2.all === true) {
       rotateSessionSecret();
-      return json4(res, 200, { ok: true, all: true });
+      return json5(res, 200, { ok: true, all: true });
     }
     const ids = Array.isArray(body2.deviceIds) ? body2.deviceIds.filter((x2) => typeof x2 === "string" && x2.length > 0 && x2.length <= 64) : [];
-    if (ids.length === 0 || ids.length > 1e3) return json4(res, 400, { error: "deviceIds must be a non-empty list" });
+    if (ids.length === 0 || ids.length > 1e3) return json5(res, 400, { error: "deviceIds must be a non-empty list" });
     revokeDevices(ids);
     console.log(`[access] revoked ${ids.length} browser(s); their sessions here end now`);
-    return json4(res, 200, { ok: true, revoked: ids.length });
+    return json5(res, 200, { ok: true, revoked: ids.length });
   }
-  return json4(res, 404, { error: "Not found" });
+  return json5(res, 404, { error: "Not found" });
 }
 
 // src/brain-mcp.ts
@@ -59691,920 +61892,6 @@ async function handleGbrain(req, res, url3, service) {
   }
 }
 
-// src/templates.ts
-import { createHash as createHash14 } from "crypto";
-import { existsSync as existsSync30, mkdirSync as mkdirSync18, readdirSync as readdirSync7, readFileSync as readFileSync35, renameSync as renameSync18, rmSync as rmSync11, writeFileSync as writeFileSync23 } from "fs";
-import { dirname as dirname18, join as join25 } from "path";
-
-// ../templates/src/ids.ts
-var ORG_TEMPLATE_ID = /^org-[a-z0-9]{8,40}$/;
-function isOrgTemplateId(id) {
-  return !!id && ORG_TEMPLATE_ID.test(id);
-}
-var BUNDLE_LIMITS = { files: 40, fileBytes: 64 * 1024, totalBytes: 256 * 1024 };
-
-// ../templates/src/skill-payload.ts
-var import_yaml3 = __toESM(require_dist2(), 1);
-
-// ../templates/src/skill-directory.ts
-var import_yaml2 = __toESM(require_dist2(), 1);
-
-// ../templates/src/schema.ts
-var KINDS2 = ["openclaw.plugin", "openclaw.config", "openclaw.skill", "controlclaw.setting", "file", "line", "run"];
-var json5 = external_exports.lazy(() => external_exports.union([external_exports.string(), external_exports.number(), external_exports.boolean(), external_exports.null(), external_exports.array(json5), external_exports.record(external_exports.string(), json5)]));
-var inFolder = external_exports.string().min(1).refine((p2) => !p2.startsWith("/") && !p2.startsWith("~") && !p2.split(/[\\/]/).includes(".."), "must be a path inside the template folder");
-function workspacePathProblem(path) {
-  const elsewhere = "A file anywhere else is written by a run step, which is shown as a script to the person who confirms";
-  if (path.startsWith("~") || path.startsWith("/") || /^[A-Za-z]:/.test(path)) return `must be a file in the agent's workspace, like SOUL.md or notes/plan.md. ${elsewhere}`;
-  if (path.includes("\\") || path.includes("\0")) return "must be a plain path with / between its parts";
-  const parts = path.split("/");
-  if (parts.some((part) => part === "" || part === "." || part === "..")) return `must be a plain path inside the agent's workspace: no "..", no "." and no empty part. ${elsewhere}`;
-  return null;
-}
-var target = external_exports.string().min(1).superRefine((path, ctx) => {
-  const problem = workspacePathProblem(path);
-  if (problem) ctx.addIssue({ code: "custom", message: problem });
-});
-function pluginId(spec) {
-  if (spec.id) return spec.id;
-  const name = (spec.package ?? "").replace(/^(npm|clawhub):/, "").replace(/^@[^/]+\//, "");
-  return name.replace(/@[^@]*$/, "") || name;
-}
-var pluginSpec = external_exports.strictObject({
-  /** The plugin's id in OpenClaw. Left out, it is the last part of the package name. No dots: it is part of a config path. */
-  id: external_exports.string().regex(/^[a-z0-9][a-z0-9_-]*$/i, "must be a plugin id (letters, digits, - and _)").optional(),
-  /** The npm package, or `clawhub:<package>` for one from ClawHub. Left out for a plugin that ships with OpenClaw. */
-  package: external_exports.string().regex(/^(npm:|clawhub:)?(@[a-z0-9._-]+\/)?[a-z0-9._-]+(@[a-z0-9._-]+)?$/i, "must be a package name, like @openclaw/voice-call or clawhub:name").optional(),
-  enabled: external_exports.boolean().default(true),
-  config: external_exports.record(external_exports.string(), json5).optional()
-}).refine((s2) => s2.id || s2.package, "needs an id or a package").refine((s2) => s2.id || !s2.package || !pluginId(s2).includes("."), "needs an id: the package name has a dot, so the plugin's id cannot be worked out from it");
-var configSpec = external_exports.strictObject({
-  // Starts with a letter, a digit or _: never with a dash, which the OpenClaw CLI would read as an option.
-  path: external_exports.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*(\.[A-Za-z0-9_@/:-]+)*$/, "must be a config path like agents.defaults.thinkingDefault"),
-  value: json5.refine((v2) => v2 !== null, "cannot be null: a template never removes a value")
-});
-var skillSpec = external_exports.strictObject({
-  // The name is a key in OpenClaw's config, so not one every object has (`constructor`).
-  name: external_exports.string().regex(SKILL_NAME, "must be a skill name (lowercase letters, digits and dashes)").refine((name) => !(name in {}), "cannot be used as a skill name"),
-  from: inFolder.optional(),
-  enabled: external_exports.boolean().default(true)
-}).refine((s2) => s2.from === void 0 || s2.from.replace(/^(\.\/)+/, "").replace(/\/+$/, "") === carriedSkillFolder(s2.name), { message: "must be files/skills/<name>, the folder a template keeps this skill in", path: ["from"] }).refine((s2) => s2.from === void 0 || !BUILTIN_SKILL_NAMES.includes(s2.name), { message: "is the name of a skill that comes with every agent. A template cannot install its own under that name; give yours another name", path: ["name"] });
-var settingSpec = external_exports.strictObject({
-  /** A console tool, by its name in the catalog (`apps/saas/lib/tools/catalog.ts`). */
-  tool: external_exports.string().regex(/^[a-z][a-z0-9_]*$/, "must be the name of a ControlClaw tool, like egress_create_rule"),
-  values: external_exports.record(external_exports.string(), json5).default({})
-});
-var mode = external_exports.union([external_exports.string(), external_exports.number().int().min(0)]).transform((m2) => String(m2).replace(/^0(?=[0-7]{3,4}$)/, "")).refine((m2) => /^[0-7]{3,4}$/.test(m2), "must be a file mode like 644 or 0755");
-var fileSpec = external_exports.strictObject({
-  path: target,
-  from: inFolder,
-  ifMissing: external_exports.boolean().default(false),
-  /** Replace `{{note}}` and `{{name}}` in the file's text with the agent's note and name. */
-  fill: external_exports.boolean().default(false),
-  mode: mode.optional()
-});
-var lineSpec = external_exports.strictObject({
-  file: target,
-  match: external_exports.string().min(1).refine(isRegExp, "must be a regular expression"),
-  line: external_exports.string().min(1).refine((l2) => !/[\r\n]/.test(l2), "must be one line")
-}).refine((s2) => !isRegExp(s2.match) || new RegExp(s2.match).test(s2.line), { message: "must match its own `match`, or the step would never hold", path: ["line"] });
-var runSpec = external_exports.strictObject({
-  apply: inFolder,
-  verify: inFolder,
-  /** Seconds each script may take. */
-  timeout: external_exports.number().int().min(1).max(3600).default(300)
-});
-function isRegExp(source) {
-  try {
-    new RegExp(source);
-    return true;
-  } catch {
-    return false;
-  }
-}
-var STEP_FIELDS = /* @__PURE__ */ new Set(["id", "title", "optional", "needs", "restart", ...KINDS2]);
-
-// ../templates/src/skill-payload.ts
-var SKILL_PAYLOAD_ID = /^sks-[a-z0-9]{8,40}$/;
-function isSkillPayloadId(id) {
-  return !!id && SKILL_PAYLOAD_ID.test(id);
-}
-var SKILL_PAYLOAD_MAX_BYTES = Math.ceil(SKILL_LIMITS.totalBytes * 4 / 3) + 256 * 1024;
-
-// src/born.ts
-import { closeSync as closeSync3, constants, fstatSync as fstatSync3, openSync as openSync3, readSync as readSync3, statSync as statSync3 } from "fs";
-import { dirname as dirname17 } from "path";
-var BORN_PATH = "/etc/controlclaw/born";
-var FUTURE_SLACK_MS = 5 * 6e4;
-function bornAt(path = BORN_PATH, owner = 0) {
-  let fd = null;
-  try {
-    const folder = statSync3(dirname17(path));
-    if (!folder.isDirectory() || folder.uid !== owner || (folder.mode & 18) !== 0) return null;
-    fd = openSync3(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const stat5 = fstatSync3(fd);
-    if (!stat5.isFile() || stat5.uid !== owner || (stat5.mode & 18) !== 0 || stat5.size > 64) return null;
-    const buffer = Buffer.alloc(64);
-    const text2 = buffer.toString("utf8", 0, readSync3(fd, buffer, 0, 64, 0)).trim();
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/.test(text2)) return null;
-    const at2 = new Date(text2);
-    return Number.isNaN(at2.getTime()) ? null : at2;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) closeSync3(fd);
-  }
-}
-function isNew(hours, options = {}) {
-  const born = bornAt(options.path, options.owner);
-  if (!born) return false;
-  const age = (options.now ?? /* @__PURE__ */ new Date()).getTime() - born.getTime();
-  return age >= -FUTURE_SLACK_MS && age < hours * 60 * 6e4;
-}
-
-// src/templates.ts
-var TEMPLATE_POLL_MS = 2 * 6e4;
-var TEMPLATE_IDLE_POLL_MS = 15 * 6e4;
-var TEMPLATE_VERIFY_MS = 6 * 60 * 6e4;
-var RUN_TIMEOUT_MS = 45 * 6e4;
-var VERIFY_TIMEOUT_MS = 10 * 6e4;
-var CALL_MS2 = 2e4;
-var TEMPLATE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
-var REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
-var STEP_ID = /^[a-z0-9][a-z0-9-]*(\/[a-z0-9][a-z0-9-]*)?$/;
-var BUNDLE_HASH = /^[a-f0-9]{64}$/;
-var BUNDLE_MAX_BYTES = 1024 * 1024;
-var UNPACK_TIMEOUT_MS = 6e4;
-var SKILL_TIMEOUT_MS = 10 * 6e4;
-var START_SKILLS_HOURS = 2;
-var MAX_START_SKILLS = 30;
-var START_SKILLS_TRIES = 4;
-var isOrgTemplate = isOrgTemplateId;
-var captureId = (raw) => {
-  const id = raw?.id;
-  return typeof id === "string" && REQUEST_ID.test(id) ? id : null;
-};
-function startSkillsOf(raw) {
-  const r2 = raw;
-  if (!r2 || typeof r2.id !== "string" || !REQUEST_ID.test(r2.id) || !Array.isArray(r2.items)) return null;
-  const items = r2.items.slice(0, MAX_START_SKILLS).flatMap((entry) => {
-    const e = entry;
-    if (!e || !isSkillPayloadId(typeof e.payload === "string" ? e.payload : null) || typeof e.hash !== "string" || !BUNDLE_HASH.test(e.hash)) return [];
-    return [{ payload: e.payload, hash: e.hash, runId: typeof e.runId === "string" && REQUEST_ID.test(e.runId) ? e.runId : null }];
-  });
-  return items.length ? { id: r2.id, items } : null;
-}
-var bundleHashOf = (raw) => {
-  const hash3 = raw?.hash;
-  return typeof hash3 === "string" && BUNDLE_HASH.test(hash3) ? hash3 : null;
-};
-var UNSURE_ROUNDS = 5;
-var TEMPLATE_REVIEW_MS = 45 * 6e4;
-var templateReviewPath = (stateDir) => join25(stateDir, "review.json");
-var STAMP = /^[0-9TZ:.-]{1,48}$/;
-function reviewFilesOf(raw) {
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((entry) => {
-    const f2 = entry;
-    if (!f2 || typeof f2.step !== "string" || !STEP_ID.test(f2.step) || typeof f2.path !== "string" || typeof f2.text !== "string") return [];
-    if (!f2.path || f2.path.startsWith("/") || f2.path.split("/").includes("..")) return [];
-    return [{ step: f2.step, title: typeof f2.title === "string" ? f2.title.slice(0, 120) : f2.step, path: f2.path, text: f2.text, exists: f2.exists === true, stamp: typeof f2.stamp === "string" && STAMP.test(f2.stamp) ? f2.stamp : null }];
-  });
-}
-function readTemplateReview(stateDir, now = /* @__PURE__ */ new Date()) {
-  try {
-    const raw = JSON.parse(readFileSync35(templateReviewPath(stateDir), "utf8"));
-    if (typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template) || typeof raw.at !== "string") return null;
-    const age = now.getTime() - new Date(raw.at).getTime();
-    if (!(age >= 0 && age < TEMPLATE_REVIEW_MS)) return null;
-    const files2 = reviewFilesOf(raw.files).map(({ stamp: _stamp, ...file2 }) => file2);
-    return files2.length ? { template: raw.template, at: raw.at, files: files2 } : null;
-  } catch {
-    return null;
-  }
-}
-var TEMPLATE_TICKET_MS = 30 * 6e4;
-var TEMPLATE_FIRST_HOUR_MS = 60 * 6e4;
-var CHECKED_WHEN_APPLIED = "checked when applied";
-var AGENT_NAME_MAX = 200;
-var TIME_ZONE = /^[A-Za-z0-9_+\-/]{1,64}$/;
-var PENDING_NOTE_MAX = 400;
-function payloadHash(files2, vars) {
-  return createHash14("sha256").update(JSON.stringify(["template-apply-v1", files2, vars.note, vars.name, vars.timeZone])).digest("hex");
-}
-var varsOf = (raw) => {
-  const v2 = raw;
-  return v2 && typeof v2.note === "string" && typeof v2.name === "string" && typeof v2.timeZone === "string" ? { note: v2.note, name: v2.name, timeZone: v2.timeZone } : null;
-};
-var APPLIED_VARS = "vars.json";
-var PREVIEW_VARS = "preview-vars.json";
-var TemplateService = class {
-  constructor(opts) {
-    this.opts = opts;
-    try {
-      const kept = JSON.parse(readFileSync35(this.unsentPath, "utf8"));
-      if (kept && typeof kept === "object") this.unsent = kept;
-    } catch {
-    }
-  }
-  running = null;
-  /**
-   * A result the control plane has not taken yet. Kept on disk as well: the template is applied
-   * once, so a result lost to a restart of this service could never be produced again.
-   */
-  unsent = null;
-  settled = false;
-  /** When the console was last asked, so an idle agent asks only now and then. */
-  askedAt = 0;
-  /** The console said something is waiting, and the console has not been asked since. */
-  poked = false;
-  again = false;
-  /**
-   * A periodic check in flight. A round waits for it and it never starts during a round: both
-   * unpack an organization's template into the same folder, and neither may remove it under the other.
-   */
-  verifying = null;
-  /** Rounds in which the template chosen at create could not be unpacked for a reason that says nothing about its files. */
-  unsure = 0;
-  /**
-   * The console's poke. Remembered, so it is not lost when it arrives while a round is running (that
-   * round may have asked just before the request was made) or while OpenClaw is not connected: the
-   * next round asks, and a round that is running is followed by another.
-   */
-  poke() {
-    this.poked = true;
-  }
-  get unsentPath() {
-    return join25(this.opts.stateDir, "unsent.json");
-  }
-  keep(result) {
-    this.unsent = result;
-    this.write(this.unsentPath, result);
-  }
-  /** True once the template has been applied (or there is none) and its result has been taken. */
-  get done() {
-    return this.settled && !this.unsent;
-  }
-  /**
-   * Whether to ask the console on this round (rounds are two minutes apart). Every round while its
-   * own template is still to apply or a result is still to send. After that only now and then: an
-   * owner may ask for a preview or an apply on any agent, also one with no template, and the console
-   * pokes the agent when one does.
-   */
-  get asks() {
-    if (!this.settled || this.unsent || this.poked || this.startOpen()) return true;
-    return (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime() - this.askedAt >= TEMPLATE_IDLE_POLL_MS;
-  }
-  /** A take of the starting skills that has not finished: the next round tries again, or closes it. */
-  startOpen() {
-    const latch = this.startLatch();
-    return !!latch && !latch.done;
-  }
-  log(line2) {
-    (this.opts.log ?? ((l2) => console.log(l2)))(`[templates] ${line2}`);
-  }
-  get markerPath() {
-    return join25(this.opts.stateDir, "applied.json");
-  }
-  marker() {
-    try {
-      const raw = JSON.parse(readFileSync35(this.markerPath, "utf8"));
-      if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
-      const vars = varsOf(raw.vars);
-      return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {}, ...vars ? { vars } : {} };
-    } catch {
-      return null;
-    }
-  }
-  write(path, value2) {
-    mkdirSync18(dirname18(path), { recursive: true, mode: 448 });
-    const tmp = `${path}.tmp`;
-    writeFileSync23(tmp, JSON.stringify(value2), { mode: 384 });
-    renameSync18(tmp, path);
-  }
-  async call(method, body2, path = "", maxBytes = BUNDLE_MAX_BYTES) {
-    const base = this.opts.base();
-    if (!base) throw new Error("no control plane address");
-    const response = await (this.opts.fetch ?? fetch)(`${base}/api/vm-agent/template${path || (method === "GET" ? "?can=templates_org,skills_start" : "")}`, {
-      method,
-      headers: { authorization: `Bearer ${await this.opts.getToken()}`, ...body2 === void 0 ? {} : { "content-type": "application/json" } },
-      body: body2 === void 0 ? void 0 : JSON.stringify(body2),
-      signal: AbortSignal.timeout(CALL_MS2)
-    });
-    if (!response.ok) throw Object.assign(new Error(`control plane answered ${response.status}`), { status: response.status });
-    if (!path) return response.json();
-    const reader = response.body?.getReader();
-    const chunks = [];
-    let size2 = 0;
-    for (let part = await reader?.read(); part && !part.done; part = await reader?.read()) {
-      size2 += part.value.byteLength;
-      if (size2 > maxBytes) {
-        await reader?.cancel().catch(() => void 0);
-        throw Object.assign(new Error("the template is too large"), { status: 413 });
-      }
-      chunks.push(part.value);
-    }
-    return Buffer.concat(chunks).toString("utf8");
-  }
-  /**
-   * The folder a template runs from. A system template is a folder of this release. One of the
-   * organization's own is fetched from the console and unpacked by the runner, which writes it only
-   * if it passes the runner's checks and has the hash the console named (`hash`). The files as they
-   * were fetched are kept, and unpacked again each time, so what runs is always what was checked.
-   * Throws only when the console cannot be reached: that is tried again on the next round. Whatever
-   * goes wrong with the files themselves is an answer (`broken`), never a throw: a template that
-   * cannot be unpacked must not stop this service from reporting, or from taking a later request.
-   */
-  async folder(template, hash3) {
-    if (!isOrgTemplate(template)) {
-      const dir2 = join25(this.opts.templatesDir, template);
-      return existsSync30(join25(dir2, "template.yaml")) ? { dir: dir2 } : { dir: null, why: "missing" };
-    }
-    if (!hash3) return { dir: null, why: "broken" };
-    const kept = join25(this.opts.stateDir, "org", `${template}.json`);
-    const dir = join25(this.opts.stateDir, "org", template);
-    const remove = (path) => {
-      try {
-        rmSync11(path, { recursive: true, force: true });
-      } catch {
-      }
-    };
-    let certain = false;
-    const unpack = async (again = false) => {
-      remove(dir);
-      try {
-        await this.opts.exec(this.opts.node, [this.opts.runbook, "unpack", kept, dir, "--hash", hash3], UNPACK_TIMEOUT_MS);
-        return true;
-      } catch (error62) {
-        remove(dir);
-        const code = error62.code;
-        certain = code === 3 || code === 64;
-        if (certain || again) return false;
-        return unpack(true);
-      }
-    };
-    if (existsSync30(kept) && await unpack()) return { dir };
-    let text2;
-    try {
-      text2 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(template)}`);
-    } catch (error62) {
-      if (error62.status === 404) return { dir: null, why: "missing" };
-      throw error62;
-    }
-    try {
-      mkdirSync18(dirname18(kept), { recursive: true, mode: 448 });
-      writeFileSync23(`${kept}.tmp`, text2, { mode: 384 });
-      renameSync18(`${kept}.tmp`, kept);
-    } catch (error62) {
-      this.log(`${template}: its files could not be kept on this agent (${error62.code ?? "error"})`);
-      return { dir: null, why: "unsure" };
-    }
-    if (await unpack()) return { dir };
-    if (!certain) {
-      this.log(`${template}: its files could not be unpacked just now`);
-      return { dir: null, why: "unsure" };
-    }
-    this.log(`${template}: the files are not the ones the console named, or do not pass the check`);
-    remove(kept);
-    return { dir: null, why: "broken" };
-  }
-  /** Runs the runner and returns what it printed for the console, whatever its exit code. */
-  async runbook(command, template, dir, assignment, only, noScripts = false) {
-    const vars = join25(this.opts.stateDir, command === "check" ? PREVIEW_VARS : APPLIED_VARS);
-    this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
-    const args = [this.opts.runbook, command === "check" ? "run" : command, dir, "--vars", vars, "--json", "--public"];
-    if (isOrgTemplate(template)) args.push("--as", template);
-    if (command === "check") args.push("--check", ...noScripts ? ["--no-scripts"] : [], ...only ? ["--only", only.join(",")] : []);
-    if (command === "run") args.push("--skip-unconfirmed", ...assignment.runId ? ["--run-id", assignment.runId] : [], ...only ? ["--only", only.join(",")] : []);
-    let stdout = "";
-    try {
-      stdout = (await this.opts.exec(this.opts.node, args, command === "run" ? RUN_TIMEOUT_MS : VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
-    } catch (error62) {
-      stdout = error62.stdout ?? "";
-    }
-    try {
-      const report = JSON.parse(stdout);
-      return Array.isArray(report.steps) ? report : null;
-    } catch {
-      return null;
-    }
-  }
-  async send() {
-    if (!this.unsent) return;
-    try {
-      await this.call("POST", this.unsent);
-    } catch (error62) {
-      const status = error62.status;
-      if (status !== 400 && status !== 413) throw error62;
-      this.log(`the control plane refused the result (${status}); not sent again`);
-    }
-    this.unsent = null;
-    rmSync11(this.unsentPath, { force: true });
-  }
-  /** What the control plane says about this agent now, or null when the answer cannot be read. */
-  async assignment() {
-    const raw = await this.call("GET");
-    if (!raw || typeof raw !== "object") return null;
-    const template = typeof raw.template === "string" && TEMPLATE_ID.test(raw.template) ? raw.template : null;
-    const stepIds = (list) => Array.isArray(list) ? list.filter((id) => typeof id === "string" && STEP_ID.test(id)) : [];
-    const steps = stepIds(raw.rerun?.steps);
-    const asked = raw.request;
-    const request = asked && typeof asked.id === "string" && REQUEST_ID.test(asked.id) && (asked.kind === "preview" || asked.kind === "apply") && typeof asked.template === "string" && TEMPLATE_ID.test(asked.template) ? { id: asked.id, kind: asked.kind, template: asked.template, preview: typeof asked.preview === "string" && REQUEST_ID.test(asked.preview) ? asked.preview : null, steps: stepIds(asked.steps), runId: typeof asked.runId === "string" ? asked.runId : null, bundle: bundleHashOf(asked.bundle), look: asked.kind === "preview" && asked.look === true } : null;
-    return {
-      template,
-      note: typeof raw.note === "string" ? raw.note : "",
-      // Both go into the template's files and to its scripts. A name is one line of bounded length,
-      // so the firewall can show all of it in the code message; a time zone is a zone's name and
-      // nothing else, so it cannot carry other text.
-      name: typeof raw.name === "string" ? raw.name.replace(/[\r\n\u2028\u2029]+/g, " ").slice(0, AGENT_NAME_MAX) : "",
-      timeZone: typeof raw.timeZone === "string" && TIME_ZONE.test(raw.timeZone) ? raw.timeZone : "UTC",
-      runId: typeof raw.runId === "string" ? raw.runId : null,
-      rerun: template && steps.length ? { runId: typeof raw.rerun?.runId === "string" ? raw.rerun.runId : null, steps, at: typeof raw.rerun?.at === "string" ? raw.rerun.at.slice(0, 40) : "" } : null,
-      request,
-      bundle: template ? bundleHashOf(raw.bundle) : null,
-      capture: captureId(raw.capture),
-      skills: startSkillsOf(raw.skills),
-      ..."review" in raw ? { review: typeof raw.review === "string" && TEMPLATE_ID.test(raw.review) ? raw.review : null } : {}
-    };
-  }
-  /** Applies the template if that is still to do, and sends whatever the console has not had. One at a time; never throws. */
-  tick() {
-    this.running ??= (this.verifying ?? Promise.resolve()).then(() => this.once()).catch((error62) => this.log(`could not finish: ${error62.message}`)).finally(() => {
-      this.running = null;
-      if (this.poked && !this.again) {
-        this.again = true;
-        void this.tick().finally(() => this.again = false);
-      }
-    });
-    return this.running;
-  }
-  async once() {
-    if (this.unsent) await this.send();
-    this.poked = false;
-    const assignment = await this.assignment();
-    this.askedAt = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime();
-    if (!assignment) return;
-    const marker = this.marker();
-    if (marker) {
-      this.settled = true;
-      if (!marker.missing) await this.rerun(marker, assignment);
-    } else if (assignment.template && this.coded && !this.firstHour()) {
-      if (!this.settled) {
-        this.log(`${assignment.template} is named for this agent, which is no longer new: not applied without a confirmation code`);
-        this.keep({ kind: "run", template: assignment.template, unconfirmed: true });
-        await this.send();
-      }
-      this.settled = true;
-    } else if (assignment.template) {
-      await this.apply(assignment.template, assignment, void 0, assignment.bundle);
-    } else {
-      this.settled = true;
-    }
-    this.dropReview(assignment.review === void 0 ? void 0 : assignment.review ?? (assignment.request?.kind === "preview" ? assignment.request.template : null));
-    if (assignment.request) await this.asked(assignment.request, assignment);
-    await this.startSkills(assignment.skills);
-    if (assignment.capture) await this.capture(assignment.capture);
-    this.tidy([assignment.template, assignment.request?.template, this.marker()?.template]);
-  }
-  /** Removes the copies of the organization's templates this agent no longer has and is not being asked about. */
-  tidy(wanted) {
-    const folder = join25(this.opts.stateDir, "org");
-    try {
-      for (const name of readdirSync7(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync11(join25(folder, name), { recursive: true, force: true });
-    } catch {
-    }
-  }
-  /**
-   * Applies a template in full and reports it: the one chosen at create, or one an owner applied
-   * to the running agent (`requestId`). Recorded, so it is applied once.
-   */
-  async apply(template, assignment, requestId, hash3 = null, found) {
-    const folder = found ?? await this.folder(template, hash3);
-    const now = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
-    const from = { ...requestId ? { request: requestId } : {}, ...hash3 ? { hash: hash3 } : {} };
-    if (folder.dir === null && folder.why === "unsure" && !requestId && this.unsure < UNSURE_ROUNDS) {
-      this.unsure++;
-      this.log(`${template} could not be unpacked just now; trying again on the next round (${this.unsure} of ${UNSURE_ROUNDS})`);
-      return;
-    }
-    if (folder.dir === null) {
-      this.log(`${template} is not on this agent`);
-      this.keep({ kind: "run", template, ...folder.why === "missing" ? { missing: true } : { broken: true }, ...requestId ? { requestId } : {} });
-      if (!requestId) this.write(this.markerPath, { template, at: now, missing: true, ...from });
-      this.settled = true;
-      return this.send();
-    }
-    const dir = folder.dir;
-    this.log(`applying ${template}`);
-    const report = await this.runbook("run", template, dir, assignment);
-    this.keep({ kind: "run", template, ...report ? { report } : { broken: true }, ...requestId ? { requestId } : {} });
-    this.write(this.markerPath, { template, at: now, ...from, vars: { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone } });
-    this.settled = true;
-    this.log(report ? `applied ${template}: ${String(report.result)}` : `${template}: the runner gave no report`);
-    setTimeout(() => void this.verify(), this.opts.verifyAfterMs ?? 3 * 6e4).unref();
-    return this.send();
-  }
-  /**
-   * Save as template: reads what this agent is set up with (`cc-runbook capture`, which only reads
-   * and never touches memory, credentials or anything outside the workspace) and sends it to the
-   * console, because an owner or admin asked for exactly that. Never by itself, and each request
-   * once. What is sent is a list of facts; the console checks each and builds the template, and
-   * takes this agent's own template from its own copy, not from here.
-   */
-  async capture(id) {
-    const done = join25(this.opts.stateDir, "capture.json");
-    try {
-      if (JSON.parse(readFileSync35(done, "utf8")).id === id) return;
-    } catch {
-    }
-    this.log("reading this agent's setup for Save as template");
-    let body2 = { id, failed: true };
-    try {
-      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "capture"], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
-      const observed = JSON.parse(stdout);
-      if (Array.isArray(observed.files) && Array.isArray(observed.plugins) && Array.isArray(observed.config)) body2 = { id, observed };
-    } catch (error62) {
-      this.log(`could not read the setup: ${error62.message}`);
-    }
-    this.write(done, { id });
-    try {
-      await this.call("POST", body2, "/capture");
-    } catch (error62) {
-      this.log(`the console did not take what was read: ${error62.message}`);
-    }
-  }
-  get startSkillsPath() {
-    return join25(this.opts.stateDir, "start-skills.json");
-  }
-  /** What was taken, as it is kept: the id, the exact skills that were named then, and how far it got. */
-  startLatch() {
-    const closed = { id: "", at: "", items: [], tries: 0, done: true };
-    let text2;
-    try {
-      text2 = readFileSync35(this.startSkillsPath, "utf8");
-    } catch (error62) {
-      return error62.code === "ENOENT" ? null : closed;
-    }
-    try {
-      const raw = JSON.parse(text2);
-      const parsed = startSkillsOf({ id: raw.id, items: raw.items });
-      if (!parsed) return { id: typeof raw.id === "string" ? raw.id : "", at: "", items: [], tries: 0, done: true };
-      return { id: parsed.id, at: typeof raw.at === "string" ? raw.at : "", items: parsed.items, tries: typeof raw.tries === "number" ? raw.tries : 0, done: raw.done === true };
-    } catch {
-      return closed;
-    }
-  }
-  /**
-   * The skills a new agent starts with. Creating an agent asks for no confirmation code, so this
-   * must not become a way to install a skill on an agent that is already at work:
-   *
-   * - **Only a new agent, tested on every attempt.** "New" is the born stamp (`born.ts`): a file
-   *   only provisioning writes. Nothing kept in this service's own folder can make an agent new.
-   * - **Once, and only what was named the first time.** The first take writes down the id and the
-   *   exact skills (payload and hash). Every later attempt installs those and nothing else: what
-   *   the console says later, under the same id or another, is not read.
-   * - **This service's record can only close the window.** When the agent is no longer new the
-   *   record is marked done, whatever happened, and a record that is done stays done.
-   *
-   * Each skill is fetched and installed by itself, so one that fails does not stop the others.
-   * While the agent is new, a round in which some skill did not install is tried again a few
-   * times: a busy first boot must not leave an agent without its skills.
-   */
-  async startSkills(named) {
-    const latch = this.startLatch();
-    if (latch?.done) return;
-    const now = () => (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
-    const close = (kept) => this.write(this.startSkillsPath, { ...kept, done: true });
-    if (!(this.opts.isNew ?? (() => isNew(START_SKILLS_HOURS, { now: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))() })))()) {
-      if (latch) close(latch);
-      else if (named) {
-        close({ id: named.id, at: now(), items: named.items, tries: 0 });
-        await this.call("POST", { kind: "skills", requestId: named.id, notNew: true, skills: [] }).catch((error62) => this.log(`the console was not told that this agent is not new: ${error62.message}`));
-      }
-      return;
-    }
-    let taken = latch;
-    if (!taken) {
-      if (!named) return;
-      taken = { id: named.id, at: now(), items: named.items, tries: 0, done: false };
-      this.write(this.startSkillsPath, taken);
-    }
-    this.log(`installing the ${taken.items.length} skill(s) this agent starts with`);
-    const results = [];
-    for (const item of taken.items) results.push({ payload: item.payload, ...await this.installSkill(item) });
-    const tries = taken.tries + 1;
-    let over = false;
-    try {
-      await this.call("POST", { kind: "skills", requestId: taken.id, skills: results });
-    } catch (error62) {
-      const status = error62.status;
-      if (status !== 400 && status !== 413) {
-        this.write(this.startSkillsPath, { ...taken, tries });
-        if (tries >= START_SKILLS_TRIES) close({ ...taken, tries });
-        throw error62;
-      }
-      this.log(`the control plane refused the skills result (${status}); not sent again`);
-      over = true;
-    }
-    const allIn = results.every((r2) => {
-      const steps = r2.report?.steps ?? [];
-      return steps.some((s2) => s2.kind === "openclaw.skill" && (s2.status === "ok" || s2.status === "changed"));
-    });
-    if (over || allIn || tries >= START_SKILLS_TRIES) close({ ...taken, tries });
-    else this.write(this.startSkillsPath, { ...taken, tries });
-  }
-  /** One skill: fetched from the console, checked and installed by the runner. Never throws except when the console cannot be reached. */
-  async installSkill(item) {
-    let text2;
-    try {
-      text2 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(item.payload)}`, SKILL_PAYLOAD_MAX_BYTES);
-    } catch (error62) {
-      const status = error62.status;
-      if (status === 404) return { missing: true };
-      if (status === 413) return { broken: true };
-      throw error62;
-    }
-    const file2 = join25(this.opts.stateDir, "skills", `${item.payload}.json`);
-    try {
-      mkdirSync18(dirname18(file2), { recursive: true, mode: 448 });
-      writeFileSync23(file2, text2, { mode: 384 });
-      let stdout = "";
-      try {
-        stdout = (await this.opts.exec(this.opts.node, [this.opts.runbook, "skill", file2, "--hash", item.hash, "--as", item.payload, "--skip-unconfirmed", "--json", "--public", ...item.runId ? ["--run-id", item.runId] : []], SKILL_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
-      } catch (error62) {
-        stdout = error62.stdout ?? "";
-      }
-      try {
-        const report = JSON.parse(stdout);
-        if (Array.isArray(report.steps)) return { report };
-      } catch {
-      }
-      this.log(`${item.payload}: the skill was not installed (not the files the console named, or not a valid skill)`);
-      return { broken: true };
-    } catch (error62) {
-      this.log(`${item.payload}: the skill could not be kept on this agent (${error62.code ?? "error"})`);
-      return { broken: true };
-    } finally {
-      rmSync11(file2, { force: true });
-    }
-  }
-  get handledPath() {
-    return join25(this.opts.stateDir, "request.json");
-  }
-  /** This agent has a firewall, so an apply to it needs the firewall's ticket. */
-  get coded() {
-    return this.opts.firewall?.() === true;
-  }
-  /**
-   * Whether this agent is still new: in the first hour after it was given to its organization, by
-   * the born stamp (`born.ts`). Asked on every attempt and never kept. An agent with no stamp, which
-   * is every agent from before the stamp existed, is not new.
-   */
-  firstHour() {
-    return isNew(TEMPLATE_FIRST_HOUR_MS / 36e5, { now: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))(), ...this.opts.born });
-  }
-  get pendingPath() {
-    return join25(this.opts.stateDir, "pending.json");
-  }
-  get ticketPath() {
-    return join25(this.opts.stateDir, "ticket.json");
-  }
-  fresh(at2, ms) {
-    if (typeof at2 !== "string") return false;
-    const age = (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().getTime() - new Date(at2).getTime();
-    return age >= 0 && age < ms;
-  }
-  /** What a template is, from its own files (`cc-runbook facts`, which runs nothing). Null when it cannot be read. */
-  async facts(dir) {
-    try {
-      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "facts", dir], UNPACK_TIMEOUT_MS, void 0, { maxBuffer: 1024 * 1024 });
-      const raw = JSON.parse(stdout);
-      if (typeof raw.name !== "string" || !TEMPLATE_ID.test(raw.name) || typeof raw.hash !== "string" || !BUNDLE_HASH.test(raw.hash) || !Array.isArray(raw.steps)) return null;
-      const steps = raw.steps.filter((s2) => !!s2 && typeof s2.id === "string" && STEP_ID.test(s2.id) && typeof s2.kind === "string");
-      return steps.length === raw.steps.length ? { name: raw.name, hash: raw.hash, steps } : null;
-    } catch {
-      return null;
-    }
-  }
-  /**
-   * For the firewall: what the preview with this id found, while it is recent. The firewall writes
-   * the code message from this answer and from nothing the console said.
-   */
-  pending(ref) {
-    try {
-      const raw = JSON.parse(readFileSync35(this.pendingPath, "utf8"));
-      if (raw.kind !== "template" || raw.ref !== ref || !this.fresh(raw.at, TEMPLATE_REVIEW_MS)) return null;
-      if (typeof raw.template !== "string" || typeof raw.name !== "string" || typeof raw.hash !== "string" || typeof raw.steps !== "number" || typeof raw.change !== "number" || typeof raw.scripts !== "number") return null;
-      const vars = varsOf(raw.vars);
-      if (!vars || !BUNDLE_HASH.test(raw.hash)) return null;
-      return { kind: "template", ref, template: raw.template, name: raw.name, hash: raw.hash, org: raw.org === true, steps: raw.steps, change: raw.change, scripts: raw.scripts, at: raw.at, filledName: vars.name.slice(0, AGENT_NAME_MAX), note: vars.note.slice(0, PENDING_NOTE_MAX), noteCut: vars.note.length > PENDING_NOTE_MAX, payload: payloadHash(raw.hash, vars) };
-    } catch {
-      return null;
-    }
-  }
-  /**
-   * From the firewall, after the right code: this preview may be applied, once, with exactly the
-   * files it was a preview of and the note, name and time zone it was filled with (`payload` is the
-   * hash over all of them). Taken only for the preview this agent has on record.
-   */
-  ticket(ref, payload) {
-    const pending = this.pending(ref);
-    if (!pending || pending.payload !== payload) return false;
-    let vars = null;
-    try {
-      vars = varsOf(JSON.parse(readFileSync35(this.pendingPath, "utf8")).vars);
-    } catch {
-    }
-    if (!vars) return false;
-    this.write(this.ticketPath, { ref, template: pending.template, hash: pending.hash, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(), vars });
-    this.log(`a confirmation code was given for ${pending.template}`);
-    return true;
-  }
-  /**
-   * Whether the firewall's ticket covers this apply: the same preview, the same template, the same
-   * files, and not too old. Used up by asking, whatever the answer: a ticket is for one apply.
-   * Answers with the note, name and time zone the preview was made with, which the apply uses: what
-   * the console says they are at the time of the apply is not what the person looked at.
-   */
-  async ticketed(request, dir) {
-    let ticket = null;
-    try {
-      ticket = JSON.parse(readFileSync35(this.ticketPath, "utf8"));
-    } catch {
-    }
-    rmSync11(this.ticketPath, { force: true });
-    const vars = varsOf(ticket?.vars);
-    if (!ticket || !vars || !request.preview || ticket.ref !== request.preview || ticket.template !== request.template || !this.fresh(ticket.at, TEMPLATE_TICKET_MS)) return null;
-    const hash3 = isOrgTemplate(request.template) ? request.bundle : (await this.facts(dir))?.hash ?? null;
-    if (!hash3 || hash3 !== ticket.hash) return null;
-    rmSync11(this.pendingPath, { force: true });
-    return vars;
-  }
-  /** A preview or an apply an owner or admin asked for in the console. Each request once. */
-  async asked(request, assignment) {
-    let handled = null;
-    try {
-      handled = JSON.parse(readFileSync35(this.handledPath, "utf8")).id ?? null;
-    } catch {
-    }
-    if (handled === request.id || this.marker()?.request === request.id) return;
-    if (request.kind === "apply") {
-      let found;
-      let vars = assignment;
-      if (this.coded) {
-        found = await this.folder(request.template, request.bundle);
-        const confirmed = found.dir ? await this.ticketed(request, found.dir) : null;
-        if (found.dir && !confirmed) {
-          this.log(`${request.template} was not applied: no confirmation code was given for it`);
-          this.write(this.handledPath, { id: request.id });
-          this.keep({ kind: "run", template: request.template, requestId: request.id, unconfirmed: true });
-          return this.send();
-        }
-        if (confirmed) vars = confirmed;
-      }
-      await this.apply(request.template, { ...vars, runId: request.runId }, request.id, request.bundle, found);
-      this.write(this.handledPath, { id: request.id });
-      return;
-    }
-    const folder = await this.folder(request.template, request.bundle);
-    if (request.look) {
-      const kept2 = folder.dir ? await this.review(request, folder.dir, assignment) : {};
-      this.write(this.handledPath, { id: request.id });
-      await this.call("POST", { kind: "preview", template: request.template, requestId: request.id, kept: kept2 }).catch((error62) => this.log(`the second look was not taken: ${error62.message}`));
-      return;
-    }
-    this.log(`previewing ${request.template}`);
-    const facts = this.coded && folder.dir ? await this.facts(folder.dir) : null;
-    const own2 = facts ? facts.steps.filter((s2) => s2.kind !== "controlclaw.setting").map((s2) => s2.id) : request.steps;
-    const noScripts = this.coded && isOrgTemplate(request.template);
-    const report = folder.dir && own2.length ? await this.runbook("check", request.template, folder.dir, assignment, own2, noScripts) : null;
-    this.write(this.handledPath, { id: request.id });
-    rmSync11(this.pendingPath, { force: true });
-    rmSync11(this.ticketPath, { force: true });
-    const hash3 = isOrgTemplate(request.template) ? request.bundle : facts?.hash ?? null;
-    if (facts && hash3 && (report || !own2.length)) {
-      const said = (report?.steps ?? []).filter((s2) => typeof s2.id === "string" && own2.includes(s2.id));
-      this.write(this.pendingPath, {
-        kind: "template",
-        ref: request.id,
-        template: request.template,
-        name: facts.name,
-        hash: hash3,
-        org: isOrgTemplate(request.template),
-        steps: own2.length,
-        change: said.filter((s2) => s2.status === "would-change" && s2.message !== CHECKED_WHEN_APPLIED).length,
-        scripts: facts.steps.filter((s2) => s2.kind === "run").length,
-        at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(),
-        // Kept with it and not handed to the firewall: what this check was filled with.
-        vars: { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone }
-      });
-    }
-    this.keep({ kind: "preview", template: request.template, requestId: request.id, ...folder.dir === null ? folder.why === "missing" ? { missing: true } : { broken: true } : report ? { report } : request.steps.length ? { broken: true } : {} });
-    await this.send();
-    if (!folder.dir) return;
-    const kept = await this.review(request, folder.dir, assignment);
-    if (Object.keys(kept).length) await this.call("POST", { kind: "preview", template: request.template, requestId: request.id, kept }).catch((error62) => this.log(`when the kept files were written was not taken: ${error62.message}`));
-  }
-  /**
-   * Keeps, for the Files page, the files the previewed template would not overwrite, each with the
-   * template's own text (`cc-runbook review`). Returns when each of those the agent has was last
-   * written. Best effort: without it the preview is as it was before.
-   */
-  async review(request, dir, assignment) {
-    const path = templateReviewPath(this.opts.stateDir);
-    try {
-      const vars = join25(this.opts.stateDir, PREVIEW_VARS);
-      this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
-      const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "review", dir, "--vars", vars, ...isOrgTemplate(request.template) ? ["--as", request.template] : []], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
-      const files2 = reviewFilesOf(JSON.parse(stdout).files);
-      if (!files2.length) throw new Error("nothing to review");
-      this.write(path, { template: request.template, requestId: request.id, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(), files: files2 });
-      return Object.fromEntries(files2.flatMap((f2) => f2.exists && f2.stamp ? [[f2.step, f2.stamp]] : []));
-    } catch {
-      if (readTemplateReview(this.opts.stateDir)?.template !== request.template) rmSync11(path, { force: true });
-      return {};
-    }
-  }
-  /**
-   * Drops what was kept for the Files page once the console no longer has that preview: it was
-   * cancelled, confirmed, or grew too old. `wanted` is the template the console still shows a
-   * preview of; a console that does not say (an older one) leaves it to the time limit.
-   */
-  dropReview(wanted) {
-    if (wanted === void 0) return;
-    const path = templateReviewPath(this.opts.stateDir);
-    try {
-      if (JSON.parse(readFileSync35(path, "utf8")).template !== wanted) rmSync11(path, { force: true });
-    } catch {
-      rmSync11(path, { force: true });
-    }
-  }
-  /**
-   * Steps an owner or admin asked for again in the console (a setting to confirm or set again, a
-   * failed step to try again). Which steps, and with which values, is the console's to say: the
-   * agent runs exactly the ones it is given, under the grant it is given, and reports them.
-   */
-  async rerun(marker, assignment) {
-    if (assignment.template !== marker.template || !assignment.rerun) return;
-    const request = `${assignment.rerun.runId ?? ""}:${assignment.rerun.at}:${assignment.rerun.steps.join(",")}`;
-    if (marker.rerun === request) return;
-    const found = await this.folder(marker.template, (this.coded ? null : assignment.bundle) ?? marker.hash ?? null);
-    const dir = found.dir;
-    if (found.dir === null && found.why === "unsure") return;
-    if (!dir) {
-      this.log(`${marker.template}: steps were not run again, the files that were applied could not be had`);
-      this.write(this.markerPath, { ...marker, rerun: request });
-      this.keep({ kind: "rerun", template: marker.template, missing: true });
-      return this.send();
-    }
-    this.log(`running ${assignment.rerun.steps.length} step(s) of ${marker.template} again`);
-    const report = await this.runbook("run", marker.template, dir, { ...this.appliedVars(marker, assignment), runId: assignment.rerun.runId }, assignment.rerun.steps);
-    this.write(this.markerPath, { ...this.marker() ?? marker, rerun: request });
-    if (!report) return;
-    const ran = report.steps.filter((s2) => typeof s2.id === "string" && assignment.rerun?.steps.includes(s2.id));
-    this.keep({ kind: "rerun", template: marker.template, report: { ...report, steps: ran } });
-    return this.send();
-  }
-  /**
-   * The note, name and time zone for running steps again and for checking them. On an agent with a
-   * firewall these are the ones the template was applied with, kept with its record: what the
-   * console says they are now could be other content, written into a file or handed to a script
-   * with no code. A record from before they were kept takes them, once, from the file the last run
-   * or check of the applied template was filled with. No preview writes that file (`PREVIEW_VARS`),
-   * so a preview made after this software was installed cannot change what a step is run again with.
-   */
-  appliedVars(marker, assignment) {
-    if (!this.coded) return assignment;
-    if (marker.vars) return marker.vars;
-    let kept = null;
-    try {
-      kept = varsOf(JSON.parse(readFileSync35(join25(this.opts.stateDir, APPLIED_VARS), "utf8")));
-    } catch {
-    }
-    const vars = kept ?? { note: "", name: assignment.name, timeZone: "UTC" };
-    this.write(this.markerPath, { ...marker, vars });
-    return vars;
-  }
-  /** Checks the applied template again and tells the console how many steps still hold. Never throws. */
-  async verify() {
-    const marker = this.marker();
-    if (!marker || marker.missing || this.running || this.verifying) return;
-    this.verifying = this.check(marker).finally(() => this.verifying = null);
-    return this.verifying;
-  }
-  async check(marker) {
-    try {
-      const assignment = await this.assignment() ?? { template: marker.template, note: "", name: "", timeZone: "UTC", runId: null, rerun: null, request: null, bundle: null, capture: null, skills: null };
-      const { dir } = await this.folder(marker.template, marker.hash ?? null);
-      if (!dir) return;
-      const report = await this.runbook("verify", marker.template, dir, { ...this.appliedVars(marker, assignment), runId: assignment.runId });
-      if (report) await this.call("POST", { kind: "verify", template: marker.template, report });
-    } catch (error62) {
-      this.log(`could not check ${marker.template}: ${error62.message}`);
-    }
-  }
-};
-
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -60626,10 +61913,10 @@ var poolHealthy = false;
 if (POOL_UNCLAIMED && !existsSync31(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
-  writeFileSync24(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+  writeFileSync25(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync36(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync37(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -60637,7 +61924,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync36(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync37(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
   setOwnHostnames(() => [readKeyFile(KEYS_DIR2, "vm_hostname"), readKeyFile(KEYS_DIR2, "access_hostname")]);
   setBoundTokensLatch(`${process.env.STATE_DIR ?? "/opt/controlclaw/state"}/firewall-tokens-bound`);
 } catch {
@@ -60821,6 +62108,7 @@ var workspaceExporter = new WorkspaceExporter({
   calls: () => phoneCalls.calls().map((c2) => callDetail(c2, phoneCallLog))
 });
 var skills = new SkillsService();
+var storage = new StorageService();
 var files = new FilesService({
   root: process.env.FILES_ROOT ?? process.env.HOME ?? "/home/controlclaw",
   vmId: readKeyFile(KEYS_DIR2, "vm_id"),
@@ -60908,7 +62196,7 @@ function startWatchdog() {
         return false;
       }
     },
-    report: (what, ok) => void reportOwnAction("watchdog", "watchdog.restart", `watchdog \xB7 ${what}`, "controlclaw", ok).catch((err) => console.error("[watchdog]", err.message))
+    report: (what2, ok) => void reportOwnAction("watchdog", "watchdog.restart", `watchdog \xB7 ${what2}`, "controlclaw", ok).catch((err) => console.error("[watchdog]", err.message))
   });
   const dog = watchdog;
   setInterval(() => void dog.tick(), TICK_MS).unref();
@@ -61012,6 +62300,18 @@ var server = createServer2(async (req, res) => {
     await handleApplyTicket(req, res, templateService);
     return;
   }
+  if (url3.pathname.startsWith("/templates/capture/")) {
+    await handleTemplateCaptureSession(req, res, url3, templateService);
+    return;
+  }
+  if (url3.pathname.startsWith("/templates/repair/")) {
+    await handleTemplateRepair(req, res, url3, templateService);
+    return;
+  }
+  if (url3.pathname.startsWith("/templates/check/")) {
+    await handleTemplateCheck(req, res, url3, templateService, healthDeps);
+    return;
+  }
   if (url3.pathname.startsWith("/kill/")) {
     await handleKill(req, res, url3);
     return;
@@ -61063,8 +62363,12 @@ var server = createServer2(async (req, res) => {
     res.end(JSON.stringify({ ok: r2.trusted, installed: r2.installed, message: r2.message }));
     return;
   }
-  if (url3.pathname === "/skills" || url3.pathname === "/skills/enabled" || url3.pathname === "/skills/remove") {
-    await handleSkills(req, res, url3.pathname, skills);
+  if (url3.pathname === "/skills" || url3.pathname === "/skills/enabled" || url3.pathname === "/skills/remove" || url3.pathname === "/skills/restore" || url3.pathname === "/notes/remove" || url3.pathname === "/notes/restore") {
+    await handleSkills(req, res, url3.pathname, skills, templateService);
+    return;
+  }
+  if (url3.pathname === "/storage" || url3.pathname === "/storage/grow") {
+    await handleStorage(req, res, url3.pathname, storage);
     return;
   }
   if (url3.pathname === "/logs" && req.method === "GET") {
@@ -61121,16 +62425,16 @@ server.listen(PORT, BIND, () => {
   }) : null;
   if (meetingFollowUp) setInterval(() => void meetingFollowUp.tick().catch(() => void 0), MEETING_REQUEST_POLL_MS).unref();
   const reserveMeetingBrowser = (reserved) => {
-    if (reserved) writeFileSync24(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
-    else rmSync12(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
+    if (reserved) writeFileSync25(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
+    else rmSync13(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
   };
   const meetingBrowser = async (start, voice = false, signedIn = false) => {
     const marker = `${STATE_DIR}/meeting-browser-voice`;
-    if (start && voice) writeFileSync24(marker, "bidi", { mode: 384 });
-    else rmSync12(marker, { force: true });
+    if (start && voice) writeFileSync25(marker, "bidi", { mode: 384 });
+    else rmSync13(marker, { force: true });
     const signed = `${STATE_DIR}/meeting-browser-signed`;
-    if (start && signedIn) writeFileSync24(signed, "signed", { mode: 384 });
-    else rmSync12(signed, { force: true });
+    if (start && signedIn) writeFileSync25(signed, "signed", { mode: 384 });
+    else rmSync13(signed, { force: true });
     meetingMic?.close();
     meetingMic = null;
     await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
@@ -61160,8 +62464,8 @@ server.listen(PORT, BIND, () => {
     account: () => google?.account() ?? null,
     connected: () => google?.connected() ?? false,
     window: async (start, url3) => {
-      if (start && url3) writeFileSync24(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
-      else rmSync12(`${STATE_DIR}/meeting-signin-url`, { force: true });
+      if (start && url3) writeFileSync25(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
+      else rmSync13(`${STATE_DIR}/meeting-signin-url`, { force: true });
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-signin.service"], 15e3);
     },
     browser: (start) => meetingBrowser(start, false, true),
@@ -61192,7 +62496,7 @@ server.listen(PORT, BIND, () => {
       let inboxId = agentmail?.status()?.inboxId;
       if (!inboxId) {
         try {
-          inboxId = JSON.parse(readFileSync36(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
+          inboxId = JSON.parse(readFileSync37(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
         } catch {
         }
       }

@@ -1003,14 +1003,14 @@ var require_foldFlowLines = __commonJS({
     var FOLD_FLOW = "flow";
     var FOLD_BLOCK = "block";
     var FOLD_QUOTED = "quoted";
-    function foldFlowLines(text, indent, mode2 = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+    function foldFlowLines(text3, indent, mode2 = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
       if (!lineWidth || lineWidth < 0)
-        return text;
+        return text3;
       if (lineWidth < minContentWidth)
         minContentWidth = 0;
       const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-      if (text.length <= endStep)
-        return text;
+      if (text3.length <= endStep)
+        return text3;
       const folds = [];
       const escapedFolds = {};
       let end = lineWidth - indent.length;
@@ -1027,14 +1027,14 @@ var require_foldFlowLines = __commonJS({
       let escStart = -1;
       let escEnd = -1;
       if (mode2 === FOLD_BLOCK) {
-        i = consumeMoreIndentedLines(text, i, indent.length);
+        i = consumeMoreIndentedLines(text3, i, indent.length);
         if (i !== -1)
           end = i + endStep;
       }
-      for (let ch; ch = text[i += 1]; ) {
+      for (let ch; ch = text3[i += 1]; ) {
         if (mode2 === FOLD_QUOTED && ch === "\\") {
           escStart = i;
-          switch (text[i + 1]) {
+          switch (text3[i + 1]) {
             case "x":
               i += 3;
               break;
@@ -1051,12 +1051,12 @@ var require_foldFlowLines = __commonJS({
         }
         if (ch === "\n") {
           if (mode2 === FOLD_BLOCK)
-            i = consumeMoreIndentedLines(text, i, indent.length);
+            i = consumeMoreIndentedLines(text3, i, indent.length);
           end = i + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text[i + 1];
+            const next = text3[i + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
               split = i;
           }
@@ -1068,12 +1068,12 @@ var require_foldFlowLines = __commonJS({
             } else if (mode2 === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text[i += 1];
+                ch = text3[i += 1];
                 overflow = true;
               }
               const j = i > escEnd + 1 ? i - 2 : escStart - 1;
               if (escapedFolds[j])
-                return text;
+                return text3;
               folds.push(j);
               escapedFolds[j] = true;
               end = j + endStep;
@@ -1088,39 +1088,39 @@ var require_foldFlowLines = __commonJS({
       if (overflow && onOverflow)
         onOverflow();
       if (folds.length === 0)
-        return text;
+        return text3;
       if (onFold)
         onFold();
-      let res = text.slice(0, folds[0]);
+      let res = text3.slice(0, folds[0]);
       for (let i2 = 0; i2 < folds.length; ++i2) {
         const fold = folds[i2];
-        const end2 = folds[i2 + 1] || text.length;
+        const end2 = folds[i2 + 1] || text3.length;
         if (fold === 0)
           res = `
-${indent}${text.slice(0, end2)}`;
+${indent}${text3.slice(0, end2)}`;
         else {
           if (mode2 === FOLD_QUOTED && escapedFolds[fold])
-            res += `${text[fold]}\\`;
+            res += `${text3[fold]}\\`;
           res += `
-${indent}${text.slice(fold + 1, end2)}`;
+${indent}${text3.slice(fold + 1, end2)}`;
         }
       }
       return res;
     }
-    function consumeMoreIndentedLines(text, i, indent) {
+    function consumeMoreIndentedLines(text3, i, indent) {
       let end = i;
       let start = i + 1;
-      let ch = text[start];
+      let ch = text3[start];
       while (ch === " " || ch === "	") {
         if (i < start + indent) {
-          ch = text[++i];
+          ch = text3[++i];
         } else {
           do {
-            ch = text[++i];
+            ch = text3[++i];
           } while (ch && ch !== "\n");
           end = i;
           start = i + 1;
-          ch = text[start];
+          ch = text3[start];
         }
       }
       return end;
@@ -1506,7 +1506,7 @@ var require_stringify = __commonJS({
         props.push(doc.directives.tagString(tag));
       return props.join(" ");
     }
-    function stringify2(item, ctx, onComment, onChompKeep) {
+    function stringify3(item, ctx, onComment, onChompKeep) {
       if (identity.isPair(item))
         return item.toString(ctx, onComment, onChompKeep);
       if (identity.isAlias(item)) {
@@ -1535,7 +1535,7 @@ var require_stringify = __commonJS({
 ${ctx.indent}${str}`;
     }
     exports.createStringifyContext = createStringifyContext;
-    exports.stringify = stringify2;
+    exports.stringify = stringify3;
   }
 });
 
@@ -1545,7 +1545,7 @@ var require_stringifyPair = __commonJS({
     "use strict";
     var identity = require_identity();
     var Scalar = require_Scalar();
-    var stringify2 = require_stringify();
+    var stringify3 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
       const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
@@ -1567,7 +1567,7 @@ var require_stringifyPair = __commonJS({
       });
       let keyCommentDone = false;
       let chompKeep = false;
-      let str = stringify2.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+      let str = stringify3.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
       if (!explicitKey && !ctx.inFlow && str.length > 1024) {
         if (simpleKeys)
           throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
@@ -1619,7 +1619,7 @@ ${indent}:`;
         ctx.indent = ctx.indent.substring(2);
       }
       let valueCommentDone = false;
-      const valueStr = stringify2.stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
+      const valueStr = stringify3.stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
       let ws = " ";
       if (keyComment || vsb || vcb) {
         ws = vsb ? "\n" : "";
@@ -1760,7 +1760,7 @@ var require_addPairToJSMap = __commonJS({
     "use strict";
     var log = require_log();
     var merge2 = require_merge();
-    var stringify2 = require_stringify();
+    var stringify3 = require_stringify();
     var identity = require_identity();
     var toJS = require_toJS();
     function addPairToJSMap(ctx, map2, { key, value }) {
@@ -1796,7 +1796,7 @@ var require_addPairToJSMap = __commonJS({
       if (typeof jsKey !== "object")
         return String(jsKey);
       if (identity.isNode(key) && ctx?.doc) {
-        const strCtx = stringify2.createStringifyContext(ctx.doc, {});
+        const strCtx = stringify3.createStringifyContext(ctx.doc, {});
         strCtx.anchors = /* @__PURE__ */ new Set();
         for (const node2 of ctx.anchors.keys())
           strCtx.anchors.add(node2.anchor);
@@ -1863,12 +1863,12 @@ var require_stringifyCollection = __commonJS({
   "../../node_modules/.pnpm/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyCollection.js"(exports) {
     "use strict";
     var identity = require_identity();
-    var stringify2 = require_stringify();
+    var stringify3 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyCollection(collection, ctx, options) {
       const flow = ctx.inFlow ?? collection.flow;
-      const stringify3 = flow ? stringifyFlowCollection : stringifyBlockCollection;
-      return stringify3(collection, ctx, options);
+      const stringify4 = flow ? stringifyFlowCollection : stringifyBlockCollection;
+      return stringify4(collection, ctx, options);
     }
     function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, flowChars, itemIndent, onChompKeep, onComment }) {
       const { indent, options: { commentString } } = ctx;
@@ -1893,7 +1893,7 @@ var require_stringifyCollection = __commonJS({
           }
         }
         chompKeep = false;
-        let str2 = stringify2.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+        let str2 = stringify3.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
         if (comment2)
           str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment2));
         if (chompKeep && comment2)
@@ -1960,7 +1960,7 @@ ${indent}${line2}` : "\n";
         }
         if (comment)
           reqNewline = true;
-        let str = stringify2.stringify(item, itemCtx, () => comment = null);
+        let str = stringify3.stringify(item, itemCtx, () => comment = null);
         reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
         if (i < items.length - 1) {
           str += ",";
@@ -3321,7 +3321,7 @@ var require_stringifyDocument = __commonJS({
   "../../node_modules/.pnpm/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyDocument.js"(exports) {
     "use strict";
     var identity = require_identity();
-    var stringify2 = require_stringify();
+    var stringify3 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyDocument(doc, options) {
       const lines = [];
@@ -3336,7 +3336,7 @@ var require_stringifyDocument = __commonJS({
       }
       if (hasDirectives)
         lines.push("---");
-      const ctx = stringify2.createStringifyContext(doc, options);
+      const ctx = stringify3.createStringifyContext(doc, options);
       const { commentString } = ctx.options;
       if (doc.commentBefore) {
         if (lines.length !== 1)
@@ -3358,7 +3358,7 @@ var require_stringifyDocument = __commonJS({
           contentComment = doc.contents.comment;
         }
         const onChompKeep = contentComment ? void 0 : () => chompKeep = true;
-        let body = stringify2.stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
+        let body = stringify3.stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
         if (contentComment)
           body += stringifyComment.lineComment(body, "", commentString(contentComment));
         if ((body[0] === "|" || body[0] === ">") && lines[lines.length - 1] === "---") {
@@ -3366,7 +3366,7 @@ var require_stringifyDocument = __commonJS({
         } else
           lines.push(body);
       } else {
-        lines.push(stringify2.stringify(doc.contents, ctx));
+        lines.push(stringify3.stringify(doc.contents, ctx));
       }
       if (doc.directives?.docEnd) {
         if (doc.comment) {
@@ -5502,7 +5502,7 @@ var require_cst_scalar = __commonJS({
 var require_cst_stringify = __commonJS({
   "../../node_modules/.pnpm/yaml@2.9.1/node_modules/yaml/dist/parse/cst-stringify.js"(exports) {
     "use strict";
-    var stringify2 = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
+    var stringify3 = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
     function stringifyToken(token) {
       switch (token.type) {
         case "block-scalar": {
@@ -5555,7 +5555,7 @@ var require_cst_stringify = __commonJS({
         res += stringifyToken(value);
       return res;
     }
-    exports.stringify = stringify2;
+    exports.stringify = stringify3;
   }
 });
 
@@ -6350,15 +6350,15 @@ var require_parser = __commonJS({
     var node_process = __require("process");
     var cst = require_cst();
     var lexer = require_lexer();
-    function includesToken(list, type) {
-      for (let i = 0; i < list.length; ++i)
-        if (list[i].type === type)
+    function includesToken(list2, type) {
+      for (let i = 0; i < list2.length; ++i)
+        if (list2[i].type === type)
           return true;
       return false;
     }
-    function findNonEmptyIndex(list) {
-      for (let i = 0; i < list.length; ++i) {
-        switch (list[i].type) {
+    function findNonEmptyIndex(list2) {
+      for (let i = 0; i < list2.length; ++i) {
+        switch (list2[i].type) {
           case "space":
           case "comment":
           case "newline":
@@ -7285,7 +7285,7 @@ var require_public_api = __commonJS({
       }
       return doc.toJS(Object.assign({ reviver: _reviver }, options));
     }
-    function stringify2(value, replacer, options) {
+    function stringify3(value, replacer, options) {
       let _replacer = null;
       if (typeof replacer === "function" || Array.isArray(replacer)) {
         _replacer = replacer;
@@ -7310,7 +7310,7 @@ var require_public_api = __commonJS({
     exports.parse = parse3;
     exports.parseAllDocuments = parseAllDocuments;
     exports.parseDocument = parseDocument;
-    exports.stringify = stringify2;
+    exports.stringify = stringify3;
   }
 });
 
@@ -7383,8 +7383,8 @@ function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function shown(value) {
-  const text = typeof value === "string" ? value : JSON.stringify(value) ?? "nothing";
-  return text.length > 60 ? `${text.slice(0, 57)}...` : text;
+  const text3 = typeof value === "string" ? value : JSON.stringify(value) ?? "nothing";
+  return text3.length > 60 ? `${text3.slice(0, 57)}...` : text3;
 }
 
 // ../templates/src/ids.ts
@@ -7394,14 +7394,110 @@ var bundlePath = (relative3) => relative3.replace(/^(\.\/)+/, "").replace(/\/+/g
 function cleanVar(value) {
   return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim().slice(0, 200) : "";
 }
-function fillVars(text, vars) {
-  return text.replace(/\{\{\s*(note|name|timeZone)\s*(?:\|([^}]*))?\}\}/g, (_m, key, fallback) => vars[key] || (fallback ?? "").trim());
+function fillVars(text3, vars) {
+  return text3.replace(/\{\{\s*(note|name|timeZone)\s*(?:\|([^}]*))?\}\}/g, (_m, key, fallback) => vars[key] || (fallback ?? "").trim());
 }
 var CAPTURE_FILES = ["SOUL.md", "AGENTS.md", "HEARTBEAT.md"];
 var CAPTURE_PRIVATE = ["USER.md", "MEMORY.md", "IDENTITY.md", "TOOLS.md", "memory"];
+var SESSION_PRIVATE = new Set([...CAPTURE_PRIVATE, "sessions", "credentials", "auth-profiles.json", ".env"].map((name) => name.toLowerCase()));
+var capturePrivatePath = (path) => path.split(/[\\/]+/).some((part) => SESSION_PRIVATE.has(part.toLowerCase()) || part.toLowerCase().endsWith(".env"));
 var CAPTURE_CONFIG_PATHS = ["agents.defaults.thinkingDefault", "agents.defaults.reasoningDefault", "agents.defaults.fastModeDefault", "agents.defaults.verboseDefault", "agents.defaults.timeoutSeconds", "tools.deny", "messages.responsePrefix", "messages.visibleReplies"];
 var CONTROLCLAW_PLUGINS = ["agentmail", "brave", "duckduckgo", "google-meet", "parallel", "tavily", "cc-meeting-guard", "cc-meeting-voice"];
 var CAPTURE_SKILL_FILES = 12;
+var SCHEDULE_NAME = /^[A-Za-z0-9][A-Za-z0-9 _.,:()'&+/-]{0,59}$/;
+var MCP_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/;
+var jobSlug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+var OPENCLAW_JOBS = ["heartbeat-main", "skill-collection-review-main", "memory-dreaming-promotion"];
+var isOpenclawJob = (name) => OPENCLAW_JOBS.includes(jobSlug(name));
+var SCHEDULE_KEY_PREFIX = "controlclaw:schedule:";
+var scheduleKey = (name) => `${SCHEDULE_KEY_PREFIX}${jobSlug(name)}`;
+var MAIN_SESSION = "agent:main:main";
+var CAPTURE_SCHEDULES = 20;
+var CAPTURE_MCP_SERVERS = 20;
+var SCHEDULE_MESSAGE_MAX = 2e3;
+var SCHEDULE_EVERY_MIN_MS = 5 * 6e4;
+var MCP_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]{0,63})\}/;
+var MCP_PLACEHOLDER = "FILL_IN";
+var MCP_FLAG = /^(-[A-Za-z]|--[A-Za-z][A-Za-z]*(?:[0-9]{0,2})(?:-[A-Za-z]+[0-9]{0,2}){0,6})$/;
+function mcpArgName(arg) {
+  const at = arg.indexOf("=");
+  const flag = at < 0 ? arg : arg.slice(0, at);
+  if (flag.length > 40 || !MCP_FLAG.test(flag) || (flag.match(/[0-9]/g)?.length ?? 0) > 2) return MCP_PLACEHOLDER;
+  return at < 0 ? flag : `${flag}=${MCP_PLACEHOLDER}`;
+}
+var mcpCommandName = (command) => (command.trim().split(/\s+/)[0] ?? "").split("/").pop() ?? "";
+var RESERVED_SECRET_NAME = /^(?:PATH|HOME|SHELL|USER|LOGNAME|ENV|BASH_ENV|IFS|NODE_.*|LD_.*|OPENCLAW_.*|CONTROLCLAW_.*|AGENTMAIL_.*)$/;
+var OWN_VARIABLES = /^(CC|CLAWHUB|NPM|XDG|LC|SSH|SYSTEMD|DBUS|DYLD|BASH|AI_GATEWAY|VERCEL|PLAYWRIGHT|CHROME|PULSE)_/;
+var BUILT_IN_VARIABLES = ["PWD", "OLDPWD", "LANG", "LANGUAGE", "TERM", "TMPDIR", "TMP", "TEMP", "HOSTNAME", "MAIL", "DISPLAY", "EDITOR", "UID", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET", "SSL_CERT_FILE", "SSL_CERT_DIR", "KEYS_DIR", "TZ"];
+function secretNameProblem(name) {
+  if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(name)) return "is not a secret's name (capital letters, digits and _)";
+  if (RESERVED_SECRET_NAME.test(name) || OWN_VARIABLES.test(name) || BUILT_IN_VARIABLES.includes(name)) return "is a variable the agent has by itself, not a secret of yours";
+  return null;
+}
+var TEMPLATE_SCHEDULES_MAX = 10;
+var CONFIG_ROOTS_WITH_A_KIND = { mcp: "openclaw.mcp", cron: "openclaw.schedule", schedule: "openclaw.schedule", schedules: "openclaw.schedule", automations: "openclaw.schedule", plugins: "openclaw.plugin", skills: "openclaw.skill" };
+function configRootKind(path) {
+  const root = (path.split(".")[0] ?? "").toLowerCase();
+  return Object.hasOwn(CONFIG_ROOTS_WITH_A_KIND, root) ? CONFIG_ROOTS_WITH_A_KIND[root] : null;
+}
+var MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+var DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+function cronSet(field, low, high, names = []) {
+  const number4 = (text3) => /^\d+$/.test(text3) ? Number(text3) : names.includes(text3.toLowerCase()) ? names.indexOf(text3.toLowerCase()) + low : NaN;
+  const values = /* @__PURE__ */ new Set();
+  for (const part of field.split(",")) {
+    const match = /^(\*|\?|([A-Za-z0-9]+)(?:-([A-Za-z0-9]+))?)(?:\/(\d+))?$/.exec(part);
+    if (!match) return null;
+    const from = match[2] === void 0 ? low : number4(match[2]);
+    const to = match[2] === void 0 ? high : match[3] === void 0 ? match[4] ? high : from : number4(match[3]);
+    const step = match[4] === void 0 ? 1 : Number(match[4]);
+    if (Number.isNaN(from) || Number.isNaN(to) || from < low || to > high || from > to || step < 1) return null;
+    for (let value = from; value <= to; value += step) values.add(value);
+  }
+  return [...values].sort((x, y) => x - y);
+}
+function cronMinutesAndHours(expression) {
+  const fields = expression.trim().split(/\s+/);
+  if (fields.length !== 5) return null;
+  const minutes = cronSet(fields[0], 0, 59);
+  const hours = cronSet(fields[1], 0, 23);
+  return minutes && hours && minutes.length && hours.length ? { minutes, hours } : null;
+}
+function cronDays(expression) {
+  const fields = expression.trim().split(/\s+/);
+  const any2 = (field) => field === void 0 || field === "*" || field === "?";
+  return {
+    daysOfMonth: any2(fields[2]) ? null : cronSet(fields[2], 1, 31),
+    months: any2(fields[3]) ? null : cronSet(fields[3], 1, 12, MONTHS),
+    // 7 is Sunday too.
+    daysOfWeek: any2(fields[4]) ? null : cronSet(fields[4].replace(/\b7\b/g, "0"), 0, 6, DAYS) ?? null
+  };
+}
+function cronMinGapMinutes(expression) {
+  const read = cronMinutesAndHours(expression);
+  if (!read) return null;
+  const { minutes, hours } = read;
+  let gap = Infinity;
+  for (let i = 1; i < minutes.length; i++) gap = Math.min(gap, minutes[i] - minutes[i - 1]);
+  const inARow = hours.some((hour) => hours.includes((hour + 1) % 24));
+  if (inARow) gap = Math.min(gap, 60 - minutes[minutes.length - 1] + minutes[0]);
+  return gap === Infinity ? 60 : gap;
+}
+function cronMinutesOfDay(expression) {
+  const read = cronMinutesAndHours(expression);
+  return read ? read.hours.flatMap((hour) => read.minutes.map((minute) => hour * 60 + minute)) : [];
+}
+var CONTROLCLAW_MCP_PREFIX = "controlclaw-";
+function everyMs(text3) {
+  const match = /^([1-9][0-9]{0,4})(m|h|d)$/.exec(text3.trim());
+  if (!match) return null;
+  return Number(match[1]) * { m: 6e4, h: 36e5, d: 864e5 }[match[2]];
+}
+function everyText(ms) {
+  if (!Number.isInteger(ms) || ms <= 0) return null;
+  for (const [unit, size2] of [["d", 864e5], ["h", 36e5], ["m", 6e4]]) if (ms % size2 === 0 && ms / size2 <= 99999) return `${ms / size2}${unit}`;
+  return null;
+}
 
 // ../templates/src/kinds/types.ts
 var EXIT_TIMEOUT = 124;
@@ -7422,8 +7518,8 @@ function cleanTimeZone(value) {
 var NeedsConfirmation = class extends StepFailure {
 };
 function lastLine(result) {
-  const text = (result.stderr.trim() || result.stdout.trim()).replace(/\x1b\[[0-9;]*m/g, "");
-  return text.split("\n").filter((l) => l.trim()).pop()?.trim() ?? `exit code ${result.code}`;
+  const text3 = (result.stderr.trim() || result.stdout.trim()).replace(/\x1b\[[0-9;]*m/g, "");
+  return text3.split("\n").filter((l) => l.trim()).pop()?.trim() ?? `exit code ${result.code}`;
 }
 function logOutput(ctx, result) {
   for (const line2 of `${result.stdout}
@@ -7493,7 +7589,7 @@ timed out after ${Math.round(timeoutMs / 1e3)} s`);
 });
 
 // ../templates/src/redact.ts
-import { readFileSync } from "fs";
+import { lstatSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
 // ../log-redact/src/index.ts
@@ -7514,8 +7610,8 @@ function makeRedactor(values) {
   }
   const sorted = [...exact].sort((a, b) => b.length - a.length);
   const secretRe = sorted.length ? new RegExp(sorted.map(escapeRegExp).join("|"), "g") : null;
-  return (text) => {
-    let out = text;
+  return (text3) => {
+    let out = text3;
     if (secretRe) out = out.replace(secretRe, "[redacted]");
     out = out.replace(PARAM_RE, (_m, k) => `${k}=[redacted]`);
     out = out.replace(BEARER_RE, "Bearer [redacted]");
@@ -7541,21 +7637,21 @@ function namesSecret(key) {
 var REFERENCE = /^(\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|secret:[A-Z][A-Z0-9_]{1,63})$/;
 var COMMAND = /^(\$\(|`)/;
 var PLAIN_VALUE = /^(true|false|yes|no|on|off|null|none|nil|undefined|required|optional|include|omit|same-origin|enabled|disabled|auto|default|always|never)$/i;
-var entropy = (text) => {
+var entropy = (text3) => {
   const counts = /* @__PURE__ */ new Map();
-  for (const char of text) counts.set(char, (counts.get(char) ?? 0) + 1);
+  for (const char of text3) counts.set(char, (counts.get(char) ?? 0) + 1);
   let bits = 0;
-  for (const n of counts.values()) bits -= n / text.length * Math.log2(n / text.length);
+  for (const n of counts.values()) bits -= n / text3.length * Math.log2(n / text3.length);
   return bits;
 };
 function looksSecret(value) {
   if (typeof value !== "string") return false;
-  const text = value.trim().replace(/^(["'])(.*)\1$/, "$2");
-  if (!text || REFERENCE.test(text) || COMMAND.test(text) || PLAIN_VALUE.test(text)) return false;
-  if (/^[0-9.,_-]+$/.test(text) || /^[A-Z][A-Z0-9_]*$/.test(text) || /^(\.{0,2}|~)\//.test(text) || /^<.*>$/.test(text)) return false;
-  if (text.length < 12) return false;
-  if (/[A-Za-z]/.test(text) && /[0-9]/.test(text)) return true;
-  return text.length >= 20 && !/\s/.test(text) && entropy(text) >= 3.8;
+  const text3 = value.trim().replace(/^(["'])(.*)\1$/, "$2");
+  if (!text3 || REFERENCE.test(text3) || COMMAND.test(text3) || PLAIN_VALUE.test(text3)) return false;
+  if (/^[0-9.,_-]+$/.test(text3) || /^[A-Z][A-Z0-9_]*$/.test(text3) || /^(\.{0,2}|~)\//.test(text3) || /^<.*>$/.test(text3)) return false;
+  if (text3.length < 12) return false;
+  if (/[A-Za-z]/.test(text3) && /[0-9]/.test(text3)) return true;
+  return text3.length >= 20 && !/\s/.test(text3) && entropy(text3) >= 3.8;
 }
 var TOKEN_SHAPES = [
   ["a private key", /-----BEGIN [A-Z ]*(PRIVATE KEY|KEY BLOCK|CERTIFICATE REQUEST)-----/],
@@ -7578,8 +7674,14 @@ var TOKEN_SHAPES = [
   ["an access token (pat-\u2026)", /\bpat-[A-Za-z0-9_-]{16,}/],
   ["a bearer token", /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}/]
 ];
-function tokenShapeIn(text) {
-  for (const [name, shape] of TOKEN_SHAPES) if (shape.test(text)) return name;
+function randomLooking(part) {
+  const text3 = part.replace(/[-_.~]/g, "");
+  if (text3.length < 20 || !/^[A-Za-z0-9+/=%]+$/.test(text3)) return false;
+  if (/[A-Za-z]/.test(text3) && /[0-9]/.test(text3) && (text3.match(/[0-9]/g)?.length ?? 0) >= 3) return true;
+  return entropy(text3) >= 4;
+}
+function tokenShapeIn(text3) {
+  for (const [name, shape] of TOKEN_SHAPES) if (shape.test(text3)) return name;
   return null;
 }
 var SECRET_ASSIGNMENT = /(?<![A-Za-z0-9_.-])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\1(\s*[=:]\s*)(["']?)([^\s"',;&]+)\4/g;
@@ -7588,23 +7690,23 @@ function onlyLooselyNamed(key) {
   const words = wordsOf(key);
   return !words.some((word, at) => SECRET_WORDS.has(word) && !ALSO_PLAIN_WORDS.has(word) && !((word === "key" || word === "keys") && at > 0 && DATA_KEY.has(words[at - 1])) || /passw(or)?d/.test(word));
 }
-function* secretAssignments(text) {
+function* secretAssignments(text3) {
   const scan = new RegExp(SECRET_ASSIGNMENT.source, "g");
-  for (let match = scan.exec(text); match; match = scan.exec(text)) {
+  for (let match = scan.exec(text3); match; match = scan.exec(text3)) {
     const [whole, quote = "", key = "", sep6 = "", valueQuote = "", value = ""] = match;
     if (namesSecret(key)) yield { index: match.index, whole, quote, key, sep: sep6, valueQuote, value };
     else scan.lastIndex = match.index + quote.length + key.length;
   }
 }
-function secretInText(text) {
-  for (const found of secretAssignments(text)) if (looksSecret(found.value)) return `"${found.key}"`;
-  return tokenShapeIn(text);
+function secretInText(text3) {
+  for (const found of secretAssignments(text3)) if (looksSecret(found.value)) return `"${found.key}"`;
+  return tokenShapeIn(text3);
 }
-function secretFields(value, path = [], underSecretKey = false) {
-  if (Array.isArray(value)) return value.flatMap((item, i) => secretFields(item, [...path, String(i)], underSecretKey));
+function secretFields(value, path = [], underSecretKey2 = false) {
+  if (Array.isArray(value)) return value.flatMap((item, i) => secretFields(item, [...path, String(i)], underSecretKey2));
   if (isObject(value)) return Object.entries(value).flatMap(([key, entry]) => secretFields(entry, [...path, key], namesSecret(key)));
   if (typeof value !== "string" || value === "") return [];
-  if (underSecretKey && looksSecret(value) || tokenShapeIn(value)) return [path.join(".") || "value"];
+  if (underSecretKey2 && looksSecret(value) || tokenShapeIn(value)) return [path.join(".") || "value"];
   return [];
 }
 
@@ -7613,7 +7715,76 @@ var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token
 var MASK = "[redacted]";
 var HEADER = /\b(Authorization\s*:\s*)(Basic|Bearer|Token)\s+\S+/gi;
 var PEM_BODY = /^[A-Za-z0-9+/=]{40,}$/;
-function boxSecrets(keysDir, openclawHome) {
+var OPENCLAW_DEPTH = 5;
+var OPENCLAW_ENTRIES = 400;
+var OPENCLAW_FILE_BYTES = 2 * 1024 * 1024;
+var SKIPPED_DIRS = /* @__PURE__ */ new Set(["workspace", "node_modules", "sessions", "logs", "cache", "browser", ".git"]);
+var CREDENTIAL_STORE = /(^|\/)(auth-profiles\.json|credentials(\/.*)?\.json|[^/]*\.env)$/;
+var underSecretKey = (value) => value.length > 0 && !/^\$\{[A-Za-z0-9_]+\}$/.test(value);
+function secretShaped(value) {
+  if (/\s/.test(value)) return false;
+  if (TOKEN_SHAPES.some(([, shape]) => shape.test(value))) return true;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) && !/^[a-z][a-z0-9+.-]*:\/\/[^/@\s]*:[^/@\s]+@/i.test(value)) return false;
+  if (/^[A-Za-z0-9]+([-._/][A-Za-z0-9]+)+$/.test(value) && (value.match(/[0-9]/g) ?? []).length <= 2) return false;
+  return looksSecret(value);
+}
+function envPairs(text3) {
+  const found = [];
+  for (const line2 of text3.split("\n")) {
+    const at = line2.indexOf("=");
+    if (at > 0 && !line2.trimStart().startsWith("#")) found.push([line2.slice(0, at).trim().replace(/^export\s+/, ""), line2.slice(at + 1).trim().replace(/^(["'])(.*)\1$/, "$2")]);
+  }
+  return found;
+}
+function jsonSecrets(value, store, named = false, found = []) {
+  if (typeof value === "string") {
+    if (named ? underSecretKey(value) : store && secretShaped(value)) found.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) jsonSecrets(item, store, named, found);
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) jsonSecrets(item, store, named || namesSecret(key), found);
+  }
+  return found;
+}
+function openclawSecrets(openclawHome) {
+  const found = [];
+  let seen = 0;
+  const walk = (dir, rel, depth) => {
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names.sort()) {
+      if (++seen > OPENCLAW_ENTRIES) return;
+      const path = join(dir, name);
+      const at = rel ? `${rel}/${name}` : name;
+      let stat;
+      try {
+        stat = lstatSync(path);
+      } catch {
+        continue;
+      }
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        if (depth < OPENCLAW_DEPTH && !SKIPPED_DIRS.has(name)) walk(path, at, depth + 1);
+        continue;
+      }
+      const store = CREDENTIAL_STORE.test(at);
+      if (!stat.isFile() || stat.size > OPENCLAW_FILE_BYTES || !(store || name.endsWith(".json"))) continue;
+      try {
+        const text3 = readFileSync(path, "utf8");
+        if (name.endsWith(".env")) found.push(...envPairs(text3).filter(([key, value]) => namesSecret(key) ? underSecretKey(value) : secretShaped(value)).map(([, value]) => value));
+        else jsonSecrets(JSON.parse(text3), store, false, found);
+      } catch {
+      }
+    }
+  };
+  walk(openclawHome, "", 0);
+  return found;
+}
+function keyFiles(keysDir) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
@@ -7621,19 +7792,24 @@ function boxSecrets(keysDir, openclawHome) {
     } catch {
     }
   }
+  return found;
+}
+function boxSecrets(keysDir, openclawHome) {
+  const found = keyFiles(keysDir);
   try {
-    for (const line2 of readFileSync(join(openclawHome, ".env"), "utf8").split("\n")) {
-      const at = line2.indexOf("=");
-      if (at > 0 && !line2.trimStart().startsWith("#")) found.push(line2.slice(at + 1).trim().replace(/^(["'])(.*)\1$/, "$2"));
-    }
+    found.push(...envPairs(readFileSync(join(openclawHome, ".env"), "utf8")).map(([, value]) => value));
   } catch {
   }
-  return found.filter((value) => value.length >= MIN_SECRET_LENGTH);
+  found.push(...openclawSecrets(openclawHome));
+  return [...new Set(found)].filter((value) => value.length >= MIN_SECRET_LENGTH);
+}
+function packSecrets(keysDir, openclawHome) {
+  return [.../* @__PURE__ */ new Set([...keyFiles(keysDir), ...openclawSecrets(openclawHome)])].filter((value) => value.length >= MIN_SECRET_LENGTH);
 }
 function makeRedact(values = []) {
   const base = makeRedactor(values);
-  return (text) => {
-    let out = base(text).replace(HEADER, `$1${MASK}`);
+  return (text3) => {
+    let out = base(text3).replace(HEADER, `$1${MASK}`);
     let masked = "";
     let from = 0;
     for (const found of secretAssignments(out)) {
@@ -7749,7 +7925,8 @@ function boxContext(runId, vars = { note: "", name: "", timeZone: "UTC" }) {
       runId,
       vars,
       // Behind the organization's proxy, npm (a plugin install) hangs without the proxy's CA.
-      env: existsSync(ca) && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: ca } : {}
+      // Named also when this shell already has it: an MCP step writes it into a command server's env.
+      env: process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : existsSync(ca) ? { NODE_EXTRA_CA_CERTS: ca } : {}
     },
     redact: makeRedact(boxSecrets(keysDir, join2(home, ".openclaw"))),
     stateDir: process.env.CC_RUNBOOK_STATE ?? join2(home, ".controlclaw", "runbook"),
@@ -7791,8 +7968,8 @@ function unexpected(err) {
 }
 
 // ../templates/src/load.ts
-var import_yaml2 = __toESM(require_dist(), 1);
-import { createHash as createHash2 } from "crypto";
+var import_yaml3 = __toESM(require_dist(), 1);
+import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync3, readFileSync as readFileSync5, realpathSync as realpathSync2, statSync } from "fs";
 import { basename, dirname, join as join4, resolve as resolve2, sep as sep2 } from "path";
 
@@ -9793,8 +9970,8 @@ function emoji() {
 }
 var ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$/;
 var ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
-var mac = (delimiter) => {
-  const escapedDelim = escapeRegex(delimiter ?? ":");
+var mac = (delimiter2) => {
+  const escapedDelim = escapeRegex(delimiter2 ?? ":");
   return new RegExp(`^(?:[0-9A-F]{2}${escapedDelim}){5}[0-9A-F]{2}$|^(?:[0-9a-f]{2}${escapedDelim}){5}[0-9a-f]{2}$`);
 };
 var cidrv4 = /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/([0-9]|[1-2][0-9]|3[0-2])$/;
@@ -15652,8 +15829,8 @@ var error20 = () => {
       case "invalid_union":
         return "\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF";
       case "invalid_element": {
-        const place = withDefinite(issue2.origin ?? "array");
-        return `\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF \u05D1${place}`;
+        const place2 = withDefinite(issue2.origin ?? "array");
+        return `\u05E2\u05E8\u05DA \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF \u05D1${place2}`;
       }
       default:
         return `\u05E7\u05DC\u05D8 \u05DC\u05D0 \u05EA\u05E7\u05D9\u05DF`;
@@ -17105,8 +17282,8 @@ function ko_default() {
 }
 
 // ../../node_modules/.pnpm/zod@4.6.5/node_modules/zod/v4/locales/lt.js
-var capitalizeFirstCharacter = (text) => {
-  return text.charAt(0).toUpperCase() + text.slice(1);
+var capitalizeFirstCharacter = (text3) => {
+  return text3.charAt(0).toUpperCase() + text3.slice(1);
 };
 function getUnitTypeFromNumber(number4) {
   const abs = Math.abs(number4);
@@ -23952,8 +24129,8 @@ var contributors = {
 function aggregateChecks(schema) {
   const agg = {};
   const def = schema._zod.def;
-  const list = schema._zod.traits.has("$ZodCheck") ? [schema, ...def.checks ?? []] : def.checks ?? [];
-  for (const ch of list)
+  const list2 = schema._zod.traits.has("$ZodCheck") ? [schema, ...def.checks ?? []] : def.checks ?? [];
+  for (const ch of list2)
     contributors[ch._zod.def.check]?.(agg, ch._zod.def);
   const bag = schema._zod.bag;
   if (bag.minimum !== void 0)
@@ -27468,6 +27645,7 @@ function date4(params) {
 var SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 var BUILTIN_SKILL_NAMES = ["agentmail", "apify-scraping", "google-account"];
 var carriedSkillFolder = (name) => `files/skills/${name}`;
+var carriedNotesFolder = (set2) => `files/notes/${set2}`;
 var SKILL_SOURCES = ["controlclaw", "organization", "template"];
 var SKILL_LIMITS = { files: 100, fileBytes: 256 * 1024, totalBytes: 1e6 };
 var size = (bytes2) => bytes2 >= 1e6 ? `${bytes2 / 1e6} MB` : `${Math.round(bytes2 / 1024)} KB`;
@@ -27498,7 +27676,7 @@ var NOTES_LIMITS = {
 var NOTES_LIMITS_TEXT = `at most ${NOTES_LIMITS.files} files, ${size(NOTES_LIMITS.fileBytes)} a file and ${size(NOTES_LIMITS.totalBytes)} in all`;
 
 // ../templates/src/schema.ts
-var KINDS = ["openclaw.plugin", "openclaw.config", "openclaw.skill", "controlclaw.setting", "file", "line", "run"];
+var KINDS = ["openclaw.plugin", "openclaw.config", "openclaw.skill", "openclaw.notes", "openclaw.schedule", "openclaw.mcp", "controlclaw.setting", "file", "line", "run"];
 var json2 = external_exports.lazy(() => external_exports.union([external_exports.string(), external_exports.number(), external_exports.boolean(), external_exports.null(), external_exports.array(json2), external_exports.record(external_exports.string(), json2)]));
 var inFolder = external_exports.string().min(1).refine((p) => !p.startsWith("/") && !p.startsWith("~") && !p.split(/[\\/]/).includes(".."), "must be a path inside the template folder");
 function workspacePathProblem(path) {
@@ -27528,7 +27706,7 @@ var pluginSpec = external_exports.strictObject({
 }).refine((s) => s.id || s.package, "needs an id or a package").refine((s) => s.id || !s.package || !pluginId(s).includes("."), "needs an id: the package name has a dot, so the plugin's id cannot be worked out from it");
 var configSpec = external_exports.strictObject({
   // Starts with a letter, a digit or _: never with a dash, which the OpenClaw CLI would read as an option.
-  path: external_exports.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*(\.[A-Za-z0-9_@/:-]+)*$/, "must be a config path like agents.defaults.thinkingDefault"),
+  path: external_exports.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*(\.[A-Za-z0-9_@/:-]+)*$/, "must be a config path like agents.defaults.thinkingDefault").refine((path) => configRootKind(path) === null, { error: (issue2) => `is in a part of OpenClaw's config that the ${configRootKind(String(issue2.input))} step sets. Use that step` }),
   value: json2.refine((v) => v !== null, "cannot be null: a template never removes a value")
 });
 var skillSpec = external_exports.strictObject({
@@ -27537,6 +27715,121 @@ var skillSpec = external_exports.strictObject({
   from: inFolder.optional(),
   enabled: external_exports.boolean().default(true)
 }).refine((s) => s.from === void 0 || s.from.replace(/^(\.\/)+/, "").replace(/\/+$/, "") === carriedSkillFolder(s.name), { message: "must be files/skills/<name>, the folder a template keeps this skill in", path: ["from"] }).refine((s) => s.from === void 0 || !BUILTIN_SKILL_NAMES.includes(s.name), { message: "is the name of a skill that comes with every agent. A template cannot install its own under that name; give yours another name", path: ["name"] });
+var notesSpec = external_exports.strictObject({
+  // The set's folder on the agent. Not `_…`, and not a name every object has.
+  set: external_exports.string().regex(SKILL_NAME, "must be a name for the set (lowercase letters, digits and dashes)").refine((set2) => !(set2 in {}) && !set2.startsWith("_"), "cannot be used as a set's name"),
+  from: inFolder.optional()
+}).refine((s) => s.from === void 0 || s.from.replace(/^(\.\/)+/, "").replace(/\/+$/, "") === carriedNotesFolder(s.set), { message: "must be files/notes/<set>, the folder a template keeps this set in", path: ["from"] });
+var CRON_FIELD = /^[0-9A-Za-z*/,?#-]+$/;
+var scheduleSpec = external_exports.strictObject({
+  name: external_exports.string().regex(SCHEDULE_NAME, "must be a job's name: one line of letters, digits, spaces and dashes, at most 60 characters").refine((name) => name === name.trim() && /[a-z0-9]/i.test(name), "must be a job's name").refine((name) => !isOpenclawJob(name), "is the name of one of OpenClaw's own jobs"),
+  /** Five fields: minute, hour, day of the month, month, day of the week. */
+  cron: external_exports.string().refine((c) => c.trim().split(/\s+/).length === 5 && c.trim().split(/\s+/).every((f) => CRON_FIELD.test(f)), "must be five cron fields, like 0 8 * * *").transform((c) => c.trim().split(/\s+/).join(" ")).refine((c) => cronMinGapMinutes(c) !== null, "must be minutes and hours a template can read: numbers, lists, ranges and steps, like 0 8 * * * or */15 9-17 * * 1-5").refine((c) => (cronMinGapMinutes(c) ?? 5) >= SCHEDULE_EVERY_MIN_MS / 6e4, "runs more often than every 5 minutes").optional(),
+  /** An interval: `30m`, `2h`, `1d`. */
+  every: external_exports.string().refine((e) => everyMs(e) !== null, "must be an interval like 30m, 2h or 1d").refine((e) => (everyMs(e) ?? 0) >= SCHEDULE_EVERY_MIN_MS || everyMs(e) === null, "must be at least 5m").optional(),
+  /** An IANA zone for `cron`. Left out: the zone the agent was created in. */
+  timeZone: external_exports.string().regex(/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+){0,2}$/, "must be a time zone like Europe/Rome").optional(),
+  message: external_exports.string().refine((m) => m.trim().length > 0, "is empty").refine((m) => m.length <= SCHEDULE_MESSAGE_MAX, "must be at most 2,000 characters").refine((m) => !HIDDEN_CHARACTERS.test(m), "has a character that cannot be seen"),
+  deliver: external_exports.enum(["announce", "none"]).default("announce"),
+  enabled: external_exports.boolean().default(true)
+}).refine((s) => s.cron === void 0 !== (s.every === void 0), "needs a time: cron or every, and not both").refine((s) => s.timeZone === void 0 || s.cron !== void 0, { message: "is only for cron", path: ["timeZone"] });
+var HEADER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
+var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+var text = (max) => external_exports.string().min(1).max(max).refine((v) => !/[\r\n\0]/.test(v) && !HIDDEN_CHARACTERS.test(v), "must be one line of plain text");
+var toolNames = external_exports.array(external_exports.string().regex(/^[A-Za-z0-9_.*:-]{1,80}$/, "must be a tool's name, or one with *")).min(1).max(100);
+var mcpSpec = external_exports.strictObject({
+  // The name is a key in OpenClaw's config, so not one every object has (`constructor`).
+  name: external_exports.string().regex(MCP_NAME, "must be a server name (letters, digits, dashes and _)").refine((name) => !(name in {}), "cannot be used as a server name").refine((name) => !name.startsWith("controlclaw-"), "starts with controlclaw-, which is for ControlClaw's own servers"),
+  url: external_exports.string().max(500).refine(httpsUrl, "must be an https address with no user name or password in it, like https://mcp.example.com/mcp").refine(publicUrl, "must be an address on the internet, not this machine or a private network").refine(noReference, "cannot have a ${NAME} in it: a secret goes in a header").optional(),
+  transport: external_exports.enum(["streamable-http", "sse"]).optional(),
+  headers: external_exports.record(external_exports.string().regex(HEADER_NAME, "must be a header's name"), text(500)).optional(),
+  command: external_exports.string().regex(/^[A-Za-z0-9_.@+/-]{1,200}$/, "must be a program's name or path, with no spaces").refine((c) => !c.startsWith("-"), "must be a program's name or path").optional(),
+  args: external_exports.array(text(500).refine(noReference, "cannot have a ${NAME} in it: a secret goes in env")).max(40).optional(),
+  env: external_exports.record(external_exports.string().regex(ENV_NAME, "must be an environment variable's name"), text(500)).optional(),
+  tools: external_exports.strictObject({ include: toolNames.optional(), exclude: toolNames.optional() }).optional(),
+  /** Seconds one request may take. */
+  timeout: external_exports.number().int().min(1).max(600).optional(),
+  enabled: external_exports.boolean().default(true)
+}).refine((s) => s.url === void 0 !== (s.command === void 0), "needs a url or a command, and not both").refine((s) => s.url !== void 0 || s.transport === void 0 && s.headers === void 0, "transport and headers are only for a server with a url").refine((s) => s.command !== void 0 || s.args === void 0 && s.env === void 0, "args and env are only for a server with a command");
+function httpsUrl(value) {
+  try {
+    const url2 = new URL(value);
+    return url2.protocol === "https:" && !url2.username && !url2.password && !/\s/.test(value);
+  } catch {
+    return false;
+  }
+}
+function privateHost(hostname3) {
+  const host = hostname3.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (host === "localhost" || [".localhost", ".local", ".internal", ".lan", ".home.arpa"].some((end) => host.endsWith(end)) || host === "home.arpa" || !host.includes(".") && !host.includes(":")) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) return privateV4(Number(v4[1]), Number(v4[2]), Number(v4[3]));
+  if (!host.includes(":")) return false;
+  const groups = v6Groups(host);
+  if (!groups) return true;
+  const [a, b, c, d, e, f, g, h] = groups;
+  const embedded = (hi, lo) => privateV4(hi >> 8, hi & 255, lo >> 8);
+  if (groups.every((group) => group === 0)) return true;
+  if ((a & 65024) === 64512 || (a & 65472) === 65152 || (a & 65472) === 65216 || (a & 65280) === 65280) return true;
+  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && (f === 0 || f === 65535)) return f === 0 && g === 0 ? true : embedded(g, h) || f === 0 && g === 0;
+  if (a === 100 && b === 65435 && c === 0 && d === 0 && e === 0 && f === 0) return embedded(g, h);
+  if (a === 100 && b === 65435 && c === 1) return true;
+  if (a === 8194) return embedded(b, c);
+  return false;
+}
+function privateV4(a, b, c) {
+  return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a === 100 && b >= 64 && b <= 127 || a === 192 && b === 0 && c === 0 || a === 198 && (b === 18 || b === 19) || a >= 224;
+}
+function v6Groups(host) {
+  let text3 = host;
+  const tail = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text3);
+  if (tail) text3 = `${tail[1]}${(Number(tail[2]) << 8 | Number(tail[3])).toString(16)}:${(Number(tail[4]) << 8 | Number(tail[5])).toString(16)}`;
+  const halves = text3.split("::");
+  if (halves.length > 2) return null;
+  const parse3 = (part) => part === "" ? [] : part.split(":").map((group) => /^[0-9a-f]{1,4}$/.test(group) ? parseInt(group, 16) : NaN);
+  const head = parse3(halves[0] ?? "");
+  const rest = halves.length === 2 ? parse3(halves[1] ?? "") : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  const groups = [...head, ...Array(Math.max(fill, 0)).fill(0), ...rest];
+  return groups.length === 8 && groups.every((group) => !Number.isNaN(group)) && fill >= 0 ? groups : null;
+}
+function publicUrl(value) {
+  try {
+    return !privateHost(new URL(value).hostname);
+  } catch {
+    return true;
+  }
+}
+function noReference(value) {
+  return !value.includes("${");
+}
+var CREDENTIAL_WORDS = /* @__PURE__ */ new Set(["pw", "auth", "authorization", "bearer", "cred", "creds", "login-token"]);
+function credentialOption(option) {
+  const name = /^--?([A-Za-z][A-Za-z0-9_-]*)$/.exec(option)?.[1];
+  if (!name || name.length < 2) return false;
+  return namesSecret(name) || CREDENTIAL_WORDS.has(name.toLowerCase());
+}
+function credentialHeader(header) {
+  const match = /^\s*([A-Za-z0-9-]+)\s*:\s*(.*)$/.exec(header);
+  if (!match) return false;
+  const value = (match[2] ?? "").replace(/^(Bearer|Basic|Token)\s+/i, "").trim();
+  return value !== "" && value !== MCP_PLACEHOLDER && !/^\$\{/.test(value) && (namesSecret(match[1]) || /^(cookie|proxy-authorization)$/i.test(match[1]));
+}
+function harmlessValue(value) {
+  if (value === MCP_PLACEHOLDER) return true;
+  if (/^[0-9]+(\.[0-9]+)?(ms|s|m|h|d|k|kb|mb|gb)?$/i.test(value)) return true;
+  if (/^(true|false|yes|no|on|off|none|null|auto|default|basic|oauth|oauth2|digest|stdio|sse|http|https|json|text|yaml|debug|info|warn|error|read|write|read-only)$/i.test(value)) return true;
+  if (/^(\.{0,2}|~)\//.test(value) || /^[a-z][a-z0-9+.-]*:\/\/[^@\s]+$/i.test(value)) return true;
+  return false;
+}
+function mcpPlaceholders(spec) {
+  return [...spec.url?.includes(MCP_PLACEHOLDER) ? ["url"] : [], ...spec.args?.some((arg) => arg.includes(MCP_PLACEHOLDER)) ? ["args"] : []];
+}
+function mcpReferences(spec) {
+  const list2 = (value) => isObject(value) ? Object.values(value) : [];
+  const texts = [...list2(spec.headers), ...list2(spec.env)].filter((value) => typeof value === "string");
+  return [...new Set(texts.flatMap((value) => [...value.matchAll(/\$\{([^}]*)\}/g)].map((m) => m[1])))];
+}
 var settingSpec = external_exports.strictObject({
   /** A console tool, by its name in the catalog (`apps/saas/lib/tools/catalog.ts`). */
   tool: external_exports.string().regex(/^[a-z][a-z0-9_]*$/, "must be the name of a ControlClaw tool, like egress_create_rule"),
@@ -27574,6 +27867,9 @@ var SPECS = {
   "openclaw.plugin": pluginSpec,
   "openclaw.config": configSpec,
   "openclaw.skill": skillSpec,
+  "openclaw.notes": notesSpec,
+  "openclaw.schedule": scheduleSpec,
+  "openclaw.mcp": mcpSpec,
   "controlclaw.setting": settingSpec,
   file: fileSpec,
   line: lineSpec,
@@ -27622,6 +27918,54 @@ function secretsOf(kind, spec) {
     return fields(value, [path], named);
   }
   if (kind === "line") return secretInText(spec.line) ? ["line"] : [];
+  if (kind === "openclaw.schedule") return spec.message.split("\n").some((line2) => secretInText(line2)) ? ["message"] : [];
+  if (kind === "openclaw.mcp") {
+    const { url: url2, headers, command, args, env } = spec;
+    const own2 = (value) => value.replace(new RegExp(MCP_REFERENCE.source, "g"), "").trim();
+    const held = (group, values) => Object.entries(values ?? {}).flatMap(([key, value]) => tokenShapeIn(own2(value)) || (namesSecret(key) || group === "headers") && looksSecret(own2(value).replace(/^(Bearer|Basic|Token)\s+/i, "")) ? [`${group}.${key}`] : []);
+    const parts = (value) => value.split(/[/?#&=:,\s]+/).filter((part) => part && part !== MCP_PLACEHOLDER);
+    const keyIn = (value) => parts(value).some(randomLooking);
+    const pathOf = (value) => {
+      try {
+        const parsed = new URL(value);
+        return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+      } catch {
+        return value;
+      }
+    };
+    const badArg = (arg, index, all) => {
+      if (keyIn(arg)) return true;
+      const afterOption = /^--?[A-Za-z]/.test(all[index - 1] ?? "") && !(all[index - 1] ?? "").includes("=");
+      if (afterOption && !arg.startsWith("-") && /^[A-Za-z0-9+=]+$/.test(arg) && looksSecret(arg)) return true;
+      const before = all[index - 1] ?? "";
+      const plainWord = (value) => /^[a-z][a-z-]*$/.test(value);
+      if (!arg.startsWith("-") && !before.includes("=")) {
+        if (credentialOption(before) && !harmlessValue(arg)) return true;
+        if (/^-[pPkt]$/.test(before) && !harmlessValue(arg) && (!plainWord(arg) || namesSecret(arg))) return true;
+        if (/^(-u|--user|--login)$/.test(before) && /^[^\s:/]+:[^\s:/]+$/.test(arg)) return true;
+      }
+      if (/^(-H|--header)$/.test(before) && credentialHeader(arg)) return true;
+      const assigned = /^(--?[A-Za-z][A-Za-z0-9_-]*)=(.+)$/.exec(arg);
+      if (assigned) {
+        const [, option = "", value = ""] = assigned;
+        if (credentialOption(option) && !harmlessValue(value)) return true;
+        if (/^-[pPkt]$/.test(option) && !harmlessValue(value) && (!plainWord(value) || namesSecret(value))) return true;
+        if (/^(-u|--user|--login)$/.test(option) && /^[^\s:/]+:[^\s:/]+$/.test(value)) return true;
+        if (/^(-H|--header)$/.test(option) && credentialHeader(value)) return true;
+      }
+      const attachedTo = /^-([pPkt])(.+)$/.exec(arg);
+      if (attachedTo && !assigned && !harmlessValue(attachedTo[2]) && (!plainWord(attachedTo[2]) || namesSecret(attachedTo[2]))) return true;
+      const attached = /^-[A-Za-z]([^-=].*)$/.exec(arg)?.[1] ?? /^--?[A-Za-z][A-Za-z0-9_-]*=(.+)$/.exec(arg)?.[1];
+      return !!attached && attached !== MCP_PLACEHOLDER && attached.length >= 8 && /[A-Za-z]/.test(attached) && /[0-9]/.test(attached) && /^[A-Za-z0-9+=_.-]+$/.test(attached) && !/^[a-z]+(-[a-z]+)*-?[0-9]{1,2}$/.test(attached);
+    };
+    return [
+      ...url2 && (secretInText(url2) || keyIn(pathOf(url2))) ? ["url"] : [],
+      ...held("headers", headers),
+      ...held("env", env),
+      // What a capture left to fill in is no value.
+      ...command && (secretInText([command, ...args ?? []].join(" ").replaceAll(MCP_PLACEHOLDER, "")) || (args ?? []).some(badArg)) ? ["args"] : []
+    ];
+  }
   return [];
 }
 function parseStep(raw, index, problems) {
@@ -27658,6 +28002,12 @@ function parseStep(raw, index, problems) {
     return null;
   }
   for (const field of secretsOf(kind, parsed.data)) problems.push(`${at}: "${field}" looks like a secret. A template holds no secrets: name it in "needs", or refer to it as \${NAME}`);
+  if (kind === "openclaw.mcp")
+    for (const name of mcpReferences(parsed.data)) {
+      const problem = secretNameProblem(name);
+      if (problem) problems.push(`${at}: \${${name}} ${problem}. A header or an env value can refer only to a secret you add under Secrets`);
+      else if (!needs.includes(`secret:${name}`)) problems.push(`${at}: refers to \${${name}}, so "needs" must name it: needs: [secret:${name}]`);
+    }
   if (problems.length > before) return null;
   return { id, title: typeof raw.title === "string" ? raw.title.trim() : null, optional: raw.optional === true, kind, spec: parsed.data, needs, restart: raw.restart === "openclaw" ? "openclaw" : null };
 }
@@ -27695,6 +28045,59 @@ function parseTodo(raw, problems) {
   }
   return items;
 }
+function zoneOffsets(zone) {
+  try {
+    const at = (month) => {
+      const date5 = new Date(Date.UTC(2026, month, 15, 12));
+      const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", hour: "numeric", minute: "numeric", day: "numeric" }).formatToParts(date5);
+      const get = (type) => Number(parts.find((part) => part.type === type)?.value);
+      return (get("day") - 15) * 1440 + get("hour") * 60 + get("minute") - 720;
+    };
+    return [at(0), at(6)];
+  } catch {
+    return null;
+  }
+}
+function jobsTooClose(jobs2) {
+  const floor = SCHEDULE_EVERY_MIN_MS / 6e4;
+  const sharesDay = (a, b, wraps) => {
+    const x = cronDays(a), y = cronDays(b);
+    const overlap = (p, q) => !p || !q || p.some((value) => q.includes(value));
+    if (!overlap(x.months, y.months)) return false;
+    const onlyWeek = (d) => d.daysOfWeek && !d.daysOfMonth;
+    const onlyMonth = (d) => d.daysOfMonth && !d.daysOfWeek;
+    const next = { week: (days) => days.map((day) => (day + 1) % 7), month: (days) => [...new Set(days.flatMap((day) => day >= 28 ? [day + 1, 1] : [day + 1]))] };
+    const first = wraps === "a-then-b" ? x : wraps === "b-then-a" ? y : null;
+    const moved = (d, which) => d === first ? next[which](which === "week" ? d.daysOfWeek : d.daysOfMonth) : which === "week" ? d.daysOfWeek : d.daysOfMonth;
+    if (wraps === "unknown") return true;
+    if (onlyWeek(x) && onlyWeek(y)) return overlap(moved(x, "week"), moved(y, "week"));
+    if (onlyMonth(x) && onlyMonth(y)) return overlap(moved(x, "month"), moved(y, "month"));
+    return true;
+  };
+  for (let i = 0; i < jobs2.length; i++) {
+    for (let j = i + 1; j < jobs2.length; j++) {
+      const a = jobs2[i], b = jobs2[j];
+      if (!a.cron || !b.cron) continue;
+      if (a.zone === "" !== (b.zone === "")) continue;
+      const shifts = a.zone === b.zone ? [0] : (() => {
+        const za = zoneOffsets(a.zone), zb = zoneOffsets(b.zone);
+        return za && zb ? [.../* @__PURE__ */ new Set([za[0] - zb[0], za[1] - zb[1]])] : [];
+      })();
+      const ta = cronMinutesOfDay(a.cron), tb = cronMinutesOfDay(b.cron);
+      for (const shift of shifts) {
+        const close = ta.some((at) => tb.some((other) => {
+          const gap = ((other + shift - at) % 1440 + 1440) % 1440;
+          const apart = Math.min(gap, 1440 - gap);
+          if (apart >= floor) return false;
+          const wraps = shift !== 0 ? "unknown" : Math.abs(other - at) < floor ? "no" : at > other ? "a-then-b" : "b-then-a";
+          return sharesDay(a.cron, b.cron, wraps);
+        }));
+        if (close) return [a.id, b.id];
+      }
+    }
+  }
+  return null;
+}
 function parseTemplate(raw) {
   const problems = [];
   if (!isObject(raw)) throw new TemplateError(["the template must be a group of fields: name, steps"]);
@@ -27718,8 +28121,50 @@ function parseTemplate(raw) {
     steps.push(step);
   }
   if (!uses.length && !Array.isArray(raw.steps)) problems.push(`"steps" is missing`);
+  problems.push(...setProblems(steps));
   if (problems.length) throw new TemplateError(problems);
   return { name: raw.name, description: raw.description ?? null, uses, todo, steps };
+}
+function setProblems(steps) {
+  return setProblemsOf(steps.map(setItemOf));
+}
+var setItemOf = (step) => ({
+  id: step.id,
+  ...step.kind === "openclaw.schedule" ? { job: { name: step.spec.name, cron: step.spec.cron, every: step.spec.every, timeZone: step.spec.timeZone, enabled: step.spec.enabled } } : {},
+  ...step.kind === "openclaw.mcp" ? { server: step.spec.name } : {}
+});
+function setProblemsOf(steps) {
+  const problems = [];
+  const named = /* @__PURE__ */ new Map();
+  for (const step of steps) {
+    const identity = step.job ? scheduleKey(step.job.name) : step.server ? `mcp:${step.server}` : null;
+    if (identity && named.has(identity)) problems.push(`step "${step.id}": ${step.job ? "another step schedules a job of this name" : "another step adds an MCP server of this name"} (step "${named.get(identity)}")`);
+    else if (identity) named.set(identity, step.id);
+  }
+  const scheduled = steps.filter((step) => !!step.job);
+  const jobs2 = scheduled.filter((step) => step.job.enabled);
+  if (scheduled.length > TEMPLATE_SCHEDULES_MAX) problems.push(`the template schedules ${scheduled.length} jobs, and a template may schedule ${TEMPLATE_SCHEDULES_MAX}`);
+  const perMinute = jobs2.reduce((sum, step) => sum + 1 / (step.job.cron ? cronMinGapMinutes(step.job.cron) ?? 5 : (everyMs(step.job.every ?? "") ?? SCHEDULE_EVERY_MIN_MS) / 6e4), 0);
+  if (jobs2.length > 1 && perMinute > 6e4 / SCHEDULE_EVERY_MIN_MS + 1e-9) problems.push(`the template's ${jobs2.length} jobs together run more often than once every 5 minutes. Space them out, or schedule fewer`);
+  const close = jobsTooClose(jobs2.map((step) => ({ id: step.id, cron: step.job.cron ?? void 0, zone: step.job.timeZone ?? "" })));
+  if (close && !(jobs2.length > 1 && perMinute > 6e4 / SCHEDULE_EVERY_MIN_MS + 1e-9)) problems.push(`step "${close[1]}": its job runs less than 5 minutes from the job of step "${close[0]}". Move one of them`);
+  return problems;
+}
+function besideProblems(bundle, has) {
+  const others = has.flatMap((set2) => set2.steps.map((step) => ({ ...step, id: `${step.id} (${set2.from})` })));
+  const before = new Set(setProblemsOf(others));
+  const problems = setProblemsOf([...others, ...bundle]).filter((problem) => !before.has(problem));
+  const TOO_CLOSE = "its job runs less than 5 minutes from the job of step";
+  if (!problems.some((problem) => problem.includes(TOO_CLOSE)))
+    pairs: for (const mine of bundle.filter((step) => step.job?.enabled))
+      for (const other of others.filter((step) => step.job?.enabled)) {
+        const close = setProblemsOf([other, mine]).find((problem) => problem.includes(TOO_CLOSE));
+        if (close) {
+          problems.push(close);
+          break pairs;
+        }
+      }
+  return problems;
 }
 function parseSkillSetup(raw) {
   const problems = [];
@@ -27746,6 +28191,12 @@ function parseSkillSetup(raw) {
   if (problems.length) throw new TemplateError(problems);
   return { title: typeof raw.title === "string" ? raw.title.trim() : null, category: typeof raw.category === "string" ? raw.category.trim() : null, todo, steps };
 }
+
+// ../templates/src/notes-directory.ts
+import { createHash as createHash2 } from "crypto";
+
+// ../templates/src/skill-directory.ts
+var import_yaml2 = __toESM(require_dist(), 1);
 
 // ../templates/src/skill-files.ts
 var import_yaml = __toESM(require_dist(), 1);
@@ -27839,43 +28290,192 @@ function parseSkillRecord(raw) {
   return { source: r.source, id: r.id, version: r.version, installedHash: r.installedHash, installedAt: typeof r.installedAt === "string" ? r.installedAt : "" };
 }
 
+// ../templates/src/skill-directory.ts
+var SEGMENT = /^[A-Za-z0-9_](?:[A-Za-z0-9._ -]*[A-Za-z0-9._-])?$/;
+var MAX_PATH = 200;
+var MAX_DEPTH = 8;
+function skillPathProblem(path) {
+  if (!path || path.length > MAX_PATH) return `${shownPath(path)}: a file's path is at most ${MAX_PATH} characters`;
+  if (path.includes("\\") || path.includes("\0") || path.startsWith("/") || /^[A-Za-z]:/.test(path)) return `${shownPath(path)}: must be a plain path inside the skill, with / between its parts`;
+  if (HIDDEN_CHARACTERS.test(path)) return `${shownPath(path)}: the path has a character that cannot be seen`;
+  const parts = path.split("/");
+  if (parts.length > MAX_DEPTH) return `${shownPath(path)}: at most ${MAX_DEPTH} folders deep`;
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return `${shownPath(path)}: cannot have "..", "." or an empty part in it`;
+  if (parts.some((part) => part.startsWith(".") || part.startsWith("-"))) return `${shownPath(path)}: a file or folder name cannot start with a dot or a dash`;
+  if (parts.some((part) => !SEGMENT.test(part))) return `${shownPath(path)}: name files with letters, digits, dots, dashes, underscores and spaces`;
+  return null;
+}
+var shownPath = (path) => JSON.stringify(path.length > 80 ? `${path.slice(0, 77)}...` : path);
+function descriptionIn(skillMd) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMd)?.[1];
+  if (!front) return null;
+  const clean = (text3) => typeof text3 === "string" && text3.trim() ? text3.replace(/\s+/g, " ").trim().slice(0, 300) : null;
+  try {
+    const parsed = (0, import_yaml2.parse)(front);
+    const description = clean(typeof parsed === "object" && parsed !== null ? parsed.description : null);
+    if (description) return description;
+  } catch {
+  }
+  const line2 = front.split(/\r?\n/).map((l) => /^description:\s*(.+?)\s*$/.exec(l)?.[1]).find(Boolean);
+  return clean(line2?.replace(/^(["'])(.*)\1$/, "$2"));
+}
+function checkDirectorySkill(all) {
+  const problems = [];
+  const seen = /* @__PURE__ */ new Map();
+  for (const file3 of all) {
+    const problem = skillPathProblem(file3.path);
+    if (problem) problems.push(problem);
+    const key = file3.path.toLowerCase();
+    if (seen.has(key)) problems.push(`${shownPath(file3.path)}: there are two files with this path${seen.get(key) === file3.path ? "" : " (they differ only in capitals)"}`);
+    seen.set(key, file3.path);
+  }
+  for (const file3 of all) {
+    const parts = file3.path.toLowerCase().split("/");
+    for (let depth = 1; depth < parts.length; depth++) {
+      const above = seen.get(parts.slice(0, depth).join("/"));
+      if (above !== void 0) problems.push(`${shownPath(file3.path)}: ${shownPath(above)} is a file, so it cannot also be a folder`);
+    }
+  }
+  if (problems.length) return { ok: false, problems: problems.slice(0, 20) };
+  const folder = skillFromFiles(all);
+  if ("problems" in folder) return { ok: false, problems: folder.problems.map((p) => p[0]?.toUpperCase() + p.slice(1)) };
+  const text3 = new Map(folder.files.filter((f) => isTextFile(f.content)).map((f) => [f.path, f.content.toString("utf8")]));
+  for (const file3 of folder.files) {
+    const content2 = text3.get(file3.path);
+    if (content2 === void 0) {
+      if (file3.executable || file3.content.subarray(0, 2).toString("latin1") === "#!") problems.push(`${file3.path} can be run and is not text (it has a byte that is not UTF-8, or a NUL). A script in a skill must be readable text`);
+    } else if (HIDDEN_CHARACTERS.test(content2)) problems.push(`${file3.path} has a character that cannot be seen, or that changes the order text is read in`);
+  }
+  problems.push(...skillSecrets(folder.files).map((p) => `${p}. A skill holds no secrets: name the secret, and add it under Secrets`));
+  const skillMd = text3.get("SKILL.md");
+  if (skillMd === void 0) problems.push("SKILL.md must be text");
+  const named = skillMd === void 0 ? null : skillNameOf(skillMd);
+  const name = named && "name" in named ? named.name : null;
+  if (named && "problem" in named) problems.push(`SKILL.md ${named.problem}`);
+  else if (name && (!SKILL_NAME.test(name) || name in {})) problems.push(`SKILL.md names the skill ${shownPath(name)}. A skill's name is lowercase letters, digits and dashes, at most 64 characters`);
+  else if (name && BUILTIN_SKILL_NAMES.includes(name)) problems.push(`${name} is the name of a skill that comes with every agent. Give yours another name`);
+  let setup = null;
+  const setupFile = folder.files.find((f) => f.path === SKILL_SETUP_FILE);
+  if (setupFile) {
+    const raw = text3.get(SKILL_SETUP_FILE);
+    if (raw === void 0) problems.push(`${SKILL_SETUP_FILE} must be text`);
+    else {
+      try {
+        setup = parseSkillSetup((0, import_yaml2.parse)(raw));
+      } catch (error62) {
+        if (error62 instanceof TemplateError) problems.push(...error62.problems.map((p) => `${SKILL_SETUP_FILE}: ${p}`));
+        else problems.push(`${SKILL_SETUP_FILE} is not valid YAML`);
+      }
+    }
+  }
+  if (problems.length || !name || skillMd === void 0) return { ok: false, problems: problems.slice(0, 40) };
+  const runnable = new Set(skillScripts(folder.files));
+  const files = folder.files.map((f) => ({ path: f.path, bytes: f.content.length, binary: !text3.has(f.path), is: f.path === "SKILL.md" ? "instructions" : f.path === SKILL_SETUP_FILE ? "setup" : runnable.has(f.path) ? "runnable" : "file" })).sort((a, b) => a.path === "SKILL.md" ? -1 : b.path === "SKILL.md" ? 1 : a.path.localeCompare(b.path));
+  return {
+    ok: true,
+    skill: { name, title: setup?.title ?? name, description: descriptionIn(skillMd), category: setup?.category ?? null, hash: folder.hash, bytes: files.reduce((sum, f) => sum + f.bytes, 0), files, setup }
+  };
+}
+
+// ../templates/src/notes-directory.ts
+var NOTES_PAYLOAD_ID = /^snt-[a-z0-9]{8,40}$/;
+function isNotesPayloadId(id) {
+  return !!id && NOTES_PAYLOAD_ID.test(id);
+}
+var NOTES_PAYLOAD_MAX_BYTES = NOTES_LIMITS.totalBytes * 2 + 512 * 1024;
+function notesHash(files, always) {
+  return createHash2("sha256").update(`${hashSkillFiles(files.map((f) => ({ ...f, executable: false })))}\0always\0${always ?? ""}`).digest("hex");
+}
+function notesNameProblem(name) {
+  return SKILL_NAME.test(name) && !(name in {}) && !name.startsWith("_") ? null : "A set's name is lowercase letters, digits and dashes, at most 64 characters";
+}
+function checkNotesSet(all, always) {
+  const problems = [];
+  if (!all.length) return { ok: false, problems: ["A set has at least one file"] };
+  if (all.length > NOTES_LIMITS.files || all.some((f) => f.content.length > NOTES_LIMITS.fileBytes) || all.reduce((sum, f) => sum + f.content.length, 0) > NOTES_LIMITS.totalBytes) return { ok: false, problems: [`It is too big: a set of notes is ${NOTES_LIMITS_TEXT}`] };
+  const seen = /* @__PURE__ */ new Map();
+  for (const file3 of all) {
+    const problem = skillPathProblem(file3.path);
+    if (problem) problems.push(problem);
+    else if (!/\.md$/i.test(file3.path)) problems.push(`${file3.path}: notes are Markdown files, named .md`);
+    const key = file3.path.toLowerCase();
+    if (seen.has(key)) problems.push(`${file3.path}: there are two files with this path${seen.get(key) === file3.path ? "" : " (they differ only in capitals)"}`);
+    seen.set(key, file3.path);
+  }
+  for (const file3 of all) {
+    const parts = file3.path.toLowerCase().split("/");
+    for (let depth = 1; depth < parts.length; depth++) if (seen.has(parts.slice(0, depth).join("/"))) problems.push(`${file3.path}: ${seen.get(parts.slice(0, depth).join("/"))} is a file, so it cannot also be a folder`);
+  }
+  if (problems.length) return { ok: false, problems: problems.slice(0, 20) };
+  for (const file3 of all) {
+    if (!isTextFile(file3.content)) problems.push(`${file3.path} is not text. Notes are Markdown`);
+    else if (HIDDEN_CHARACTERS.test(file3.content.toString("utf8"))) problems.push(`${file3.path} has a character that cannot be seen, or that changes the order text is read in`);
+    if (file3.executable || file3.content.subarray(0, 2).toString("latin1") === "#!") problems.push(`${file3.path} is marked to be run, or starts like a script. Notes are read, never run`);
+  }
+  problems.push(...skillSecrets(all.filter((f) => isTextFile(f.content))).map((p) => `${p}. Notes hold no secrets: every agent that has the set can repeat it`));
+  if (always !== null) {
+    const file3 = all.find((f) => f.path === always);
+    if (!file3) problems.push(`The file that is always loaded, ${JSON.stringify(always.slice(0, 80))}, is not in the set`);
+    else if (isTextFile(file3.content) && [...file3.content.toString("utf8")].length > NOTES_LIMITS.alwaysChars) problems.push(`${always} is always loaded, so it is at most ${NOTES_LIMITS.alwaysChars} characters. It has ${[...file3.content.toString("utf8")].length}. Keep the few lines that must never be missed, and put the rest in another file`);
+  }
+  if (problems.length) return { ok: false, problems: problems.slice(0, 40) };
+  const files = all.map((f) => ({ path: f.path, bytes: f.content.length, always: f.path === always })).sort((a, b) => a.path.localeCompare(b.path));
+  return { ok: true, set: { hash: notesHash(all, always), bytes: files.reduce((sum, f) => sum + f.bytes, 0), files, always } };
+}
+function parseNotesPayload(raw) {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw;
+  const set2 = r.set;
+  if (r.kind !== "notes" || typeof r.hash !== "string" || !/^[0-9a-f]{64}$/.test(r.hash) || !set2 || typeof set2 !== "object") return null;
+  if (typeof set2.name !== "string" || notesNameProblem(set2.name) || typeof set2.id !== "string" || !/^[a-z0-9-]{1,64}$/.test(set2.id) || !Number.isInteger(set2.version) || set2.version < 1) return null;
+  if (set2.always !== null && typeof set2.always !== "string") return null;
+  if (!Array.isArray(r.files) || r.files.length > NOTES_LIMITS.files) return null;
+  const files = [];
+  for (const entry of r.files) {
+    if (!entry || typeof entry.path !== "string" || typeof entry.content !== "string") return null;
+    files.push({ path: entry.path, executable: false, content: Buffer.from(entry.content, "utf8") });
+  }
+  return { payload: { kind: "notes", hash: r.hash, set: { name: set2.name, id: set2.id, version: set2.version, always: set2.always ?? null }, files: r.files.map((f) => ({ path: f.path, content: f.content })) }, files };
+}
+
 // ../templates/src/skill-folder.ts
 import { randomBytes } from "crypto";
-import { existsSync as existsSync2, lstatSync, readdirSync, readFileSync as readFileSync4, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync as existsSync2, lstatSync as lstatSync2, readdirSync as readdirSync2, readFileSync as readFileSync4, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join as join3, resolve, sep } from "path";
 var TooBig = class extends Error {
 };
-function listFolder(dir) {
+function listFolder(dir, notes = false) {
+  const limits = notes ? NOTES_LIMITS : SKILL_LIMITS;
   const files = [];
   const problems = [];
   let bytes2 = 0;
   const walk = (folder, prefix) => {
-    for (const name of readdirSync(folder).sort()) {
+    for (const name of readdirSync2(folder).sort()) {
       const path = join3(folder, name);
       const relative3 = `${prefix}${name}`;
-      const stat = lstatSync(path);
+      const stat = lstatSync2(path);
       if (stat.isDirectory()) walk(path, `${relative3}/`);
       else if (!stat.isFile()) problems.push(`${relative3} is ${stat.isSymbolicLink() ? "a link" : "not a file"}. A skill holds only files and folders`);
       else {
         bytes2 += stat.size;
-        if (files.length >= SKILL_LIMITS.files + 8 || stat.size > SKILL_LIMITS.fileBytes || bytes2 > SKILL_LIMITS.totalBytes + 65536) throw new TooBig();
+        if (files.length >= limits.files + 8 || stat.size > limits.fileBytes || bytes2 > limits.totalBytes + 65536) throw new TooBig();
         files.push({ path: relative3, content: readFileSync4(path), executable: (stat.mode & 73) !== 0 });
       }
     }
   };
   try {
-    if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return { problems: ["it is not a folder"] };
+    if (!lstatSync2(dir, { throwIfNoEntry: false })?.isDirectory()) return { problems: ["it is not a folder"] };
     walk(dir, "");
   } catch (error62) {
     if (!(error62 instanceof TooBig)) throw error62;
-    return { problems: [`it is too big: a skill is ${SKILL_LIMITS_TEXT}`] };
+    return { problems: [notes ? `it is too big: a set of notes is ${NOTES_LIMITS_TEXT}` : `it is too big: a skill is ${SKILL_LIMITS_TEXT}`] };
   }
   return problems.length ? { problems } : { files };
 }
-function listInFolder(dir, relative3) {
+function listInFolder(dir, relative3, notes = false) {
   const path = resolve(dir, relative3);
-  if (!existsSync2(path) || !lstatSync(path).isDirectory() || !realpathSync(path).startsWith(realpathSync(dir) + sep)) return null;
-  return listFolder(path);
+  if (!existsSync2(path) || !lstatSync2(path).isDirectory() || !realpathSync(path).startsWith(realpathSync(dir) + sep)) return null;
+  return listFolder(path, notes);
 }
 function readSkillFolder(dir, options = {}) {
   const listed2 = listFolder(dir);
@@ -27929,10 +28529,10 @@ function readFolder(dir, label, problems) {
   }
   return parseTemplateText(readFileSync5(file3, "utf8"), label, problems);
 }
-function parseTemplateText(text, label, problems) {
+function parseTemplateText(text3, label, problems) {
   let raw;
   try {
-    raw = (0, import_yaml2.parse)(text);
+    raw = (0, import_yaml3.parse)(text3);
   } catch (error62) {
     problems.push(`${label}: ${TEMPLATE_FILE} is not valid YAML: ${error62.message.split("\n")[0]}`);
     return null;
@@ -27953,13 +28553,13 @@ function folderSource(dir) {
       const path = fileInFolder(dir, relative3);
       return path ? readFileSync5(path) : null;
     },
-    list: (relative3) => listInFolder(dir, relative3)
+    list: (relative3, notes) => listInFolder(dir, relative3, notes)
   };
 }
 function stepsOf(source3, file3, bundle, label, problems) {
   const folder = source3.dir;
   return file3.steps.map((step) => {
-    const hash2 = createHash2("sha256").update(JSON.stringify([step.kind, step.spec, step.restart]));
+    const hash2 = createHash3("sha256").update(JSON.stringify([step.kind, step.spec, step.restart]));
     for (const [field, relative3] of filesOf(step)) {
       const content2 = source3.read(relative3);
       if (content2) {
@@ -27968,16 +28568,30 @@ function stepsOf(source3, file3, bundle, label, problems) {
         if (line2 >= 0) problems.push(`${label}: step "${step.id}": ${relative3} has ${tokenShapeIn(content2.toString("utf8").split("\n")[line2] ?? "")} on line ${line2 + 1}. A template holds no secrets: name it in "needs"`);
       } else problems.push(`${label}: step "${step.id}": "${field}" names ${relative3}, which is not a file in ${source3.name}/`);
     }
-    let carried;
+    let carried2;
     if (step.kind === "openclaw.skill" && step.spec.from) {
       const skill = carriedSkill(source3.list(step.spec.from), step.spec.from, step.spec.name);
       if ("problems" in skill) problems.push(...skill.problems.map((p) => `${label}: step "${step.id}": ${p}`));
       else {
         hash2.update(skill.hash);
-        carried = { hash: skill.hash, files: skill.files.map((f) => f.path).sort(), scripts: skillScripts(skill.files).sort() };
+        carried2 = { hash: skill.hash, files: skill.files.map((f) => f.path).sort(), scripts: skillScripts(skill.files).sort() };
       }
     }
-    return { ...step, id: bundle ? `${bundle}/${step.id}` : step.id, dir: folder, bundle, hash: hash2.digest("hex").slice(0, 16), ...carried ? { skill: carried } : {} };
+    let notes;
+    if (step.kind === "openclaw.notes" && step.spec.from) {
+      const listed2 = source3.list(step.spec.from, true);
+      if (!listed2) problems.push(`${label}: step "${step.id}": "from" names ${step.spec.from}, which is not a folder in the template`);
+      else if ("problems" in listed2) problems.push(...listed2.problems.map((p) => `${label}: step "${step.id}": ${step.spec.from}: ${p}`));
+      else {
+        const checked = checkNotesSet(listed2.files, null);
+        if (!checked.ok) problems.push(...checked.problems.map((p) => `${label}: step "${step.id}": ${p}`));
+        else {
+          hash2.update(checked.set.hash);
+          notes = { hash: checked.set.hash, files: checked.set.files.map((f) => f.path) };
+        }
+      }
+    }
+    return { ...step, id: bundle ? `${bundle}/${step.id}` : step.id, dir: folder, bundle, hash: hash2.digest("hex").slice(0, 16), ...carried2 ? { skill: carried2 } : {}, ...notes ? { notes } : {} };
   });
 }
 function loadStep(dir, step) {
@@ -27990,7 +28604,7 @@ function loadStep(dir, step) {
 }
 function loadTemplate(templateDir, options = {}) {
   const dir = resolve2(templateDir);
-  const rootNamed = resolve2(options.bundlesRoot ?? dirname(dir));
+  const rootNamed = resolve2(options.bundlesRoot ?? (existsSync3(join4(dir, "bundles")) ? dir : dirname(dir)));
   const root = existsSync3(rootNamed) ? realpathSync2(rootNamed) : rootNamed;
   const problems = [];
   const steps = [];
@@ -28028,6 +28642,7 @@ function loadTemplate(templateDir, options = {}) {
     if (ids.has(step.id)) problems.push(`step "${step.id}": this id is used twice (two bundles with the same name)`);
     ids.add(step.id);
   }
+  if (done.size) for (const problem of setProblems(steps)) problems.push(`template with its bundles: ${problem}`);
   if (!template || problems.length) throw new TemplateError(problems);
   todo.push(...template.todo);
   const todoIds = /* @__PURE__ */ new Set();
@@ -28039,17 +28654,17 @@ function loadTemplate(templateDir, options = {}) {
   return { name: template.name, description: template.description, dir, steps, todo, hash: templateHash(steps, todo) };
 }
 function templateHash(steps, todo) {
-  return createHash2("sha256").update([...steps.map((s) => `${s.id}:${s.hash}`), JSON.stringify(todo)].join("\n")).digest("hex").slice(0, 16);
+  return createHash3("sha256").update([...steps.map((s) => `${s.id}:${s.hash}`), JSON.stringify(todo)].join("\n")).digest("hex").slice(0, 16);
 }
 
 // ../templates/src/runner.ts
 import { randomBytes as randomBytes3 } from "crypto";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync7, renameSync as renameSync3, rmSync as rmSync3, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname3, join as join7 } from "path";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync9, renameSync as renameSync3, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname5, join as join9 } from "path";
 
 // ../templates/src/kinds/files.ts
 import { randomBytes as randomBytes2 } from "crypto";
-import { chmodSync, existsSync as existsSync4, lstatSync as lstatSync2, mkdirSync, readFileSync as readFileSync6, readlinkSync, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync2 } from "fs";
+import { chmodSync, existsSync as existsSync4, lstatSync as lstatSync3, mkdirSync, readFileSync as readFileSync6, readlinkSync, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync2 } from "fs";
 import { basename as basename2, dirname as dirname2, join as join5, resolve as resolve3, sep as sep3 } from "path";
 function targetPath(path, ctx) {
   const problem = workspacePathProblem(path);
@@ -28069,7 +28684,7 @@ var inside = (path, folder) => path.startsWith(folder + sep3);
 function writable(path, ctx) {
   const named = targetPath(path, ctx);
   let target2 = named;
-  if (lstatSync2(named, { throwIfNoEntry: false })?.isSymbolicLink()) target2 = existsSync4(named) ? realpathSync3(named) : resolve3(dirname2(named), readlinkSync(named));
+  if (lstatSync3(named, { throwIfNoEntry: false })?.isSymbolicLink()) target2 = existsSync4(named) ? realpathSync3(named) : resolve3(dirname2(named), readlinkSync(named));
   target2 = real(target2);
   if (!inside(target2, real(ctx.workspace))) throw new StepFailure(`${path} leads outside the agent's workspace, which a file or line step cannot write`);
   if (statSync2(target2, { throwIfNoEntry: false })?.isDirectory()) throw new StepFailure(`${path} is a folder, not a file`);
@@ -28168,6 +28783,9 @@ var run = {
     if (result.code !== 0) throw new StepFailure(`${step.spec.apply} failed: ${lastLine(result)}`);
   }
 };
+
+// ../templates/src/kinds/mcp.ts
+import { readFileSync as readFileSync7 } from "fs";
 
 // ../templates/src/config-retry.ts
 var CONFIG_CHANGED_MEANWHILE = /config (file )?changed (while|since)/i;
@@ -28273,18 +28891,260 @@ var openclawPlugin = {
   }
 };
 
+// ../templates/src/kinds/mcp.ts
+var READ_MS2 = 6e4;
+var WRITE_MS2 = 12e4;
+async function mcpServers(box) {
+  const result = await cli(box, ["config", "file"], READ_MS2);
+  const path = result.stdout.split("\n").map((line2) => line2.trim()).filter((line2) => line2.startsWith("/")).pop();
+  if (result.code !== 0 || !path) throw new StepFailure(`the MCP servers could not be read: ${result.code === 0 ? "OpenClaw did not say where its config file is" : lastLine(result)}`);
+  let config2;
+  try {
+    config2 = JSON.parse(readFileSync7(path, "utf8"));
+  } catch (error62) {
+    if (error62.code === "ENOENT") return {};
+    throw new StepFailure("the MCP servers could not be read: OpenClaw's config file is not plain JSON");
+  }
+  const servers = isObject(config2) && isObject(config2.mcp) && isObject(config2.mcp.servers) ? config2.mcp.servers : {};
+  return Object.fromEntries(Object.entries(servers).filter((entry) => isObject(entry[1])));
+}
+var MCP_CA_ENV = "NODE_EXTRA_CA_CERTS";
+function mcpDefinition(spec, box = {}) {
+  const ca = spec.command && box.env?.[MCP_CA_ENV] ? { [MCP_CA_ENV]: box.env[MCP_CA_ENV] } : null;
+  const env = ca || spec.env ? { ...ca, ...spec.env } : null;
+  return {
+    ...spec.url ? { url: spec.url, ...spec.transport ? { transport: spec.transport } : {}, ...spec.headers ? { headers: spec.headers } : {} } : {},
+    ...spec.command ? { command: spec.command, ...spec.args ? { args: spec.args } : {}, ...env ? { env } : {} } : {},
+    ...spec.tools ? { toolFilter: spec.tools } : {},
+    ...spec.timeout ? { requestTimeoutMs: spec.timeout * 1e3 } : {}
+  };
+}
+var otherShape = (spec, current) => spec.url ? "command" in current : "url" in current;
+var openclawMcp = {
+  async diff(step, ctx) {
+    const { name, enabled } = step.spec;
+    const current = (await mcpServers(ctx))[name];
+    const what = step.spec.url ? `at ${step.spec.url}` : `run with ${step.spec.command}`;
+    if (!current) return { holds: false, message: `no MCP server called ${name}; it would be added, ${what}` };
+    const found = otherShape(step.spec, current) ? [`it is ${"url" in current ? "an address" : "a command"}, wanted ${step.spec.url ? "an address" : "a command"}`] : differences(mcpDefinition(step.spec, ctx), current);
+    if (current.enabled !== false !== enabled) found.push(`it is switched ${enabled ? "off" : "on"}, wanted ${enabled ? "on" : "off"}`);
+    return found.length ? { holds: false, message: `MCP server ${name}: ${found.join("; ")}` } : { holds: true, message: `MCP server ${name} is set, ${what}${enabled ? "" : " (off)"}` };
+  },
+  async apply(step, ctx) {
+    const { name, enabled } = step.spec;
+    const unfinished = mcpPlaceholders(step.spec);
+    if (unfinished.length) throw new StepFailure(`the MCP server ${name} still has ${MCP_PLACEHOLDER} in its ${unfinished.join(" and its ")}: write what belongs there in the template`);
+    const current = (await mcpServers(ctx))[name];
+    if (current && otherShape(step.spec, current)) {
+      const removed = await cli(ctx, ["mcp", "unset", name], WRITE_MS2);
+      logOutput(ctx, removed);
+      if (removed.code !== 0) throw new StepFailure(`the MCP server ${name} could not be replaced: ${lastLine(removed)}`);
+    }
+    const definition = { ...mcpDefinition(step.spec, ctx), ...enabled ? current?.enabled === false ? { enabled: true } : {} : { enabled: false } };
+    await configWrite(ctx, ["patch", "--stdin"], JSON.stringify({ mcp: { servers: { [name]: definition } } }));
+  }
+};
+
+// ../templates/src/kinds/schedule.ts
+var READ_MS3 = 3e4;
+var WRITE_MS3 = 6e4;
+var READ_TRIES = 9;
+var READ_RETRY_MS = 1e4;
+async function listJobs(box, timeoutMs = READ_MS3) {
+  const result = await cli(box, ["cron", "list", "--all", "--json"], timeoutMs);
+  if (result.code !== 0) return null;
+  let answer;
+  try {
+    answer = jsonFrom(result.stdout);
+  } catch {
+    return null;
+  }
+  const jobs2 = Array.isArray(answer) ? answer : isObject(answer) && Array.isArray(answer.jobs) ? answer.jobs : null;
+  return jobs2 ? jobs2.filter(isObject) : null;
+}
+async function jobs(ctx) {
+  for (let attempt = 1; ; attempt++) {
+    const found = await listJobs(ctx);
+    if (found) return found;
+    if (attempt >= READ_TRIES) throw new StepFailure("OpenClaw's list of scheduled jobs could not be read");
+    await new Promise((done) => setTimeout(done, ctx.retryWaitMs ?? READ_RETRY_MS));
+  }
+}
+function jobOf(list2, name) {
+  return list2.find((job) => job.declarationKey === scheduleKey(name)) ?? list2.find((job) => job.name === name && !job.declarationKey) ?? null;
+}
+var jobDelivers = (job) => job.delivery?.mode === "announce" || job.sessionTarget !== void 0 && job.sessionTarget !== "isolated";
+var cannotDeliver = (job) => job.payload?.kind === "agentTurn" && (job.sessionTarget === void 0 || job.sessionTarget === "isolated") && job.delivery?.mode === "announce" && (job.delivery.channel === void 0 || job.delivery.channel === "last") && job.delivery.to === void 0 && !job.sessionKey;
+var zoneOf = (step, ctx) => step.spec.timeZone ?? cleanTimeZone(ctx.vars.timeZone);
+var when = (cron, every, zone) => cron ? `at ${cron} (${zone})` : `every ${every}`;
+function changes(step, job, zone) {
+  const { cron, every, message, deliver, enabled } = step.spec;
+  const found = [];
+  if (job.enabled !== false !== enabled) found.push(job.enabled === false ? "paused" : "switched on");
+  const schedule = job.schedule ?? {};
+  const same = cron ? schedule.kind === "cron" && schedule.expr === cron && (typeof schedule.tz === "string" ? schedule.tz : "UTC") === zone : schedule.kind === "every" && schedule.everyMs === everyMs(every ?? "");
+  if (!same) {
+    const theirs = schedule.kind === "cron" && typeof schedule.expr === "string" ? when(schedule.expr, void 0, typeof schedule.tz === "string" ? schedule.tz : "UTC") : schedule.kind === "every" && typeof schedule.everyMs === "number" ? `every ${everyText(schedule.everyMs) ?? `${schedule.everyMs} ms`}` : "at another time";
+    found.push(`runs ${theirs}`);
+  }
+  if (job.payload?.kind !== "agentTurn" || job.payload.message !== message) found.push("another message");
+  if (jobDelivers(job) !== (deliver === "announce")) found.push(deliver === "announce" ? "its answer is not sent to a channel" : "its answer is sent");
+  return found;
+}
+var openclawSchedule = {
+  async diff(step, ctx) {
+    const { name, cron, every } = step.spec;
+    const zone = zoneOf(step, ctx);
+    const job = jobOf(await jobs(ctx), name);
+    if (!job) return { holds: false, message: `no scheduled job called ${name}; it would run ${when(cron, every, zone)}` };
+    if (step.spec.deliver === "announce" && cannotDeliver(job)) return { holds: false, reason: "no-conversation", message: `scheduled job ${name} has no conversation to deliver to: OpenClaw runs it and does not send its answer` };
+    const changed = changes(step, job, zone);
+    if (changed.length) return { holds: true, kept: true, message: `scheduled job ${name} was changed on this agent, kept as it is (${changed.join("; ")})` };
+    return { holds: true, message: `scheduled job ${name} runs ${when(cron, every, zone)}` };
+  },
+  async apply(step, ctx) {
+    const { name, cron, every, message, deliver, enabled } = step.spec;
+    const job = jobOf(await jobs(ctx), name);
+    if (job) {
+      if (deliver !== "announce" || !cannotDeliver(job)) return;
+      if (typeof job.id !== "string") throw new StepFailure(`the job ${name} could not be tied to the agent's conversation: OpenClaw gave no id for it`);
+      const tied = await cli(ctx, ["cron", "edit", job.id, `--session-key=${MAIN_SESSION}`, "--json"], WRITE_MS3);
+      logOutput(ctx, tied);
+      if (tied.code !== 0) throw new StepFailure(`the job ${name} could not be tied to the agent's conversation: ${lastLine(tied)}`);
+      return;
+    }
+    const result = await cli(
+      ctx,
+      ["cron", "add", `--name=${name}`, ...cron ? [`--cron=${cron}`, `--tz=${zoneOf(step, ctx)}`] : [`--every=${every}`], `--message=${message}`, ...deliver === "announce" ? ["--announce", `--session-key=${MAIN_SESSION}`] : ["--no-deliver"], `--declaration-key=${scheduleKey(name)}`, ...enabled ? [] : ["--disabled"], "--json"],
+      WRITE_MS3
+    );
+    logOutput(ctx, result);
+    if (result.code !== 0) throw new StepFailure(`the job ${name} could not be scheduled: ${lastLine(result)}`);
+  }
+};
+
 // ../templates/src/kinds/setting.ts
 var controlclawSetting = {
   diff: (step, ctx) => ctx.settings.read({ tool: step.spec.tool, values: step.spec.values }),
   apply: (step, ctx) => ctx.settings.apply({ runId: ctx.runId, template: ctx.template, stepId: step.id, tool: step.spec.tool, values: step.spec.values })
 };
 
+// ../templates/src/kinds/notes.ts
+import { mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname4, join as join7 } from "path";
+
+// ../templates/src/notes-folder.ts
+import { lstatSync as lstatSync4, mkdirSync as mkdirSync2, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync as rmSync3, statSync as statSync3, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname3, join as join6 } from "path";
+function notesPlace(env = process.env) {
+  return { root: env.CC_NOTES_DIR ?? "/var/lib/controlclaw-notes/sets", helper: env.CC_NOTES_HELPER ? [env.CC_NOTES_HELPER] : ["sudo", "-n", "/usr/local/sbin/cc-notes"] };
+}
+var recordPath = (home, set2) => join6(home, ".controlclaw", "notes", `${set2}.json`);
+function readNotesRecord(home, set2) {
+  if (notesNameProblem(set2)) return null;
+  try {
+    const r = JSON.parse(readFileSync8(recordPath(home, set2), "utf8"));
+    if (!r || r.source !== "organization" && r.source !== "template" || typeof r.id !== "string" || typeof r.hash !== "string" || !/^[0-9a-f]{64}$/.test(r.hash)) return null;
+    return { source: r.source, id: r.id, version: typeof r.version === "string" ? r.version : null, payload: typeof r.payload === "string" ? r.payload : null, hash: r.hash, always: typeof r.always === "string" ? r.always : null, installedAt: typeof r.installedAt === "string" ? r.installedAt : "" };
+  } catch {
+    return null;
+  }
+}
+function writeNotesRecord(home, set2, record2) {
+  if (notesNameProblem(set2)) throw new Error("not a set's name");
+  mkdirSync2(join6(home, ".controlclaw", "notes"), { recursive: true, mode: 448 });
+  writeFileSync3(recordPath(home, set2), JSON.stringify(record2), { mode: 384 });
+}
+function installedNotes(root, set2) {
+  if (notesNameProblem(set2)) return null;
+  const files = [];
+  let bytes2 = 0;
+  const walk = (folder, prefix) => {
+    for (const name of readdirSync3(folder).sort()) {
+      const path = join6(folder, name);
+      const stat = lstatSync4(path);
+      if (stat.isDirectory()) {
+        if (!walk(path, `${prefix}${name}/`)) return false;
+      } else if (!stat.isFile()) return false;
+      else {
+        bytes2 += stat.size;
+        if (files.length >= NOTES_LIMITS.files || stat.size > NOTES_LIMITS.fileBytes || bytes2 > NOTES_LIMITS.totalBytes) return false;
+        files.push({ path: `${prefix}${name}`, content: readFileSync8(path), executable: false });
+      }
+    }
+    return true;
+  };
+  try {
+    const dir = join6(root, set2);
+    if (!lstatSync4(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
+    return walk(dir, "") ? files : null;
+  } catch {
+    return null;
+  }
+}
+
+// ../templates/src/kinds/notes.ts
+var PUT_MS = 12e4;
+var place = (ctx) => ctx.notes ?? notesPlace();
+var filesHash = (files) => hashSkillFiles(files.map((f) => ({ ...f, executable: false })));
+function carried(step, ctx) {
+  const { set: set2, from } = step.spec;
+  if (!from) throw new StepFailure(`notes ${set2} is one of the console's shared notes, so this step needs the console: it puts the set's files in the template when it applies it. By hand, name the folder with "from"`);
+  const listed2 = listInFolder(step.dir, from, true);
+  if (!listed2) throw new StepFailure(`"from" names ${from}, which is not a folder in the template`);
+  if ("problems" in listed2) throw new StepFailure(listed2.problems.map((p) => `${from}: ${p}`).join("; "));
+  const always = ctx.notesRecord?.always ?? null;
+  const checked = checkNotesSet(listed2.files, always);
+  if (!checked.ok) throw new StepFailure(checked.problems.join("; "));
+  return { files: listed2.files, hash: checked.set.hash, always };
+}
+var openclawNotes = {
+  async diff(step, ctx) {
+    const { set: set2 } = step.spec;
+    const wanted = carried(step, ctx);
+    const there = installedNotes(place(ctx).root, set2);
+    const count = `${wanted.files.length} file${wanted.files.length === 1 ? "" : "s"}`;
+    if (!there) return { holds: false, message: `notes ${set2} are not on this agent (${count})` };
+    if (filesHash(there) !== filesHash(wanted.files)) return { holds: false, message: `notes ${set2} on this agent are not the ${count} of ${step.spec.from}` };
+    if (readNotesRecord(ctx.home, set2)?.hash !== wanted.hash) return { holds: false, message: `notes ${set2} have no record of where they are from` };
+    return { holds: true, message: `notes ${set2} are in place (${count})` };
+  },
+  async apply(step, ctx) {
+    const { set: set2 } = step.spec;
+    const wanted = carried(step, ctx);
+    const there = installedNotes(place(ctx).root, set2);
+    if (!there || filesHash(there) !== filesHash(wanted.files)) {
+      const parent = join7(ctx.home, ".controlclaw");
+      mkdirSync3(parent, { recursive: true, mode: 448 });
+      const dir = mkdtempSync(join7(parent, "notes-put-"));
+      try {
+        for (const f of wanted.files) {
+          mkdirSync3(dirname4(join7(dir, f.path)), { recursive: true });
+          writeFileSync4(join7(dir, f.path), f.content, { mode: 420, flag: "wx" });
+        }
+        const [command = "", ...args] = place(ctx).helper;
+        const result = await ctx.exec(command, [...args, "put", set2, dir], { timeoutMs: PUT_MS });
+        logOutput(ctx, result);
+        if (result.code !== 0) throw new StepFailure(`notes ${set2} could not be put in place: ${lastLine(result)}`);
+      } finally {
+        rmSync4(dir, { recursive: true, force: true });
+      }
+    }
+    writeNotesRecord(ctx.home, set2, {
+      ...ctx.notesRecord ? { source: "organization", id: ctx.notesRecord.id, version: ctx.notesRecord.version, payload: ctx.notesRecord.payload } : { source: "template", id: `${ctx.template}/${set2}`, version: null, payload: null },
+      hash: wanted.hash,
+      always: wanted.always,
+      installedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+  }
+};
+
 // ../templates/src/kinds/skill.ts
 import { existsSync as existsSync5 } from "fs";
-import { join as join6 } from "path";
+import { join as join8 } from "path";
 import { resolve as resolve4 } from "path";
 var INSTALL_MS2 = 12e4;
-var managedDir = (ctx, name) => join6(ctx.home, ".openclaw", "skills", name);
+var managedDir = (ctx, name) => join8(ctx.home, ".openclaw", "skills", name);
 function source2(step) {
   const { name, from, enabled } = step.spec;
   if (!from) {
@@ -28301,13 +29161,16 @@ async function enabledNow(ctx, name) {
 }
 function installed(ctx, name, hash2) {
   const dir = managedDir(ctx, name);
-  if (!existsSync5(join6(dir, "SKILL.md"))) return { state: "missing" };
+  if (!existsSync5(join8(dir, "SKILL.md"))) return { state: "missing" };
   const now = skillHash(dir);
   const record2 = readSkillRecord(dir);
   if (now === hash2 && ctx.skillRecord && record2 && record2.source !== "organization") return { state: "kept" };
+  if (ctx.skillRecord?.onlyOverRecord && (record2?.source !== "organization" || record2.installedHash !== ctx.skillRecord.onlyOverRecord)) return { state: "kept" };
   if (now === hash2) return { state: "same", record: record2?.installedHash === hash2 };
   const replaceable = ctx.skillRecord ? record2?.source === "template" || record2?.source === "organization" : record2?.source === "template";
-  return { state: replaceable && record2?.installedHash === now ? "outdated" : "kept" };
+  if (replaceable && record2?.installedHash === now) return { state: "outdated" };
+  if (ctx.skillRecord?.replaceChanged && record2?.source === "organization") return { state: "outdated", changed: true };
+  return { state: "kept" };
 }
 function scriptsNote(files) {
   const scripts = skillScripts(files);
@@ -28323,11 +29186,12 @@ var openclawSkill = {
     if (skill && from) {
       const there = installed(ctx, name, skill.hash);
       if (there.state === "missing") found.push(`skill ${name} is not installed${scriptsNote(skill.files)}`);
-      if (there.state === "outdated") found.push(`skill ${name} is an earlier version of ${from}${scriptsNote(skill.files)}`);
+      if (there.state === "outdated") found.push(there.changed ? `skill ${name} was changed on this agent and is replaced by ${from}${scriptsNote(skill.files)}` : `skill ${name} is an earlier version of ${from}${scriptsNote(skill.files)}`);
       if (there.state === "same" && !there.record && !readSkillRecord(managedDir(ctx, name))) found.push(`skill ${name} has no record of where it is from`);
       kept = there.state === "kept";
     }
-    if (await enabledNow(ctx, name) !== enabled) found.push(`skill ${name} is switched ${enabled ? "off" : "on"}, wanted ${enabled ? "on" : "off"}`);
+    const leaveSwitch = !!ctx.skillRecord && (kept || ctx.skillRecord.keepSwitch === true);
+    if (!leaveSwitch && await enabledNow(ctx, name) !== enabled) found.push(`skill ${name} is switched ${enabled ? "off" : "on"}, wanted ${enabled ? "on" : "off"}`);
     if (found.length) return { holds: false, message: found.join("; ") };
     if (kept) return { holds: true, kept: true, message: `skill ${name} was changed on this agent, kept as it is (${enabled ? "on" : "off"})` };
     return { holds: true, message: skill ? `skill ${name} is installed and ${enabled ? "on" : "off"}${scriptsNote(skill.files)}` : `skill ${name} is switched off` };
@@ -28335,18 +29199,20 @@ var openclawSkill = {
   async apply(step, ctx) {
     const { name, from, enabled } = step.spec;
     const skill = source2(step);
+    let leaveSwitch = ctx.skillRecord?.keepSwitch === true;
     if (skill && from) {
       const there = installed(ctx, name, skill.hash);
+      if (ctx.skillRecord && there.state === "kept") leaveSwitch = true;
       if (there.state === "missing" || there.state === "outdated") {
         const result = await cli(ctx, ["skills", "install", skill.dir, "--as", name, "--global", ...there.state === "outdated" ? ["--force"] : []], INSTALL_MS2);
         logOutput(ctx, result);
         if (result.code !== 0) throw new StepFailure(`skill ${name} could not be installed: ${lastLine(result)}`);
-        if (!existsSync5(join6(managedDir(ctx, name), "SKILL.md"))) throw new StepFailure(`OpenClaw said it installed skill ${name}, but it is not in its skills folder`);
+        if (!existsSync5(join8(managedDir(ctx, name), "SKILL.md"))) throw new StepFailure(`OpenClaw said it installed skill ${name}, but it is not in its skills folder`);
       }
       if (there.state === "missing" || there.state === "outdated" || there.state === "same" && !there.record && !readSkillRecord(managedDir(ctx, name)))
         writeSkillRecord(managedDir(ctx, name), { ...ctx.skillRecord ? { source: "organization", id: ctx.skillRecord.id, version: ctx.skillRecord.version } : { source: "template", id: `${ctx.template}/${name}`, version: null }, installedHash: skill.hash, installedAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
-    if (await enabledNow(ctx, name) !== enabled) await configWrite(ctx, ["set", `skills.entries.${name}.enabled`, JSON.stringify(enabled), "--strict-json"]);
+    if (!leaveSwitch && await enabledNow(ctx, name) !== enabled) await configWrite(ctx, ["set", `skills.entries.${name}.enabled`, JSON.stringify(enabled), "--strict-json"]);
   }
 };
 
@@ -28355,6 +29221,9 @@ var kinds = {
   "openclaw.plugin": openclawPlugin,
   "openclaw.config": openclawConfig,
   "openclaw.skill": openclawSkill,
+  "openclaw.notes": openclawNotes,
+  "openclaw.schedule": openclawSchedule,
+  "openclaw.mcp": openclawMcp,
   "controlclaw.setting": controlclawSetting,
   file: file2,
   line,
@@ -28368,7 +29237,7 @@ var LOG_WIDTH = 300;
 var UnknownStep = class extends Error {
 };
 function statePath(stateDir, template) {
-  return join7(stateDir, `${template}.json`);
+  return join9(stateDir, `${template}.json`);
 }
 function isStepResult(value) {
   return isObject(value) && typeof value.id === "string" && typeof value.hash === "string" && typeof value.message === "string" && typeof value.at === "string" && typeof value.status === "string" && STATUSES.includes(value.status) && typeof value.kind === "string" && KINDS.includes(value.kind) && Array.isArray(value.log) && value.log.every((l) => typeof l === "string");
@@ -28376,7 +29245,7 @@ function isStepResult(value) {
 function readState(stateDir, template) {
   let raw;
   try {
-    raw = JSON.parse(readFileSync7(statePath(stateDir, template), "utf8"));
+    raw = JSON.parse(readFileSync9(statePath(stateDir, template), "utf8"));
   } catch {
     return null;
   }
@@ -28386,14 +29255,14 @@ function readState(stateDir, template) {
 }
 function writeState(stateDir, report) {
   const path = statePath(stateDir, report.template);
-  mkdirSync2(dirname3(path), { recursive: true, mode: 448 });
+  mkdirSync4(dirname5(path), { recursive: true, mode: 448 });
   const tmp = `${path}.${randomBytes3(6).toString("hex")}.tmp`;
   try {
-    writeFileSync3(tmp, `${JSON.stringify(report, null, 2)}
+    writeFileSync5(tmp, `${JSON.stringify(report, null, 2)}
 `, { mode: 384 });
     renameSync3(tmp, path);
   } finally {
-    rmSync3(tmp, { force: true });
+    rmSync5(tmp, { force: true });
   }
 }
 function kindOf(step) {
@@ -28428,8 +29297,9 @@ async function one(step, options, template, redact, now) {
     return { result: failure2(error62, "check"), applied: false };
   }
   if (before.holds) return { result: { ...done("ok", before.message), ...before.kept ? { kept: true } : {} }, applied: false };
-  if (options.mode === "check") return { result: done("would-change", before.message), applied: false };
-  if (options.mode === "verify") return { result: done("failed", before.message, "check"), applied: false };
+  const why = before.reason ? { reason: before.reason } : {};
+  if (options.mode === "check") return { result: { ...done("would-change", before.message), ...why }, applied: false };
+  if (options.mode === "verify") return { result: { ...done("failed", before.message, "check"), ...why }, applied: false };
   try {
     await kind.apply(step, ctx);
   } catch (error62) {
@@ -28452,7 +29322,7 @@ async function runTemplate(template, options) {
   const unknown2 = options.only?.find((id) => !template.steps.some((s) => s.id === id));
   if (unknown2) throw new UnknownStep(`no step "${unknown2}" in ${template.name}. The steps are: ${template.steps.map((s) => s.id).join(", ")}`);
   const previous = options.stateDir ? readState(options.stateDir, template.name) : null;
-  const carried = template.steps.filter((step, i) => i < start || only && !only.has(step.id)).flatMap((step) => previous?.steps.filter((r) => r.id === step.id && r.hash === step.hash && (r.status === "ok" || r.status === "changed")) ?? []).map((r) => ({ ...r, carried: true }));
+  const carried2 = template.steps.filter((step, i) => i < start || only && !only.has(step.id)).flatMap((step) => previous?.steps.filter((r) => r.id === step.id && r.hash === step.hash && (r.status === "ok" || r.status === "changed")) ?? []).map((r) => ({ ...r, carried: true }));
   const asked = new Set(template.steps.filter((s) => s.restart === "openclaw").map((s) => s.id));
   const ran = [];
   let failed = false;
@@ -28490,10 +29360,12 @@ async function runTemplate(template, options) {
     finishedAt: now().toISOString(),
     result: failed ? "failed" : ran.some((r) => r.status === "would-change") ? "would-change" : ran.some((r) => r.status === "changed") ? "changed" : "ok",
     // In the template's order, whichever of them ran now.
-    steps: [...carried, ...ran].sort((a, b) => template.steps.findIndex((s) => s.id === a.id) - template.steps.findIndex((s) => s.id === b.id)),
+    steps: [...carried2, ...ran].sort((a, b) => template.steps.findIndex((s) => s.id === a.id) - template.steps.findIndex((s) => s.id === b.id)),
     needs: template.steps.flatMap((s) => s.needs.map((need) => ({ step: s.id, need }))),
     restart,
-    ...interrupted2 ? { interrupted: interrupted2 } : {}
+    ...interrupted2 ? { interrupted: interrupted2 } : {},
+    ...options.repaired?.length ? { repaired: options.repaired.filter((id) => template.steps.some((s) => s.id === id)) } : {},
+    ...options.repairOutdated ? { repairOutdated: true } : {}
   };
   if (options.mode === "run" && options.stateDir) writeState(options.stateDir, report);
   return report;
@@ -28512,8 +29384,10 @@ function summary(report) {
 }
 var PUBLIC_FAILURE = { check: "could not be checked", apply: "could not be applied", recheck: "applied, but it does not hold" };
 var CHECKED_WHEN_APPLIED = "checked when applied";
+var NO_CONVERSATION = "has no conversation to deliver to";
 function publicMessage(result, mode2) {
   if (result.status === "ok") return result.kept ? "kept as it is" : "holds";
+  if (result.reason === "no-conversation" && (result.status === "would-change" || result.status === "failed" && result.phase === "check")) return NO_CONVERSATION;
   if (result.status === "changed") return "changed";
   if (result.status === "would-change") return result.later ? CHECKED_WHEN_APPLIED : "would change";
   if (result.status === "unconfirmed") return "an owner has to confirm";
@@ -28529,7 +29403,9 @@ function publicReport(report) {
     at: report.finishedAt,
     restart: report.restart,
     steps: report.steps.map((r) => ({ id: r.id, kind: r.kind, status: r.status, message: report.interrupted && r.status === "failed" && !r.phase ? "stopped" : publicMessage(r, report.mode) })),
-    needs: report.needs
+    needs: report.needs,
+    ...report.repaired?.length ? { repaired: report.repaired } : {},
+    ...report.repairOutdated ? { repairOutdated: true } : {}
   };
 }
 
@@ -28565,6 +29441,9 @@ var USAGE = `cc-ensure: make one thing true on this agent, with the same step ki
   cc-ensure openclaw.plugin package=@openclaw/brave-search config.maxResults=8
   cc-ensure skill name=house-style from=files/skills/house-style --dir ./sales-assistant
   cc-ensure skill name=weather enabled=false
+  cc-ensure notes set=products from=files/notes/products --dir ./sales-assistant
+  cc-ensure schedule name=morning-brief cron='0 8 * * *' message='Morning brief: today, in short.'
+  cc-ensure mcp name=docs url=https://mcp.example.com/mcp transport=streamable-http
   cc-ensure line file=notes/todo.md match='^- [ ] call' line='- [ ] call Anna'
   cc-ensure file path=SOUL.md from=files/SOUL.md ifMissing=true --dir ./sales-assistant
   cc-ensure run apply=scripts/apply.sh verify=scripts/verify.sh --dir ./sales-assistant
@@ -28576,7 +29455,7 @@ var USAGE = `cc-ensure: make one thing true on this agent, with the same step ki
 
 Exit code: 0 done, 1 failed, 2 --check found a change, 64 the command is wrong.`;
 var FLAGS = /* @__PURE__ */ new Set(["--check", "--restart", "--json"]);
-var TEXT_FIELDS = /* @__PURE__ */ new Set(["path", "file", "from", "match", "line", "apply", "verify", "tool", "package", "id", "mode", "name"]);
+var TEXT_FIELDS = /* @__PURE__ */ new Set(["path", "file", "from", "match", "line", "apply", "verify", "tool", "package", "id", "mode", "name", "cron", "every", "timeZone", "message", "url", "command"]);
 function fieldsFrom(pairs) {
   const spec = {};
   for (const pair of pairs) {
@@ -28584,13 +29463,13 @@ function fieldsFrom(pairs) {
     if (at < 1) throw new Error(`"${pair}" is not field=value`);
     const keys = pair.slice(0, at).split(".");
     if (keys.some((key) => key === "" || key === "__proto__" || key === "constructor" || key === "prototype")) throw new Error(`"${pair.slice(0, at)}" is not a field name`);
-    const text = pair.slice(at + 1);
-    let value = text;
+    const text3 = pair.slice(at + 1);
+    let value = text3;
     if (!(keys.length === 1 && TEXT_FIELDS.has(keys[0] ?? ""))) {
       try {
-        value = JSON.parse(text);
+        value = JSON.parse(text3);
       } catch {
-        value = text;
+        value = text3;
       }
     }
     let target2 = spec;
@@ -28601,7 +29480,7 @@ function fieldsFrom(pairs) {
 }
 async function main(argv, out = console.log, err = console.error) {
   const [command, named, ...rest] = argv;
-  const kind = named === "skill" ? "openclaw.skill" : named;
+  const kind = named === "skill" || named === "notes" || named === "schedule" || named === "mcp" ? `openclaw.${named}` : named;
   if (command === "--help" || command === "-h" || argv.includes("--help")) {
     out(USAGE);
     return 0;
@@ -28638,7 +29517,9 @@ ${USAGE}`);
   }
   let template;
   try {
-    template = loadStep(dir, { [kind]: fieldsFrom(pairs), ...flags.has("--restart") ? { restart: "openclaw" } : {} });
+    const fields = fieldsFrom(pairs);
+    const needs = kind === "openclaw.mcp" ? mcpReferences(fields).map((name) => `secret:${name}`) : [];
+    template = loadStep(dir, { [kind]: fields, ...needs.length ? { needs } : {}, ...flags.has("--restart") ? { restart: "openclaw" } : {} });
   } catch (error62) {
     if (!(error62 instanceof Error)) throw error62;
     const problems = error62 instanceof TemplateError ? error62.problems : [error62.message];
@@ -28662,21 +29543,25 @@ ${USAGE}`);
 }
 
 // ../templates/src/cli-runbook.ts
-import { readFileSync as readFileSync11 } from "fs";
+import { readFileSync as readFileSync16 } from "fs";
 
 // ../templates/src/bundle.ts
-import { createHash as createHash3 } from "crypto";
-var PATH = /^(template\.yaml|README\.md|(files|scripts)\/[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*)$/;
-var bytes = (text) => Buffer.byteLength(text, "utf8");
+import { createHash as createHash4 } from "crypto";
+var OWN = "(template\\.yaml|README\\.md|(files|scripts)\\/[A-Za-z0-9._-]+(\\/[A-Za-z0-9._-]+)*)";
+var PATH = new RegExp(`^(bundles\\/[a-z0-9][a-z0-9-]*\\/)?${OWN}$`);
+var USED_BUNDLE = /^bundles\/([a-z0-9][a-z0-9-]{0,62})$/;
+var bundleFolder = (name) => `bundles/${name}`;
+var bundleOfPath = (path) => /^bundles\/([^/]+)\//.exec(path)?.[1] ?? null;
+var bytes = (text3) => Buffer.byteLength(text3, "utf8");
 function bundlePathProblem(path) {
   if (!PATH.test(path)) return `${path}: a template has template.yaml, README.md, and files under files/ and scripts/, named with letters, digits, dots, dashes and underscores`;
   if (path.split("/").some((part) => part === "." || part === "..")) return `${path}: cannot have . or .. in it`;
   return null;
 }
 function bundleHash(files) {
-  const hash2 = createHash3("sha256");
+  const hash2 = createHash4("sha256");
   for (const file3 of [...files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) {
-    hash2.update(`${file3.path}\0${file3.executable ? "x" : "-"}\0${createHash3("sha256").update(file3.content, "utf8").digest("hex")}
+    hash2.update(`${file3.path}\0${file3.executable ? "x" : "-"}\0${createHash4("sha256").update(file3.content, "utf8").digest("hex")}
 `);
   }
   return hash2.digest("hex");
@@ -28686,17 +29571,19 @@ function bundleSecrets(files) {
   const found = [];
   for (const file3 of files) {
     const lines = file3.content.split("\n");
-    for (const [index, text] of lines.entries()) {
-      const line2 = file3.path === TEMPLATE_FILE ? text.replace(NAMED_SECRET, "${NAMED}") : text;
+    for (const [index, text3] of lines.entries()) {
+      const line2 = file3.path === TEMPLATE_FILE ? text3.replace(NAMED_SECRET, "${NAMED}").replaceAll(MCP_PLACEHOLDER, "") : text3;
       const why = secretInText(line2);
       if (why) found.push(`${file3.path}: line ${index + 1} has ${why}, which looks like a secret. A template holds no secrets: name it in "needs", or refer to it as \${NAME}`);
     }
   }
   return found;
 }
-function loadBundle(files) {
+function loadBundle(files, options = {}) {
   const problems = [];
-  if (files.length > BUNDLE_LIMITS.files) problems.push(`a template has at most ${BUNDLE_LIMITS.files} files; this one has ${files.length}`);
+  const carried2 = files.filter((file3) => typeof file3?.path === "string" && bundleOfPath(file3.path) !== null);
+  const fromBundles = (bytes2 = false) => carried2.length ? `, ${bytes2 ? `${Math.ceil(carried2.reduce((sum, file3) => sum + Buffer.byteLength(typeof file3.content === "string" ? file3.content : "", "utf8"), 0) / 1024)} KB` : carried2.length} of them from the bundles it uses (${[...new Set(carried2.map((file3) => bundleOfPath(file3.path)))].join(", ")})` : "";
+  if (files.length > BUNDLE_LIMITS.files) problems.push(`a template has at most ${BUNDLE_LIMITS.files} files; this one has ${files.length}${fromBundles()}`);
   const byPath = /* @__PURE__ */ new Map();
   let total = 0;
   for (const file3 of files) {
@@ -28717,51 +29604,91 @@ function loadBundle(files) {
     const inside2 = [...byPath.keys()].find((other) => other.startsWith(`${path}/`));
     if (inside2) problems.push(`${path}: is a file, and ${inside2} needs it to be a folder`);
   }
-  if (total > BUNDLE_LIMITS.totalBytes) problems.push(`the files are ${Math.ceil(total / 1024)} KB in all, and a template may be ${BUNDLE_LIMITS.totalBytes / 1024} KB`);
+  if (total > BUNDLE_LIMITS.totalBytes) problems.push(`the files are ${Math.ceil(total / 1024)} KB in all${fromBundles(true)}, and a template may be ${BUNDLE_LIMITS.totalBytes / 1024} KB`);
   problems.push(...bundleSecrets(files));
   const yaml = byPath.get(TEMPLATE_FILE);
   if (!yaml) throw new TemplateError([...problems, `no ${TEMPLATE_FILE}`]);
   const template = parseTemplateText(yaml.content, "template", problems);
   if (!template) throw new TemplateError(problems);
-  if (template.uses.length) problems.push(`"uses": this template cannot use bundles`);
-  const source3 = {
+  const sourceAt = (folder, name) => ({
     dir: "",
-    name: "the template",
+    name,
     read: (relative3) => {
-      const file3 = byPath.get(bundlePath(relative3));
+      const file3 = byPath.get(`${folder}${bundlePath(relative3)}`);
       return file3 ? Buffer.from(file3.content, "utf8") : null;
     },
     // A skill the template carries: the files under that folder, by their path inside it.
     list: (relative3) => {
-      const prefix = `${bundlePath(relative3)}/`;
+      const prefix = `${folder}${bundlePath(relative3)}/`;
       const files2 = [...byPath.values()].filter((file3) => file3.path.startsWith(prefix)).map((file3) => ({ path: file3.path.slice(prefix.length), content: Buffer.from(file3.content, "utf8"), executable: file3.executable }));
       return files2.length ? { files: files2 } : null;
     }
-  };
+  });
   const fromSteps = [];
-  const steps = stepsOf(source3, template, null, "template", fromSteps);
+  const steps = [];
+  const todo = [];
+  const used = /* @__PURE__ */ new Set();
+  for (const use of template.uses) {
+    const name = USED_BUNDLE.exec(bundlePath(use))?.[1];
+    if (!name) {
+      problems.push(`"uses": ${use} is not a bundle. Name a bundle as bundles/<name>`);
+      continue;
+    }
+    if (used.has(name)) continue;
+    used.add(name);
+    const inside2 = byPath.get(`${bundleFolder(name)}/${TEMPLATE_FILE}`);
+    if (!inside2) {
+      problems.push(`"uses": there is no bundle called ${name}`);
+      continue;
+    }
+    const bundle = parseTemplateText(inside2.content, `bundle ${name}`, problems);
+    if (!bundle) continue;
+    if (bundle.uses.length) problems.push(`bundle ${name}: a bundle cannot use bundles`);
+    if (bundle.name !== name) problems.push(`bundle ${name}: its template.yaml is named ${bundle.name}. A bundle's name is the name it is used by`);
+    steps.push(...stepsOf(sourceAt(`${bundleFolder(name)}/`, `the bundle ${name}`), bundle, name, `bundle ${name}`, fromSteps));
+    todo.push(...bundle.todo);
+  }
+  for (const name of new Set([...byPath.keys()].map(bundleOfPath).filter((name2) => name2 !== null))) if (!used.has(name)) problems.push(`${bundleFolder(name)}/: the template does not use a bundle called ${name}`);
+  steps.push(...stepsOf(sourceAt("", "the template"), template, null, "template", fromSteps));
+  todo.push(...template.todo);
+  const ids = /* @__PURE__ */ new Set();
+  for (const step of steps) {
+    if (ids.has(step.id)) problems.push(`step "${step.id}": this id is used twice`);
+    ids.add(step.id);
+  }
+  if (used.size) for (const problem of setProblems(steps)) problems.push(`template with its bundles: ${problem}`);
+  const todoIds = /* @__PURE__ */ new Set();
+  for (const item of todo) {
+    if (todoIds.has(item.id)) problems.push(`todo "${item.id}": this id is used twice (in a bundle and in the template)`);
+    todoIds.add(item.id);
+  }
   problems.push(...fromSteps.filter((p) => !/ has .* on line \d+\. A (template|skill) holds no secrets/.test(p)));
+  if (!options.draft) {
+    for (const step of steps)
+      if (step.kind === "openclaw.mcp")
+        for (const field of mcpPlaceholders(step.spec)) problems.push(`template: step "${step.id}": "${field}" still has ${MCP_PLACEHOLDER} in it. Write ${field === "url" ? "the rest of the address" : "the argument"} in its place`);
+  }
   if (problems.length) throw new TemplateError(problems);
-  return { name: template.name, description: template.description, dir: "", steps, todo: template.todo, hash: templateHash(steps, template.todo), bundleHash: bundleHash(files) };
+  return { name: template.name, description: template.description, dir: "", steps, todo, hash: templateHash(steps, todo), bundleHash: bundleHash(files) };
 }
 
 // ../templates/src/bundle-folder.ts
-import { chmodSync as chmodSync2, lstatSync as lstatSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync2, readFileSync as readFileSync8, statSync as statSync3, writeFileSync as writeFileSync4 } from "fs";
-import { dirname as dirname4, join as join8 } from "path";
+import { chmodSync as chmodSync2, lstatSync as lstatSync5, mkdirSync as mkdirSync5, readdirSync as readdirSync4, readFileSync as readFileSync10, statSync as statSync4, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname6, join as join10 } from "path";
 function readBundleFolder(dir) {
   const files = [];
   let total = 0;
   const walk = (folder, prefix) => {
-    for (const name of readdirSync2(folder).sort()) {
-      const path = join8(folder, name);
+    for (const name of readdirSync4(folder).sort()) {
+      const path = join10(folder, name);
       const relative3 = prefix ? `${prefix}/${name}` : name;
-      const stat = lstatSync3(path);
+      const stat = lstatSync5(path);
       if (stat.isSymbolicLink()) throw new TemplateError([`${relative3}: is a link, and a template holds only its own files`]);
       if (stat.isDirectory()) walk(path, relative3);
       else if (stat.isFile()) {
         total += stat.size;
         if (files.length >= BUNDLE_LIMITS.files * 4 || total > BUNDLE_LIMITS.totalBytes * 4) throw new TemplateError([`${dir} is too large to be a template`]);
-        files.push({ path: relative3, executable: (stat.mode & 73) !== 0, content: readFileSync8(path, "utf8") });
+        files.push({ path: relative3, executable: (stat.mode & 73) !== 0, content: readFileSync10(path, "utf8") });
       } else throw new TemplateError([`${relative3}: is not a file`]);
     }
   };
@@ -28771,21 +29698,102 @@ function readBundleFolder(dir) {
 function writeBundleFolder(dir, files) {
   const problems = files.map((file3) => bundlePathProblem(file3.path)).filter((p) => p !== null);
   if (problems.length) throw new TemplateError(problems);
-  mkdirSync3(dir, { recursive: true, mode: 448 });
-  if (readdirSync2(dir).length) throw new TemplateError([`${dir} is not empty`]);
+  mkdirSync5(dir, { recursive: true, mode: 448 });
+  if (readdirSync4(dir).length) throw new TemplateError([`${dir} is not empty`]);
   for (const file3 of files) {
-    const path = join8(dir, file3.path);
-    mkdirSync3(dirname4(path), { recursive: true, mode: 448 });
-    writeFileSync4(path, file3.content, { mode: file3.executable ? 493 : 420, flag: "wx" });
+    const path = join10(dir, file3.path);
+    mkdirSync5(dirname6(path), { recursive: true, mode: 448 });
+    writeFileSync6(path, file3.content, { mode: file3.executable ? 493 : 420, flag: "wx" });
     chmodSync2(path, file3.executable ? 493 : 420);
   }
-  for (const file3 of files) if (statSync3(join8(dir, file3.path)).size !== Buffer.byteLength(file3.content, "utf8")) throw new TemplateError([`${file3.path}: could not be written in full`]);
+  for (const file3 of files) if (statSync4(join10(dir, file3.path)).size !== Buffer.byteLength(file3.content, "utf8")) throw new TemplateError([`${file3.path}: could not be written in full`]);
 }
 
 // ../templates/src/capture.ts
-import { lstatSync as lstatSync4, readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
-import { join as join9, relative, sep as sep4 } from "path";
-var DEFAULT_JOBS = /* @__PURE__ */ new Set(["heartbeat-main", "skill-collection-review-main"]);
+import { lstatSync as lstatSync6, readdirSync as readdirSync5, readFileSync as readFileSync11 } from "fs";
+import { join as join11, relative, sep as sep4 } from "path";
+var EXACT_REFERENCE = new RegExp(`^${MCP_REFERENCE.source}$`);
+var strings = (value) => Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+function scheduleFact(job, name, skip) {
+  const { schedule, payload, delivery } = job;
+  if (payload?.kind !== "agentTurn" || typeof payload.message !== "string" || !payload.message.trim()) return { why: "it runs a command or a script, or is not a message to the agent" };
+  if (payload.message.length > SCHEDULE_MESSAGE_MAX) return { why: `its message is longer than ${SCHEDULE_MESSAGE_MAX} characters` };
+  if (payload.message.split("\n").some((line2) => secretInText(line2) !== null || keyLike(line2))) return { why: "its message has something that looks like a key" };
+  const inMain = job.sessionTarget === void 0 || ["isolated", "current", "main", `session:${MAIN_SESSION}`].includes(job.sessionTarget);
+  if (!inMain || job.sessionKey !== void 0 && job.sessionKey !== MAIN_SESSION) return { why: "it belongs to one conversation, which another agent does not have" };
+  const mode2 = delivery?.mode ?? "none";
+  if (mode2 !== "announce" && mode2 !== "none") return { why: "it sends its answer to a web address" };
+  const cron = schedule?.kind === "cron" && typeof schedule.expr === "string" && schedule.expr.trim().split(/\s+/).length === 5 ? schedule.expr.trim() : null;
+  const every = schedule?.kind === "every" && typeof schedule.everyMs === "number" ? everyText(schedule.everyMs) : null;
+  if (!cron && !every) return { why: "it runs once, on an event, or at a time a template cannot say" };
+  if (mode2 === "announce" && (delivery?.channel !== void 0 && delivery.channel !== "last" || delivery?.to !== void 0)) skip(`The scheduled job "${name}" sends its answer to one chat of this agent. That chat was not read: on an agent made from the template the answer goes to that agent's own conversation.`);
+  return { name, cron, every, timeZone: cron ? typeof schedule?.tz === "string" ? schedule.tz : "UTC" : null, message: payload.message, deliver: jobDelivers(job) ? "announce" : "none", enabled: job.enabled !== false };
+}
+var keyLike = (text3) => tokenShapeIn(text3) !== null || randomLooking(text3) || text3.split(/[^A-Za-z0-9+=]+/).some(randomLooking);
+var keyInHost = (host) => host.split(".").some((label) => tokenShapeIn(label) !== null || randomLooking(label));
+function argNames(args) {
+  return args.map((arg) => keyLike(arg.split("=")[0] ?? "") ? MCP_PLACEHOLDER : mcpArgName(arg));
+}
+function mcpFact(name, server, skip) {
+  if (keyLike(name)) {
+    skip("An MCP server was not captured: its name looks like a key.");
+    return null;
+  }
+  if (server.auth === "oauth" || isObject(server.oauth)) {
+    skip(`The MCP server "${name}" signs in with OAuth and was not captured: someone has to sign in again on the agent the template is applied to.`);
+    return null;
+  }
+  const names = (group, what) => Object.fromEntries(
+    Object.entries(isObject(group) ? group : {}).flatMap(([key, value]) => {
+      if (key === MCP_CA_ENV) return [];
+      if (keyLike(key)) {
+        skip(`The MCP server "${name}": ${what} whose name looks like a key was not sent.`);
+        return [];
+      }
+      const reference = typeof value === "string" ? EXACT_REFERENCE.exec(value)?.[1] : void 0;
+      return [[key, reference && !secretNameProblem(reference) ? value : null]];
+    })
+  );
+  let origin = null;
+  let rest = false;
+  if (typeof server.url === "string") {
+    try {
+      const url2 = new URL(server.url);
+      if (keyInHost(url2.hostname) || url2.username || url2.password) {
+        skip(`The MCP server "${name}" was not captured: its address has a key or a password in it.`);
+        return null;
+      }
+      origin = `${url2.protocol}//${url2.host}`;
+      rest = url2.pathname.replace(/\/+$/, "") !== "" || url2.search !== "" || url2.hash !== "";
+    } catch {
+      skip(`The MCP server "${name}" was not captured: its address could not be read.`);
+      return null;
+    }
+  }
+  const command = !origin && typeof server.command === "string" ? mcpCommandName(server.command) : null;
+  const inCommand = !origin && typeof server.command === "string" ? server.command.trim().split(/\s+/).slice(1) : [];
+  if (!origin && (!command || keyLike(command))) {
+    skip(`The MCP server "${name}" has neither an address nor a command that could be sent, and was not captured.`);
+    return null;
+  }
+  const other = Object.keys(server).filter((key) => !["url", "transport", "type", "headers", "command", "args", "env", "toolFilter", "enabled", "requestTimeoutMs", "connectionTimeoutMs", "supportsParallelToolCalls"].includes(key));
+  if (other.length) skip(`These settings of the MCP server "${name}" were not read: ${other.filter((key) => !keyLike(key)).slice(0, 8).join(", ")}.`);
+  const filter = isObject(server.toolFilter) ? server.toolFilter : null;
+  const include = strings(filter?.include).filter((tool) => !keyLike(tool));
+  const exclude = strings(filter?.exclude).filter((tool) => !keyLike(tool));
+  return {
+    name,
+    url: origin,
+    rest,
+    transport: origin && typeof server.transport === "string" && ["streamable-http", "sse"].includes(server.transport) ? server.transport : null,
+    command,
+    args: origin ? [] : argNames([...inCommand, ...strings(server.args)]),
+    headers: origin ? names(server.headers, "a header") : {},
+    env: origin ? {} : names(server.env, "an environment entry"),
+    tools: include.length || exclude.length ? { ...include.length ? { include } : {}, ...exclude.length ? { exclude } : {} } : null,
+    enabled: server.enabled !== false
+  };
+}
 var LEFT_OUT_LINES = 40;
 var Collector = class {
   files = [];
@@ -28803,13 +29811,13 @@ var Collector = class {
   }
   /** Adds a workspace file, or says why not. A link is never followed: only the agent's own files. */
   file(path, from) {
-    const stat = lstatSync4(from, { throwIfNoEntry: false });
+    const stat = lstatSync6(from, { throwIfNoEntry: false });
     if (!stat) return false;
     if (stat.isSymbolicLink() || !stat.isFile()) return this.skip(`${path} was left out: it is a link or a folder, not a file.`);
     if (stat.size > BUNDLE_LIMITS.fileBytes) return this.skip(`${path} was left out: it is larger than ${BUNDLE_LIMITS.fileBytes / 1024} KB.`);
     if (this.files.length >= BUNDLE_LIMITS.files - 8) return this.skip(`${path} was left out: a template has at most ${BUNDLE_LIMITS.files} files.`);
     if (this.bytes + stat.size > BUNDLE_LIMITS.totalBytes - 64 * 1024) return this.skip(`${path} was left out: the template would be larger than ${BUNDLE_LIMITS.totalBytes / 1024} KB.`);
-    const content2 = readFileSync9(from, "utf8");
+    const content2 = readFileSync11(from, "utf8");
     if (content2.includes("\0") || content2.includes("\uFFFD")) return this.skip(`${path} was left out: it is not a text file.`);
     this.files.push({ path, executable: (stat.mode & 73) !== 0, content: content2 });
     this.bytes += stat.size;
@@ -28821,14 +29829,14 @@ function filesUnder(dir, limit) {
   const walk = (folder, depth) => {
     let names;
     try {
-      names = readdirSync3(folder).sort();
+      names = readdirSync5(folder).sort();
     } catch {
       return;
     }
     for (const name of names) {
       if (found.length >= limit) return;
-      const path = join9(folder, name);
-      const stat = lstatSync4(path, { throwIfNoEntry: false });
+      const path = join11(folder, name);
+      const stat = lstatSync6(path, { throwIfNoEntry: false });
       if (stat?.isDirectory() && depth < 4) walk(path, depth + 1);
       else if (stat?.isFile()) found.push(relative(dir, path).split(sep4).join("/"));
     }
@@ -28844,29 +29852,48 @@ async function ask(box, args) {
     return null;
   }
 }
+function observeSkill(box, name) {
+  const out = new Collector();
+  if (!SKILL_NAME.test(name) || name in {}) return { found: false, files: [], leftOut: [] };
+  const dir = join11(box.workspace, "skills", name);
+  const stat = lstatSync6(dir, { throwIfNoEntry: false });
+  if (!stat?.isDirectory() || lstatSync6(join11(box.workspace, "skills"), { throwIfNoEntry: false })?.isSymbolicLink()) {
+    if (stat?.isSymbolicLink()) out.skip(`The skill "${name}" was not read: it is a link to somewhere else.`);
+    return { found: false, files: [], leftOut: out.leftOut() };
+  }
+  const all = filesUnder(dir, CAPTURE_SKILL_FILES * 40);
+  const names = all.filter((file3) => !file3.split("/").some((part) => part.startsWith(".")));
+  if (names.length < all.length) out.skip("Files and folders whose name starts with a dot were left out.");
+  if (names.length > CAPTURE_SKILL_FILES) {
+    out.skip(`The skill "${name}" was not read: it has more than ${CAPTURE_SKILL_FILES} files.`);
+    return { found: true, files: [], leftOut: out.leftOut() };
+  }
+  for (const file3 of names) out.file(`skills/${name}/${file3}`, join11(dir, file3));
+  return { found: true, files: out.files, leftOut: out.leftOut() };
+}
 async function observeAgent(box) {
   const out = new Collector();
-  const inWorkspace = (path) => join9(box.workspace, path);
-  const isDir = (path) => lstatSync4(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  const inWorkspace = (path) => join11(box.workspace, path);
+  const isDir = (path) => lstatSync6(path, { throwIfNoEntry: false })?.isDirectory() === true;
   for (const name of CAPTURE_FILES) out.file(name, inWorkspace(name));
-  if (CAPTURE_PRIVATE.some((name) => lstatSync4(inWorkspace(name), { throwIfNoEntry: false }))) out.skip("What the agent remembers, what it knows about its person, its identity and its notes on local tools (MEMORY.md, the memory folder, USER.md, IDENTITY.md, TOOLS.md) are never read.");
+  if (CAPTURE_PRIVATE.some((name) => lstatSync6(inWorkspace(name), { throwIfNoEntry: false }))) out.skip("What the agent remembers, what it knows about its person, its identity and its notes on local tools (MEMORY.md, the memory folder, USER.md, IDENTITY.md, TOOLS.md) are never read.");
   const skillsDir = inWorkspace("skills");
   let skills = [];
   try {
-    skills = isDir(skillsDir) ? readdirSync3(skillsDir).sort() : [];
+    skills = isDir(skillsDir) ? readdirSync5(skillsDir).sort() : [];
   } catch {
   }
   for (const skill of skills) {
-    if (!isDir(join9(skillsDir, skill))) {
-      if (lstatSync4(join9(skillsDir, skill), { throwIfNoEntry: false })?.isSymbolicLink()) out.skip(`The skill "${skill}" was left out: it is a link to somewhere else.`);
+    if (!isDir(join11(skillsDir, skill))) {
+      if (lstatSync6(join11(skillsDir, skill), { throwIfNoEntry: false })?.isSymbolicLink()) out.skip(`The skill "${skill}" was left out: it is a link to somewhere else.`);
       continue;
     }
-    const names = filesUnder(join9(skillsDir, skill), CAPTURE_SKILL_FILES + 1);
+    const names = filesUnder(join11(skillsDir, skill), CAPTURE_SKILL_FILES + 1);
     if (names.length > CAPTURE_SKILL_FILES) {
       out.skip(`The skill "${skill}" was left out: it has more than ${CAPTURE_SKILL_FILES} files.`);
       continue;
     }
-    for (const name of names) out.file(`skills/${skill}/${name}`, join9(skillsDir, skill, name));
+    for (const name of names) out.file(`skills/${skill}/${name}`, join11(skillsDir, skill, name));
   }
   const plugins = [];
   const listed2 = await ask(box, ["plugins", "list", "--json"]);
@@ -28886,21 +29913,166 @@ async function observeAgent(box) {
     const value = await configGet(box, path).catch(() => void 0);
     if (value !== void 0 && value !== null) config2.push({ path, value });
   }
-  const servers = await configGet(box, "mcp.servers").catch(() => void 0);
-  for (const name of isObject(servers) ? Object.keys(servers) : []) if (!name.startsWith("controlclaw-")) out.skip(`The MCP server "${name}" is not read: its settings can hold a credential and can run a command. Add it on the agent the template is applied to.`);
+  const servers = [];
+  const saved = await mcpServers(box).catch(() => null);
+  if (!saved) out.skip("The MCP servers could not be read, so none was captured.");
+  for (const [name, server] of Object.entries(saved ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    if (name.startsWith(CONTROLCLAW_MCP_PREFIX)) continue;
+    if (servers.length >= CAPTURE_MCP_SERVERS) {
+      out.skip(`The MCP server "${name}" was left out: a capture takes at most ${CAPTURE_MCP_SERVERS} servers.`);
+      continue;
+    }
+    const fact = mcpFact(name, server, (sentence) => out.skip(sentence));
+    if (fact) servers.push(fact);
+  }
   const skillList = await ask(box, ["skills", "list", "--json"]);
   for (const skill of Array.isArray(skillList) ? skillList : Array.isArray(skillList?.skills) ? skillList.skills : [])
     if (typeof skill?.name === "string" && skill.source === "openclaw-managed" && !BUILTIN_SKILL_NAMES.includes(skill.name)) out.skip(`The skill "${skill.name}" is installed outside the workspace and is not read. Install it again on the agent the template is applied to, or add a script step that does.`);
-  const jobs = await ask(box, ["cron", "list", "--json"]);
-  for (const job of Array.isArray(jobs) ? jobs : Array.isArray(jobs?.jobs) ? jobs.jobs : []) {
-    const name = typeof job?.name === "string" ? job.name : typeof job?.id === "string" ? job.id : "";
-    if (name && !DEFAULT_JOBS.has(name) && !DEFAULT_JOBS.has(String(job.id))) out.skip(`The scheduled job "${name}" is not read. Add a script step that schedules it, or schedule it again on the new agent.`);
+  const schedules = [];
+  const jobs2 = await listJobs(box, 6e4).catch(() => null);
+  if (!jobs2) out.skip("The scheduled jobs could not be read, so none was captured.");
+  for (const job of jobs2 ?? []) {
+    const name = typeof job.name === "string" ? job.name : "";
+    const key = typeof job.declarationKey === "string" ? job.declarationKey : "";
+    if (!name || isOpenclawJob(name)) continue;
+    if (keyLike(name) || secretInText(name) !== null) {
+      out.skip("A scheduled job was not captured: its name looks like a key.");
+      continue;
+    }
+    if (key && !key.startsWith(SCHEDULE_KEY_PREFIX)) {
+      out.skip(`The scheduled job "${name}" was not captured: a plugin or another program made it and keeps it, not a person or a template.`);
+      continue;
+    }
+    const fact = scheduleFact(job, name, (sentence) => out.skip(sentence));
+    if ("why" in fact) out.skip(`The scheduled job "${name}" was not captured: ${fact.why}. Schedule it again on the new agent, or add a script step that does.`);
+    else if (schedules.some((s) => s.name === name)) out.skip(`A second scheduled job called "${name}" was not captured: a template has one job under a name.`);
+    else if (schedules.length >= CAPTURE_SCHEDULES) out.skip(`The scheduled job "${name}" was left out: a capture takes at most ${CAPTURE_SCHEDULES} jobs.`);
+    else schedules.push(fact);
   }
-  return { files: out.files, plugins, config: config2, leftOut: out.leftOut() };
+  return { files: out.files, plugins, config: config2, schedules, mcpServers: servers, leftOut: out.leftOut() };
+}
+
+// ../templates/src/probe.ts
+import { lstatSync as lstatSync7, readFileSync as readFileSync12 } from "fs";
+import { delimiter, join as join12 } from "path";
+var PROBE_VERBS = ["state", "readme", "steps", "verify", "plugins", "skills", "config", "file", "tool", "schedule"];
+var PROBE_MAX_CHARS = 2e4;
+var README_MAX_CHARS = 8e3;
+var TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,40}$/;
+var CONFIG_DENIED_ROOTS = ["plugins", "mcp", "channels", "gateway", "auth", "env", "models", "secrets", "hooks"];
+var CONFIG_DENIED_PARTS = ["env", "headers", "auth"];
+var NAME_MAX = 120;
+function isProbeVerb(value) {
+  return typeof value === "string" && PROBE_VERBS.includes(value);
+}
+function probeFiles(template) {
+  const paths = template.steps.flatMap((s) => s.kind === "file" ? [s.spec.path] : s.kind === "line" ? [s.spec.file] : []);
+  return [...new Set(paths)].sort();
+}
+async function ask2(box, args) {
+  try {
+    const result = await cli(box, args, 6e4);
+    return result.code === 0 ? jsonFrom(result.stdout) : null;
+  } catch {
+    return null;
+  }
+}
+function list(raw, key) {
+  const found = Array.isArray(raw) ? raw : Array.isArray(raw?.[key]) ? raw[key] : [];
+  return found.filter((entry) => !!entry && typeof entry === "object");
+}
+var text2 = (value) => (typeof value === "string" ? value : value === void 0 || value === null ? "" : String(value)).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").slice(0, NAME_MAX);
+function probeConfigPaths(template) {
+  const allowed = (path) => !CONFIG_DENIED_ROOTS.includes(path.split(".")[0] ?? "") && !path.split(".").some((part) => namesSecret(part) || CONFIG_DENIED_PARTS.includes(part));
+  return [.../* @__PURE__ */ new Set([...CAPTURE_CONFIG_PATHS, ...template.steps.flatMap((s) => s.kind === "openclaw.config" ? [s.spec.path] : [])])].filter(allowed).sort();
+}
+function onPath(name, home) {
+  for (const dir of [.../* @__PURE__ */ new Set([...(process.env.PATH ?? "").split(delimiter).filter(Boolean), join12(home, ".local", "bin")])]) {
+    const stat = lstatSync7(join12(dir, name), { throwIfNoEntry: false });
+    if (stat && (stat.isFile() || stat.isSymbolicLink())) return join12(dir, name);
+  }
+  return null;
+}
+async function probe(template, verb, arg, opts) {
+  const done = (answer, ok = true) => ({ ok, text: opts.redact(answer).slice(0, PROBE_MAX_CHARS) });
+  if (!isProbeVerb(verb)) return done(`Unknown command. One of: ${PROBE_VERBS.join(", ")}, health, model.`, false);
+  if (arg !== void 0 && verb !== "config" && verb !== "file" && verb !== "tool") return done(`${verb} takes no argument.`, false);
+  switch (verb) {
+    case "state": {
+      const state = readState(opts.stateDir, template.name);
+      if (!state) return done("No run of this template is recorded on this agent.", false);
+      const steps = state.steps.map((s) => ({ id: s.id, kind: s.kind, status: s.status, ...s.phase ? { phase: s.phase } : {}, ...s.optional ? { optional: true } : {}, ...s.kept ? { kept: true } : {}, at: s.at }));
+      return done(JSON.stringify({ template: state.template, mode: state.mode, result: state.result, finishedAt: state.finishedAt, restart: state.restart, steps }, null, 2));
+    }
+    case "readme": {
+      try {
+        const stat = lstatSync7(join12(template.dir, "README.md"));
+        if (!stat.isFile()) throw new Error("not a file");
+        return done(readFileSync12(join12(template.dir, "README.md"), "utf8").slice(0, README_MAX_CHARS));
+      } catch {
+        return done("This template has no README.md.", false);
+      }
+    }
+    case "steps":
+      return done(JSON.stringify({
+        template: template.name,
+        description: template.description,
+        steps: template.steps.map((s) => ({ id: s.id, kind: s.kind, title: s.title, optional: s.optional, needs: s.needs, ...s.kind === "file" ? { path: s.spec.path, ifMissing: s.spec.ifMissing } : {}, ...s.kind === "line" ? { file: s.spec.file } : {}, ...s.kind === "openclaw.config" ? { path: s.spec.path } : {}, ...s.kind === "openclaw.skill" ? { name: s.spec.name } : {}, ...s.kind === "controlclaw.setting" ? { tool: s.spec.tool } : {} })),
+        // The names of the secrets a person adds are in `needs`; a to-do item is its words and where it is done.
+        todo: template.todo.map((t) => ({ id: t.id, title: t.title, why: t.why, go: t.go, optional: t.optional }))
+      }, null, 2));
+    case "verify": {
+      const report = await runTemplate(template, { ...opts.run, mode: "verify", skipUnconfirmed: true });
+      return done(JSON.stringify({ result: report.result, steps: report.steps.map((s) => ({ id: s.id, kind: s.kind, status: s.status, ...s.phase ? { phase: s.phase } : {}, ...s.optional ? { optional: true } : {} })) }, null, 2));
+    }
+    case "plugins": {
+      const listed2 = await ask2(opts.box, ["plugins", "list", "--json"]);
+      if (!listed2) return done("OpenClaw did not list its plugins.", false);
+      return done(JSON.stringify(list(listed2, "plugins").map((p) => ({ id: text2(p.id), origin: text2(p.origin), enabled: p.enabled !== false })), null, 2));
+    }
+    case "skills": {
+      const listed2 = await ask2(opts.box, ["skills", "list", "--json"]);
+      if (!listed2) return done("OpenClaw did not list its skills.", false);
+      return done(JSON.stringify(list(listed2, "skills").map((s) => ({ name: text2(s.name), source: text2(s.source), ...typeof s.enabled === "boolean" ? { enabled: s.enabled } : {}, ...typeof s.eligible === "boolean" ? { eligible: s.eligible } : {} })), null, 2));
+    }
+    case "config": {
+      const allowed = probeConfigPaths(template);
+      if (!arg || !allowed.includes(arg)) return done(`config takes one of: ${allowed.join(", ")}`, false);
+      try {
+        const value = await configGet(opts.box, arg);
+        if (value === void 0) return done("Not set.");
+        if (value === null || typeof value === "boolean" || typeof value === "number") return done(JSON.stringify(value));
+        if (typeof value === "string") return done(JSON.stringify(text2(value)));
+        return done(Array.isArray(value) ? `Set: a list of ${value.length}.` : `Set: a group of ${Object.keys(value).length} values.`);
+      } catch {
+        return done("OpenClaw did not answer for that setting.", false);
+      }
+    }
+    case "file": {
+      const allowed = probeFiles(template);
+      if (!arg || !allowed.includes(arg)) return done(allowed.length ? `file takes one of: ${allowed.join(", ")}` : "This template names no workspace file.", false);
+      const stat = lstatSync7(join12(opts.box.workspace, arg), { throwIfNoEntry: false });
+      if (!stat) return done(JSON.stringify({ path: arg, exists: false }));
+      return done(JSON.stringify({ path: arg, exists: true, kind: stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "folder" : "file", bytes: stat.size, writtenAt: stat.mtime.toISOString() }));
+    }
+    case "tool": {
+      if (!arg || !TOOL_NAME.test(arg)) return done("tool takes a command's name, such as gh.", false);
+      const found = onPath(arg, opts.box.home);
+      return done(JSON.stringify({ name: arg, onPath: !!found, ...found ? { path: found } : {} }));
+    }
+    case "schedule": {
+      const listed2 = await ask2(opts.box, ["cron", "list", "--all", "--json"]);
+      if (!listed2) return done("OpenClaw did not list its scheduled jobs.", false);
+      return done(JSON.stringify(list(listed2, "jobs").map((j) => {
+        const schedule = j.schedule ?? {};
+        return { name: text2(j.name) || text2(j.id), enabled: j.enabled !== false, ...text2(schedule.expr) || text2(j.cron) ? { cron: text2(schedule.expr) || text2(j.cron) } : {}, ...text2(schedule.tz) || text2(j.tz) ? { timeZone: text2(schedule.tz) || text2(j.tz) } : {} };
+      }), null, 2));
+    }
+  }
 }
 
 // ../templates/src/review.ts
-import { readFileSync as readFileSync10, statSync as statSync4 } from "fs";
+import { readFileSync as readFileSync13, statSync as statSync5 } from "fs";
 import { relative as relative2, sep as sep5 } from "path";
 var REVIEW_MAX_BYTES = 256 * 1024;
 function reviewFiles(template, ctx) {
@@ -28912,15 +30084,15 @@ function reviewFiles(template, ctx) {
     if (!under || under.startsWith("..")) continue;
     const from = fileInFolder(step.dir, step.spec.from);
     if (!from) continue;
-    const source3 = readFileSync10(from);
+    const source3 = readFileSync13(from);
     if (source3.byteLength > REVIEW_MAX_BYTES || source3.includes(0)) continue;
-    const text = step.spec.fill ? fillVars(source3.toString("utf8"), ctx.vars) : source3.toString("utf8");
-    const stat = statSync4(target2, { throwIfNoEntry: false });
+    const text3 = step.spec.fill ? fillVars(source3.toString("utf8"), ctx.vars) : source3.toString("utf8");
+    const stat = statSync5(target2, { throwIfNoEntry: false });
     files.push({
       step: step.id,
       title: step.title ?? step.id,
       path: under.split(sep5).join("/"),
-      text,
+      text: text3,
       exists: !!stat?.isFile(),
       stamp: stat?.isFile() ? `${stat.mtime.toISOString()}:${stat.size}` : null
     });
@@ -28928,102 +30100,195 @@ function reviewFiles(template, ctx) {
   return files;
 }
 
-// ../templates/src/skill-install.ts
-import { chmodSync as chmodSync3, mkdirSync as mkdirSync4, mkdtempSync, rmSync as rmSync4, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname5, join as join10 } from "path";
+// ../templates/src/capture-session.ts
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync15, rmSync as rmSync7, writeFileSync as writeFileSync8 } from "fs";
+import { join as join14 } from "path";
 
-// ../templates/src/skill-payload.ts
-var import_yaml4 = __toESM(require_dist(), 1);
-
-// ../templates/src/skill-directory.ts
-var import_yaml3 = __toESM(require_dist(), 1);
-var SEGMENT = /^[A-Za-z0-9_](?:[A-Za-z0-9._ -]*[A-Za-z0-9._-])?$/;
-var MAX_PATH = 200;
-var MAX_DEPTH = 8;
-function skillPathProblem(path) {
-  if (!path || path.length > MAX_PATH) return `${shownPath(path)}: a file's path is at most ${MAX_PATH} characters`;
-  if (path.includes("\\") || path.includes("\0") || path.startsWith("/") || /^[A-Za-z]:/.test(path)) return `${shownPath(path)}: must be a plain path inside the skill, with / between its parts`;
-  if (HIDDEN_CHARACTERS.test(path)) return `${shownPath(path)}: the path has a character that cannot be seen`;
-  const parts = path.split("/");
-  if (parts.length > MAX_DEPTH) return `${shownPath(path)}: at most ${MAX_DEPTH} folders deep`;
-  if (parts.some((part) => part === "" || part === "." || part === "..")) return `${shownPath(path)}: cannot have "..", "." or an empty part in it`;
-  if (parts.some((part) => part.startsWith(".") || part.startsWith("-"))) return `${shownPath(path)}: a file or folder name cannot start with a dot or a dash`;
-  if (parts.some((part) => !SEGMENT.test(part))) return `${shownPath(path)}: name files with letters, digits, dots, dashes, underscores and spaces`;
-  return null;
+// ../templates/src/repair.ts
+import { cpSync, existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync14, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname7, join as join13 } from "path";
+function repairDir(stateDir, template) {
+  return join13(stateDir, "repair", template);
 }
-var shownPath = (path) => JSON.stringify(path.length > 80 ? `${path.slice(0, 77)}...` : path);
-function descriptionIn(skillMd) {
-  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMd)?.[1];
-  if (!front) return null;
-  const clean = (text) => typeof text === "string" && text.trim() ? text.replace(/\s+/g, " ").trim().slice(0, 300) : null;
+var metaPath = (stateDir, template) => join13(stateDir, "repair", `${template}.json`);
+function readRepairMeta(stateDir, template) {
   try {
-    const parsed = (0, import_yaml3.parse)(front);
-    const description = clean(typeof parsed === "object" && parsed !== null ? parsed.description : null);
-    if (description) return description;
+    const raw = JSON.parse(readFileSync14(metaPath(stateDir, template), "utf8"));
+    return typeof raw.base === "string" && /^[a-f0-9]{64}$/.test(raw.base) && (raw.session === null || typeof raw.session === "string") ? { base: raw.base, session: raw.session, at: typeof raw.at === "string" ? raw.at : "" } : null;
+  } catch {
+    return null;
+  }
+}
+var folderHash = (dir) => bundleHash(readBundleFolder(dir));
+function makeRepairFolder(templateDir, stateDir, name, session = null) {
+  const dir = repairDir(stateDir, name);
+  const meta3 = readRepairMeta(stateDir, name);
+  if (existsSync6(dir) && meta3 && session !== null && meta3.session === session) return dir;
+  rmSync6(dir, { recursive: true, force: true });
+  mkdirSync6(dirname7(dir), { recursive: true, mode: 448 });
+  cpSync(templateDir, dir, { recursive: true, dereference: false, errorOnExist: true });
+  writeFileSync7(metaPath(stateDir, name), JSON.stringify({ base: folderHash(templateDir), session, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+  return dir;
+}
+var RepairOutdated = class extends TemplateError {
+  constructor() {
+    super(["the repair folder was made from an earlier version of this template's files"]);
+  }
+};
+function currentRepairs(base, stateDir, options = {}) {
+  const meta3 = readRepairMeta(stateDir, base.name);
+  if (!meta3 || meta3.base !== folderHash(base.dir)) throw new RepairOutdated();
+  return withRepairs(base, repairDir(stateDir, base.name), options);
+}
+function withRepairs(base, scratch, options = {}) {
+  let copy;
+  try {
+    copy = readFileSync14(join13(scratch, TEMPLATE_FILE), "utf8");
+  } catch {
+    throw new TemplateError(["the repair folder has no template.yaml"]);
+  }
+  if (copy !== readFileSync14(join13(base.dir, TEMPLATE_FILE), "utf8")) {
+    throw new TemplateError(["the repair folder's template.yaml is not the template's: a repair changes scripts and files, not the list of steps"]);
+  }
+  const fixed = loadTemplate(scratch, options);
+  const repaired = [];
+  const steps = base.steps.map((step) => {
+    const other = step.bundle === null ? fixed.steps.find((s) => s.id === step.id && s.bundle === null) : void 0;
+    if (!other || other.hash === step.hash) return step;
+    repaired.push(step.id);
+    return other;
+  });
+  return { template: { ...base, steps }, repaired };
+}
+var STAND_IN = /\b(cctc_|ccb_)[A-Za-z0-9_-]{8,}|\bCC-[A-Z]{2,12}-[A-Fa-f0-9]{16,}/;
+function forms(value) {
+  return [value, Buffer.from(value, "utf8").toString("base64"), Buffer.from(value, "utf8").toString("base64url"), encodeURIComponent(value)].filter((form, at, all) => form.length >= MIN_SECRET_LENGTH && all.indexOf(form) === at);
+}
+function secretProblems(files, secrets) {
+  const problems = bundleSecrets(files);
+  const needles = secrets.flatMap(forms);
+  for (const file3 of files) {
+    for (const [index, line2] of file3.content.split("\n").entries()) {
+      if (needles.some((needle) => line2.includes(needle))) problems.push(`${file3.path}: line ${index + 1} holds a value this agent keeps secret. A template holds no secrets: refer to it as \${NAME} and name it in "needs"`);
+      else if (STAND_IN.test(line2)) problems.push(`${file3.path}: line ${index + 1} holds a stand-in that belongs to this agent only. Refer to the secret as \${NAME} and name it in "needs"`);
+    }
+  }
+  return problems;
+}
+function packRepair(base, baseFiles, scratch, secrets, hashOf) {
+  let files;
+  let repaired;
+  try {
+    files = readBundleFolder(scratch);
+    loadBundle(files);
+    repaired = withRepairs(base, scratch).repaired;
+  } catch (error62) {
+    if (!(error62 instanceof TemplateError)) throw error62;
+    return { ok: false, problems: error62.problems };
+  }
+  const before = new Map(baseFiles.map((f) => [f.path, f]));
+  const changed = files.filter((f) => {
+    const was = before.get(f.path);
+    return !was || was.content !== f.content || was.executable !== f.executable;
+  });
+  const problems = secretProblems(changed, secrets);
+  if (baseFiles.some((f) => !files.some((g) => g.path === f.path))) problems.push("a file of the template is missing from the repair folder: a repair changes files, it does not remove them");
+  if (problems.length) return { ok: false, problems };
+  return { ok: true, pack: { base: hashOf(baseFiles), files: changed, before: changed.flatMap((f) => before.has(f.path) ? [before.get(f.path)] : []), steps: repaired } };
+}
+
+// ../templates/src/capture-session.ts
+function captureDir(home, session) {
+  return join14(home, ".controlclaw", "capture", session);
+}
+function makeCaptureFolder(home, session) {
+  rmSync7(join14(home, ".controlclaw", "capture"), { recursive: true, force: true });
+  const dir = captureDir(home, session);
+  mkdirSync7(join14(dir, "files"), { recursive: true, mode: 448 });
+  mkdirSync7(join14(dir, "scripts"), { recursive: true, mode: 448 });
+  return dir;
+}
+var isPrivate = capturePrivatePath;
+var heldPath = (home, session) => join14(home, ".controlclaw", "capture", `${session}.held.json`);
+function writeCaptureHeld(home, session, held, at) {
+  try {
+    writeFileSync8(heldPath(home, session), JSON.stringify({ files: bundleHash(readBundleFolder(captureDir(home, session))), held, at }), { mode: 384 });
   } catch {
   }
-  const line2 = front.split(/\r?\n/).map((l) => /^description:\s*(.+?)\s*$/.exec(l)?.[1]).find(Boolean);
-  return clean(line2?.replace(/^(["'])(.*)\1$/, "$2"));
 }
-function checkDirectorySkill(all) {
-  const problems = [];
-  const seen = /* @__PURE__ */ new Map();
-  for (const file3 of all) {
-    const problem = skillPathProblem(file3.path);
-    if (problem) problems.push(problem);
-    const key = file3.path.toLowerCase();
-    if (seen.has(key)) problems.push(`${shownPath(file3.path)}: there are two files with this path${seen.get(key) === file3.path ? "" : " (they differ only in capitals)"}`);
-    seen.set(key, file3.path);
+function readCaptureHeld(home, session, files) {
+  try {
+    const raw = JSON.parse(readFileSync15(heldPath(home, session), "utf8"));
+    if (raw.files !== bundleHash(files) || !Array.isArray(raw.held) || typeof raw.at !== "string") return null;
+    return { held: raw.held.filter((h) => h && typeof h.id === "string" && typeof h.holds === "boolean").map((h) => ({ id: h.id, holds: h.holds })), at: raw.at };
+  } catch {
+    return null;
   }
-  for (const file3 of all) {
-    const parts = file3.path.toLowerCase().split("/");
-    for (let depth = 1; depth < parts.length; depth++) {
-      const above = seen.get(parts.slice(0, depth).join("/"));
-      if (above !== void 0) problems.push(`${shownPath(file3.path)}: ${shownPath(above)} is a file, so it cannot also be a folder`);
-    }
+}
+function packCapture(dir, secrets) {
+  let files;
+  let steps;
+  try {
+    files = readBundleFolder(dir);
+    steps = loadBundle(files).steps;
+  } catch (error62) {
+    if (!(error62 instanceof TemplateError)) throw error62;
+    return { ok: false, problems: error62.problems };
   }
-  if (problems.length) return { ok: false, problems: problems.slice(0, 20) };
-  const folder = skillFromFiles(all);
-  if ("problems" in folder) return { ok: false, problems: folder.problems.map((p) => p[0]?.toUpperCase() + p.slice(1)) };
-  const text = new Map(folder.files.filter((f) => isTextFile(f.content)).map((f) => [f.path, f.content.toString("utf8")]));
-  for (const file3 of folder.files) {
-    const content2 = text.get(file3.path);
-    if (content2 === void 0) {
-      if (file3.executable || file3.content.subarray(0, 2).toString("latin1") === "#!") problems.push(`${file3.path} can be run and is not text (it has a byte that is not UTF-8, or a NUL). A script in a skill must be readable text`);
-    } else if (HIDDEN_CHARACTERS.test(content2)) problems.push(`${file3.path} has a character that cannot be seen, or that changes the order text is read in`);
+  const problems = secretProblems(files, secrets);
+  const NEVER2 = `${CAPTURE_PRIVATE.join(", ")}, conversations or logins: what the agent remembers and knows about its person is never part of a template`;
+  for (const file3 of files) if (isPrivate(file3.path)) problems.push(`${file3.path}: a capture does not take ${NEVER2}`);
+  for (const step of steps) {
+    const spec = step.spec && typeof step.spec === "object" ? step.spec : {};
+    const target2 = step.kind === "file" ? spec.path : step.kind === "line" ? spec.file : void 0;
+    if (typeof target2 === "string" && isPrivate(target2)) problems.push(`step "${step.id}": writes ${target2}. A capture does not take ${NEVER2}`);
   }
-  problems.push(...skillSecrets(folder.files).map((p) => `${p}. A skill holds no secrets: name the secret, and add it under Secrets`));
-  const skillMd = text.get("SKILL.md");
-  if (skillMd === void 0) problems.push("SKILL.md must be text");
-  const named = skillMd === void 0 ? null : skillNameOf(skillMd);
-  const name = named && "name" in named ? named.name : null;
-  if (named && "problem" in named) problems.push(`SKILL.md ${named.problem}`);
-  else if (name && (!SKILL_NAME.test(name) || name in {})) problems.push(`SKILL.md names the skill ${shownPath(name)}. A skill's name is lowercase letters, digits and dashes, at most 64 characters`);
-  else if (name && BUILTIN_SKILL_NAMES.includes(name)) problems.push(`${name} is the name of a skill that comes with every agent. Give yours another name`);
-  let setup = null;
-  const setupFile = folder.files.find((f) => f.path === SKILL_SETUP_FILE);
-  if (setupFile) {
-    const raw = text.get(SKILL_SETUP_FILE);
-    if (raw === void 0) problems.push(`${SKILL_SETUP_FILE} must be text`);
-    else {
-      try {
-        setup = parseSkillSetup((0, import_yaml3.parse)(raw));
-      } catch (error62) {
-        if (error62 instanceof TemplateError) problems.push(...error62.problems.map((p) => `${SKILL_SETUP_FILE}: ${p}`));
-        else problems.push(`${SKILL_SETUP_FILE} is not valid YAML`);
-      }
-    }
-  }
-  if (problems.length || !name || skillMd === void 0) return { ok: false, problems: problems.slice(0, 40) };
-  const runnable = new Set(skillScripts(folder.files));
-  const files = folder.files.map((f) => ({ path: f.path, bytes: f.content.length, binary: !text.has(f.path), is: f.path === "SKILL.md" ? "instructions" : f.path === SKILL_SETUP_FILE ? "setup" : runnable.has(f.path) ? "runnable" : "file" })).sort((a, b) => a.path === "SKILL.md" ? -1 : b.path === "SKILL.md" ? 1 : a.path.localeCompare(b.path));
-  return {
-    ok: true,
-    skill: { name, title: setup?.title ?? name, description: descriptionIn(skillMd), category: setup?.category ?? null, hash: folder.hash, bytes: files.reduce((sum, f) => sum + f.bytes, 0), files, setup }
-  };
+  if (problems.length) return { ok: false, problems };
+  return { ok: true, files, steps: steps.map((s) => s.id) };
 }
 
+// ../templates/src/cli-runbook.ts
+import { existsSync as existsSync7 } from "fs";
+import { homedir as homedir2 } from "os";
+import { join as join17 } from "path";
+
+// ../templates/src/notes-install.ts
+var import_yaml4 = __toESM(require_dist(), 1);
+import { mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync2, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname8, join as join15 } from "path";
+var NOTES_STEP = "put-notes";
+async function installNotesPayload(parsed, run2) {
+  const { set: set2 } = parsed.payload;
+  const parent = join15(run2.context.home, ".controlclaw");
+  mkdirSync8(parent, { recursive: true, mode: 448 });
+  const dir = mkdtempSync2(join15(parent, "notes-"));
+  try {
+    writeFileSync9(join15(dir, "template.yaml"), (0, import_yaml4.stringify)({ name: "notes", steps: [{ id: NOTES_STEP, title: `Put the notes ${set2.name} in place`, "openclaw.notes": { set: set2.name, from: carriedNotesFolder(set2.name) } }] }), { mode: 384, flag: "wx" });
+    for (const f of parsed.files) {
+      const path = join15(dir, carriedNotesFolder(set2.name), f.path);
+      mkdirSync8(dirname8(path), { recursive: true, mode: 448 });
+      writeFileSync9(path, f.content, { mode: 420, flag: "wx" });
+    }
+    const template = { ...loadTemplate(dir), name: run2.as };
+    return await runTemplate(template, {
+      context: { ...run2.context, notesRecord: { id: set2.id, version: String(set2.version), payload: run2.as, always: set2.always } },
+      restartOpenclaw: run2.restartOpenclaw,
+      redact: run2.redact,
+      stateDir: join15(dir, "state"),
+      mode: run2.mode,
+      interrupted: run2.interrupted
+    });
+  } finally {
+    rmSync8(dir, { recursive: true, force: true });
+  }
+}
+
+// ../templates/src/skill-install.ts
+import { chmodSync as chmodSync3, mkdirSync as mkdirSync9, mkdtempSync as mkdtempSync3, rmSync as rmSync9, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname9, join as join16 } from "path";
+
 // ../templates/src/skill-payload.ts
+var import_yaml5 = __toESM(require_dist(), 1);
 var SKILL_PAYLOAD_ID = /^sks-[a-z0-9]{8,40}$/;
 function isSkillPayloadId(id) {
   return !!id && SKILL_PAYLOAD_ID.test(id);
@@ -29062,7 +30327,7 @@ function installStepId(setup) {
   return id;
 }
 function payloadTemplateYaml(skill, enabled) {
-  return (0, import_yaml4.stringify)({
+  return (0, import_yaml5.stringify)({
     name: "skill",
     steps: [
       ...(skill.setup?.steps ?? []).map((s) => ({ id: s.id, ...s.title ? { title: s.title } : {}, "controlclaw.setting": { tool: s.spec.tool, values: s.spec.values } })),
@@ -29074,31 +30339,31 @@ function payloadTemplateYaml(skill, enabled) {
 // ../templates/src/skill-install.ts
 async function installSkillPayload(parsed, skill, run2) {
   const { payload, files } = parsed;
-  const parent = join10(run2.context.home, ".controlclaw");
-  mkdirSync4(parent, { recursive: true, mode: 448 });
-  const dir = mkdtempSync(join10(parent, "skill-"));
+  const parent = join16(run2.context.home, ".controlclaw");
+  mkdirSync9(parent, { recursive: true, mode: 448 });
+  const dir = mkdtempSync3(join16(parent, "skill-"));
   try {
-    writeFileSync5(join10(dir, "template.yaml"), payloadTemplateYaml(skill, payload.skill.enabled), { mode: 384, flag: "wx" });
+    writeFileSync10(join16(dir, "template.yaml"), payloadTemplateYaml(skill, payload.skill.enabled), { mode: 384, flag: "wx" });
     const kept = new Set(skill.files.map((f) => f.path));
     for (const f of files.filter((entry) => kept.has(entry.path))) {
-      const path = join10(dir, carriedSkillFolder(payload.skill.name), f.path);
-      mkdirSync4(dirname5(path), { recursive: true, mode: 448 });
-      writeFileSync5(path, f.content, { mode: f.executable ? 493 : 420, flag: "wx" });
+      const path = join16(dir, carriedSkillFolder(payload.skill.name), f.path);
+      mkdirSync9(dirname9(path), { recursive: true, mode: 448 });
+      writeFileSync10(path, f.content, { mode: f.executable ? 493 : 420, flag: "wx" });
       chmodSync3(path, f.executable ? 493 : 420);
     }
     const template = { ...loadTemplate(dir), name: run2.as };
     return await runTemplate(template, {
-      context: { ...run2.context, skillRecord: { id: payload.skill.id, version: String(payload.skill.version) } },
+      context: { ...run2.context, skillRecord: { id: payload.skill.id, version: String(payload.skill.version), ...run2.replaceChanged ? { replaceChanged: true } : {}, ...run2.keepSwitch ? { keepSwitch: true } : {}, ...run2.onlyOverRecord ? { onlyOverRecord: run2.onlyOverRecord } : {} } },
       restartOpenclaw: run2.restartOpenclaw,
       redact: run2.redact,
       // The run's state is for this report only: the skill is not a template the agent has.
-      stateDir: join10(dir, "state"),
+      stateDir: join16(dir, "state"),
       mode: run2.mode,
       skipUnconfirmed: run2.skipUnconfirmed,
       interrupted: run2.interrupted
     });
   } finally {
-    rmSync4(dir, { recursive: true, force: true });
+    rmSync9(dir, { recursive: true, force: true });
   }
 }
 
@@ -29114,9 +30379,24 @@ var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
   cc-runbook verify [folder]               check every step; change nothing
   cc-runbook capture                       what this agent is set up with, as facts for the console (JSON); reads only
   cc-runbook review [folder]               the files the template keeps as the agent has them, with the template's text (JSON)
+  cc-runbook capture --skill <name>        the files of one skill of the agent's own workspace, and nothing else (JSON)
+  cc-runbook probe <folder> <verb> [arg]    one read for a Final check (state, readme, steps, verify, plugins, skills, config, file, tool, schedule); changes nothing
+  cc-runbook capture-folder --session <id>      make a capture session's folder, empty, and print where it is
+  cc-runbook capture-pack --session <id>        the files of that folder, checked as a template and for secrets (JSON)
+  cc-runbook repair <folder> [--session <id>]   make this template's repair folder (a copy to edit a script in) and print where it is
+  cc-runbook run <folder> --beside <folder>         a bundle beside what the agent has: checked together with it
+  cc-runbook run <folder> --from <step> --repairs   run with the scripts of the repair folder, for the steps it changed
+  cc-runbook pack <folder> [--session <id>]     what the repair folder changed, checked as a template and for secrets (JSON)
   cc-runbook ensure <kind> <field>=<value>...   one step by hand; the same as "cc-ensure"
   cc-runbook unpack <file> <folder> --hash <hash>   write a template the console handed out into a new folder
   cc-runbook skill <file> --hash <hash> --as <id>   install one skill the console's skills directory handed out
+  cc-runbook notes <file> --hash <hash> --as <id>   put one set of the console's shared notes in the notes folder
+                                                    (both: --name <name> refuses a payload of another name;
+                                                    skill: --replace-changed also replaces a copy the
+                                                    organization installed and that was changed here;
+                                                    --keep-switch leaves the skill on or off as it is;
+                                                    --only-over-record <hash> writes only over a copy
+                                                    whose record names that hash as installed)
 
   folder            the template folder (default: the current one)
   --bundles <dir>   where the folders named in "uses" are (default: next to the template folder)
@@ -29127,7 +30407,7 @@ var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
   --json            print the report as JSON
   --public          with --json: only what the console is told (no messages from the box, no log lines)
 
-Exit code: 0 done, 1 a step failed, 2 --check found changes, 3 unpack, skill: not the files that were named, 64 the template or the command is wrong, 130 stopped by a signal.`;
+Exit code: 0 done, 1 a step failed, 2 --check found changes, 3 unpack, skill, notes: not the files that were named, 64 the template or the command is wrong, 130 stopped by a signal.`;
 async function main2(argv, out = console.log, err = console.error) {
   if (argv[0] === "ensure") return main(argv, out, err);
   let parsed;
@@ -29135,7 +30415,7 @@ async function main2(argv, out = console.log, err = console.error) {
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { check: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, vars: { type: "string" }, as: { type: "string" }, hash: { type: "string" }, "skip-unconfirmed": { type: "boolean" }, "no-scripts": { type: "boolean" }, public: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
+      options: { check: { type: "boolean" }, from: { type: "string" }, only: { type: "string" }, bundles: { type: "string" }, "run-id": { type: "string" }, vars: { type: "string" }, as: { type: "string" }, hash: { type: "string" }, name: { type: "string" }, "skip-unconfirmed": { type: "boolean" }, "replace-changed": { type: "boolean" }, "keep-switch": { type: "boolean" }, skill: { type: "string" }, "only-over-record": { type: "string" }, "no-scripts": { type: "boolean" }, repairs: { type: "boolean" }, beside: { type: "string", multiple: true }, session: { type: "string" }, public: { type: "boolean" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } }
     });
   } catch (error62) {
     err(`${error62.message}
@@ -29149,15 +30429,35 @@ ${USAGE2}`);
     out(USAGE2);
     return values.help ? 0 : 64;
   }
-  if (command === "capture") return positionals.length === 1 ? capture(out, err) : (err(USAGE2), 64);
+  if (command === "capture") return positionals.length === 1 ? capture(out, err, values.skill ?? null) : (err(USAGE2), 64);
   if (command === "skill") {
     if (extra.length || !values.hash || !isSkillPayloadId(values.as)) return err(USAGE2), 64;
-    return installSkill(resolve5(folder), { hash: values.hash, as: values.as, runId: values["run-id"] ?? null, check: values.check === true, skipUnconfirmed: values["skip-unconfirmed"] === true, public: values.public === true }, out, err);
+    return installSkill(resolve5(folder), { hash: values.hash, as: values.as, runId: values["run-id"] ?? null, name: values.name ?? null, check: values.check === true, skipUnconfirmed: values["skip-unconfirmed"] === true, replaceChanged: values["replace-changed"] === true, keepSwitch: values["keep-switch"] === true, onlyOverRecord: values["only-over-record"] ?? null, public: values.public === true }, out, err);
+  }
+  if (command === "notes") {
+    if (extra.length || !values.hash || !isNotesPayloadId(values.as)) return err(USAGE2), 64;
+    return installNotes(resolve5(folder), { hash: values.hash, as: values.as, name: values.name ?? null, check: values.check === true, public: values.public === true }, out, err);
   }
   if (command === "unpack") return extra.length === 1 && values.hash ? unpack(resolve5(folder), resolve5(extra[0]), values.hash, out, err) : (err(USAGE2), 64);
   if (values.as !== void 0 && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(values.as)) {
     err("--as: must be lowercase letters, digits and dashes");
     return 64;
+  }
+  if (command === "capture-folder" || command === "capture-pack") {
+    if (positionals.length !== 1 || !values.session || !/^[A-Za-z0-9_-]{8,80}$/.test(values.session)) return err(USAGE2), 64;
+    if (refusesRoot(err)) return 64;
+    return captureSession(command, values.session, out);
+  }
+  if (command === "repair" || command === "pack") {
+    if (extra.length || values.check || values.from || values.only) return err(USAGE2), 64;
+    if (refusesRoot(err)) return 64;
+    if (values.session !== void 0 && !/^[A-Za-z0-9_-]{8,80}$/.test(values.session)) return err("--session: not a session id"), 64;
+    return repairCommand(command, resolve5(folder), { bundles: values.bundles, as: values.as, session: values.session }, out, err);
+  }
+  if (command === "probe") {
+    if (extra.length < 1 || extra.length > 2 || values.check || values.from || values.only || values["no-scripts"]) return err(USAGE2), 64;
+    if (refusesRoot(err)) return 64;
+    return probeCommand(resolve5(folder), extra[0], extra[1], { bundles: values.bundles, as: values.as, vars: values.vars }, out, err);
   }
   if (command !== "run" && command !== "verify" && command !== "review" && command !== "facts" || extra.length || command !== "run" && (values.check || values.from || values.only) || values["no-scripts"] && !values.check) {
     err(USAGE2);
@@ -29170,6 +30470,18 @@ ${USAGE2}`);
   try {
     template = loadTemplate(resolve5(folder), { bundlesRoot: values.bundles ? resolve5(values.bundles) : void 0 });
     if (values.as) template = { ...template, name: values.as };
+    if (mode2 !== "verify" && values.beside?.length) {
+      const has = values.beside.flatMap((other) => {
+        try {
+          const loaded = loadTemplate(resolve5(other));
+          return [{ from: loaded.name, steps: loaded.steps.map(setItemOf) }];
+        } catch {
+          return [];
+        }
+      });
+      const clash = besideProblems(template.steps.map(setItemOf), has);
+      if (clash.length) throw new TemplateError(clash.map((problem) => `with what this agent already has: ${problem}`));
+    }
   } catch (error62) {
     if (!(error62 instanceof TemplateError)) throw error62;
     err(`The template has ${error62.problems.length === 1 ? "a problem" : `${error62.problems.length} problems`}. Nothing was run.
@@ -29188,11 +30500,25 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
     out(JSON.stringify({ template: template.name, files: reviewFiles(template, context) }));
     return 0;
   }
+  const box = boxContext(values["run-id"] ?? null, vars);
+  let repaired = [];
+  let repairOutdated = false;
+  if (values.repairs && box.stateDir && existsSync7(repairDir(box.stateDir, template.name))) {
+    try {
+      ({ template, repaired } = currentRepairs(template, box.stateDir, { bundlesRoot: values.bundles ? resolve5(values.bundles) : void 0 }));
+    } catch (error62) {
+      if (!(error62 instanceof TemplateError)) throw error62;
+      repairOutdated = error62 instanceof RepairOutdated;
+      err(`The repair folder is not used: ${error62.problems[0]}.`);
+    }
+  }
   const width = Math.max(...template.steps.map((s) => s.id.length), 4);
   const signals = watchSignals();
   try {
     const report = await runTemplate(template, {
-      ...boxContext(values["run-id"] ?? null, vars),
+      ...box,
+      repaired,
+      repairOutdated,
       mode: mode2,
       skipUnconfirmed: values["skip-unconfirmed"] === true,
       noScripts: values["no-scripts"] === true,
@@ -29202,6 +30528,8 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
       onUnexpected: unexpected(err),
       onStep: values.json ? void 0 : (result) => out(stepLine(result, width))
     });
+    const capturing = mode2 === "verify" ? /^(.*)\/\.controlclaw\/capture\/([A-Za-z0-9_-]{8,80})$/.exec(resolve5(folder)) : null;
+    if (capturing && capturing[1] === (process.env.HOME ?? homedir2())) writeCaptureHeld(capturing[1], capturing[2], report.steps.map((s) => ({ id: s.id, holds: s.status === "ok" })), report.finishedAt);
     if (values.json) out(JSON.stringify(values.public ? publicReport(report) : report, null, 2));
     else {
       const bundles = values.bundles ? ` --bundles ${values.bundles}` : "";
@@ -29216,6 +30544,90 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
     signals.done();
   }
 }
+function captureSession(command, session, out) {
+  const home = process.env.HOME ?? homedir2();
+  if (command === "capture-folder") {
+    out(makeCaptureFolder(home, session));
+    return 0;
+  }
+  const dir = captureDir(home, session);
+  if (!existsSync7(join17(dir, "template.yaml"))) {
+    out(JSON.stringify({ none: true }));
+    return 0;
+  }
+  const answer = packCapture(dir, packSecrets(process.env.KEYS_DIR ?? "/opt/controlclaw/keys", join17(home, ".openclaw")));
+  if (!answer.ok) {
+    out(JSON.stringify({ problems: answer.problems }));
+    return 1;
+  }
+  const record2 = readCaptureHeld(home, session, answer.files);
+  out(JSON.stringify({ files: answer.files, held: record2?.held ?? [], at: record2?.at ?? (/* @__PURE__ */ new Date()).toISOString() }));
+  return 0;
+}
+function repairCommand(command, folder, options, out, err) {
+  let template;
+  try {
+    template = loadTemplate(folder, { bundlesRoot: options.bundles ? resolve5(options.bundles) : void 0 });
+    if (options.as) template = { ...template, name: options.as };
+  } catch (error62) {
+    if (!(error62 instanceof TemplateError)) throw error62;
+    err("The template on this agent could not be read.");
+    return 64;
+  }
+  const home = process.env.HOME ?? homedir2();
+  const stateDir = process.env.CC_RUNBOOK_STATE ?? join17(home, ".controlclaw", "runbook");
+  if (command === "repair") {
+    out(makeRepairFolder(folder, stateDir, template.name, options.session ?? null));
+    return 0;
+  }
+  const scratch = repairDir(stateDir, template.name);
+  if (!existsSync7(scratch)) {
+    out(JSON.stringify({ none: true }));
+    return 0;
+  }
+  const meta3 = readRepairMeta(stateDir, template.name);
+  if (options.session !== void 0 && meta3?.session !== options.session) {
+    out(JSON.stringify({ none: true }));
+    return 0;
+  }
+  if (!meta3 || meta3.base !== folderHash(folder)) {
+    out(JSON.stringify({ problems: ["the repair folder was made from an earlier version of this template's files, so its changes are not proposed"] }));
+    return 1;
+  }
+  const answer = packRepair(template, readBundleFolder(folder), scratch, packSecrets(process.env.KEYS_DIR ?? "/opt/controlclaw/keys", join17(home, ".openclaw")), bundleHash);
+  out(JSON.stringify(answer.ok ? answer.pack : { problems: answer.problems }));
+  return answer.ok ? 0 : 1;
+}
+async function probeCommand(folder, verb, arg, options, out, err) {
+  let template;
+  try {
+    template = loadTemplate(folder, { bundlesRoot: options.bundles ? resolve5(options.bundles) : void 0 });
+    if (options.as) template = { ...template, name: options.as };
+  } catch (error62) {
+    if (!(error62 instanceof TemplateError)) throw error62;
+    err("The template on this agent could not be read.");
+    return 64;
+  }
+  let vars;
+  try {
+    vars = varsFromFile(options.vars);
+  } catch {
+    err(`--vars: ${options.vars} is not a JSON file that can be read`);
+    return 64;
+  }
+  const run2 = boxContext(null, vars);
+  if (!run2.stateDir) return 64;
+  if (existsSync7(repairDir(run2.stateDir, template.name))) {
+    try {
+      template = currentRepairs(template, run2.stateDir).template;
+    } catch (error62) {
+      if (!(error62 instanceof TemplateError)) throw error62;
+    }
+  }
+  const answer = await probe(template, verb, arg, { box: run2.context, stateDir: run2.stateDir, redact: run2.redact ?? ((text3) => text3), run: run2 });
+  out(answer.text);
+  return answer.ok ? 0 : 1;
+}
 function facts(folder, bundlesRoot, out, err) {
   try {
     const template = loadTemplate(folder, { bundlesRoot });
@@ -29228,9 +30640,13 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
     return 64;
   }
 }
-async function capture(out, err) {
+async function capture(out, err, skill = null) {
   if (refusesRoot(err)) return 64;
   const { context } = boxContext(null);
+  if (skill !== null) {
+    out(JSON.stringify(observeSkill(context, skill)));
+    return 0;
+  }
   out(JSON.stringify(await observeAgent(context)));
   return 0;
 }
@@ -29238,7 +30654,7 @@ function unpack(file3, folder, hash2, out, err) {
   if (refusesRoot(err)) return 64;
   let files;
   try {
-    const raw = JSON.parse(readFileSync11(file3, "utf8"));
+    const raw = JSON.parse(readFileSync16(file3, "utf8"));
     if (!Array.isArray(raw.files) || !raw.files.every((f) => !!f && typeof f === "object" && typeof f.path === "string" && typeof f.content === "string" && typeof f.executable === "boolean")) throw new Error("shape");
     files = raw.files.map((f) => ({ path: f.path, executable: f.executable, content: f.content }));
   } catch {
@@ -29268,7 +30684,7 @@ async function installSkill(file3, options, out, err) {
   if (refusesRoot(err)) return 64;
   let parsed = null;
   try {
-    parsed = parseSkillPayload(JSON.parse(readFileSync11(file3, "utf8")));
+    parsed = parseSkillPayload(JSON.parse(readFileSync16(file3, "utf8")));
   } catch {
   }
   if (!parsed) {
@@ -29279,6 +30695,10 @@ async function installSkill(file3, options, out, err) {
     err("The skill is not the one that was named (its hash is different). Nothing was written.");
     return 3;
   }
+  if (options.name && parsed.payload.skill.name !== options.name) {
+    err("The skill is not the one that was named (its name is different). Nothing was written.");
+    return 3;
+  }
   const checked = checkSkillPayload(parsed);
   if (!checked.ok) {
     err(`The skill has ${checked.problems.length === 1 ? "a problem" : `${checked.problems.length} problems`}. Nothing was written.
@@ -29287,7 +30707,7 @@ ${checked.problems.map((p) => `  ${p}`).join("\n")}`);
   }
   const signals = watchSignals();
   try {
-    const report = await installSkillPayload(parsed, checked.skill, { ...boxContext(options.runId), as: options.as, mode: options.check ? "check" : "run", skipUnconfirmed: options.skipUnconfirmed, interrupted: signals.interrupted });
+    const report = await installSkillPayload(parsed, checked.skill, { ...boxContext(options.runId), as: options.as, mode: options.check ? "check" : "run", skipUnconfirmed: options.skipUnconfirmed, replaceChanged: options.replaceChanged === true, keepSwitch: options.keepSwitch === true, onlyOverRecord: options.onlyOverRecord ?? null, interrupted: signals.interrupted });
     out(JSON.stringify(options.public ? publicReport(report) : report, null, 2));
     return exitCode(report);
   } catch (error62) {
@@ -29297,6 +30717,52 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
       return 64;
     }
     err(`The skill could not be written (${error62.code ?? (error62 instanceof Error ? error62.name : "error")}). Nothing was installed.`);
+    return 64;
+  } finally {
+    signals.done();
+  }
+}
+async function installNotes(file3, options, out, err) {
+  if (refusesRoot(err)) return 64;
+  let parsed = null;
+  try {
+    parsed = parseNotesPayload(JSON.parse(readFileSync16(file3, "utf8")));
+  } catch {
+  }
+  if (!parsed) {
+    err(`${file3} is not a set of notes the console handed out`);
+    return 64;
+  }
+  if (parsed.payload.hash !== options.hash) {
+    err("The notes are not the ones that were named (their hash is different). Nothing was written.");
+    return 3;
+  }
+  if (options.name && parsed.payload.set.name !== options.name) {
+    err("The notes are not the ones that were named (the set's name is different). Nothing was written.");
+    return 3;
+  }
+  const checked = checkNotesSet(parsed.files, parsed.payload.set.always);
+  if (!checked.ok) {
+    err(`The notes have ${checked.problems.length === 1 ? "a problem" : `${checked.problems.length} problems`}. Nothing was written.
+${checked.problems.map((p) => `  ${p}`).join("\n")}`);
+    return 64;
+  }
+  if (checked.set.hash !== options.hash) {
+    err("The notes are not the ones that were named (their files have another hash). Nothing was written.");
+    return 3;
+  }
+  const signals = watchSignals();
+  try {
+    const report = await installNotesPayload(parsed, { ...boxContext(null), as: options.as, mode: options.check ? "check" : "run", interrupted: signals.interrupted });
+    out(JSON.stringify(options.public ? publicReport(report) : report, null, 2));
+    return exitCode(report);
+  } catch (error62) {
+    if (error62 instanceof TemplateError) {
+      err(`The notes have ${error62.problems.length === 1 ? "a problem" : `${error62.problems.length} problems`}. Nothing was written.
+${error62.problems.map((p) => `  ${p}`).join("\n")}`);
+      return 64;
+    }
+    err(`The notes could not be written (${error62.code ?? (error62 instanceof Error ? error62.name : "error")}). Nothing was put in place.`);
     return 64;
   } finally {
     signals.done();
