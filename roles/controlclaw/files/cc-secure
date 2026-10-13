@@ -27,6 +27,8 @@ RECOVERY_JWE=${CC_SECURE_RECOVERY_JWE:-/etc/controlclaw/luks-recovery.sealed}
 # wraps data keys to (`org_backup_settings.publicKey`). NOT a PEM: it is 32 raw bytes in base64,
 # because that is the shape libsodium and the owner's browser already speak.
 RECOVERY_PUB=${CC_SECURE_RECOVERY_PUB:-/etc/controlclaw/luks-recovery-pub.b64}
+# What an Update replays into the play (cc-reprovision). `reseal` keeps its recovery key line current.
+UPDATE_CONF=${CC_SECURE_UPDATE_CONF:-/etc/controlclaw/update.conf}
 CC_SEAL=${CC_SECURE_SEAL:-/usr/local/bin/cc-seal}
 TANGD_PORT=${CC_SECURE_TANGD_PORT:-3921}
 
@@ -807,6 +809,11 @@ cmd_reseal() {
   if [ "$(cat "$RECOVERY_PUB" 2>/dev/null || true)" != "$key" ]; then
     printf '%s\n' "$key" > "$RECOVERY_PUB.tmp" && chmod 0644 "$RECOVERY_PUB.tmp" && mv "$RECOVERY_PUB.tmp" "$RECOVERY_PUB" \
       || { rm -f "$RECOVERY_PUB.tmp"; die "re-sealed to $tag, but could not record the key at $RECOVERY_PUB; run it again"; }
+  fi
+  # The copy an Update replays. Nothing reads it for sealing any more, so a failure here is said
+  # and does not fail the re-seal.
+  if [ -f "$UPDATE_CONF" ] && grep -q '^LUKS_RECOVERY_PUBKEY=' "$UPDATE_CONF" && ! grep -qxF "LUKS_RECOVERY_PUBKEY=$key" "$UPDATE_CONF"; then
+    sed -i "s|^LUKS_RECOVERY_PUBKEY=.*|LUKS_RECOVERY_PUBKEY=$key|" "$UPDATE_CONF" || log "could not record the key in $UPDATE_CONF"
   fi
   if [ "$have" = "$tag" ]; then echo "{\"to\":\"$tag\",\"changed\":false}"; else echo "{\"to\":\"$tag\",\"changed\":true}"; fi
 }

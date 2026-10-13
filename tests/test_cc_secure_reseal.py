@@ -73,6 +73,7 @@ class Box:
             'cmd_reseal "$@"',
         ])
         env = {**os.environ, 'KEYFILE': str(self.keyfile), 'RECOVERY_JWE': str(self.blob), 'RECOVERY_PUB': str(self.pub),
+               'UPDATE_CONF': str(self.dir / 'update.conf'),
                'CC_SEAL': self.seal, 'TRACE': str(self.dir / 'trace')}
         return subprocess.run(['bash', '-c', script, 'cc-secure', *args], capture_output=True, text=True, env=env)
 
@@ -203,6 +204,78 @@ class Reseal(unittest.TestCase):
         r = box.reseal(VECTOR_PUBLIC)
         self.assertNotIn('the-passphrase', r.stdout + r.stderr)
         self.assertEqual(sorted(p.name for p in box.blob.parent.iterdir()), ['luks-recovery-pub.b64', 'luks-recovery.sealed'])
+
+
+    def test_a_box_with_no_seal_yet_is_sealed(self):
+        # A ready-pool box: made with no organization, so it has a passphrase and no sealed blob.
+        box = Box(self)
+        self.assertFalse(box.blob.exists())
+        r = box.reseal(VECTOR_PUBLIC)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {'to': VECTOR_TAG, 'changed': True})
+        self.assertEqual(json.loads(box.blob.read_text())['to'], VECTOR_TAG)
+        self.assertEqual(box.pub.read_text().strip(), VECTOR_PUBLIC)
+
+    def test_the_copy_an_update_replays_is_kept_current(self):
+        box = Box(self)
+        box.sealed_before(OTHER_PUBLIC)
+        conf = box.dir / 'update.conf'
+        conf.write_text(f'ORG_ID=o1\nLUKS_RECOVERY_PUBKEY={OTHER_PUBLIC}\nDISK_ENCRYPTION=true\n')
+        r = box.reseal(VECTOR_PUBLIC)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(conf.read_text(), f'ORG_ID=o1\nLUKS_RECOVERY_PUBKEY={VECTOR_PUBLIC}\nDISK_ENCRYPTION=true\n')
+
+    def test_a_box_with_no_update_file_is_sealed_all_the_same(self):
+        box = Box(self)
+        box.sealed_before(OTHER_PUBLIC)
+        r = box.reseal(VECTOR_PUBLIC)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((box.dir / 'update.conf').exists())
+
+
+class Callers(unittest.TestCase):
+    """Everything in the role that runs `cc-secure reseal` passes the key."""
+    FILES = ROOT / 'roles/controlclaw'
+
+    def callers(self):
+        found = []
+        for path in self.FILES.rglob('*'):
+            if not path.is_file() or '/dist/' in str(path) or path.name == 'cc-secure':
+                continue
+            try:
+                text = path.read_text()
+            except UnicodeDecodeError:
+                continue
+            for n, line in enumerate(text.split('\n'), 1):
+                if re.search(r"cc-secure['\", ]+reseal", line) and 'NOPASSWD' not in line and not line.lstrip().startswith('#'):
+                    found.append((path.relative_to(ROOT), n, line.strip()))
+        return found
+
+    def test_the_pool_claim_passes_the_organizations_key(self):
+        pool = (self.FILES / 'files/cc-pool-local.cjs').read_text()
+        self.assertIn("cmd(['/usr/local/bin/cc-secure', 'reseal', vars.luks_recovery_pubkey]);", pool)
+        # After the key file is written and before the claim's files are: a failure stops the claim there.
+        self.assertLess(pool.index("write('/etc/controlclaw/luks-recovery-pub.b64', vars.luks_recovery_pubkey)"), pool.index("'reseal', vars.luks_recovery_pubkey"))
+        self.assertLess(pool.index("'reseal', vars.luks_recovery_pubkey"), pool.index("const files = { saas_public_key"))
+
+    def test_nothing_calls_reseal_without_a_key(self):
+        callers = self.callers()
+        self.assertTrue(callers, 'the pool claim should have been found')
+        for path, n, line in callers:
+            self.assertNotRegex(line, r"reseal['\"]?\s*(\]|\)|$|;|\|)", f'{path}:{n} calls reseal with no key: {line}')
+
+    @unittest.skipUnless(shutil.which('node'), 'needs node')
+    def test_the_claims_own_call_seals_a_pool_box(self):
+        # The argv the claim builds, run against the shipped cmd_reseal on a box with no seal.
+        pool = (self.FILES / 'files/cc-pool-local.cjs').read_text()
+        argv_src = re.search(r"cmd\((\['/usr/local/bin/cc-secure', 'reseal'[^\]]*\])\);", pool).group(1)
+        out = subprocess.run(['node', '-e', f'const vars={{luks_recovery_pubkey:{json.dumps(VECTOR_PUBLIC)}}};console.log(JSON.stringify({argv_src}))'], capture_output=True, text=True, check=True)
+        argv = json.loads(out.stdout)
+        self.assertEqual(argv[:2], ['/usr/local/bin/cc-secure', 'reseal'])
+        box = Box(self)
+        r = box.reseal(*argv[2:])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(box.blob.read_text())['to'], VECTOR_TAG)
 
 
 class Play(unittest.TestCase):

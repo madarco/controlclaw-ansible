@@ -78,7 +78,8 @@ function activate(vars) {
   if (!vars.saas_public_key.startsWith('-----BEGIN PUBLIC KEY-----\n') || crypto.createPublicKey(vars.saas_public_key).asymmetricKeyType !== 'ed25519') throw Error('bad SaaS public key');
   write('/etc/controlclaw/luks-recovery-pub.b64', vars.luks_recovery_pubkey);
   // Seal the SAME random passphrase. No key rotation, temporary recipient, or key export.
-  cmd(['/usr/local/bin/cc-secure', 'reseal']);
+  // The key is the argument: `cc-secure reseal` takes exactly one and reads none from a file.
+  cmd(['/usr/local/bin/cc-secure', 'reseal', vars.luks_recovery_pubkey]);
   const files = { saas_public_key: 'saas_public_key.pem', vm_id: 'vm_id', vm_hostname: 'vm_hostname',
     vm_bootstrap_token: 'bootstrap_token', register_api_url: 'register_api_url', ready_api_url: 'ready_api_url',
     config_api_url: 'config_api_url', org_id: 'org_id', controlclaw_url: 'controlclaw_url' };
