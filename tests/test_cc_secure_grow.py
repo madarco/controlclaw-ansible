@@ -1087,16 +1087,23 @@ cmd_mount
             self.assertIn(f'ignoring :optional on {sub}: it is always required', r.stderr)
             self.assertIn(f'could not be mounted: {d0}/{sub}', r.stderr)
 
-    def test_the_entries_the_role_ships_are_all_required(self):
+    def test_shared_notes_is_the_one_optional_entry_the_role_ships(self):
         defaults = (ROOT / 'roles/controlclaw/defaults/main.yml').read_text()
         binds = defaults[defaults.index('luks_binds:'):defaults.index('luks_dependent_units:')]
-        self.assertNotIn(':optional', binds)
-        # And cc-secure would not take the marker on any of them: every name in the list is one
-        # it always requires.
-        shipped = set(re.findall(r"'([a-z-]+):(?:/|' ~)", binds))
-        self.assertEqual(shipped, {'keys', 'state', 'openclaw', 'mitm-ca', 'connector', 'clickclack', 'gbrain', 'postgresql'})
+        specs = re.findall(r"'([a-z-]+):((?:/|' ~)[^\]]*?)'(?=[,\]])", binds)
+        self.assertEqual({name for name, _ in specs}, {'keys', 'state', 'openclaw', 'mitm-ca', 'connector', 'clickclack', 'gbrain', 'postgresql', 'notes'})
+        self.assertEqual({name for name, rest in specs if rest.endswith(':optional')}, {'notes'})
+        self.assertIn("'notes:/var/lib/controlclaw-notes:root:0755:optional'", binds)
+        # cc-secure would not take the marker on any of the others: each is a name it always requires.
         always = set(re.search(r'case "\$sub" in\n\s+([a-z|-]+)\)', shell_function('cmd_mount')).group(1).split('|'))
-        self.assertEqual(shipped - always, set())
+        self.assertEqual({name for name, _ in specs} - always, {'notes'})
+
+    def test_the_notes_folder_is_the_one_cc_notes_and_the_marker_name(self):
+        notes = (ROOT / 'roles/controlclaw/files/cc-notes').read_text()
+        self.assertIn('BASE=/var/lib/controlclaw-notes', notes)
+        self.assertIn('mountpoint -q "$BASE"', notes)
+        tasks = (ROOT / 'roles/controlclaw/tasks/shared-notes.yml').read_text()
+        self.assertIn('mountpoint -q /var/lib/controlclaw-notes', tasks)
 
     def test_the_daemon_is_ready_after_exit_3_and_after_nothing_else(self):
         daemon = (ROOT / 'roles/controlclaw/files/cc-secure-daemon').read_text()

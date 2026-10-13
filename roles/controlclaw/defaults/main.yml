@@ -437,14 +437,16 @@ luks_binds: >-
         'clickclack:/var/lib/clickclack:clickclack:0700'] if box_role == 'mitm' else [])
     + (['gbrain:' ~ gbrain_home ~ ':' ~ gbrain_user ~ ':0750',
         'postgresql:/var/lib/postgresql:postgres:0700'] if box_role == 'gbrain' else [])
-    + (['notes:/var/lib/controlclaw-notes:root:0755'] if box_role == 'openclaw' else [])
+    + (['notes:/var/lib/controlclaw-notes:root:0755:optional'] if box_role == 'openclaw' else [])
   }}
 
 # An agent's shared notes (tasks/shared-notes.yml) are inside the container when the box has one:
-# the `notes` bind above, LAST in the list, so every other bind is in place before it is tried.
-# cc-secure stops at a bind that fails, before it starts tang, and that script is not this change's
-# to alter; the role makes the one thing that could fail it (the mount point not being a folder)
-# impossible before the container is mounted (tasks/main.yml, before disk-encryption.yml).
+# the `notes` bind above. It is the one entry marked `:optional`: an agent runs without its shared
+# notes, and must not be kept from booting by them. If that bind fails, cc-secure still mounts the
+# rest and starts tang, exits 3, and cc-secure-daemon reports ready and names the folder in the
+# journal; cc-notes then refuses to write, because the folder is not the mount. Every other entry
+# is required, and cc-secure does not take the marker on them. The role still makes the mount
+# point a real folder before the container is mounted (tasks/main.yml, before disk-encryption.yml).
 # False in a CI run, which has no container even with disk_encryption on.
 shared_notes_in_container: "{{ (disk_encryption | bool) and box_role == 'openclaw' and not (ci_test | default(false) | bool) }}"
 
