@@ -35010,6 +35010,7 @@ var GatewayClient = class {
 
 // src/budgets.ts
 var GATEWAY_READ_MS = 1e4;
+var GATEWAY_START_LIMIT_MS = 15 * 6e4;
 var CONFIG_PATCH_MS = 2e4;
 var CONFIG_PATCH_RESTART_MS = 45e3;
 var APPLY_INLINE_WAIT_MS = 25e3;
@@ -41471,8 +41472,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e89f832" : "unknown",
-  builtAt: true ? "2026-10-13T10:49:37+01:00" : "unknown"
+  commit: true ? "0751b9e" : "unknown",
+  builtAt: true ? "2026-10-14T00:44:44+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -42304,6 +42305,8 @@ var TICK_MS = 3e4;
 var GATEWAY_FAILS = 4;
 var JAM_FAILS = 3;
 var START_GRACE_MS = 3 * 6e4;
+var START_LIMIT_MS = GATEWAY_START_LIMIT_MS;
+var SAME_START_MS = 5e3;
 var JAM_IN_CALL_MS = 5 * 6e4;
 var RESTART_QUIET_MS = 10 * 6e4;
 var MAX_RESTARTS = 3;
@@ -42323,6 +42326,9 @@ var Watchdog = class {
     this.deps = deps;
   }
   gatewayFails = 0;
+  /** When the unit judged now became active, and whether the gateway has answered since. */
+  startedAt = null;
+  answered = false;
   jamFails = 0;
   gatewayLimit = new Limiter();
   jamLimit = new Limiter();
@@ -42333,8 +42339,12 @@ var Watchdog = class {
   status() {
     return { ...this.state };
   }
+  /**
+   * Only ever compared with itself and with `unitActiveFor`, which systemd counts on the monotonic
+   * clock. So it is monotonic too: a wall clock that NTP steps would make one start look like two.
+   */
   now() {
-    return (this.deps.now ?? Date.now)();
+    return (this.deps.now ?? (() => Math.round(performance.now())))();
   }
   log(msg) {
     (this.deps.log ?? console.log)(`[watchdog] ${msg}`);
@@ -42351,37 +42361,57 @@ var Watchdog = class {
   async hold() {
     return await this.deps.hold?.() ?? null;
   }
-  /** Active for longer than the grace: a unit that can be judged. */
-  async unitSettled() {
+  /** How long the unit has been active when it is the start being judged; null for a stopped unit or another start. */
+  async sameStart() {
     const activeFor = await this.deps.unitActiveFor();
-    return activeFor !== null && activeFor >= START_GRACE_MS;
+    if (activeFor === null || this.startedAt === null) return null;
+    return Math.abs(this.now() - activeFor - this.startedAt) <= SAME_START_MS ? activeFor : null;
   }
   async checkGateway() {
-    if (!await this.unitSettled()) {
+    const activeFor = await this.deps.unitActiveFor();
+    if (activeFor === null) {
+      this.startedAt = null;
+      this.answered = false;
       this.gatewayFails = 0;
       this.state.gatewayAnswers = null;
       return;
     }
-    const answers = await this.deps.gatewayAnswers();
-    this.state.gatewayAnswers = answers;
-    if (answers) {
+    const startedAt = this.now() - activeFor;
+    if (this.startedAt === null || Math.abs(startedAt - this.startedAt) > SAME_START_MS) {
+      this.startedAt = startedAt;
+      this.answered = false;
       this.gatewayFails = 0;
+    }
+    const answers = await this.deps.gatewayAnswers();
+    if (answers) {
+      this.answered = true;
+      this.gatewayFails = 0;
+      this.state.gatewayAnswers = activeFor >= START_GRACE_MS ? true : null;
       return;
     }
+    const starting = !this.answered && activeFor < START_LIMIT_MS;
+    if (activeFor < START_GRACE_MS || starting) {
+      this.gatewayFails = 0;
+      this.state.gatewayAnswers = null;
+      return;
+    }
+    this.state.gatewayAnswers = false;
     if (++this.gatewayFails < GATEWAY_FAILS) return;
     if (await this.hold()) return;
     if (!this.gatewayLimit.allow(this.now())) return;
     this.gatewayFails = 0;
     await this.deps.beforeRestart?.().catch(() => this.log("the meeting cleanup before the restart did not finish"));
-    if (!await this.unitSettled()) {
+    const still = await this.sameStart();
+    if (still === null || still < START_GRACE_MS) {
       this.log("OpenClaw was stopped or restarted meanwhile: leaving it");
       this.state.gatewayAnswers = null;
       return;
     }
-    this.log("OpenClaw is running but has not answered for two minutes: restarting it");
+    const hung = this.answered;
+    this.log(hung ? "OpenClaw is running but has not answered for two minutes: restarting it" : `OpenClaw has not answered since it started ${Math.round(still / 6e4)} minutes ago: restarting it`);
     const ok = await this.deps.restartOpenClaw();
     if (!ok) this.log("the restart failed");
-    this.deps.report?.("OpenClaw stopped answering and was restarted", ok);
+    this.deps.report?.(hung ? "OpenClaw stopped answering and was restarted" : "OpenClaw did not finish starting and was restarted", ok);
   }
   async checkOutbound() {
     const out = await this.deps.outbound();
@@ -48212,7 +48242,7 @@ var AgentMailService = class {
     }
     try {
       await new Promise((resolve4) => setTimeout(resolve4, 250));
-      const until = Date.now() + 3e5;
+      const until = Date.now() + GATEWAY_START_LIMIT_MS;
       while (Date.now() < until) {
         try {
           if (await client.whenConnected(5e3)) {

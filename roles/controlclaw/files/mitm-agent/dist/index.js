@@ -38775,7 +38775,7 @@ var ruleEntry = external_exports.object({
   value: addressPattern,
   mailbox: mailboxRef.nullable().default(null)
 });
-var outboundMode = external_exports.enum(["listed", "ask", "block"]);
+var outboundMode = external_exports.enum(["listed", "ask", "block", "anyone"]);
 var requireAuth = external_exports.enum(["aligned", "dmarc"]);
 var LIMITS = { perHour: { min: 1, max: 200 }, perDay: { min: 1, max: 2e3 } };
 var MAX_RECIPIENTS = 20;
@@ -38816,7 +38816,13 @@ var emailChange = external_exports.discriminatedUnion("action", [
   }),
   external_exports.object({ action: external_exports.literal("set_mailbox_mode"), mailbox: mailboxRef, mode: outboundMode.nullable() })
 ]);
-var MODE_RANK = { block: 0, listed: 1, ask: 2 };
+var MODE_RANK = { block: 0, listed: 1, ask: 2, anyone: 3 };
+var MODE_WORDS = {
+  listed: "send only to listed people",
+  ask: "ask before emailing someone new",
+  block: "send no email",
+  anyone: "be able to email anyone, with no list and no request to you"
+};
 var sameEntry = (a2, b2) => a2.value === b2.value && a2.mailbox === b2.mailbox;
 function applyChange(rules, change) {
   const next = structuredClone(rules);
@@ -38888,7 +38894,7 @@ function listed(entries, address, mailbox) {
     (e) => (e.mailbox === null || e.mailbox === mailbox) && (e.value === a2 || d2 !== null && e.value === `@${d2}`)
   );
 }
-function describeChange(change) {
+function describeChange(change, next) {
   const where = (e) => e.mailbox ? ` (${e.mailbox.replace(/^[a-z]+:/, "")} only)` : "";
   const who2 = (e) => e.value.startsWith("@") ? `anyone at ${e.value.slice(1)}` : e.value;
   switch (change.action) {
@@ -38904,13 +38910,16 @@ function describeChange(change) {
       return change.requireAuth === "dmarc" ? "Only accept email that passes DMARC" : "Accept email that passes DMARC or has a DKIM signature from the sender's domain";
     case "set_outbound": {
       const parts = [];
-      if (change.mode) parts.push({ listed: "send only to listed people", ask: "ask before emailing someone new", block: "send no email" }[change.mode]);
+      if (change.mode) parts.push(MODE_WORDS[change.mode]);
       if (change.repliesToSenders !== void 0) parts.push(change.repliesToSenders ? "reply to people allowed to email them" : "not reply unless the person is listed");
       if (change.perHour !== void 0 || change.perDay !== void 0) parts.push(`send at most ${change.perHour ?? "the same"} an hour and ${change.perDay ?? "the same"} a day per mailbox`);
       return `Agents will ${parts.join(", ")}`;
     }
-    case "set_mailbox_mode":
-      return `${change.mailbox.replace(/^[a-z]+:/, "")}: ${change.mode ? { listed: "send only to listed people", ask: "ask before emailing someone new", block: "send no email" }[change.mode] : "follow the organization setting"}`;
+    case "set_mailbox_mode": {
+      const mode = next ? effectiveMode(next, change.mailbox) : change.mode;
+      const follows = mode === "anyone" ? `follow the organization setting and ${MODE_WORDS.anyone}` : "follow the organization setting";
+      return `${change.mailbox.replace(/^[a-z]+:/, "")} will ${change.mode && mode ? MODE_WORDS[mode] : follows}`;
+    }
   }
 }
 
@@ -39303,7 +39312,7 @@ var EmailRulesFirewall = class {
       const next = applyChange(this.store.rules, change);
       this.codes.drop(CODE_SCOPE);
       if (!widens2(this.store.rules, next)) return await this.apply(change);
-      const sent = await this.codes.send(CODE_SCOPE, { changeId, change }, "your email rules", describeChange(change), this.opts.codeRoutes());
+      const sent = await this.codes.send(CODE_SCOPE, { changeId, change }, "your email rules", describeChange(change, next), this.opts.codeRoutes());
       return sent.ok ? { ok: true, status: "awaiting_code", data: { ...awaitingCodeData(sent) } } : { ok: false, status: "failed", message: "No confirmation code could be delivered. Add a recipient on the Firewall page." };
     } catch {
       return { ok: false, status: "failed", message: "Email rules change could not be applied. Check the input, then retry." };
@@ -39482,7 +39491,7 @@ var EmailRulesFirewall = class {
     const mode = effectiveMode(rules, r2.mailbox);
     if (mode === "block") return { decision: "block", reason: "sending_off" };
     const allowed = (a2) => listed(rules.outbound.recipients, a2, r2.mailbox) || rules.outbound.repliesToSenders && listed(rules.inbound.senders, a2, r2.mailbox);
-    const unlisted = r2.list.filter((a2) => !allowed(a2));
+    const unlisted = mode === "anyone" ? [] : r2.list.filter((a2) => !allowed(a2));
     if (unlisted.length) {
       if (mode === "listed") return { decision: "block", reason: "not_allowed" };
       const asks = unlisted.flatMap((a2) => {
@@ -100665,8 +100674,8 @@ import { uptime } from "os";
 import { existsSync as existsSync17, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e89f832" : "unknown",
-  builtAt: true ? "2026-10-13T10:49:37+01:00" : "unknown"
+  commit: true ? "0751b9e" : "unknown",
+  builtAt: true ? "2026-10-14T00:44:44+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
