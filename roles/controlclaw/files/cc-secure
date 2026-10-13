@@ -27,6 +27,7 @@ RECOVERY_JWE=${CC_SECURE_RECOVERY_JWE:-/etc/controlclaw/luks-recovery.sealed}
 # wraps data keys to (`org_backup_settings.publicKey`). NOT a PEM: it is 32 raw bytes in base64,
 # because that is the shape libsodium and the owner's browser already speak.
 RECOVERY_PUB=${CC_SECURE_RECOVERY_PUB:-/etc/controlclaw/luks-recovery-pub.b64}
+CC_SEAL=${CC_SECURE_SEAL:-/usr/local/bin/cc-seal}
 TANGD_PORT=${CC_SECURE_TANGD_PORT:-3921}
 
 die() { echo "cc-secure: $*" >&2; exit 1; }
@@ -38,7 +39,7 @@ die() { echo "cc-secure: $*" >&2; exit 1; }
 seal_to_recovery() {
   local src=$1
   [ -s "$RECOVERY_PUB" ] || return 1
-  /usr/local/bin/cc-seal "$RECOVERY_PUB" "$src" "$RECOVERY_JWE.tmp" || return 1
+  "$CC_SEAL" "$RECOVERY_PUB" "$src" "$RECOVERY_JWE.tmp" || return 1
   mv "$RECOVERY_JWE.tmp" "$RECOVERY_JWE"
   chmod 0644 "$RECOVERY_JWE"
 }
@@ -758,16 +759,56 @@ cmd_rekey() {
   log "rekeyed slot 0 and re-sealed the recovery blob"
 }
 
-# Re-seal to a NEW org recovery key, without changing the passphrase. Used when the owner rotates
-# their recovery key: every box re-seals its own, because only the box has the passphrase.
+# Re-seal to a NEW org recovery key, without changing the passphrase. Used when the owner replaces
+# their recovery key: every box re-seals its own, because only the box has the passphrase
+# (controlclaw docs/plans/recovery-key-reseal.md).
+#
+#   cc-secure reseal <recovery public key, base64>
+#
+# The key is the argument, and it comes from this box's firewall, which holds the key a person
+# confirmed with a code. It is not read from $RECOVERY_PUB: that file was written at provisioning
+# from a value the control plane passed.
+#
+# The old blob stays the way in until the new one is in place: the new blob is written beside it,
+# checked to name the key that was given, and only then renamed over it. A failure before the rename
+# leaves the old blob as it was. $RECOVERY_PUB is written after, so a later rekey seals to the same
+# key; a failure there is repeated by the next call, which finds the blob current and only writes
+# the file. Prints one JSON line: {"to":"sha256:…","changed":true|false}.
+recovery_key_tag() {
+  python3 -c 'import base64,hashlib,sys
+raw=base64.b64decode(sys.argv[1],validate=True)
+assert len(raw)==32
+print("sha256:"+hashlib.sha256(raw).digest()[:8].hex())' "$1" 2>/dev/null
+}
+sealed_tag() {
+  python3 -c 'import json,re,sys
+t=json.load(open(sys.argv[1])).get("to")
+print(t if isinstance(t,str) and re.fullmatch("sha256:[0-9a-f]{16}",t) else "")' "$1" 2>/dev/null
+}
 cmd_reseal() {
-  is_mounted || die "container is not mounted"
-  [ -s "$KEYFILE" ] || die "no $KEYFILE"
-  [ -s "$RECOVERY_PUB" ] || die "no recovery public key"
+  local key=${1:-} tag have pub new
+  [ $# -eq 1 ] && [[ "$key" =~ ^[A-Za-z0-9+/]{43}=$ ]] || die "usage: cc-secure reseal <recovery public key>"
+  tag=$(recovery_key_tag "$key") && [ -n "$tag" ] || die "that is not a recovery public key; nothing was changed"
+  is_mounted || die "the disk is not open, so its passphrase cannot be read; nothing was changed"
+  [ -s "$KEYFILE" ] || die "no $KEYFILE; nothing was changed"
   take_lock
-  stop_leftover_bind "$(loopdev)"
-  seal_to_recovery "$KEYFILE" || die "could not seal to the new recovery key"
-  log "re-sealed to the current recovery key"
+  have=$(sealed_tag "$RECOVERY_JWE" || true)
+  if [ "$have" != "$tag" ]; then
+    stop_leftover_bind "$(loopdev)"
+    pub=$(mktemp -p /dev/shm cc-secure.XXXXXX) || die "could not make a temporary file; nothing was changed"
+    new="$RECOVERY_JWE.new"
+    printf '%s\n' "$key" > "$pub"
+    if ! "$CC_SEAL" "$pub" "$KEYFILE" "$new" >&2; then rm -f "$pub" "$new"; die "could not seal to the new recovery key; the old one still opens this disk"; fi
+    rm -f "$pub"
+    if [ "$(sealed_tag "$new" || true)" != "$tag" ]; then rm -f "$new"; die "the new seal does not name the key it was given; the old one still opens this disk"; fi
+    chmod 0644 "$new" && mv "$new" "$RECOVERY_JWE" || { rm -f "$new"; die "could not put the new seal in place; the old one still opens this disk"; }
+    log "re-sealed to the recovery key $tag"
+  fi
+  if [ "$(cat "$RECOVERY_PUB" 2>/dev/null || true)" != "$key" ]; then
+    printf '%s\n' "$key" > "$RECOVERY_PUB.tmp" && chmod 0644 "$RECOVERY_PUB.tmp" && mv "$RECOVERY_PUB.tmp" "$RECOVERY_PUB" \
+      || { rm -f "$RECOVERY_PUB.tmp"; die "re-sealed to $tag, but could not record the key at $RECOVERY_PUB; run it again"; }
+  fi
+  if [ "$have" = "$tag" ]; then echo "{\"to\":\"$tag\",\"changed\":false}"; else echo "{\"to\":\"$tag\",\"changed\":true}"; fi
 }
 
 # ---------------------------------------------------------------------------- size / grow
@@ -922,5 +963,5 @@ case "${1:-}" in
   status)       shift; cmd_status "$@" ;;
   size)         shift; cmd_size "$@" ;;
   grow)         shift; cmd_grow "$@" ;;
-  *) die "usage: cc-secure {init|open|open-with <file>|mount|umount|tang-keygen|thumbprint|bind <url> <thp>|unbind <thp>|list|rekey|reseal|status|size|grow <gb>}" ;;
+  *) die "usage: cc-secure {init|open|open-with <file>|mount|umount|tang-keygen|thumbprint|bind <url> <thp>|unbind <thp>|list|rekey|reseal <recovery public key>|status|size|grow <gb>}" ;;
 esac

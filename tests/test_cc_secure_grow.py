@@ -1173,7 +1173,7 @@ class Sudoers(unittest.TestCase):
 
     def test_nothing_else_about_the_container_was_opened_to_the_box_user(self):
         allowed = sorted(l.split('/usr/local/bin/cc-secure ', 1)[1] for l in self.lines())
-        self.assertEqual(allowed, sorted(['status', 'list', 'thumbprint', 'bind *', 'unbind *', 'rekey', 'reseal', 'size', '^grow [0-9]{1,4}$']))
+        self.assertEqual(allowed, sorted(['status', 'list', 'thumbprint', 'bind *', 'unbind *', 'rekey', r'^reseal [A-Za-z0-9+/]{43}\=$', 'size', '^grow [0-9]{1,4}$']))
 
     def test_the_file_says_which_sudo_the_pattern_needs(self):
         self.assertIn('sudo 1.9.10', TASKS)

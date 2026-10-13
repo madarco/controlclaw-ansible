@@ -73,10 +73,14 @@
     group: root
     mode: '0755'
 
+# Written once. After that the file is `cc-secure reseal`'s: when the organization replaces its
+# recovery key, the firewall hands the box the new one and the box records it here. The value this
+# play holds is the one from the day the box was made, so an Update must not write it back.
 - name: Disk encryption | the org's recovery public key (X25519, base64 — not a secret)
   ansible.builtin.copy:
     dest: /etc/controlclaw/luks-recovery-pub.b64
     content: "{{ luks_recovery_pubkey }}"
+    force: false
     owner: root
     group: root
     mode: '0644'
@@ -490,7 +494,10 @@
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure bind *
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure unbind *
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure rekey
-      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure reseal
+      # `reseal` takes the organization's new recovery public key and nothing else: 32 bytes in
+      # base64, which is 43 characters and one `=`. The pattern is a regular expression over the
+      # whole argument list (sudo 1.9.10 or newer, see below), and cc-secure checks the key again.
+      {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-secure ^reseal [A-Za-z0-9+/]{43}\=$
       {% if box_role == 'openclaw' %}
       # Making an agent's own storage larger (docs/plans/agent-storage-growth.md). `size` reads and
       # changes nothing. `grow` takes one argument, one to four digits, and nothing else: the pattern
