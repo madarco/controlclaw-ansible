@@ -212,14 +212,15 @@ function identity() {
  * returns a boot id, a public key, a signature over them, and a blob that is ciphertext to everyone
  * but the owner. Rate limits, not auth, are what stop someone burning the box's CPU.
  */
-function serveLocked(ident, onPassphrase) {
+function lockedHandler(ident, onPassphrase) {
   const eph = crypto.generateKeyPairSync("x25519");
   const bootId = crypto.randomBytes(16).toString("hex");
   const unlockPub = rawOf(eph.publicKey).toString("base64");
   const sig = crypto.sign(null, Buffer.from(`${bootId}|${unlockPub}`, "utf8"), ident.privateKey).toString("base64");
   let attempts = 0;
 
-  const server = http.createServer((req, res) => {
+  log(`locked; answering on 127.0.0.1:${LOCKED_PORT} (boot ${bootId})`);
+  return (req, res) => {
     const send = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
     if (req.method === "GET" && req.url.startsWith("/disk/status")) {
       let blob = null;
@@ -247,11 +248,43 @@ function serveLocked(ident, onPassphrase) {
       return;
     }
     send(404, { error: "not found" });
+  };
+}
+
+/**
+ * The one listener on LOCKED_PORT, bound when the daemon starts and kept for its whole life.
+ *
+ * It used to be closed the moment the container opened. Caddy still sends `/__cc/disk/*` to this
+ * port then, so any process on the box could bind it and answer "locked" for a disk that is open,
+ * and the console asks this port about a box it has no report from. Kept bound, nothing else can
+ * take it: while the container is open it answers `{ locked: false }` and refuses everything else.
+ *
+ * Not on a firewall. There the mitm-agent's AI judge listens on this same port once the container
+ * is open (`AI_JUDGE_PORT`, the proxy addon's `MITM_AI_JUDGE_URL`), so the firewall lets go of it
+ * as before. The console asks this port unprompted only about an agent.
+ */
+function serveDisk() {
+  let locked = null;
+  let released = false;
+  const server = http.createServer((req, res) => {
+    if (locked) return locked(req, res);
+    const send = (code, body) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
+    if (req.method === "GET" && req.url.startsWith("/disk/status")) return send(200, { locked: false, role: ROLE });
+    if (req.method === "POST" && req.url.startsWith("/disk/unlock")) return send(409, { error: "this disk is not locked" });
+    send(404, { error: "not found" });
   });
   // Same reasoning as the gate: a port clash here must not stop the box retrying its partners.
-  server.on("error", (e) => log(`locked-state listener could not bind ${LOCKED_PORT}: ${e.message}`));
-  server.listen(LOCKED_PORT, "127.0.0.1", () => log(`locked; waiting on 127.0.0.1:${LOCKED_PORT} (boot ${bootId})`));
-  return server;
+  // Tried again, so that whatever held the port at start does not keep it once it lets go.
+  server.on("error", (e) => {
+    log(`disk-state listener could not bind ${LOCKED_PORT}: ${e.message}; retrying in 30s`);
+    setTimeout(() => { if (released) return; try { server.listen(LOCKED_PORT, "127.0.0.1"); } catch { /* the next tick tries again */ } }, 30_000).unref();
+  });
+  server.listen(LOCKED_PORT, "127.0.0.1");
+  const open = () => {
+    locked = null;
+    if (ROLE === "mitm") { released = true; server.close(); }
+  };
+  return { lock: (handler) => { locked = handler; }, open, isLocked: () => locked !== null };
 }
 
 // ---------------------------------------------------------------- the tang gate
@@ -575,7 +608,7 @@ async function reportLoop(ident) {
 async function main() {
   const ident = identity();
   const started = Date.now();
-  let lockedServer = null;
+  const disk = serveDisk();
   // The recovery path finishes from inside an HTTP handler while the loop below is still parked in
   // its sleep; without this the loop wakes, `cc-secure open` says "already open", and finish() runs a
   // second time — a second mount, a second READY=1, and a second gate that can never bind and then
@@ -590,7 +623,8 @@ async function main() {
     if (done) return;
     done = true;
     sh(["mount"], { stdio: "inherit" });
-    if (lockedServer) { lockedServer.close(); lockedServer = null; }
+    // Not closed: from here it answers that the disk is open (`serveDisk`).
+    disk.open();
     notify("READY=1");
     log("container is open; consumers may start");
     serveGate();
@@ -601,8 +635,8 @@ async function main() {
     try { sh(["open"], { stdio: "inherit" }); finish(); return; }
     catch { /* exit 2 is "locked", which is a state to wait in, not a failure to report */ }
 
-    if (!lockedServer) {
-      lockedServer = serveLocked(ident, (pass, reply) => {
+    if (!disk.isLocked()) {
+      disk.lock(lockedHandler(ident, (pass, reply) => {
         const tmp = `/dev/shm/cc-unlock.${process.pid}`;
         try {
           fs.writeFileSync(tmp, pass, { mode: 0o600 });
@@ -615,7 +649,7 @@ async function main() {
           log("unlock: that passphrase did not open the container");
           reply(false, "that passphrase did not open this container");
         }
-      });
+      }));
     }
     notify(`STATUS=locked, waiting for a partner (${Math.round((Date.now() - started) / 1000)}s)`);
     const wait = Date.now() - started < RETRY_FAST_FOR_MS ? RETRY_FAST_MS : RETRY_SLOW_MS;
