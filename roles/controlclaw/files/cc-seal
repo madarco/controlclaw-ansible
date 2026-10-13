@@ -14,6 +14,8 @@
  *   shared = X25519(eph.secret, recoveryPublicKey)
  *   key    = HKDF-SHA256(shared, salt = eph.public ‖ recoveryPublicKey, info = CONTEXT, 32)
  *   out    = {"v":1,"eph":b64,"iv":b64,"ct":b64}      AES-256-GCM, 16-byte tag appended to ct
+ *            plus "to": which recovery key this was sealed to (see keyTag). Not part of the crypto:
+ *            a reader that does not know the field ignores it, and nothing is opened by it.
  *
  * The owner's half of this lives in `packages/backup-envelope/src/luks-recovery.ts` in the
  * controlclaw repo, and the two must agree byte for byte forever — an owner discovering otherwise
@@ -39,6 +41,19 @@ function derive(shared, ephPubRaw, recipientPubRaw) {
   return Buffer.from(crypto.hkdfSync("sha256", shared, salt, Buffer.from(CONTEXT, "utf8"), 32));
 }
 
+/**
+ * A short name for the recovery public key a passphrase was sealed to: "sha256:" and the first 8
+ * bytes of SHA-256 over the raw key, in hex. It travels with the sealed blob so the console can tell
+ * WHICH recovery key opens this box: an organization can replace its recovery key, and a box sealed
+ * to the old one is opened by the old one. SHA-256 because this file may use nothing but Node's own
+ * crypto; the console computes the same over the key it holds (controlclaw
+ * packages/backup-envelope/src/luks-recovery.ts, `recoveryKeyTag`). Written when the blob is sealed,
+ * from the key it is sealed to, so it cannot disagree with the blob.
+ */
+function keyTag(recipientPubRaw) {
+  return `sha256:${crypto.createHash("sha256").update(recipientPubRaw).digest().subarray(0, 8).toString("hex")}`;
+}
+
 function seal(plaintext, recipientPubRaw) {
   if (recipientPubRaw.length !== 32) throw new Error("recovery public key must be 32 bytes");
   const eph = crypto.generateKeyPairSync("x25519");
@@ -48,7 +63,7 @@ function seal(plaintext, recipientPubRaw) {
   const iv = crypto.randomBytes(12);
   const c = crypto.createCipheriv("aes-256-gcm", key, iv);
   const ct = Buffer.concat([c.update(plaintext), c.final(), c.getAuthTag()]);
-  return { v: 1, eph: ephPubRaw.toString("base64"), iv: iv.toString("base64"), ct: ct.toString("base64") };
+  return { v: 1, eph: ephPubRaw.toString("base64"), iv: iv.toString("base64"), ct: ct.toString("base64"), to: keyTag(recipientPubRaw) };
 }
 
 function open_(blob, recoverySecretRaw) {
@@ -67,6 +82,7 @@ function open_(blob, recoverySecretRaw) {
 const VECTOR = {
   recoverySecretKey: "Y29udHJvbGNsYXctbHVrcy1zZWFsLXRlc3QtdmVjdG8=",
   recoveryPublicKey: "OLIAAYYu9C/XU5mQckoX00FBWNlYg7+Ur4qx2M/tKXs=",
+  recoveryKeyTag: "sha256:0006bb1c1b76749b",
   passphrase: "vector-passphrase-do-not-use",
   sealed: {
     v: 1,
@@ -82,8 +98,11 @@ function selftest() {
   const got = open_(VECTOR.sealed, secret);
   if (got !== VECTOR.passphrase) throw new Error(`vector did not open: got ${JSON.stringify(got)}`);
   // 2. and what we seal opens too, so the format is agreed in both directions.
-  const round = open_(seal(Buffer.from(VECTOR.passphrase, "utf8"), Buffer.from(VECTOR.recoveryPublicKey, "base64")), secret);
+  const sealed = seal(Buffer.from(VECTOR.passphrase, "utf8"), Buffer.from(VECTOR.recoveryPublicKey, "base64"));
+  const round = open_(sealed, secret);
   if (round !== VECTOR.passphrase) throw new Error("round trip failed");
+  // 3. the blob names the key it was sealed to, by the tag the console computes for the same key.
+  if (sealed.to !== VECTOR.recoveryKeyTag) throw new Error(`key tag is ${sealed.to}, expected ${VECTOR.recoveryKeyTag}`);
   console.log("cc-seal: selftest ok");
 }
 
