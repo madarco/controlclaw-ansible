@@ -105,6 +105,13 @@
 # (its header says how). "ok" and "skipped" write nothing, so a box that has the path is not
 # restarted by an Update, and a box whose OpenClaw answered oddly keeps its paths and is tried
 # again by the next one. The script never fails the play.
+#
+# A changed path also changes what the memory index covers, and OpenClaw marks the index stale
+# ("index scope changed"). The running gateway brings it up to date at the first search of a chat
+# (checked on 2026.9.9, 13 October 2026: an agent updated from 1.11.0 answered from notes put seven
+# seconds earlier), but `openclaw memory search` on the box says "stale" until then. So one re-index
+# follows the restart (handlers/main.yml). Putting or removing a set runs none: the gateway reads
+# the folder itself.
 - name: Shared notes | Have memory search read the notes folder
   ansible.builtin.command:
     argv: [/usr/local/sbin/cc-notes-search-path]
@@ -114,7 +121,9 @@
     HOME: "{{ controlclaw_home }}"
   register: shared_notes_search
   changed_when: shared_notes_search.stdout | trim == 'changed'
-  notify: restart openclaw
+  notify:
+    - restart openclaw
+    - index memory after the notes path changed
 
 - name: Shared notes | Say so when the search path was left alone
   ansible.builtin.debug:
