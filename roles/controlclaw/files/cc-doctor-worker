@@ -46,8 +46,7 @@ def confined(env):
     # What is left of the folders a firewall keeps things in: nothing but this session's own.
     def listed(path):
         try: return sorted(p.name for p in Path(path).iterdir())
-        except PermissionError: return []
-        except OSError: return ['?']
+        except OSError: return ['?']  # a folder that cannot be read is not known to be empty
     if not set(listed('/run'))<={'ccdoctor','ccdoctor-sock','systemd'} or listed('/run/ccdoctor-sock')!=[sid] or listed('/home') or listed('/root') or listed('/dev/shm') or listed('/opt'): return 'files'
     for attempt in range(40):
         if reaches('127.0.0.1',CHECK_MODEL_PORT): return None

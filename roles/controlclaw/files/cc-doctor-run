@@ -160,7 +160,7 @@ asks for.
 def launch(sid,work,mode,seconds,lock,check=False):
     args = ['/usr/bin/systemd-run','--quiet','--collect','--unit=cc-doctor-'+sid,
       '--property=User=ccdoctor','--property=Group=ccdoctor','--property=ProtectSystem=strict',
-      '--property=ProtectHome=yes','--property=NoNewPrivileges=yes','--property=PrivateTmp=yes',
+      '--property=NoNewPrivileges=yes','--property=PrivateTmp=yes',
       '--property=PrivateDevices=yes','--property=ProtectKernelTunables=yes','--property=ProtectControlGroups=yes',
       '--property=RestrictSUIDSGID=yes','--property=CapabilityBoundingSet=',
       '--property=MemoryMax=2G','--property=TasksMax=256',
@@ -171,7 +171,9 @@ def launch(sid,work,mode,seconds,lock,check=False):
         # Its own network namespace: no internet, and none of this firewall's loopback listeners (the
         # proxy, Caddy's admin port, the judge, Team chat). The two IP lines say the same again.
         # Everything a firewall keeps is under folders this unit sees as empty; of /run it gets its
-        # own work folder and, read-only, the folder with its two sockets.
+        # own work folder and, read-only, the folder with its two sockets. /home and /root are empty
+        # folders it can list, not folders it is refused: the check from inside reads them, and a
+        # folder it could not read would tell it nothing.
         args += ['--property=PrivateNetwork=yes','--property=IPAddressDeny=any','--property=IPAddressAllow=localhost',
           '--property=RestrictAddressFamilies=AF_UNIX AF_INET','--property=ProtectProc=invisible','--property=ProcSubset=pid',
           '--property=ProtectKernelLogs=yes','--property=ProtectKernelModules=yes','--property=ProtectClock=yes','--property=ProtectHostname=yes',
@@ -181,7 +183,7 @@ def launch(sid,work,mode,seconds,lock,check=False):
           '--property=BindPaths='+str(work),
           '--property=BindReadOnlyPaths='+str(SOCKS/sid)+' -/etc/passwd -/etc/group -/etc/nsswitch.conf -/etc/ld.so.cache -/etc/ld.so.conf -/etc/ld.so.conf.d -/etc/alternatives -/etc/localtime']
     else:
-        args += ['--property=InaccessiblePaths=/opt/controlclaw /root','--property=ReadWritePaths='+str(work)]
+        args += ['--property=ProtectHome=yes','--property=InaccessiblePaths=/opt/controlclaw /root','--property=ReadWritePaths='+str(work)]
     if mode == 'chat': args += ['--pipe','--wait']
     args += ['/usr/local/lib/cc-doctor-worker',sid]
     proc = subprocess.Popen(args)
