@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.15.0",
+    "date": "2026-10-14",
+    "changes": [
+      "Confirmation codes sent on Telegram have number buttons: tap the number your console shows instead of typing the code."
+    ]
+  },
+  {
     "version": "1.14.0",
     "date": "2026-10-14",
     "changes": [
