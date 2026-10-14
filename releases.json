@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.14.0",
+    "date": "2026-10-14",
+    "changes": [
+      "When you replace the organization's recovery key, every agent's disk is re-sealed to the new key, and you are told once the old key is no longer needed."
+    ]
+  },
+  {
     "version": "1.13.0",
     "date": "2026-10-13",
     "changes": [
