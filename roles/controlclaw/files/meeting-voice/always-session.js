@@ -17,6 +17,7 @@
 import { LiveBridge, audible } from './live.js';
 import { createWakeMatcher } from './wake.js';
 import { meetingLines, lastPart } from './record.js';
+import { meetingTasks } from './tasks.js';
 const SECOND = 24000 * 2;
 const FRAME = SECOND / 10;
 // Audio kept while no session is connected: what is replayed when one opens.
@@ -60,8 +61,18 @@ export class AlwaysBridge {
     if (this.closed) throw new Error('Voice session closed');
     this.ready = true;
     this.timer = setInterval(() => this.tick(), this.t.tick); this.timer.unref?.();
+    // A full agent task's result (tasks.js): said in the open session; while paused, the voice
+    // reconnects and the next session says it first.
+    this.speak = text => {
+      if (this.session?.ready) return this.session.bridge.say(text);
+      // A reconnect only within the meeting's session allowance: a result never ends the voice.
+      if (!this.closed && !this.session && this.sessions < this.maxSessions) this.resume('task', 0);
+      return false;
+    };
+    this.tasks().setSpeaker(this.speak);
     this.req.onReady?.();
   }
+  tasks() { return this.deps.tasks ?? meetingTasks; }
   lines() { try { return meetingLines(this.names[0] ?? 'Agent', this.deps.voiceDir); } catch { return []; } }
   /** Open a session with the meeting so far as context. Resolves when it is connected. */
   open(reason) {
@@ -87,6 +98,8 @@ export class AlwaysBridge {
       // Lookups the last session left unanswered, and any results that arrived while reconnecting.
       if (this.handover) { bridge.adopt(this.handover); this.handover = null; }
       for (const [callId, result] of this.lateResults.splice(0)) bridge.submitToolResult(callId, result);
+      // Task results that came while no session was open.
+      if (this.speak) this.tasks().setSpeaker(this.speak);
       this.pump();
     }, (error) => {
       if (this.session === entry) this.session = null;
@@ -206,6 +219,7 @@ export class AlwaysBridge {
   close(reason = 'completed') {
     if (this.closed) return; this.closed = true; this.ready = false;
     clearInterval(this.timer); clearTimeout(this.pumpTimer);
+    if (this.speak) this.tasks().clearSpeaker(this.speak);
     const entry = this.session; this.session = null;
     entry?.bridge.close('completed');
     this.req.onClearAudio?.(); this.req.onClose?.(reason);

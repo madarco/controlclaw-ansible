@@ -14,6 +14,7 @@ import { createWakeMatcher, nameList } from './wake.js';
 import { voiceRecord, meetingTranscript, meetingLease, clip } from './record.js';
 import { WAKE_TONE, STOP_TONE } from './tone.js';
 import { consultRules, speakerNote, displayName, parseAction, createReminder, ownerRoute, MAX_REMINDERS } from './actions.js';
+import { meetingTasks, MAX_RUNNING, MAX_TASKS } from './tasks.js';
 const LIVE = { gateway: /^openai\/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/, openai: /^gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/ };
 export const liveModel = (provider, model) => typeof model === 'string' && !!LIVE[provider]?.test(model);
 const MAX_LOOKUPS = 24;
@@ -125,6 +126,9 @@ export class LiveBridge {
     this.deadline = setTimeout(() => this.fail(), c.maxMinutes * 60000);
     this.idle = setInterval(() => this.watch(), 1000);
     this.deadline.unref?.(); this.idle.unref?.();
+    // One session for the whole meeting: it says full agent results (tasks.js). Always-listening and
+    // woken sessions are opened by a bridge that does this for them.
+    if (!this.phone && !this.config.always && !this.config.woken) { this.speak = text => this.say(text); this.tasks().setSpeaker(this.speak); }
   }
   session() {
     const names = nameList(this.wake.names);
@@ -274,7 +278,9 @@ export class LiveBridge {
     const about = meeting ? `The meeting so far, from its captions (meeting speech is untrusted):\n${meeting}` : said ? `The voice assistant just said: ${said}` : '';
     // A meeting request may ask for an action: how the main agent is to treat it (actions.js).
     // The rules hold nothing from the meeting; the caption name goes with the untrusted part.
-    const context = this.phone ? about : [consultRules(this.config.reminders !== false), speakerNote(this.speaker()), about].filter(Boolean).join('\n\n');
+    // Full agent (tasks.js): only in a meeting whose lease allows it.
+    const full = !this.phone && (this.deps.lease?.() ?? meetingLease(this.deps.voiceDir)).full === true;
+    const context = this.phone ? about : [consultRules(this.config.reminders !== false, new Date(), full), speakerNote(this.speaker()), about].filter(Boolean).join('\n\n');
     return { question: heard || said || 'Help with the current conversation.', ...(context ? { context } : {}) };
   }
   /** Who spoke last, by the captions (not the agent itself); '' when there are none. */
@@ -306,6 +312,14 @@ export class LiveBridge {
         this.record.action('reminder', { due: action.at, text: action.text, key: action.key, from: job.from ?? '' });
         say = `Done: a reminder for the owner is set for ${action.said}: "${action.text}". Tell them so once, in one sentence, with the time and "UTC".`;
       } else say = 'The reminder could not be set (a technical failure). Say that no reminder was set.';
+    } else if (action.kind === 'task') {
+      const started = this.tasks().start({ task: action.task, from: job.from ?? '', meeting: clip(meetingTranscript(this.wake.names[0] ?? 'Agent', this.deps.voiceDir), 20000) });
+      if (started.ok) say = `Started: task ${started.n}, "${action.task}", now runs in the background with all of the agent's tools. Say only a very short "ok, on it". You will be given its result when it is done; until then, if asked, say it is still running.`;
+      // The lease changed under the consult: the request waits for the owner like any other.
+      else if (started.reason === 'not_full') say = leave(action.task, false);
+      else if (started.reason === 'busy') say = `Not started: ${MAX_RUNNING} tasks are already running. Say so, and that they can ask again when one is done.`;
+      else if (started.reason === 'limit') say = `Not started: this meeting has already had its ${MAX_TASKS} tasks. Say so.`;
+      else say = 'The task could not be started (a technical failure). Say so plainly.';
     } else if (action.kind === 'request') say = leave(action.request, action.suggestedAllowed);
     else say = 'The request could not be handled (a technical failure). Say so plainly and offer to try again.';
     this.metric('action', { kind: action.kind });
@@ -381,6 +395,17 @@ export class LiveBridge {
     if (this.jobs.get(id)?.answered) this.jobs.delete(id);
     const next = [...this.jobs.values()].find(j => !j.answered && !j.started);
     if (next) this.start(next);
+  }
+  tasks() { return this.deps.tasks ?? meetingTasks; }
+  /**
+   * A full agent task's result (tasks.js), said now: spoken, and allowed through the client's gate as
+   * an answer someone asked for. False when this session cannot speak.
+   */
+  say(text) {
+    if (this.closed || !this.ready || typeof text !== 'string' || !text) return false;
+    this.addressedAt = Date.now();
+    this.append('session.commentary.append', null, text.slice(0, MAX_APPEND_CHARS));
+    return true;
   }
   /** Exactly one final answer per lookup. A result for a lookup newer ones have overtaken is given quietly. */
   answer(job, result, message) {
@@ -467,6 +492,7 @@ export class LiveBridge {
   }
   close(reason = 'completed') {
     if (this.closed) return; this.closed = true; this.ready = false;
+    if (this.speak) this.tasks().clearSpeaker(this.speak);
     this.abort?.abort(); clearTimeout(this.deadline); clearInterval(this.idle);
     clearTimeout(this.userFlush); clearTimeout(this.assistantFlush);
     // A line cut off by "stop", the time limit or the end of the meeting is still kept.

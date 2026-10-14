@@ -20,10 +20,15 @@ export function meetingWakeSessions(dir = DIR()) {
     return Number.isInteger(n) && n > 1 && n <= 40 && Date.now() - at < 5 * 3600000 ? n : 0;
   } catch { return 0; }
 }
-/** The current meeting's lease as the vm-agent wrote it: when it started and the owner's direct chat, if there is one. */
+/**
+ * The current meeting's lease as the vm-agent wrote it: when it started, the owner's direct chat if
+ * there is one, the meeting's id, and whether it may drive a full agent (tasks.js).
+ */
 export function meetingLease(dir = DIR()) {
-  try { const lease = JSON.parse(readFileSync(join(dir, 'lease.json'), 'utf8')); return { at: typeof lease?.at === 'string' ? lease.at : '', owner: lease?.owner ?? null }; }
-  catch { return { at: '', owner: null }; }
+  try {
+    const lease = JSON.parse(readFileSync(join(dir, 'lease.json'), 'utf8'));
+    return { at: typeof lease?.at === 'string' ? lease.at : '', owner: lease?.owner ?? null, meetingId: typeof lease?.meetingId === 'string' ? lease.meetingId : '', full: lease?.full === true };
+  } catch { return { at: '', owner: null, meetingId: '', full: false }; }
 }
 /** The tail of a JSON-lines file, parsed; at most `max` bytes. */
 function tail(file, max = 1024 * 1024) {

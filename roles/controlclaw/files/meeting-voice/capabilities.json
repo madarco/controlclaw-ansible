@@ -1,6 +1,10 @@
 {
-  "speechFamilies": ["realtime", "live"],
+  "speechFamilies": [
+    "realtime",
+    "live"
+  ],
   "wakeWords": true,
   "wakeLocal": true,
-  "alwaysListening": true
+  "alwaysListening": true,
+  "fullAgent": true
 }
