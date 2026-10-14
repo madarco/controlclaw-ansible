@@ -13482,7 +13482,7 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
-var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket", "template-check", "template-repair", "template-capture"]);
+var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket", "template-check", "template-repair", "template-capture", "disk"]);
 async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -41472,8 +41472,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0751b9e" : "unknown",
-  builtAt: true ? "2026-10-14T00:44:44+01:00" : "unknown"
+  commit: true ? "cc5040d" : "unknown",
+  builtAt: true ? "2026-10-14T09:34:18+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -61836,6 +61836,90 @@ async function handleStorage(req, res, pathname, storage2) {
   }
 }
 
+// src/disk-reseal.ts
+var HELPER2 = "/usr/local/bin/cc-secure";
+var RESEAL_TIMEOUT_MS = 15e4;
+var RECOVERY_PUBLIC_KEY_RE = /^[A-Za-z0-9+/]{43}=$/;
+var TAG_RE = /^sha256:[0-9a-f]{16}$/;
+var ResealError = class extends Error {
+  constructor(message2, status, code) {
+    super(message2);
+    this.status = status;
+    this.code = code;
+    this.name = "ResealError";
+  }
+};
+var UNSUPPORTED_RE3 = /a password is required|a terminal is required|command not found|cc-secure: No such file|usage: cc-secure \{/i;
+function parseReseal(text3) {
+  const line2 = text3.split("\n").map((l2) => l2.trim()).filter((l2) => l2.startsWith("{")).pop();
+  if (!line2) return null;
+  try {
+    const o2 = JSON.parse(line2);
+    if (typeof o2.to !== "string" || !TAG_RE.test(o2.to) || typeof o2.changed !== "boolean") return null;
+    return { to: o2.to, changed: o2.changed };
+  } catch {
+    return null;
+  }
+}
+var DiskResealService = class {
+  constructor(exec = defaultExec) {
+    this.exec = exec;
+  }
+  running = null;
+  /** One at a time: a second call while one runs is told so and changes nothing. */
+  reseal(publicKey) {
+    if (typeof publicKey !== "string" || !RECOVERY_PUBLIC_KEY_RE.test(publicKey)) {
+      return Promise.reject(new ResealError("That is not a recovery public key.", 400, "invalid"));
+    }
+    if (this.running) return Promise.reject(new ResealError("This box is sealing its disk passphrase already.", 409, "busy"));
+    this.running = this.run(publicKey).finally(() => {
+      this.running = null;
+    });
+    return this.running;
+  }
+  async run(publicKey) {
+    let out;
+    try {
+      out = await this.exec("sudo", ["-n", HELPER2, "reseal", publicKey], RESEAL_TIMEOUT_MS);
+    } catch (err) {
+      const e = err;
+      if (e.code === "ENOENT" || UNSUPPORTED_RE3.test(`${e.stderr ?? ""}
+${e.stdout ?? ""}`)) {
+        throw new ResealError("This box was built before its disk could be sealed to a new recovery key. Update it.", 409, "unsupported");
+      }
+      const reason = helperReason(err);
+      if (reason && /disk is not open/i.test(reason)) throw new ResealError(reason, 409, "locked");
+      throw new ResealError(reason ?? "The disk passphrase could not be sealed to the new recovery key. The old one still opens this disk.", 422, "failed");
+    }
+    const result = parseReseal(out.stdout);
+    if (!result) throw new ResealError("The box did not say which recovery key its disk is sealed to now.", 500, "failed");
+    return result;
+  }
+};
+
+// src/routes/disk.ts
+async function handleDisk(req, res, url3, disk) {
+  const auth = await verifyMitmRequest(req, "disk");
+  if (!auth) {
+    sendJson(res, 401, { error: "a new recovery key must come from the org firewall" });
+    return;
+  }
+  if (url3.pathname !== "/disk/reseal" || req.method !== "POST") {
+    sendJson(res, 404, { error: "Not found" });
+    return;
+  }
+  const body2 = await readJsonBody(req, 1024);
+  try {
+    const result = await disk.reseal(body2?.publicKey);
+    console.log(`[disk] sealed to the recovery key ${result.to}${result.changed ? "" : " (already was)"}`);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    if (err instanceof ResealError) return sendJson(res, err.status, { ok: false, error: err.message, code: err.code });
+    console.error("[disk]", err.message);
+    sendJson(res, 500, { ok: false, error: "The disk passphrase could not be sealed.", code: "failed" });
+  }
+}
+
 // src/routes/access-push.ts
 function json5(res, status, body2) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -62139,6 +62223,7 @@ var workspaceExporter = new WorkspaceExporter({
 });
 var skills = new SkillsService();
 var storage = new StorageService();
+var diskReseal = new DiskResealService();
 var files = new FilesService({
   root: process.env.FILES_ROOT ?? process.env.HOME ?? "/home/controlclaw",
   vmId: readKeyFile(KEYS_DIR2, "vm_id"),
@@ -62340,6 +62425,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url3.pathname.startsWith("/templates/check/")) {
     await handleTemplateCheck(req, res, url3, templateService, healthDeps);
+    return;
+  }
+  if (url3.pathname.startsWith("/disk/")) {
+    await handleDisk(req, res, url3, diskReseal);
     return;
   }
   if (url3.pathname.startsWith("/kill/")) {

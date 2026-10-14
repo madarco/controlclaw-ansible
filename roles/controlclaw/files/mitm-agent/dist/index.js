@@ -278,13 +278,13 @@ var require_buffer_util = __commonJS({
     "use strict";
     var { EMPTY_BUFFER } = require_constants();
     var FastBuffer = Buffer[Symbol.species];
-    function concat2(list, totalLength) {
-      if (list.length === 0) return EMPTY_BUFFER;
-      if (list.length === 1) return list[0];
+    function concat2(list2, totalLength) {
+      if (list2.length === 0) return EMPTY_BUFFER;
+      if (list2.length === 1) return list2[0];
       const target = Buffer.allocUnsafe(totalLength);
       let offset = 0;
-      for (let i2 = 0; i2 < list.length; i2++) {
-        const buf = list[i2];
+      for (let i2 = 0; i2 < list2.length; i2++) {
+        const buf = list2[i2];
         target.set(buf, offset);
         offset += buf.length;
       }
@@ -2119,14 +2119,14 @@ var require_sender = __commonJS({
        * @param {Function} [cb] Callback
        * @private
        */
-      sendFrame(list, cb) {
-        if (list.length === 2) {
+      sendFrame(list2, cb) {
+        if (list2.length === 2) {
           this._socket.cork();
-          this._socket.write(list[0]);
-          this._socket.write(list[1], cb);
+          this._socket.write(list2[0]);
+          this._socket.write(list2[1], cb);
           this._socket.uncork();
         } else {
-          this._socket.write(list[0], cb);
+          this._socket.write(list2[0], cb);
         }
       }
     };
@@ -2537,7 +2537,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes30, createHash: createHash29 } = __require("crypto");
+    var { randomBytes: randomBytes30, createHash: createHash30 } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -3218,7 +3218,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest3 = createHash29("sha1").update(key + GUID).digest("base64");
+        const digest3 = createHash30("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest3) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -3587,7 +3587,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash29 } = __require("crypto");
+    var { createHash: createHash30 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -3894,7 +3894,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING2) return abortHandshake(socket, 503);
-        const digest3 = createHash29("sha1").update(key + GUID).digest("base64");
+        const digest3 = createHash30("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -10817,15 +10817,15 @@ function bucketFor(state, inst) {
 var handoff;
 var open = [];
 var memo = {
-  alloc(_inst, payload, empty) {
+  alloc(_inst, payload, empty2) {
     const bucket = handoff;
     if (!bucket)
-      return empty;
+      return empty2;
     handoff = void 0;
-    const entry = { value: empty, issues: null };
+    const entry = { value: empty2, issues: null };
     bucket.set(payload.value, entry);
     open.push(entry);
-    return empty;
+    return empty2;
   },
   guard(inst) {
     var _a28;
@@ -21796,8 +21796,8 @@ var contributors = {
 function aggregateChecks(schema) {
   const agg = {};
   const def = schema._zod.def;
-  const list = schema._zod.traits.has("$ZodCheck") ? [schema, ...def.checks ?? []] : def.checks ?? [];
-  for (const ch of list)
+  const list2 = schema._zod.traits.has("$ZodCheck") ? [schema, ...def.checks ?? []] : def.checks ?? [];
+  for (const ch of list2)
     contributors[ch._zod.def.check]?.(agg, ch._zod.def);
   const bag = schema._zod.bag;
   if (bag.minimum !== void 0)
@@ -25419,35 +25419,35 @@ function rememberEncryptedSecrets(value, sensitive = false) {
 function encryptedSecretValues() {
   return [...knownSecrets];
 }
-function encryptJson(value, boxKeyB64, aad18) {
+function encryptJson(value, boxKeyB64, aad19) {
   rememberEncryptedSecrets(value);
   const key = Buffer.from(boxKeyB64, "base64");
   const nonce = randomBytes2(NONCE_BYTES);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
-  cipher.setAAD(Buffer.from(aad18, "utf8"));
+  cipher.setAAD(Buffer.from(aad19, "utf8"));
   const ct2 = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(value), "utf8")), cipher.final(), cipher.getAuthTag()]);
   return JSON.stringify({ alg: "AES-256-GCM", nonce: nonce.toString("base64"), ct: ct2.toString("base64") });
 }
-function decryptJson(raw, boxKeyB64, aad18) {
+function decryptJson(raw, boxKeyB64, aad19) {
   const { nonce, ct: ct2 } = JSON.parse(raw);
   const key = Buffer.from(boxKeyB64, "base64");
   const buf = Buffer.from(ct2, "base64");
   const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(nonce, "base64"));
-  decipher.setAAD(Buffer.from(aad18, "utf8"));
+  decipher.setAAD(Buffer.from(aad19, "utf8"));
   decipher.setAuthTag(buf.subarray(buf.length - TAG_BYTES));
   const pt2 = Buffer.concat([decipher.update(buf.subarray(0, buf.length - TAG_BYTES)), decipher.final()]);
   const value = JSON.parse(pt2.toString("utf8"));
   rememberEncryptedSecrets(value);
   return value;
 }
-function loadEncryptedJson(path, boxKeyB64, aad18) {
+function loadEncryptedJson(path, boxKeyB64, aad19) {
   if (!existsSync(path)) return null;
-  return decryptJson(readFileSync(path, "utf8"), boxKeyB64, aad18);
+  return decryptJson(readFileSync(path, "utf8"), boxKeyB64, aad19);
 }
-function loadStoreOrEmpty(store, path, boxKeyB64, aad18, log = console.error) {
+function loadStoreOrEmpty(store, path, boxKeyB64, aad19, log = console.error) {
   let parsed;
   try {
-    parsed = loadEncryptedJson(path, boxKeyB64, aad18);
+    parsed = loadEncryptedJson(path, boxKeyB64, aad19);
   } catch (error62) {
     noteStoreUnreadable(store, error62.message);
     log(`[${store}] this firewall cannot read ${path} (${error62.message}); starting empty. The console says so, and the next change reseals it.`);
@@ -25467,14 +25467,14 @@ function keepUnreadable(path, store, log) {
     log(`[${store}] could not keep a copy of ${path}: ${error62.message}`);
   }
 }
-function saveStore(store, path, value, boxKeyB64, aad18) {
-  saveEncryptedJson(path, value, boxKeyB64, aad18);
+function saveStore(store, path, value, boxKeyB64, aad19) {
+  saveEncryptedJson(path, value, boxKeyB64, aad19);
   noteStoreReadable(store);
 }
-function saveEncryptedJson(path, value, boxKeyB64, aad18) {
+function saveEncryptedJson(path, value, boxKeyB64, aad19) {
   mkdirSync2(dirname2(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync2(tmp, encryptJson(value, boxKeyB64, aad18), { mode: 384 });
+  writeFileSync2(tmp, encryptJson(value, boxKeyB64, aad19), { mode: 384 });
   renameSync2(tmp, path);
 }
 
@@ -32910,6 +32910,7 @@ function purposeForPath(path) {
   if (path.startsWith("/templates/check/")) return "template-check";
   if (path.startsWith("/templates/repair/")) return "template-repair";
   if (path.startsWith("/templates/capture/")) return "template-capture";
+  if (path.startsWith("/disk/")) return "disk";
   if (path.startsWith("/health/")) return "health";
   return "channels";
 }
@@ -33202,9 +33203,9 @@ function parseProposal(payload) {
 function parseAgentAllowed(payload) {
   const raw = payload.allowedByAgent;
   if (!raw) return { senders: null, error: null };
-  const list = Array.isArray(raw.senders) ? raw.senders : [];
+  const list2 = Array.isArray(raw.senders) ? raw.senders : [];
   const senders2 = [];
-  for (const a2 of list) {
+  for (const a2 of list2) {
     const senderId = str(a2.senderId);
     if (!isType(a2.type) || !senderId) continue;
     if (senders2.some((x2) => x2.type === a2.type && x2.senderId === senderId)) continue;
@@ -35605,8 +35606,8 @@ var OnePassword = class {
     this.run = run;
   }
   async vaults(token2) {
-    const list = parse3(await this.run(["vault", "list", "--format", "json"], token2));
-    return list.filter((v2) => typeof v2.id === "string" && typeof v2.name === "string").map((v2) => ({ id: v2.id, name: v2.name }));
+    const list2 = parse3(await this.run(["vault", "list", "--format", "json"], token2));
+    return list2.filter((v2) => typeof v2.id === "string" && typeof v2.name === "string").map((v2) => ({ id: v2.id, name: v2.name }));
   }
   /** The login items in a vault: ids and when each last changed. One call, no secrets. */
   async list(token2, vaultId) {
@@ -38036,8 +38037,8 @@ async function answerLoginsMcp(logins2, vmId, raw) {
       const name25 = params.name;
       const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
       if (name25 === "logins_list") {
-        const list = logins2.listFor(vmId);
-        return text(id, list.length ? { logins: list } : "No logins are shared with you yet. Ask a person to add one in ControlClaw (Secrets, Logins).");
+        const list2 = logins2.listFor(vmId);
+        return text(id, list2.length ? { logins: list2 } : "No logins are shared with you yet. Ask a person to add one in ControlClaw (Secrets, Logins).");
       }
       if (name25 === "login_use") {
         const which = typeof args.login === "string" ? args.login.slice(0, 100) : "";
@@ -38826,15 +38827,15 @@ var MODE_WORDS = {
 var sameEntry = (a2, b2) => a2.value === b2.value && a2.mailbox === b2.mailbox;
 function applyChange(rules, change) {
   const next = structuredClone(rules);
-  const add = (list, entry) => {
-    if (list.some((e) => sameEntry(e, entry))) throw new Error("Already listed");
-    if (list.length >= MAX_ENTRIES) throw new Error("List is full");
-    list.push(entry);
+  const add = (list2, entry) => {
+    if (list2.some((e) => sameEntry(e, entry))) throw new Error("Already listed");
+    if (list2.length >= MAX_ENTRIES) throw new Error("List is full");
+    list2.push(entry);
   };
-  const remove = (list, entry) => {
-    const i2 = list.findIndex((e) => sameEntry(e, entry));
+  const remove = (list2, entry) => {
+    const i2 = list2.findIndex((e) => sameEntry(e, entry));
     if (i2 < 0) throw new Error("Not listed");
-    list.splice(i2, 1);
+    list2.splice(i2, 1);
   };
   switch (change.action) {
     case "add_sender":
@@ -39084,10 +39085,10 @@ function parseAddressList(value) {
 }
 function parseAddressField(value) {
   if (value === void 0 || value === null) return [];
-  const list = typeof value === "string" ? [value] : Array.isArray(value) ? value : null;
-  if (!list || list.length > 100) return null;
+  const list2 = typeof value === "string" ? [value] : Array.isArray(value) ? value : null;
+  if (!list2 || list2.length > 100) return null;
   const out = [];
-  for (const v2 of list) {
+  for (const v2 of list2) {
     if (typeof v2 !== "string") return null;
     const parsed = parseAddressList(v2);
     if (!parsed) return null;
@@ -39108,9 +39109,9 @@ function recipientsFromHeaderBlock(head) {
     const name25 = m2[1].toLowerCase();
     if (name25.startsWith("resent-")) return null;
     if (!RECIPIENT_HEADERS.has(name25)) continue;
-    const list = parseAddressList(m2[2]);
-    if (!list) return null;
-    out.push(...list);
+    const list2 = parseAddressList(m2[2]);
+    if (!list2) return null;
+    out.push(...list2);
   }
   return out;
 }
@@ -39236,8 +39237,8 @@ var EmailRulesFirewall = class {
   }
   saveCounters() {
     const now2 = this.now();
-    for (const [k2, list] of Object.entries(this.counters.sends)) {
-      const kept = list.filter((t2) => now2 - t2 < DAY);
+    for (const [k2, list2] of Object.entries(this.counters.sends)) {
+      const kept = list2.filter((t2) => now2 - t2 < DAY);
       if (kept.length) this.counters.sends[k2] = kept;
       else delete this.counters.sends[k2];
     }
@@ -39429,35 +39430,35 @@ var EmailRulesFirewall = class {
         head = await this.opts.lookups.gmailDraftHead(input2.draftId);
       }
       if (head === void 0 || input2.op !== "send" && input2.op !== "draft_send") return null;
-      const list2 = recipientsFromHeaderBlock(head);
-      return list2 ? { mailbox: `gmail:${account}`, list: list2 } : null;
+      const list3 = recipientsFromHeaderBlock(head);
+      return list3 ? { mailbox: `gmail:${account}`, list: list3 } : null;
     }
     const inboxId = input2.inboxId?.toLowerCase();
     if (!inboxId) return null;
     const mailbox = `agentmail:${inboxId}`;
     const explicit = [parseAddressField(input2.to), parseAddressField(input2.cc), parseAddressField(input2.bcc)];
     if (explicit.some((e) => e === null)) return null;
-    const list = explicit.flat();
+    const list2 = explicit.flat();
     if (input2.op === "draft_send") {
       if (!input2.draftId) return null;
       const d2 = await this.opts.lookups.agentmailDraft(input2.inboxId, input2.draftId);
       const parts = [parseAddressField(d2.to), parseAddressField(d2.cc), parseAddressField(d2.bcc)];
       if (parts.some((p2) => p2 === null)) return null;
-      list.push(...parts.flat());
+      list2.push(...parts.flat());
     } else if (input2.op === "reply" || input2.op === "reply_all") {
       if (!input2.messageId) return null;
       const m2 = await this.opts.lookups.agentmailMessage(input2.inboxId, input2.messageId);
       const replyTo = parseAddressField(m2.reply_to);
       const from = parseAddressField(m2.from);
       if (replyTo === null || from === null) return null;
-      list.push(...replyTo.length ? replyTo : from);
+      list2.push(...replyTo.length ? replyTo : from);
       if (input2.op === "reply_all") {
         const extra = [parseAddressField(m2.to), parseAddressField(m2.cc)];
         if (extra.some((e) => e === null)) return null;
-        list.push(...extra.flat());
+        list2.push(...extra.flat());
       }
     }
-    return { mailbox, list: [...new Set(list.filter((a2) => a2 !== inboxId))] };
+    return { mailbox, list: [...new Set(list2.filter((a2) => a2 !== inboxId))] };
   }
   /** The proxy's question before a send: allow (and count), block, or ask the owner. */
   async reserve(input2) {
@@ -41079,8 +41080,8 @@ function parseMemorySearch(raw) {
 }
 function parseModelList(raw) {
   if (!Array.isArray(raw)) return null;
-  const list = raw.filter((m2) => typeof m2 === "string" && m2.length > 0);
-  return list.length ? list : null;
+  const list2 = raw.filter((m2) => typeof m2 === "string" && m2.length > 0);
+  return list2.length ? list2 : null;
 }
 function parseProposal4(payload) {
   const changeId = str5(payload.changeId);
@@ -41920,8 +41921,8 @@ var MeetingsFirewall = class {
     if (!auto?.enabled) return "off";
     if (claim2.source === "email" ? !auto.email : auto.calendar === "off") return "source_off";
     if (!this.opts.organizerAllowed?.(vmId, claim2)) return "organizer";
-    const day = new Date(this.now()).toISOString().slice(0, 10);
-    if (entry.auto?.day === day && entry.auto.count >= auto.maxPerDay) return "daily_limit";
+    const day2 = new Date(this.now()).toISOString().slice(0, 10);
+    if (entry.auto?.day === day2 && entry.auto.count >= auto.maxPerDay) return "daily_limit";
     return null;
   }
   /** Direct box-to-firewall HTTPS. The scoped capability is delivered only in a signed apply. */
@@ -41974,8 +41975,8 @@ var MeetingsFirewall = class {
         return reply(409, { error: "A call is already active" });
       if (refusal) return reply(403, { error: "Automatic join refused", reason: refusal });
       if (claim2) {
-        const day = new Date(this.now()).toISOString().slice(0, 10);
-        found[1].auto = { day, count: (found[1].auto?.day === day ? found[1].auto.count : 0) + 1 };
+        const day2 = new Date(this.now()).toISOString().slice(0, 10);
+        found[1].auto = { day: day2, count: (found[1].auto?.day === day2 ? found[1].auto.count : 0) + 1 };
         this.save();
       }
       lease = {
@@ -43103,9 +43104,9 @@ function openCodeMessage(agentName, vmId, label2, email3, agentHostname, code) {
 }
 var DEVICE_LABEL = /^[A-Za-z ]{1,40}$/;
 function silentListMessage(devices, max = 20) {
-  const day = (iso) => iso.slice(0, 10);
+  const day2 = (iso) => iso.slice(0, 10);
   const who2 = (email3) => [...cleanLine(email3).text].slice(0, 100).join("");
-  const lines = devices.slice(0, max).map((d2) => `- ${DEVICE_LABEL.test(d2.label) ? d2.label : "a browser"}: first ${/^\d{4}-\d{2}-\d{2}$/.test(day(d2.createdAt)) ? day(d2.createdAt) : "?"}, last ${/^\d{4}-\d{2}-\d{2}$/.test(day(d2.lastUsedAt)) ? day(d2.lastUsedAt) : "?"}${d2.email ? `. ControlClaw says this was: ${who2(d2.email)}` : ""}`);
+  const lines = devices.slice(0, max).map((d2) => `- ${DEVICE_LABEL.test(d2.label) ? d2.label : "a browser"}: first ${/^\d{4}-\d{2}-\d{2}$/.test(day2(d2.createdAt)) ? day2(d2.createdAt) : "?"}, last ${/^\d{4}-\d{2}-\d{2}$/.test(day2(d2.lastUsedAt)) ? day2(d2.lastUsedAt) : "?"}${d2.email ? `. ControlClaw says this was: ${who2(d2.email)}` : ""}`);
   const more = devices.length > max ? `
 ...and ${devices.length - max} more.` : "";
   return `ControlClaw: ${devices.length === 1 ? "this browser was" : "these browsers were"} signed in to your agents without a code, before anyone could receive one:
@@ -43119,6 +43120,7 @@ var AccessFirewall = class {
     this.log = opts.log ?? ((l2) => console.log(l2));
     this.codes = new ConsentCodes({ agent: opts.agent, log: this.log, now: this.now, makeCode: opts.makeCode });
     this.store = loadAccessStore(opts.storePath, opts.boxKey, opts.ids);
+    this.pinsLost = isStoreUnreadable("access");
   }
   store;
   codes;
@@ -43135,6 +43137,8 @@ var AccessFirewall = class {
   configured = /* @__PURE__ */ new Map();
   configTried = /* @__PURE__ */ new Map();
   listing = false;
+  /** The store would not open when this process started, so the pins it had are lost (`pinnedAgents`). */
+  pinsLost;
   // ---- state ----
   /** `https://<this firewall's hostname>`, or null when it has none (a firewall built before webhook ingress). */
   origin() {
@@ -43203,6 +43207,15 @@ var AccessFirewall = class {
    */
   pinnedHost(vmId) {
     return this.store.pins[vmId]?.hostname ?? null;
+  }
+  /**
+   * Every agent this firewall has pinned, with the address it pinned. Pins are never moved or
+   * removed, so this is the firewall's own record of the agents it has ever been told of. Null when
+   * the store would not open at start: the pins made since are only the agents the list has now.
+   */
+  pinnedAgents() {
+    if (this.pinsLost) return null;
+    return Object.entries(this.store.pins).map(([vmId, pin]) => ({ vmId, hostname: pin.hostname }));
   }
   agentName(vmId) {
     const i2 = this.opts.identities().find((x2) => String(x2.vm_id) === vmId);
@@ -43678,11 +43691,11 @@ var DOCTOR_KEY_DOMAIN = "controlclaw:doctor-key:v1\n";
 var DoctorKeyStore = class {
   constructor(opts) {
     this.opts = opts;
-    const aad18 = `${opts.orgId}:${opts.mitmVmId}:doctor-key:v1`;
-    const saved = loadEncryptedJson(opts.statePath, opts.boxKey, aad18);
+    const aad19 = `${opts.orgId}:${opts.mitmVmId}:doctor-key:v1`;
+    const saved = loadEncryptedJson(opts.statePath, opts.boxKey, aad19);
     this.key = saved ?? (opts.generate ?? generateKey)();
     this.installed = new Set(Object.keys(this.key.agents ?? {}));
-    if (!saved) saveEncryptedJson(opts.statePath, this.key, opts.boxKey, aad18);
+    if (!saved) saveEncryptedJson(opts.statePath, this.key, opts.boxKey, aad19);
   }
   key;
   installed = /* @__PURE__ */ new Set();
@@ -44818,8 +44831,8 @@ var DoctorFirewall = class {
           (init) => {
             if (!check2 || generation !== s2.generation) return;
             const listed2 = init.slash !== void 0 && init.skills !== void 0 && init.agents !== void 0;
-            const extras = (init.slash?.length ?? 0) + (init.skills?.length ?? 0) + (init.agents?.filter((a2) => !CHECK_BUILTIN_AGENTS.has(a2)).length ?? 0);
-            if (listed2 && init.tools.length === 1 && init.tools[0] === CHECK_TOOL && init.mcp.length === 1 && init.mcp[0] === CHECK_MCP && extras === 0) {
+            const extras2 = (init.slash?.length ?? 0) + (init.skills?.length ?? 0) + (init.agents?.filter((a2) => !CHECK_BUILTIN_AGENTS.has(a2)).length ?? 0);
+            if (listed2 && init.tools.length === 1 && init.tools[0] === CHECK_TOOL && init.mcp.length === 1 && init.mcp[0] === CHECK_MCP && extras2 === 0) {
               s2.toolsChecked = true;
               this.emit(s2, { kind: "status", text: CHECK_TOOLS_OK });
             } else s2.stopping = this.end(s2, "failed", CHECK_WRONG_TOOLS);
@@ -46411,7 +46424,7 @@ var FW_DOCTOR_HELP = `cc-fwdoctor <command> [argument]
                                every configuration fresh. Once per session. If it restarts the firewall
                                software, this repair session ends.`;
 var MAX_OUTPUT = 6e4;
-var isOneOf = (list, value) => !!value && list.includes(value);
+var isOneOf = (list2, value) => !!value && list2.includes(value);
 function formatLogs(r2) {
   if (r2.warning) return r2.warning;
   if (r2.run) return r2.run.join("\n") || "The last update run wrote nothing.";
@@ -46742,10 +46755,10 @@ var BrainFirewall = class {
     }
   }
   async reconcileOnce() {
-    const boxes = this.opts.boxes();
-    if (boxes.length === 0) return;
+    const boxes2 = this.opts.boxes();
+    if (boxes2.length === 0) return;
     const stored = this.store.brain;
-    const brainRow = boxes.find((b2) => (b2.role ?? "") === "gbrain");
+    const brainRow = boxes2.find((b2) => (b2.role ?? "") === "gbrain");
     let changed = false;
     if (stored && (!brainRow || brainRow.vm_id !== stored.vmId)) {
       for (const [vmId, c2] of Object.entries(this.store.connections)) {
@@ -46760,7 +46773,7 @@ var BrainFirewall = class {
     if (!stored || !brainRow) return;
     const brain2 = this.box(stored.vmId, "gbrain");
     for (const vmId of Object.keys(this.store.connections)) {
-      if (!boxes.some((b2) => b2.vm_id === vmId && (b2.role ?? "openclaw") === "openclaw")) {
+      if (!boxes2.some((b2) => b2.vm_id === vmId && (b2.role ?? "openclaw") === "openclaw")) {
         this.log(`[gbrain] ${this.store.connections[vmId].name} is gone; disconnecting it`);
         delete this.store.connections[vmId];
         changed = true;
@@ -48208,16 +48221,16 @@ function makeTeamChatApi(opts) {
     },
     async workspaces(session) {
       const r2 = await call("GET", "/api/workspaces", session);
-      const list = Array.isArray(r2.workspaces) ? r2.workspaces : [];
-      return list.flatMap((w2) => str13(w2.id) ? [{ id: String(w2.id), name: String(w2.name ?? ""), role: str13(w2.role) }] : []);
+      const list2 = Array.isArray(r2.workspaces) ? r2.workspaces : [];
+      return list2.flatMap((w2) => str13(w2.id) ? [{ id: String(w2.id), name: String(w2.name ?? ""), role: str13(w2.role) }] : []);
     },
     async renameWorkspace(session, workspaceId, name25) {
       await call("PATCH", `/api/workspaces/${encodeURIComponent(workspaceId)}`, session, { name: name25 });
     },
     async channels(session, workspaceId) {
       const r2 = await call("GET", `/api/workspaces/${encodeURIComponent(workspaceId)}/channels`, session);
-      const list = Array.isArray(r2.channels) ? r2.channels : [];
-      return list.flatMap((c2) => str13(c2.id) ? [{ id: String(c2.id), name: String(c2.name ?? "") }] : []);
+      const list2 = Array.isArray(r2.channels) ? r2.channels : [];
+      return list2.flatMap((c2) => str13(c2.id) ? [{ id: String(c2.id), name: String(c2.name ?? "") }] : []);
     },
     async createBot(session, workspaceId, displayName, handle) {
       const r2 = await call("POST", `/api/workspaces/${encodeURIComponent(workspaceId)}/bots`, session, {
@@ -49329,9 +49342,9 @@ function count(v2) {
 }
 function parseProposal11(payload) {
   const changeId = str16(payload.changeId);
-  const list = Array.isArray(payload.agents) ? payload.agents : [];
-  if (!changeId || !ID3.test(changeId) || list.length === 0 || list.length > APPLY_MAX_AGENTS) throw new Error("malformed apply.propose payload");
-  const agents = list.map((raw) => {
+  const list2 = Array.isArray(payload.agents) ? payload.agents : [];
+  if (!changeId || !ID3.test(changeId) || list2.length === 0 || list2.length > APPLY_MAX_AGENTS) throw new Error("malformed apply.propose payload");
+  const agents = list2.map((raw) => {
     const a2 = raw ?? {};
     const vmId = str16(a2.vmId);
     const ref = str16(a2.ref);
@@ -49450,8 +49463,8 @@ function messageParts(p2) {
     const sets = facts.settings ? ` It also changes settings: ${plural2(facts.settings, "settings step", "settings steps")} from its controlclaw.yaml.` : "";
     const named2 = (which) => p2.agents.filter((_2, i2) => which(p2.facts[i2])).map((a2) => a2.name);
     const said = (names2, one2, all, some) => !names2.length ? "" : p2.agents.length === 1 ? one2 : names2.length === p2.agents.length ? all : some(someNames(names2));
-    const over = said(named2((f2) => f2.replaces), "It replaces the skill of that name already on the agent. ", "It replaces the skill of that name already on each of them. ", (list) => `It replaces the skill of that name already on ${list}. `);
-    const lost = said(named2((f2) => f2.changed), "The agent's copy was changed there; this overwrites those changes. ", "Each agent's copy was changed there; this overwrites those changes. ", (list) => `The copy on ${list} was changed there; this overwrites those changes. `);
+    const over = said(named2((f2) => f2.replaces), "It replaces the skill of that name already on the agent. ", "It replaces the skill of that name already on each of them. ", (list2) => `It replaces the skill of that name already on ${list2}. `);
+    const lost = said(named2((f2) => f2.changed), "The agent's copy was changed there; this overwrites those changes. ", "Each agent's copy was changed there; this overwrites those changes. ", (list2) => `The copy on ${list2} was changed there; this overwrites those changes. `);
     const has = `It has ${plural2(facts.files, "file", "files")}; ${facts.runnable === 0 ? "none can be run" : `${facts.runnable} can be run`}.${sets} Compare the files' version with the one on the skill's page in your console.`;
     if (p2.agents.length === 1) return { ask: `Install ${what2} on ${p2.agents[0].name} (${recordHost(p2.agents[0].hostname)})`, details: `${lost}${over}${has}` };
     return { ask: `Install ${what2} on ${p2.agents.length} agents`, details: `${lost}${over}The agents: ${listAgents(p2.agents).text}. ${has}` };
@@ -50167,8 +50180,10 @@ function summarizeRestore(p2) {
   const what = p2.kind === "workspace" ? "files" : "settings";
   return `Replace ${p2.agent.name}'s ${what} with a backup${when}`;
 }
-function summarizeRecovery(p2, own2) {
-  return p2.replaces ? `Replace your backup recovery key (new ${p2.fingerprint}, old ${p2.replaces}); this firewall's key is ${own2}` : `Set your backup recovery key to ${p2.fingerprint}; this firewall's key is ${own2}`;
+function summarizeRecovery(p2, own2, boxes2 = 0) {
+  const disks = boxes2 > 0 ? ` and seal the ${boxes2 === 1 ? "disk of 1 box" : `disks of ${boxes2} boxes`} to it` : "";
+  if (p2.replaces && p2.replaces === p2.fingerprint) return `Confirm your backup recovery key ${p2.fingerprint}${disks}; this firewall's key is ${own2}`;
+  return p2.replaces ? `Replace your backup recovery key (new ${p2.fingerprint}, old ${p2.replaces})${disks}; this firewall's key is ${own2}` : `Set your backup recovery key to ${p2.fingerprint}; this firewall's key is ${own2}`;
 }
 function summarizeSelfRestore(p2, own2) {
   const when = p2.takenAt ? ` from ${p2.takenAt.slice(0, 16).replace("T", " ")} UTC` : "";
@@ -50561,7 +50576,7 @@ var BackupFirewall = class {
       fingerprint: await fingerprint(publicKey),
       replaces: this.store.recovery?.fingerprint ?? null
     };
-    const summary = summarizeRecovery(p2, own2.fingerprint);
+    const summary = summarizeRecovery(p2, own2.fingerprint, this.opts.reseal?.count() ?? 0);
     const data = { changeId, summary, fingerprint: p2.fingerprint, firewallFingerprint: own2.fingerprint, firewallPublicKey: own2.publicKey };
     if (!this.opts.channelsReady()) {
       return { ok: false, status: "failed", message: "Your firewall cannot read its channel list right now, so it cannot ask you to confirm. Try again shortly.", data };
@@ -50655,13 +50670,15 @@ var BackupFirewall = class {
     if (v2.kind === "expired") return { ok: false, status: "expired", message: "No recovery key is waiting for a code, or the code expired.", data };
     if (v2.kind === "invalid") return { ok: false, status: "invalid_code", message: "Wrong code.", data: { ...data, attemptsLeft: v2.attemptsLeft } };
     const own2 = await this.keypair();
+    const boxes2 = this.opts.reseal?.count() ?? 0;
     this.setRecovery(v2.proposal, false);
+    this.opts.reseal?.replaced(v2.proposal.publicKey);
     return {
       ok: true,
       status: "applied",
       data: {
         ...data,
-        summary: summarizeRecovery(v2.proposal, own2.fingerprint),
+        summary: summarizeRecovery(v2.proposal, own2.fingerprint, boxes2),
         fingerprint: v2.proposal.fingerprint,
         firewallFingerprint: own2.fingerprint,
         firewallPublicKey: own2.publicKey,
@@ -51397,24 +51414,24 @@ function str20(v2) {
 function summarize15(p2) {
   const names = p2.boxes.map((b2) => b2.name);
   if (names.length === 0) return "Update the software on nothing";
-  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-  return `Update the software on ${list}`;
+  const list2 = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `Update the software on ${list2}`;
 }
 function parseProposal12(payload) {
   const changeId = str20(payload.changeId);
   const raw = Array.isArray(payload.boxes) ? payload.boxes : [];
-  const boxes = [];
+  const boxes2 = [];
   for (const entry of raw) {
     const b2 = entry ?? {};
     const vmId = str20(b2.vmId);
     const role = b2.role === "mitm" ? "mitm" : b2.role === "gbrain" ? "gbrain" : "openclaw";
     const hostname3 = str20(b2.hostname) ?? "";
     if (!vmId || role !== "mitm" && !hostname3) throw new Error("malformed update-all.propose payload");
-    boxes.push({ vmId, name: str20(b2.name) ?? vmId, hostname: hostname3, role });
+    boxes2.push({ vmId, name: str20(b2.name) ?? vmId, hostname: hostname3, role });
   }
-  if (!changeId || boxes.length === 0) throw new Error("malformed update-all.propose payload");
-  if (new Set(boxes.map((b2) => b2.vmId)).size !== boxes.length) throw new Error("malformed update-all.propose payload");
-  return { changeId, boxes };
+  if (!changeId || boxes2.length === 0) throw new Error("malformed update-all.propose payload");
+  if (new Set(boxes2.map((b2) => b2.vmId)).size !== boxes2.length) throw new Error("malformed update-all.propose payload");
+  return { changeId, boxes: boxes2 };
 }
 var CLAIM_REFUSALS = {
   no_grant: "Your firewall no longer has a confirmed batch. Start the update again.",
@@ -51673,9 +51690,445 @@ var RecoveryNotices = class {
   }
 };
 
+// src/disk-reseal.ts
+import { createHash as createHash22 } from "crypto";
+var RESEAL_RETRY_MS = 5 * 6e4;
+var RESEAL_RECHECK_MS = 6 * 60 * 6e4;
+var MESSAGE_TTL_MS = 30 * 24 * 60 * 6e4;
+var RESEAL_ABSENT_MS = 7 * 24 * 60 * 6e4;
+var TAG_RE = /^sha256:[0-9a-f]{16}$/;
+var VM_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/;
+function dict(from) {
+  const out = /* @__PURE__ */ Object.create(null);
+  if (from && typeof from === "object") {
+    for (const [k2, v2] of Object.entries(from)) if (VM_ID_RE.test(k2)) out[k2] = v2;
+  }
+  return out;
+}
+var DROPPED_WORDS = { deleted: "deleted", silent: "not reached for a week", refused: "refusing for a week" };
+function recoveryKeyTag(publicKeyB64) {
+  return `sha256:${createHash22("sha256").update(Buffer.from(publicKeyB64, "base64")).digest().subarray(0, 8).toString("hex")}`;
+}
+function aad17(ids2) {
+  return `${ids2.orgId}:${ids2.boxId}:disk-reseal`;
+}
+function empty() {
+  return { version: 1, known: dict(), target: null, previous: null, startedAt: 0, origin: "found", lost: false, self: null, agents: dict(), saidStarted: false, saidDone: false, outbox: [] };
+}
+function brief2(text4) {
+  const clean = text4.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return clean.length > 200 ? `${clean.slice(0, 200).trimEnd()}\u2026` : clean;
+}
+function readAnswer(v2) {
+  let o2 = v2;
+  if (typeof v2 === "string") {
+    const line = v2.split("\n").map((l2) => l2.trim()).filter((l2) => l2.startsWith("{")).pop();
+    if (!line) return null;
+    try {
+      o2 = JSON.parse(line);
+    } catch {
+      return null;
+    }
+  }
+  const r2 = o2;
+  return r2 && typeof r2.to === "string" && TAG_RE.test(r2.to) && typeof r2.changed === "boolean" ? { to: r2.to, changed: r2.changed } : null;
+}
+var extras = (b2) => ({ ...b2.message ? { message: b2.message } : {}, ...b2.moved ? { moved: true } : {}, ...b2.dropped ? { dropped: b2.dropped } : {} });
+var boxes = (n2) => n2 === 1 ? "1 box" : `${n2} boxes`;
+var day = (ms) => new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "long", timeZone: "UTC" });
+var list = (names) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+var DiskReseal = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+    this.log = opts.log ?? ((l2) => console.log(l2));
+    const loaded2 = loadStoreOrEmpty("disk-reseal", opts.storePath, opts.boxKey, aad17(opts.ids), this.log);
+    this.store = loaded2?.version === 1 && typeof loaded2.known === "object" && loaded2.known !== null ? { ...empty(), ...loaded2, known: dict(loaded2.known), agents: dict(loaded2.agents) } : empty();
+    if (isStoreUnreadable("disk-reseal")) this.noteLost("its record of agents could not be read");
+  }
+  store;
+  now;
+  log;
+  running = null;
+  again = false;
+  /** Agents from the control plane's list, less any whose id is not the shape of one. */
+  listed() {
+    return this.opts.agents().filter((a2) => VM_ID_RE.test(a2.vmId));
+  }
+  /** This firewall's pins, less any whose id is not the shape of one; null when they could not be read. */
+  pins() {
+    const pins = this.opts.pinned();
+    if (pins === null) {
+      this.noteLost("its pinned agents could not be read");
+      return null;
+    }
+    return pins.filter((p2) => VM_ID_RE.test(p2.vmId));
+  }
+  noteLost(why) {
+    if (this.store.lost) return;
+    this.store.lost = true;
+    this.save();
+    this.log(`[disk-reseal] ${why}; from now on no round says every box is sealed`);
+  }
+  /**
+   * How many boxes a replacement would seal again, for the code message: the agents the list has,
+   * those this firewall knows of that were never given up on as deleted or silent, and this
+   * firewall when it has an encrypted disk.
+   */
+  count() {
+    const ids2 = new Set(this.listed().map((a2) => a2.vmId));
+    for (const [vmId, k2] of Object.entries(this.store.known)) if (!k2.dropped) ids2.add(vmId);
+    for (const p2 of this.pins() ?? []) if (!this.store.known[p2.vmId]?.dropped) ids2.add(p2.vmId);
+    return ids2.size + (this.store.self?.state === "none" ? 0 : 1);
+  }
+  /**
+   * The key was just replaced and a person confirmed it with a code. Written at once, before any
+   * box is called, so a restart between the confirmation and the first call loses nothing.
+   */
+  replaced(publicKey) {
+    this.begin(recoveryKeyTag(publicKey), "replacement");
+    void this.tick().catch((e) => this.log(`[disk-reseal] tick: ${e.message}`));
+  }
+  /** Start a round. Its roster is every agent this firewall knows of; all start as not sealed. */
+  begin(tag2, origin) {
+    const previous = this.store.target ?? this.store.previous;
+    this.store = {
+      ...empty(),
+      known: this.store.known,
+      lost: this.store.lost,
+      target: tag2,
+      previous: previous !== tag2 ? previous : this.store.previous,
+      startedAt: this.now(),
+      origin,
+      // The outbox is kept: a message about the last key that nobody could be sent is still true.
+      outbox: this.store.outbox,
+      self: this.store.self?.state === "none" ? this.store.self : null
+    };
+    this.learnPins();
+    for (const vmId of Object.keys(this.store.known)) this.store.agents[vmId] = { state: "off", at: 0 };
+    this.save();
+    this.log(`[disk-reseal] moving every box's disk seal to the recovery key ${tag2}: ${Object.keys(this.store.agents).length} agent(s) on the roster${origin === "found" ? " (found boxes that may be behind)" : ""}`);
+  }
+  /** Put every pin into the record and the round. Pins that could not be read mark the record as lost. */
+  learnPins() {
+    const pins = this.pins();
+    if (pins === null) return;
+    for (const pin of pins) this.know(pin.vmId, pin.hostname, pin.hostname.split(".")[0] || pin.vmId);
+  }
+  /** Add an agent to the record, and to the round when one is open. Never removes or re-addresses one. */
+  know(vmId, hostname3, name25) {
+    if (!this.store.known[vmId]) {
+      this.store.known[vmId] = { name: name25, host: hostname3.toLowerCase() };
+      this.log(`[disk-reseal] ${name25} (${vmId}) is on the record of agents`);
+    }
+    if (this.store.target !== null && !this.store.agents[vmId]) this.store.agents[vmId] = { state: "off", at: 0 };
+  }
+  /**
+   * What the control plane's list does to the record: add an agent, rename one, and take back one
+   * a wait was ended for, which is then waited for again.
+   */
+  enroll(listed2) {
+    for (const a2 of listed2) {
+      const pin = this.pins()?.find((p2) => p2.vmId === a2.vmId);
+      this.know(a2.vmId, pin?.hostname ?? a2.hostname, a2.name);
+      const k2 = this.store.known[a2.vmId];
+      k2.name = a2.name;
+      if (k2.dropped) delete k2.dropped;
+      const box = this.store.agents[a2.vmId];
+      if (box?.dropped) this.store.agents[a2.vmId] = { state: "off", at: 0 };
+    }
+  }
+  report() {
+    const t2 = this.opts.target();
+    const confirmed = !!t2 && !t2.tofu;
+    const live = confirmed && this.store.target === recoveryKeyTag(t2.publicKey);
+    return {
+      confirmed,
+      target: live ? this.store.target : null,
+      fingerprint: t2?.fingerprint ?? null,
+      self: live && this.store.self ? { state: this.store.self.state, ...extras(this.store.self) } : null,
+      agents: live ? Object.entries(this.store.agents).map(([vmId, b2]) => ({ vmId, state: b2.state, ...extras(b2), at: b2.at })) : []
+    };
+  }
+  /**
+   * One pass over every box. A call while one runs makes it run once more after, and waits for
+   * that too: what the caller changed is seen by a pass that started after the change.
+   */
+  tick() {
+    if (this.running) {
+      this.again = true;
+      return this.running;
+    }
+    this.running = Promise.resolve().then(async () => {
+      do {
+        this.again = false;
+        await this.run().catch((e) => this.log(`[disk-reseal] pass failed: ${e.message}`));
+      } while (this.again);
+    }).finally(() => {
+      this.running = null;
+    });
+    return this.running;
+  }
+  async run() {
+    const t2 = this.opts.target();
+    if (!t2 || t2.tofu) {
+      if (this.store.target !== null) {
+        this.store = { ...empty(), known: this.store.known, lost: this.store.lost, previous: this.store.target, outbox: this.store.outbox, self: this.store.self?.state === "none" ? this.store.self : null };
+        this.save();
+      }
+      this.pins();
+      await this.flush();
+      return;
+    }
+    const tag2 = recoveryKeyTag(t2.publicKey);
+    if (this.store.target !== tag2) this.begin(tag2, "found");
+    await this.sealSelf(t2.publicKey, tag2);
+    if (this.store.target !== tag2) return;
+    this.learnPins();
+    const listed2 = this.listed();
+    this.enroll(listed2);
+    this.save();
+    for (const [vmId, box] of Object.entries(this.store.agents)) {
+      if (this.store.target !== tag2) return;
+      if (box.dropped) continue;
+      await this.sealAgent({ vmId, hostname: this.store.known[vmId]?.host ?? "", name: this.store.known[vmId]?.name ?? vmId }, t2.publicKey, tag2);
+    }
+    if (this.store.target !== tag2) return;
+    if (this.opts.synced()) {
+      this.endWaits(listed2);
+      this.announce(t2.fingerprint);
+    }
+    await this.flush();
+  }
+  due(b2) {
+    if (!b2) return true;
+    if (b2.state === "none") return false;
+    return b2.state !== "done" || this.now() - b2.at >= RESEAL_RECHECK_MS;
+  }
+  async sealSelf(publicKey, tag2) {
+    if (!this.due(this.store.self)) return;
+    const moved = this.store.self?.moved === true;
+    let next;
+    try {
+      const answer = readAnswer(await this.opts.resealSelf(publicKey));
+      if (answer?.to === tag2) {
+        next = { state: "done", at: this.now(), moved: moved || answer.changed };
+        if (answer.changed) this.log(`[disk-reseal] this firewall's disk is sealed to ${tag2}`);
+      } else {
+        next = { state: "failed", at: this.now(), message: "This firewall did not say which recovery key its disk is sealed to now.", moved };
+      }
+    } catch (err) {
+      const e = err;
+      const text4 = `${e.stderr ?? ""}
+${e.message}`;
+      const said = (e.stderr ?? "").split("\n").map((l2) => l2.trim()).filter((l2) => l2.startsWith("cc-secure: ")).pop();
+      if (/disk is not open/i.test(text4)) next = { state: "locked", at: this.now(), moved };
+      else if (/no container at|no \S+luks\.key/i.test(text4)) next = { state: "none", at: this.now() };
+      else if (e.code === "ENOENT" || /a password is required|a terminal is required|command not found|No such file|usage: cc-secure \{/i.test(text4)) {
+        next = /No such file|command not found/i.test(text4) || e.code === "ENOENT" ? { state: "none", at: this.now() } : { state: "update", at: this.now(), moved };
+      } else next = { state: "failed", at: this.now(), message: brief2(said ? said.slice("cc-secure: ".length) : "The seal could not be written."), moved };
+      if (next.state !== this.store.self?.state) this.log(`[disk-reseal] this firewall's disk: ${next.state}${next.message ? ` (${next.message})` : ""}`);
+    }
+    if (this.store.target !== tag2) return;
+    this.store.self = next;
+    this.save();
+  }
+  async sealAgent(a2, publicKey, tag2) {
+    const before = this.store.agents[a2.vmId];
+    if (!this.due(before)) return;
+    const moved = before?.moved === true;
+    let next;
+    let answer = null;
+    try {
+      answer = readAnswer(await this.opts.agent.post(a2, "/disk/reseal", { publicKey }));
+      if (answer?.to === tag2) next = { state: "done", at: this.now(), moved: moved || answer.changed };
+      else next = { state: "failed", at: this.now(), message: "The box did not say which recovery key its disk is sealed to now.", moved };
+      if (answer?.to === tag2 && answer.changed) this.log(`[disk-reseal] ${a2.name}: sealed to ${tag2}`);
+    } catch (err) {
+      next = { ...this.refusal(err), at: this.now(), moved };
+      if (next.state !== before?.state) this.log(`[disk-reseal] ${a2.name}: ${next.state}${next.message ? ` (${next.message})` : ""}`);
+    }
+    if (this.store.target !== tag2) return;
+    if (before?.absentSince !== void 0) next.absentSince = before.absentSince;
+    this.store.agents[a2.vmId] = next;
+    const k2 = this.store.known[a2.vmId];
+    if (answer && k2) {
+      k2.sealedTo = answer.to;
+      k2.sealedAt = this.now();
+    }
+    this.save();
+  }
+  /** What an agent's "no" means. Anything that is not an answer from its vm-agent is `off`. */
+  refusal(err) {
+    const message2 = err.message ?? "";
+    if (isAgentTimeout(err)) return { state: "off" };
+    const m2 = /^agent (\d{3}): ([\s\S]*)$/.exec(message2);
+    if (!m2) return { state: "off" };
+    const status = Number(m2[1]);
+    const said = m2[2];
+    if (status === 409 && /disk is not open/i.test(said)) return { state: "locked" };
+    if (status === 409 && /sealing its disk passphrase already/i.test(said)) return { state: "failed", message: "The box was busy. It is asked again." };
+    if (status === 409 || status === 404 || status === 401 || status === 403) return { state: "update" };
+    if (status >= 502) return { state: "off" };
+    return { state: "failed", message: brief2(said) };
+  }
+  /**
+   * End the wait for agents that are not coming. This is only about when a round closes: an agent
+   * dropped here is not sealed and is named so in the closing message, which then does not say the
+   * previous key is no longer needed. So nothing the list says here can make that sentence false.
+   *
+   * Only an agent the list no longer has can be dropped, and only one that has not answered as
+   * itself: `locked` and `failed` come from a vm-agent that took this firewall's token for this
+   * agent, so that box exists and is waited for. `off` is no answer; `update` is a refusal any box
+   * gives, the new box at a deleted agent's address included. Such an agent is dropped at once when
+   * its address is now listed under another id, or when an earlier wait for it was ended and the
+   * list has not had it since; otherwise after `RESEAL_ABSENT_MS`.
+   */
+  endWaits(listedAgents) {
+    const listed2 = new Set(listedAgents.map((a2) => a2.vmId));
+    const hostOwner = new Map(listedAgents.map((a2) => [a2.hostname.toLowerCase(), a2.vmId]));
+    let changed = false;
+    for (const [vmId, box] of Object.entries(this.store.agents)) {
+      if (box.dropped) continue;
+      if (listed2.has(vmId)) {
+        if (box.absentSince !== void 0) {
+          delete box.absentSince;
+          changed = true;
+        }
+        continue;
+      }
+      if (box.absentSince === void 0) {
+        box.absentSince = this.now();
+        changed = true;
+      }
+      if (box.state !== "off" && box.state !== "update") continue;
+      const k2 = this.store.known[vmId];
+      const taken = hostOwner.get(k2?.host ?? "");
+      let why;
+      if (taken && taken !== vmId) why = "deleted";
+      else if (k2?.dropped) why = k2.dropped.why;
+      else if (this.now() - box.absentSince >= RESEAL_ABSENT_MS) why = box.state === "off" ? "silent" : "refused";
+      else continue;
+      box.dropped = why;
+      if (k2 && k2.dropped?.why !== why) k2.dropped = { why, at: this.now() };
+      changed = true;
+      this.log(`[disk-reseal] ${k2?.name ?? vmId} (${vmId}) is not sealed and is not waited for any more: ${DROPPED_WORDS[why]}`);
+    }
+    if (changed) this.save();
+  }
+  /** Whether the agent itself named the round's key, in this round. */
+  confirmed(vmId) {
+    const k2 = this.store.known[vmId];
+    return !!k2 && k2.sealedTo === this.store.target && (k2.sealedAt ?? 0) >= this.store.startedAt;
+  }
+  /** "two (dropped as deleted on 14 October; last sealed to the previous key)". */
+  describe(vmId) {
+    const k2 = this.store.known[vmId];
+    const when = k2?.dropped ? `dropped as ${DROPPED_WORDS[k2.dropped.why]} on ${day(k2.dropped.at)}` : "not sealed";
+    const seal2 = !k2?.sealedTo ? "its seal was never confirmed" : k2.sealedTo === this.store.previous ? "last sealed to the previous key" : "last sealed to an older key";
+    return `${k2?.name ?? vmId} (${when}; ${seal2})`;
+  }
+  /**
+   * What is said, and when. Computed from the record against the round's key, nothing else.
+   *
+   * A round is closed when this firewall's own disk is sealed (or it has none) and every agent this
+   * firewall knows of either named the key in this round or was dropped. Then one message:
+   *
+   * - every agent named the key, and the record and the pins were never `lost`: all N are sealed,
+   *   and the previous key is no longer needed;
+   * - otherwise: N of M are sealed, each one that is not is named with what is known of it, and to
+   *   keep the previous key. For those the list says are deleted, that the key is not needed if
+   *   they really are.
+   *
+   * Before that, one message when boxes this firewall found behind start moving with no
+   * replacement just confirmed. A round nobody asked for that wrote no seal says nothing.
+   */
+  announce(fingerprint3) {
+    const self2 = this.store.self && this.store.self.state !== "none" ? [this.store.self] : [];
+    const agents = Object.keys(this.store.agents);
+    const sealedAgents = agents.filter((vmId) => this.confirmed(vmId));
+    const notSealed = agents.filter((vmId) => !this.confirmed(vmId));
+    const sealed = self2.filter((b2) => b2.state === "done").length + sealedAgents.length;
+    const total = self2.length + agents.length;
+    const moved = [...self2, ...agents.map((vmId) => this.store.agents[vmId])].filter((b2) => b2.moved).length;
+    if (moved === 0 && this.store.origin === "found") return;
+    const closed = self2.every((b2) => b2.state === "done") && notSealed.every((vmId) => this.store.agents[vmId].dropped);
+    const say = (text4) => this.store.outbox.push({ text: text4, at: this.now() });
+    if (closed && !this.store.saidDone) {
+      const unknown2 = this.store.lost;
+      if (notSealed.length === 0 && !unknown2) {
+        if (moved === 0) return;
+        say(
+          this.store.origin === "found" && !this.store.saidStarted ? `ControlClaw: your firewall sealed the disks of ${boxes(moved)} to your current recovery key (${fingerprint3}). They were still sealed to an earlier key. Your current key now opens all ${total} of your boxes.` : `ControlClaw: the ${total === 1 ? "disk of your 1 box is" : `disks of all ${total} of your boxes are`} now sealed to your recovery key (${fingerprint3}). You no longer need the previous key to open them.`
+        );
+      } else if (notSealed.length === 0) {
+        say(
+          `ControlClaw: the disks of all ${boxes(total)} this firewall knows of are sealed to your recovery key (${fingerprint3}). It could not read its own record of agents at some point, so there may be others. Keep your previous key if you may still need one of them.`
+        );
+      } else {
+        const onPrevious = notSealed.every((vmId) => this.store.known[vmId]?.sealedTo === this.store.previous);
+        const deleted = notSealed.filter((vmId) => this.store.agents[vmId].dropped === "deleted");
+        const parts = [
+          `ControlClaw: ${sealed} of ${total} boxes are sealed to your recovery key (${fingerprint3}).`,
+          `Not sealed: ${notSealed.map((vmId) => this.describe(vmId)).join(", ")}.`,
+          `Keep your ${onPrevious ? "previous key" : "earlier keys"} if you may still need ${notSealed.length === 1 ? "that box" : "those boxes"}.`
+        ];
+        if (deleted.length === notSealed.length) {
+          parts.push(`If ${deleted.length === 1 ? "this box is" : "these boxes are"} really deleted, you no longer need ${onPrevious ? "the previous key" : `an earlier key for ${deleted.length === 1 ? "it" : "them"}`}.`);
+        } else if (deleted.length > 0) {
+          parts.push(`The console says ${list(deleted.map((vmId) => this.store.known[vmId]?.name ?? vmId))} ${deleted.length === 1 ? "was" : "were"} deleted.`);
+        }
+        if (unknown2) parts.push("This firewall could not read its own record of agents at some point, so there may be others too.");
+        say(parts.join(" "));
+      }
+      this.store.saidDone = true;
+      this.store.saidStarted = true;
+      this.save();
+      return;
+    }
+    if (!closed && this.store.origin === "found" && !this.store.saidStarted) {
+      const waiting = total - sealed;
+      say(
+        `ControlClaw: your firewall is sealing the disks of your boxes to your current recovery key (${fingerprint3}). Some were still sealed to an earlier key. ${waiting === 1 ? "1 box is" : `${waiting} boxes are`} not done yet; keep the earlier key until your console shows every box on the current one.`
+      );
+      this.store.saidStarted = true;
+      this.save();
+    }
+  }
+  /** Try to deliver what is waiting. The first real person an agent box can reach, as a notice goes. */
+  async flush() {
+    if (this.store.outbox.length === 0) return;
+    const cutoff = this.now() - MESSAGE_TTL_MS;
+    const gone = /* @__PURE__ */ new Set();
+    for (const m2 of [...this.store.outbox]) {
+      if (m2.at < cutoff || await this.deliver(m2.text)) gone.add(m2);
+    }
+    if (gone.size > 0) {
+      this.store.outbox = this.store.outbox.filter((m2) => !gone.has(m2));
+      this.save();
+    }
+  }
+  async deliver(text4) {
+    for (const route of this.opts.codeRoutes()) {
+      for (const sender of route.senders) {
+        if (sender.type === DEV_SENDER_TYPE) continue;
+        try {
+          await this.opts.agent.post(route.target, "/channels/send", { type: sender.type, to: sender.id, text: text4 });
+          return true;
+        } catch {
+        }
+      }
+    }
+    return false;
+  }
+  save() {
+    saveStore("disk-reseal", this.opts.storePath, this.store, this.opts.boxKey, aad17(this.opts.ids));
+  }
+};
+
 // src/update-all-store.ts
 var EMPTY = { version: 1, grant: null };
-function aad17(ids2) {
+function aad18(ids2) {
   return `${ids2.orgId}:${ids2.boxId}:update-all`;
 }
 var UpdateAllStoreFile = class {
@@ -51683,12 +52136,12 @@ var UpdateAllStoreFile = class {
     this.path = path;
     this.boxKeyB64 = boxKeyB64;
     this.ids = ids2;
-    this.state = loadStoreOrEmpty("update-all", path, boxKeyB64, aad17(ids2), log) ?? { ...EMPTY };
+    this.state = loadStoreOrEmpty("update-all", path, boxKeyB64, aad18(ids2), log) ?? { ...EMPTY };
     if (this.state.version !== 1) this.state = { ...EMPTY };
   }
   state;
   save() {
-    saveStore("update-all", this.path, this.state, this.boxKeyB64, aad17(this.ids));
+    saveStore("update-all", this.path, this.state, this.boxKeyB64, aad18(this.ids));
   }
   /** The live grant, or null when there is none or it has run out. */
   grant(now2) {
@@ -51875,7 +52328,7 @@ var SshFirewall = class {
 };
 
 // src/ssh-local.ts
-import { createHash as createHash22 } from "crypto";
+import { createHash as createHash23 } from "crypto";
 import { execFile as execFile3 } from "child_process";
 import { mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync2, readFileSync as readFileSync16, rmSync as rmSync7, writeFileSync as writeFileSync12 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
@@ -51888,7 +52341,7 @@ var SUPPORT_USER = "ccsupport";
 var MARK = "controlclaw-rescue";
 function fingerprintOf(publicKey) {
   const blob = publicKey.trim().split(/\s+/)[1] ?? "";
-  return `SHA256:${createHash22("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
+  return `SHA256:${createHash23("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
 }
 var defaultRun = (file2, args, timeoutMs, stdin) => new Promise((resolve2, reject) => {
   const child = execFile3(file2, args, { timeout: timeoutMs }, (err, stdout) => err ? reject(err) : resolve2(String(stdout ?? "")));
@@ -51983,7 +52436,7 @@ var SshLocal = class {
 };
 
 // src/ssh-logins.ts
-import { createHash as createHash23 } from "crypto";
+import { createHash as createHash24 } from "crypto";
 import { execFile as execFile4 } from "child_process";
 var POLL_TIMEOUT_MS = 15e3;
 var MAX_PER_TICK = 50;
@@ -52037,7 +52490,7 @@ var SshLoginWatcher = class {
         source: "ssh_login",
         // The line itself is the identity of the session: same second, same port, same key means
         // the same login. The journal cursor already stops the common repeat; this stops the rest.
-        login_id: createHash23("sha256").update(line).digest("hex").slice(0, 32),
+        login_id: createHash24("sha256").update(line).digest("hex").slice(0, 32),
         // The journal's own stamp, so a backlog shipped after a restart does not land as "now"
         // and sort wrongly against the grant it belongs to.
         ts: parsed.at !== null ? Math.round(parsed.at / 1e3) : tickTs,
@@ -84725,11 +85178,11 @@ function prepareGoogleInteractionsTools({
           const searchTypesArg = args.searchTypes;
           let search_types;
           if (searchTypesArg != null && typeof searchTypesArg === "object") {
-            const list = [];
-            if (searchTypesArg.webSearch != null) list.push("web_search");
-            if (searchTypesArg.imageSearch != null) list.push("image_search");
-            if (list.length > 0) {
-              search_types = list;
+            const list2 = [];
+            if (searchTypesArg.webSearch != null) list2.push("web_search");
+            if (searchTypesArg.imageSearch != null) list2.push("image_search");
+            if (list2.length > 0) {
+              search_types = list2;
             }
           }
           interactionsTools.push({
@@ -98907,9 +99360,9 @@ var AiClient = class {
   }
   /** Take one call from today's allowance (UTC day). False when the cap is reached. */
   take(cap) {
-    const day = new Date(this.now()).toISOString().slice(0, 10);
-    if (day !== this.day) {
-      this.day = day;
+    const day2 = new Date(this.now()).toISOString().slice(0, 10);
+    if (day2 !== this.day) {
+      this.day = day2;
       this.calls = 0;
     }
     if (this.calls >= cap) return false;
@@ -98970,7 +99423,7 @@ var AiClient = class {
 };
 
 // src/ai/review.ts
-import { createHash as createHash24, randomBytes as randomBytes26 } from "crypto";
+import { createHash as createHash25, randomBytes as randomBytes26 } from "crypto";
 import { existsSync as existsSync13, mkdirSync as mkdirSync14, readFileSync as readFileSync19, renameSync as renameSync11, writeFileSync as writeFileSync15 } from "fs";
 import { isIP as isIP2 } from "net";
 import { basename as basename7, dirname as dirname12, join as join11 } from "path";
@@ -99133,9 +99586,9 @@ function groupByVm(records) {
   const out = /* @__PURE__ */ new Map();
   for (const r2 of records) {
     const k2 = r2.vm_id ?? null;
-    const list = out.get(k2) ?? [];
-    list.push(r2);
-    out.set(k2, list);
+    const list2 = out.get(k2) ?? [];
+    list2.push(r2);
+    out.set(k2, list2);
   }
   return out;
 }
@@ -99149,7 +99602,7 @@ function repeatKey(vmId, category, host2, id) {
   return [vmId ?? "", category, where].join("|");
 }
 function findingId(parts) {
-  return createHash24("sha256").update(parts.join("|")).digest("hex").slice(0, 32);
+  return createHash25("sha256").update(parts.join("|")).digest("hex").slice(0, 32);
 }
 function explanationPrompt(state, category, severity, host2, owner) {
   return [
@@ -99302,20 +99755,20 @@ var AiReviewer = class {
     const findings = [];
     const now2 = this.now();
     for (const [key, at2] of this.posted) if (at2 + REPEAT_MS <= now2) this.posted.delete(key);
-    for (const [vmId, list] of groupByVm(records)) {
+    for (const [vmId, list2] of groupByVm(records)) {
       const windows = this.loginHosts.get(vmId) ?? new LoginWindows();
       this.loginHosts.set(vmId, windows);
-      for (const r2 of list) windows.note(r2, now2);
+      for (const r2 of list2) windows.note(r2, now2);
       const loginHosts = windows.quiet(now2);
       const state = {
         kind: "recent_requests",
         agent: vmId ?? "unknown",
         ...loginHosts.size ? { saved_login_hosts: [...loginHosts] } : {},
-        requests: list.map(compactEvent)
+        requests: list2.map(compactEvent)
       };
-      const first = list[0]?.flow_id ?? "";
-      const last = list[list.length - 1]?.flow_id ?? "";
-      const f2 = await judge(this.opts.client, "review", vmId, state, hostsByCount(list), list, [first, last], now2, this.opts.trace, {
+      const first = list2[0]?.flow_id ?? "";
+      const last = list2[list2.length - 1]?.flow_id ?? "";
+      const f2 = await judge(this.opts.client, "review", vmId, state, hostsByCount(list2), list2, [first, last], now2, this.opts.trace, {
         loginHosts,
         repeatOf: (category, host2) => {
           const before = this.posted.get(repeatKey(vmId, category, host2, findingId(["review", vmId, first, last])));
@@ -99402,10 +99855,10 @@ var AiScanner = class {
       const records = reviewable(readAllRecords(this.opts.logPath), this.opts.ignoreHosts ?? []);
       const findings = [];
       const known = {};
-      for (const [vmId, list] of groupByVm(records)) {
+      for (const [vmId, list2] of groupByVm(records)) {
         const key = vmId ?? "unknown";
         const before = new Set(state.knownHosts[key] ?? []);
-        const hosts = summarizeHosts(list);
+        const hosts = summarizeHosts(list2);
         const firstScan = !state.knownHosts[key];
         const fresh = firstScan ? [] : hosts.filter((h2) => !before.has(h2.host)).map((h2) => h2.host);
         for (const h2 of hosts) if (fresh.includes(h2.host)) h2.new_since_last_scan = true;
@@ -99414,17 +99867,17 @@ var AiScanner = class {
         const summary = {
           kind: "traffic_summary",
           agent: key,
-          window: { from: Math.min(...hosts.map((h2) => h2.first_seen)), to: Math.max(...hosts.map((h2) => h2.last_seen)), requests: list.length },
+          window: { from: Math.min(...hosts.map((h2) => h2.first_seen)), to: Math.max(...hosts.map((h2) => h2.last_seen)), requests: list2.length },
           hosts: shown,
           new_hosts: fresh,
-          recent_requests: list.slice(-SCAN_RECENT).map(compactEvent)
+          recent_requests: list2.slice(-SCAN_RECENT).map(compactEvent)
         };
         const candidates = [.../* @__PURE__ */ new Set([...fresh, ...hosts.map((h2) => h2.host)])];
-        const day = new Date(now2).toISOString().slice(0, 13);
+        const day2 = new Date(now2).toISOString().slice(0, 13);
         const windows = new LoginWindows();
-        for (const r2 of list) windows.note(r2, (r2.ts ?? 0) * 1e3);
+        for (const r2 of list2) windows.note(r2, (r2.ts ?? 0) * 1e3);
         const loginHosts = windows.quiet(now2);
-        const f2 = await judge(this.opts.client, "scan", vmId, summary, candidates, list, [day], now2, this.opts.trace, { loginHosts });
+        const f2 = await judge(this.opts.client, "scan", vmId, summary, candidates, list2, [day2], now2, this.opts.trace, { loginHosts });
         if (f2) findings.push(f2);
       }
       if (findings.length > 0 && !await this.opts.post(findings)) {
@@ -99460,7 +99913,7 @@ function makeFindingsPoster(activityUrl, getToken2, fetchImpl = fetch) {
 }
 
 // src/ai/judge.ts
-import { createHash as createHash25 } from "crypto";
+import { createHash as createHash26 } from "crypto";
 import { createServer as createServer8 } from "http";
 
 // src/ai/settings.ts
@@ -99555,9 +100008,9 @@ var AiJudge = class {
   }
   key(req) {
     const settings = this.opts.client.settings();
-    const org = createHash25("sha256").update(this.orgText() ?? "").digest("hex");
+    const org = createHash26("sha256").update(this.orgText() ?? "").digest("hex");
     const parts = [settings?.provider, settings?.model, org, req.mode, req.policy ?? "", req.rule, req.method, req.host, pathTemplate(req.path), req.body_start ?? ""];
-    return createHash25("sha256").update(parts.join("|")).digest("hex");
+    return createHash26("sha256").update(parts.join("|")).digest("hex");
   }
   state(req) {
     return {
@@ -99691,25 +100144,25 @@ var AiReviewTraceStore = class {
     if (!ID5.test(id)) throw new Error("Invalid agent.");
     return id;
   }
-  path(agent, day) {
-    if (!ID5.test(agent) || !DAY2.test(day)) throw new Error("Invalid trace file.");
-    return join12(this.opts.dir, `${agent}.${day}.enc`);
+  path(agent, day2) {
+    if (!ID5.test(agent) || !DAY2.test(day2)) throw new Error("Invalid trace file.");
+    return join12(this.opts.dir, `${agent}.${day2}.enc`);
   }
-  aad(agent, day) {
-    return `${this.opts.orgId}:${this.opts.boxId}:ai-review:trace:${agent}:${day}`;
+  aad(agent, day2) {
+    return `${this.opts.orgId}:${this.opts.boxId}:ai-review:trace:${agent}:${day2}`;
   }
-  load(agent, day) {
-    return loadEncryptedJson(this.path(agent, day), this.opts.boxKey, this.aad(agent, day));
+  load(agent, day2) {
+    return loadEncryptedJson(this.path(agent, day2), this.opts.boxKey, this.aad(agent, day2));
   }
   record(run) {
     try {
       const agent = this.agent(run.vmId);
-      const day = new Date(run.at).toISOString().slice(0, 10);
+      const day2 = new Date(run.at).toISOString().slice(0, 10);
       let file2;
       try {
-        file2 = this.load(agent, day) ?? { vmId: agent, day, runs: [] };
+        file2 = this.load(agent, day2) ?? { vmId: agent, day: day2, runs: [] };
       } catch {
-        file2 = { vmId: agent, day, runs: [] };
+        file2 = { vmId: agent, day: day2, runs: [] };
       }
       const secrets2 = [...this.opts.secrets?.() ?? []];
       const clean = { ...run, events: run.events.map((e) => ({ ...e, text: redactDoctorText(e.text, secrets2) })) };
@@ -99728,7 +100181,7 @@ var AiReviewTraceStore = class {
         }
       }
       if (dropped.size) file2.runs = file2.runs.filter((_2, i2) => !dropped.has(i2));
-      saveEncryptedJson(this.path(agent, day), file2, this.opts.boxKey, this.aad(agent, day));
+      saveEncryptedJson(this.path(agent, day2), file2, this.opts.boxKey, this.aad(agent, day2));
     } catch (err) {
       (this.opts.log ?? console.error)(`[ai] trace: not recorded: ${err.message}`);
     }
@@ -99744,10 +100197,10 @@ var AiReviewTraceStore = class {
     const limit = Math.min(Math.max(o2.limit ?? 50, 1), 200);
     const minAt = this.now() - TRACE_RETENTION_MS;
     const out = [];
-    for (const day of this.days(agent)) {
+    for (const day2 of this.days(agent)) {
       let file2 = null;
       try {
-        file2 = this.load(agent, day);
+        file2 = this.load(agent, day2);
       } catch {
         continue;
       }
@@ -99763,9 +100216,9 @@ var AiReviewTraceStore = class {
     const agent = this.agent(vmId);
     if (!ID5.test(runId)) return null;
     const minAt = this.now() - TRACE_RETENTION_MS;
-    for (const day of this.days(agent)) {
+    for (const day2 of this.days(agent)) {
       try {
-        const hit = this.load(agent, day)?.runs.find((r2) => r2.runId === runId);
+        const hit = this.load(agent, day2)?.runs.find((r2) => r2.runId === runId);
         if (hit) return hit.at > minAt ? hit : null;
       } catch {
       }
@@ -99791,13 +100244,13 @@ var AiReviewTraceStore = class {
 };
 
 // src/ai-review-history.ts
-import { createHash as createHash26, randomBytes as randomBytes27 } from "crypto";
+import { createHash as createHash27, randomBytes as randomBytes27 } from "crypto";
 var AI_REVIEW_ROOT = "/__cc/doctor/ai-review";
 var COOKIE6 = "__Secure-cc_ai_review";
 var AGENT = /^[A-Za-z0-9_-]{1,80}$/;
 var agentRoot = (vmId) => `${AI_REVIEW_ROOT}/a/${vmId}`;
 var GRANT_MS3 = 2 * 60 * 6e4;
-var hash6 = (value) => createHash26("sha256").update(value).digest("hex");
+var hash6 = (value) => createHash27("sha256").update(value).digest("hex");
 var HEADERS7 = {
   "cache-control": "no-store",
   "referrer-policy": "same-origin",
@@ -100133,11 +100586,11 @@ function makeFwLogs(opts) {
 }
 
 // src/fw-logs-page.ts
-import { createHash as createHash27, randomBytes as randomBytes28 } from "crypto";
+import { createHash as createHash28, randomBytes as randomBytes28 } from "crypto";
 var FW_LOGS_ROOT = "/__cc/doctor/logs";
 var COOKIE7 = "__Secure-cc_fw_logs";
 var GRANT_MS4 = 2 * 60 * 6e4;
-var hash7 = (value) => createHash27("sha256").update(value).digest("hex");
+var hash7 = (value) => createHash28("sha256").update(value).digest("hex");
 var HEADERS8 = {
   "cache-control": "no-store",
   "referrer-policy": "same-origin",
@@ -100594,7 +101047,7 @@ function write(sink, chunk) {
 
 // src/recovery-tls.ts
 import { execFileSync as execFileSync2 } from "child_process";
-import { createHash as createHash28 } from "crypto";
+import { createHash as createHash29 } from "crypto";
 import { chmodSync as chmodSync3, existsSync as existsSync16, mkdirSync as mkdirSync17, readFileSync as readFileSync21 } from "fs";
 import { createServer as createNetServer } from "net";
 import { createServer as createHttpsServer } from "https";
@@ -100639,7 +101092,7 @@ function loadOrCreateRecoveryTls(dir, subject, log = console.log) {
 function certFingerprint(certPem) {
   const body = certPem.replace(/-----BEGIN CERTIFICATE-----/g, "").replace(/-----END CERTIFICATE-----/g, "").replace(/\s+/g, "");
   const der = Buffer.from(body, "base64");
-  const hex4 = createHash28("sha256").update(der).digest("hex").toUpperCase();
+  const hex4 = createHash29("sha256").update(der).digest("hex").toUpperCase();
   return `sha256:${(hex4.match(/.{2}/g) ?? []).join(":")}`;
 }
 var TLS_HANDSHAKE = 22;
@@ -100674,8 +101127,8 @@ import { uptime } from "os";
 import { existsSync as existsSync17, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0751b9e" : "unknown",
-  builtAt: true ? "2026-10-14T00:44:44+01:00" : "unknown"
+  commit: true ? "cc5040d" : "unknown",
+  builtAt: true ? "2026-10-14T09:34:18+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -100852,6 +101305,7 @@ var SELF_UPDATE_STATE_PATH = process.env.SELF_UPDATE_STATE_PATH ?? "/opt/control
 var AUTO_UPDATE_STORE_PATH = process.env.AUTO_UPDATE_STORE_PATH ?? "/opt/controlclaw/state/auto-update.enc";
 var UPDATE_ALL_STORE_PATH = process.env.UPDATE_ALL_STORE_PATH ?? "/opt/controlclaw/state/update-all.enc";
 var RECOVERY_NOTICES_PATH = process.env.RECOVERY_NOTICES_PATH ?? "/opt/controlclaw/state/recovery-notices.enc";
+var DISK_RESEAL_PATH = process.env.DISK_RESEAL_PATH ?? "/opt/controlclaw/state/disk-reseal.enc";
 var SELF_UPDATE_CONF_PATH = process.env.SELF_UPDATE_CONF_PATH ?? "/etc/controlclaw/update.conf";
 var AGENT_VERSION = process.env.MITM_AGENT_VERSION ?? "0.1.0";
 var SHIP_ONCE = process.env.SHIP_ONCE === "1";
@@ -100877,6 +101331,7 @@ function die(msg) {
 var usesHttp = STORE_URL.startsWith("http") || RULES_URL.startsWith("http") || ACTIVITY_URL.startsWith("http") || FIREWALL_URL.startsWith("http");
 var getToken = usesHttp ? makeBoxTokenSigner(KEYS_DIR2) : void 0;
 var identities = [];
+var identitiesSynced = false;
 var browserIdentities = [];
 function agentRecordName(vmId) {
   const name25 = identities.find((i2) => String(i2.vm_id) === vmId)?.name;
@@ -100903,6 +101358,7 @@ function learnAgents() {
   if (Date.now() - learnedAt < LEARN_GAP_MS) return Promise.resolve();
   learning = fetchIdentities(IDENTITIES_URL, getToken).then((rows) => {
     ({ agents: identities, browserBoxes: browserIdentities } = splitIdentities(parseIdentities(rows)));
+    identitiesSynced = true;
     firstSeen.observe(identities.map((i2) => String(i2.vm_id)));
     access?.notePins();
   }).catch((error62) => console.error(`[agents] could not look for a new agent: ${error62.message}`)).finally(() => {
@@ -100971,6 +101427,7 @@ var selfUpdates = null;
 var autoUpdates = null;
 var batchUpdates = null;
 var recoveryNotices = null;
+var diskReseal = null;
 var sshAccess = null;
 var sshLocal = null;
 var aiSettings = null;
@@ -100994,6 +101451,7 @@ async function runSync(boxKey) {
   if (IDENTITIES_URL) {
     cfg.identities = await fetchIdentities(IDENTITIES_URL, getToken);
     ({ agents: identities, browserBoxes: browserIdentities } = splitIdentities(parseIdentities(cfg.identities)));
+    identitiesSynced = true;
     firstSeen.observe(identities.map((i2) => String(i2.vm_id)));
     access?.notePins();
     if (doctorKeys) void doctorKeys.reconcile(identities.filter((i2) => i2.hostname).map((i2) => ({ vmId: String(i2.vm_id), hostname: i2.hostname })), makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), hostFor: agentHostFor, onUnknown: learnAgents, timeoutMs: 5e3 }));
@@ -101656,6 +102114,35 @@ async function main() {
       console.log("[mitm-agent] no connector runtime on this box (CONNECTOR_URL unset); integrations are off");
     }
     try {
+      diskReseal = new DiskReseal({
+        storePath: DISK_RESEAL_PATH,
+        boxKey,
+        ids,
+        agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), hostFor: agentHostFor, onUnknown: learnAgents }),
+        target: () => {
+          const r2 = backups?.status()?.recovery;
+          const keys = backups?.recoveryKeys();
+          return r2 && keys ? { publicKey: keys.publicKey, fingerprint: keys.fingerprint, tofu: r2.tofu } : null;
+        },
+        // Every box with a disk of its own: the agents, and the organization's brain.
+        agents: () => browserIdentities.flatMap((i2) => {
+          const hostname3 = agentHostFor(String(i2.vm_id));
+          return hostname3 ? [{ vmId: String(i2.vm_id), hostname: hostname3, name: i2.name ?? String(i2.vm_id) }] : [];
+        }),
+        resealSelf: async (publicKey) => (await execFileAsync("sudo", ["-n", "/usr/local/bin/cc-secure", "reseal", publicKey], { timeout: 15e4, encoding: "utf8" })).stdout,
+        // No access module, or its store would not open: the pins are not known, which is not "none".
+        pinned: () => access ? access.pinnedAgents() : null,
+        synced: () => identitiesSynced,
+        codeRoutes: () => channels?.codeRoutes() ?? []
+      });
+      const reseal = diskReseal;
+      const pass = () => void reseal.tick().catch((e) => console.error("[disk-reseal] tick:", e.message));
+      setTimeout(pass, 6e4).unref();
+      setInterval(pass, RESEAL_RETRY_MS).unref();
+    } catch (err) {
+      console.error(`[mitm-agent] disk re-sealing would not start: ${err.message}`);
+    }
+    try {
       backups = new BackupFirewall({
         storePath: BACKUP_STORE_PATH,
         boxKey,
@@ -101663,6 +102150,7 @@ async function main() {
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), hostFor: agentHostFor, onUnknown: learnAgents }),
         codeRoutes: () => channels?.codeRoutes() ?? [],
         channelsReady: () => channels !== null,
+        ...diskReseal ? { reseal: diskReseal } : {},
         selfBackup: new SelfBackup({ ids }),
         selfRestore: new SelfRestore({
           ids,
@@ -101814,7 +102302,7 @@ async function main() {
     });
     if (doctor && existsSync18(TPLCHECK_CLIENT)) {
       try {
-        const aad18 = `${ORG_ID}:${BOX_ID}:template-checks`;
+        const aad19 = `${ORG_ID}:${BOX_ID}:template-checks`;
         const checksDoctor = doctor;
         templateChecks = new TemplateCheck({
           agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), hostFor: agentHostFor }),
@@ -101828,8 +102316,8 @@ async function main() {
           check: (input2) => checksDoctor.check(input2),
           annotate: (id, text4) => checksDoctor.annotate(id, text4),
           redact: (text4) => makeRedactor(firewallSecrets())(text4),
-          load: () => loadEncryptedJson(TPLCHECK_STORE_PATH, boxKey, aad18),
-          save: (value) => saveEncryptedJson(TPLCHECK_STORE_PATH, value, boxKey, aad18)
+          load: () => loadEncryptedJson(TPLCHECK_STORE_PATH, boxKey, aad19),
+          save: (value) => saveEncryptedJson(TPLCHECK_STORE_PATH, value, boxKey, aad19)
         });
       } catch {
         console.error("[tplcheck] Final checks could not start. Check the encrypted store.");
@@ -102166,6 +102654,9 @@ async function main() {
             ...llm ? { included_ai: llm.includedCredentialId() } : {},
             ...selfUpdates ? { update: selfUpdates.status() } : {},
             ...backupStatus ? { backup: { ...backupStatus, recoveryRoutes } } : {},
+            // `disk_reseal`: which recovery key the boxes' disk seals are being moved to, and each
+            // box's own answer. Names of keys and states only.
+            ...diskReseal && backupStatus?.recovery ? { disk_reseal: diskReseal.report() } : {},
             // `residential`: whether an exit is set up, what the last reachability check saw
             // (including the address the world sees) and this month's bytes. Reported, never
             // authoritative: the control plane displays it and decides nothing from it.
