@@ -4636,10 +4636,87 @@ def _allow_record(flow: http.HTTPFlow) -> dict[str, Any]:
     return rec
 
 
+# ---- Approve with a button (packages/mitm-agent/src/code-buttons.ts) -----------------------------
+# The firewall sends a confirmation code to Telegram with number buttons. A tap comes back as a
+# `callback_query` in the agent's own `getUpdates` answer, which passes through here. Ours start with
+# TAP_PREFIX: they are taken out before the agent sees them and posted to the firewall agent on
+# loopback, which decides them. Nothing the agent sends or says about a tap is ever read.
+TAP_PREFIX = "cc1:"
+CODE_BUTTONS_URL = os.environ.get("MITM_CODE_BUTTONS_URL", "http://127.0.0.1:8793/")
+_TG_GET_UPDATES_RE = re.compile(r"^/bot(\d+):[^/]+/getUpdates$", re.IGNORECASE)
+
+
+def _is_tap(update: Any) -> bool:
+    cq = update.get("callback_query") if isinstance(update, dict) else None
+    return isinstance(cq, dict) and isinstance(cq.get("data"), str) and cq["data"].startswith(TAP_PREFIX)
+
+
+def strip_taps(doc: Any) -> tuple[Any, list[dict[str, Any]]]:
+    """
+    Take our taps out of a `getUpdates` answer; returns the answer for the agent and the taps.
+
+    The agent asks for the next batch with `offset` = the highest `update_id` it saw + 1, and
+    Telegram keeps sending everything below the offset. So when the highest update in the batch is a
+    tap, its id stays in the answer as an update with nothing else in it: dropping it outright would
+    have Telegram send the same tap on every poll, and an empty answer to a long poll would have the
+    agent poll again at once. Taps lower in the batch are covered by the update above them.
+    """
+    if not isinstance(doc, dict) or doc.get("ok") is not True or not isinstance(doc.get("result"), list):
+        return doc, []
+    updates = doc["result"]
+    taps = [u["callback_query"] for u in updates if _is_tap(u)]
+    if not taps:
+        return doc, []
+    kept = [u for u in updates if not _is_tap(u)]
+    ids = [u["update_id"] for u in updates if isinstance(u, dict) and isinstance(u.get("update_id"), int)]
+    top = max(ids) if ids else None
+    if top is not None and not any(isinstance(u, dict) and u.get("update_id") == top for u in kept):
+        kept.append({"update_id": top})
+    return {**doc, "result": kept}, taps
+
+
+def _post_taps(bot_id: str, taps: list[dict[str, Any]]) -> None:
+    try:
+        body = json.dumps({"botId": bot_id, "queries": taps[:100]}).encode()
+        request = urllib.request.Request(CODE_BUTTONS_URL, data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as answer:
+            answer.read()
+    except (OSError, ValueError) as exc:
+        # The tap is gone either way (it must never reach the agent); the person taps again or types the code.
+        log.warning("[mitm] could not hand a button tap to the firewall: %s", type(exc).__name__)
+
+
+def telegram_taps_response(flow: http.HTTPFlow) -> None:
+    """Strip our taps out of the agent's `getUpdates` answer and hand them to the firewall agent."""
+    if flow.request.pretty_host.lower() != "api.telegram.org" or flow.response is None or flow.response.status_code != 200:
+        return
+    match = _TG_GET_UPDATES_RE.match(flow.request.path.split("?", 1)[0])
+    if not match:
+        return
+    raw = flow.response.get_content() or b""
+    if TAP_PREFIX.encode() not in raw:
+        return
+    try:
+        doc = json.loads(raw)
+    except (ValueError, UnicodeError):
+        return
+    clean, taps = strip_taps(doc)
+    if not taps:
+        return
+    flow.response.set_content(json.dumps(clean).encode())
+    try:
+        task = asyncio.get_running_loop().create_task(asyncio.to_thread(_post_taps, match.group(1), taps))
+        _phone_settle_tasks.add(task)
+        task.add_done_callback(_phone_settle_tasks.discard)
+    except RuntimeError:  # no event loop: a direct call from a test
+        _post_taps(match.group(1), taps)
+
+
 _phone_settle_tasks = set()
 
 
 def response(flow: http.HTTPFlow) -> None:
+    telegram_taps_response(flow)
     if flow.metadata.get("cc_email_reservation"):
         task = asyncio.create_task(asyncio.to_thread(email_settle, flow))
         _phone_settle_tasks.add(task)
