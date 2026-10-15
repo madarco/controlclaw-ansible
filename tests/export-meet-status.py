@@ -29,6 +29,10 @@ with tempfile.TemporaryDirectory() as d:
     if len(sys.argv) > 2 and sys.argv[2] == 'consult':
         source = (dest / 'host/dist/plugin-sdk/meeting-runtime.js').read_text()
         start = source.index('async function consultMeetingAgent(params) {')
+        # The model of the meeting's lookups (Model for meetings) comes from a helper next to it.
+        if 'function ccMeetingConsultModel(' in source:
+            helper = source.index('function ccMeetingConsultModel(')
+            print(source[helper:source.index('\n}', helper)+2])
         print(source[start:source.index('\n}', start)+2])
         print('; consultMeetingAgent')
         sys.exit(0)
