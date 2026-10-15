@@ -49,6 +49,9 @@ test('the run\'s result: the last one or two sentences of its reply; nothing usa
   assert.deepEqual(runResult(JSON.stringify({ ok: true, final: 'Done.' })), { ok: true, text: 'Done.' });
   assert.equal(runResult(JSON.stringify({ ok: false, error: { message: 'No route-compatible authentication source' } })).ok, false);
   assert.equal(runResult('not json').ok, false);
+  // What a gateway turn really returns (OpenClaw 2026.9.9).
+  assert.deepEqual(runResult(JSON.stringify({ runId: 'r', status: 'ok', summary: 'completed', result: { payloads: [{ text: 'Created the file.', mediaUrl: null }] } })), { ok: true, text: 'Created the file.' });
+  assert.equal(runResult(JSON.stringify({ runId: 'r', status: 'error', result: { payloads: [{ text: 'Something broke.' }] } })).ok, false);
   assert.equal(runResult(JSON.stringify({ ok: true, payloads: [] })).ok, false);
 });
 

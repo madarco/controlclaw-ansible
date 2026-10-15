@@ -43,7 +43,9 @@ export function runResult(stdout) {
   // The last two sentences are the ones for the room.
   // A stop followed by a space ends a sentence; one inside a name or a version (meeting-task.txt, 1.3.0) does not.
   const sentences = clean(text, 4000).split(/(?<=[.!?…])\s+/).map(s => s.trim()).filter(Boolean);
-  return { ok: out?.ok !== false && !!sentences.length, text: sentences.slice(-2).join(' ').slice(0, 600) };
+  // Gateway turns answer {status: 'ok', result: {payloads}}; anything else is a failure, whatever text came with it.
+  const ok = out?.ok !== false && (out?.status === undefined || out.status === 'ok');
+  return { ok: ok && !!sentences.length, text: sentences.slice(-2).join(' ').slice(0, 600) };
 }
 
 export function createTasks(deps = {}) {
