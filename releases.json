@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.19.0",
+    "date": "2026-10-15",
+    "changes": [
+      "Meetings: the agent answers questions in a meeting faster, on a fast model you can choose in its Meetings settings.",
+      "Meetings: the agent leaves a meeting when someone asks it to, and presents its screen only when it was asked directly."
+    ]
+  },
+  {
     "version": "1.18.0",
     "date": "2026-10-15",
     "changes": [
