@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.19.1",
+    "date": "2026-10-15",
+    "changes": [
+      "Meetings: the agent's lookups run on a fast model you can choose in its Meetings settings, so it answers sooner.",
+      "Meetings: the agent no longer comments on the conversation by itself, opens and shows a page when asked to show a site, can browse during a meeting, and leaves when asked.",
+      "Security: optional content rules on the firewall stop, hold for approval or record Telegram messages that match them; leaking secrets is always checked. Every change needs a confirmation code."
+    ]
+  },
+  {
     "version": "1.19.0",
     "date": "2026-10-15",
     "changes": [
