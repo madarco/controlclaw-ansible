@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.16.0",
+    "date": "2026-10-15",
+    "changes": [
+      "Meetings: an owner can let the agent do real work when asked in a meeting (Full agent), confirmed with a code; it says \"ok, on it\" and tells the room the result.",
+      "Meetings: the agent answers only when it is sure it was addressed, says a short \"ok\" before it looks something up, and keeps its answers shorter."
+    ]
+  },
+  {
     "version": "1.15.0",
     "date": "2026-10-14",
     "changes": [
