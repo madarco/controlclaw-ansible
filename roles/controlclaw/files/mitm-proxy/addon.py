@@ -69,6 +69,7 @@ from html import unescape as html_unescape
 import socket
 import time
 import urllib.request
+import uuid
 from typing import Any
 
 import logging
@@ -2130,6 +2131,65 @@ def _ascii_host(host: str) -> str | None:
         except UnicodeError:
             return None
     return host if _HOST_NAME.fullmatch(host) else None
+
+
+def is_telegram_host(host: str | None) -> bool:
+    """
+    `api.telegram.org`, written any way that still reaches it: any case, the root's trailing dot,
+    or dots and letters that IDNA folds into those (`。`, full-width). Like `_ascii_host`, with the
+    dot dropped after the encoding too, since a trailing ideographic dot becomes one.
+    """
+    h = (host or "").lower()
+    if not h.isascii():
+        try:
+            h = h.encode("idna").decode("ascii")
+        except UnicodeError:
+            return False
+    return h.rstrip(".") == "api.telegram.org"
+
+
+# Telegram's published address ranges (https://core.telegram.org/resources/cidr.txt, 2026-10-15).
+# Plain HTTP carries no SNI, and its `Host:` header is the agent's to write, so a request to one of
+# these addresses is Telegram whatever it calls itself.
+TELEGRAM_NETWORKS = [ipaddress.ip_network(n) for n in (
+    "91.108.56.0/22", "91.108.4.0/22", "91.108.8.0/22", "91.108.16.0/22", "91.108.12.0/22",
+    "149.154.160.0/20", "91.105.192.0/23", "91.108.20.0/22", "185.76.151.0/24",
+    "2001:b28:f23d::/48", "2001:b28:f23f::/48", "2001:67c:4e8::/48", "2001:b28:f23c::/48", "2a0a:f280::/32",
+)]
+
+
+def is_telegram_ip(address: Any) -> bool:
+    try:
+        ip = ipaddress.ip_address(str(address).strip("[]"))
+    except ValueError:
+        return False
+    # An IPv4 address written as IPv6 (::ffff:149.154.167.220) is the same address.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in TELEGRAM_NETWORKS)
+
+
+# The Bot API's shape: what a flow that is Telegram only by its address has to look like to be
+# checked. The same addresses serve t.me, telegram.org and web.telegram.org, which are not.
+_TG_BOT_API_PATH = re.compile(r"^/(?:file/)?bot\d+:")
+
+
+def is_telegram_flow(flow: http.HTTPFlow) -> bool:
+    """
+    Whether this request goes to Telegram by any of the names it carries: the `Host:` header, the
+    connection's host, the name the client handshook with, or the address the connection really
+    goes to. A `Host:` header naming somewhere else on a connection to Telegram must not skip the
+    content check, and an agent in plain mode holds the real bot token, so nothing else would stop
+    that request.
+    """
+    if any(is_telegram_host(h) for h in (flow.request.pretty_host, flow.request.host, getattr(flow.client_conn, "sni", None))):
+        return True
+    server = getattr(flow, "server_conn", None)
+    address = getattr(server, "address", None) if server else None
+    by_address = is_telegram_ip(flow.request.host) or (bool(address) and is_telegram_ip(address[0]))
+    # Telegram only by its address (the transparent redirect connects by IP): the Bot API only.
+    # A t.me link or telegram.org page on the same address is a web page, not a message.
+    return by_address and bool(_TG_BOT_API_PATH.match(flow.request.path.split("?", 1)[0]))
 
 
 def _sign_in_address(spec: str, default: tuple[str, int] | None = None) -> dict[str, Any] | None:
@@ -4584,6 +4644,11 @@ async def request(flow: http.HTTPFlow) -> None:
         if not await email_outbound(flow, vm_id):
             return
 
+    # Content rules (docs/plans/firewall-content-rules.md): after the organization's host rules have
+    # let the request through, before any credential is swapped in.
+    if is_telegram_flow(flow) and (content_rules_telegram_poll(flow) or await content_rules_telegram_out(flow, vm_id)):
+        return
+
     if host.lower() == "api.twilio.com" and (not phone_authorized(flow, phone_credential(flow, vm_id)) or not await phone_reserve(flow, phone_credential(flow, vm_id))):
         flow.response = http.Response.make(403, '{"error":"phone_assignment_required_or_operation_refused"}', {"Content-Type": "application/json"})
         flow.metadata["cc_effect"] = "block"
@@ -4667,12 +4732,20 @@ def strip_taps(doc: Any) -> tuple[Any, list[dict[str, Any]]]:
     taps = [u["callback_query"] for u in updates if _is_tap(u)]
     if not taps:
         return doc, []
-    kept = [u for u in updates if not _is_tap(u)]
+    kept = keep_top_update(updates, [u for u in updates if not _is_tap(u)])
+    return {**doc, "result": kept}, taps
+
+
+def keep_top_update(updates: list[Any], kept: list[Any]) -> list[Any]:
+    """
+    `kept`, with the batch's highest `update_id` still in it: an empty update when that one was
+    taken out, so the agent's next `offset` moves past it and Telegram does not send it again.
+    """
     ids = [u["update_id"] for u in updates if isinstance(u, dict) and isinstance(u.get("update_id"), int)]
     top = max(ids) if ids else None
     if top is not None and not any(isinstance(u, dict) and u.get("update_id") == top for u in kept):
-        kept.append({"update_id": top})
-    return {**doc, "result": kept}, taps
+        kept = [*kept, {"update_id": top}]
+    return kept
 
 
 def _post_taps(bot_id: str, taps: list[dict[str, Any]]) -> None:
@@ -4688,7 +4761,7 @@ def _post_taps(bot_id: str, taps: list[dict[str, Any]]) -> None:
 
 def telegram_taps_response(flow: http.HTTPFlow) -> None:
     """Strip our taps out of the agent's `getUpdates` answer and hand them to the firewall agent."""
-    if flow.request.pretty_host.lower() != "api.telegram.org" or flow.response is None or flow.response.status_code != 200:
+    if not is_telegram_flow(flow) or flow.response is None or flow.response.status_code != 200:
         return
     match = _TG_GET_UPDATES_RE.match(flow.request.path.split("?", 1)[0])
     if not match:
@@ -4715,8 +4788,483 @@ def telegram_taps_response(flow: http.HTTPFlow) -> None:
 _phone_settle_tasks = set()
 
 
+# ---- Content rules (docs/plans/firewall-content-rules.md) ----------------------------------------
+#
+# What an organization says its agents may not send or receive, checked on the text of a message.
+# One engine (`content_evaluate`, pure, no I/O) and one adapter per channel; Telegram is the first.
+# The rules come from the mitm-agent (`content-rules.ts`), which writes them only after a change was
+# confirmed with a code; this file only reads them. The "Leaking secrets" rule is not in that file:
+# it ships here, is on for every organization, and nothing the control plane sends can turn it off.
+#
+# Fail closed: a check that cannot run stops the message. mitmproxy's own answer to an exception in
+# a hook is to log it and let the flow through (seen in the spike), so every adapter catches its
+# own errors and refuses.
+
+CONTENT_RULES_PATH = os.environ.get("MITM_CONTENT_RULES_PATH", os.path.join(os.path.dirname(CREDS_PATH), "content-rules.json"))
+CONTENT_RULES_URL = os.environ.get("MITM_CONTENT_RULES_URL", "http://127.0.0.1:8794")
+CONTENT_AUDIT_PATH = os.environ.get("MITM_CONTENT_AUDIT_FILE", os.path.join(os.path.dirname(LOG_PATH), "content-rules.jsonl") if LOG_PATH else "")
+CONTENT_TEXT_MAX = 65536
+CONTENT_HOLD_BODY_MAX = 262144
+CONTENT_HOLD_WAIT = 25
+CONTENT_ACTIONS = ("log", "hold", "block")  # weakest to strongest
+
+CORE_SECRETS_RULE = {
+    "id": "core-leaking-secrets", "name": "Leaking secrets", "direction": "out", "channels": ["*"],
+    "patterns": [], "detectors": ["secrets"], "action": "block",
+    "reason": "it looks like it contains a password, key or token",
+}
+
+# Our own expressions, each linear: no nested repetition. Organization rules never reach `re` as a
+# pattern; their words are escaped (see `_content_phrase`).
+_SECRET_RES = [re.compile(p) for p in (
+    r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----",
+    r"\bsk-(?:proj-|ant-|svcacct-)?[A-Za-z0-9_-]{32,}",
+    r"\bAKIA[0-9A-Z]{16}\b",
+    r"\bgh[pousr]_[A-Za-z0-9]{36,}",
+    r"\bgithub_pat_[A-Za-z0-9_]{40,}",
+    r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+    r"\bAIza[0-9A-Za-z_-]{35}\b",
+    r"\b\d{6,12}:AA[A-Za-z0-9_-]{33}\b",
+    r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+    r"\bvck_[A-Za-z0-9]{24,}",
+)]
+_IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b")
+_CARD_RE = re.compile(r"(?<![\d-])[2-6]\d{3}(?:[ -]?\d{4}){2}[ -]?\d{1,7}(?![\d-])")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,24}")
+CONTENT_EMAILS_BULK = 5
+
+
+def _iban_ok(candidate: str) -> bool:
+    s = candidate.replace(" ", "")
+    if not 15 <= len(s) <= 34:
+        return False
+    digits = "".join(str(int(c, 36)) for c in s[4:] + s[:4])
+    return int(digits) % 97 == 1
+
+
+def _luhn_ok(candidate: str) -> bool:
+    digits = [int(c) for c in candidate if c.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def content_detect(name: str, text: str) -> bool:
+    """One built-in detector on one text."""
+    if name == "secrets":
+        return any(r.search(text) for r in _SECRET_RES)
+    if name == "iban":
+        return any(_iban_ok(m.group(0)) for m in _IBAN_RE.finditer(text.upper()))
+    if name == "card":
+        return any(_luhn_ok(m.group(0)) for m in _CARD_RE.finditer(text))
+    if name == "emails":
+        return len({m.group(0).lower() for m in _EMAIL_RE.finditer(text)}) >= CONTENT_EMAILS_BULK
+    raise ValueError(f"unknown detector {name}")
+
+
+_phrase_cache: dict[str, re.Pattern[str]] = {}
+
+
+def _content_phrase(phrase: str) -> re.Pattern[str]:
+    """A word or phrase, case-insensitive, on word boundaries. Always escaped: never a regex."""
+    found = _phrase_cache.get(phrase)
+    if found is None:
+        found = re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", re.IGNORECASE)
+        if len(_phrase_cache) < 4096:
+            _phrase_cache[phrase] = found
+    return found
+
+
+def content_evaluate(rules: list[dict[str, Any]], direction: str, channel: str, text: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """
+    The engine. Every rule that applies to this direction and channel and matches the text, and the
+    one whose action wins (block over hold over log; the first listed among equals). Pure: no I/O,
+    so the same function can run in the console's test box and in the Rust rewrite.
+
+    Never cut: a text over `CONTENT_TEXT_MAX` is refused by the adapters before it gets here, so
+    padding one field cannot push what matters out of reach.
+    """
+    if len(text) > CONTENT_TEXT_MAX:
+        raise ContentTooLong(len(text))
+    hits = []
+    for rule in rules:
+        if rule["direction"] not in (direction, "both"):
+            continue
+        if channel not in rule["channels"] and "*" not in rule["channels"]:
+            continue
+        if any(_content_phrase(p).search(text) for p in rule["patterns"]) or any(content_detect(d, text) for d in rule["detectors"]):
+            hits.append(rule)
+    winner = None
+    for rule in hits:
+        if winner is None or CONTENT_ACTIONS.index(rule["action"]) > CONTENT_ACTIONS.index(winner["action"]):
+            winner = rule
+    return winner, hits
+
+
+class ContentRulesUnreadable(Exception):
+    """The rules cannot be known (no file, a broken one, a store the firewall could not open): every check refuses."""
+
+
+class ContentTooLong(Exception):
+    """More text than a check reads. Telegram's own limits are far below it, so it is refused, never cut."""
+
+
+_content_cache: dict[str, Any] = {"key": None, "rules": []}
+
+
+def _content_rule_ok(r: Any) -> bool:
+    return (isinstance(r, dict) and isinstance(r.get("id"), str) and isinstance(r.get("reason"), str)
+            and r.get("direction") in ("in", "out", "both") and r.get("action") in CONTENT_ACTIONS
+            and isinstance(r.get("channels"), list) and all(isinstance(c, str) for c in r["channels"])
+            and isinstance(r.get("patterns"), list) and all(isinstance(p, str) and 0 < len(p) <= 100 for p in r["patterns"])
+            and isinstance(r.get("detectors"), list) and all(d in ("secrets", "iban", "card", "emails") for d in r["detectors"]))
+
+
+def content_rules() -> list[dict[str, Any]]:
+    """The organization's rules (re-read when the file changes), with the core rule first. Raises when they cannot be known."""
+    try:
+        st = os.stat(CONTENT_RULES_PATH)
+    except OSError as exc:
+        # No file is not "no rules": the directory is a tmpfs, so after a reboot the proxy starts
+        # before the mitm-agent has written it, and a mitm-agent that failed never writes it.
+        raise ContentRulesUnreadable(str(exc)) from exc
+    key = (st.st_mtime_ns, st.st_size)
+    if _content_cache["key"] != key:
+        try:
+            with open(CONTENT_RULES_PATH, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError) as exc:
+            raise ContentRulesUnreadable(str(exc)) from exc
+        if isinstance(doc, dict) and doc.get("unreadable") is True:
+            # The mitm-agent could not open its store: the organization's rules are unknown.
+            raise ContentRulesUnreadable("the firewall could not read its content rules")
+        rules = doc.get("rules") if isinstance(doc, dict) and doc.get("version") == 1 else None
+        if not isinstance(rules, list) or not all(_content_rule_ok(r) for r in rules):
+            raise ContentRulesUnreadable("the rule file is not in the expected shape")
+        # Nothing holds a message coming in (the agent's next poll would have to hand it over later):
+        # a hold on that side stops it instead.
+        _content_cache.update(key=key, rules=rules)
+    return [CORE_SECRETS_RULE, *_content_cache["rules"]]
+
+
+def _content_audit(flow: http.HTTPFlow | None, rule_id: str, channel: str, direction: str, action: str, **extra: Any) -> None:
+    """The firewall's own record of a rule that fired. Metadata only, never the text."""
+    rec = {"ts": time.time(), "rule": rule_id, "channel": channel, "direction": direction, "action": action,
+           "vm_id": flow.metadata.get("cc_vm_id") if flow else None, "flow_id": flow.id if flow else None, **extra}
+    log.info(f"[content-rules] {json.dumps(rec)}")
+    if not CONTENT_AUDIT_PATH:
+        return
+    try:
+        try:
+            if os.path.getsize(CONTENT_AUDIT_PATH) >= LOG_MAX_BYTES:
+                os.replace(CONTENT_AUDIT_PATH, CONTENT_AUDIT_PATH + ".1")
+        except FileNotFoundError:
+            pass
+        with open(CONTENT_AUDIT_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError as exc:
+        log.warning(f"[content-rules] audit write failed: {exc}")
+
+
+def _content_post(path: str, payload: dict[str, Any], timeout: float = 5) -> dict[str, Any]:
+    # A hold waits for `CONTENT_HOLD_WAIT`, longer than the mitm-agent can take to ask everyone (it
+    # asks in parallel, 10 s per Telegram call): a hold the proxy gave up on would still be sendable.
+    """Loopback to the mitm-agent (`content-rules.ts`). Raises on anything but a JSON 200."""
+    request = urllib.request.Request(CONTENT_RULES_URL + path, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout) as answer:
+        doc = json.loads(answer.read() or b"{}")
+    if not isinstance(doc, dict):
+        raise ValueError("unexpected answer")
+    return doc
+
+
+def _content_notice(payload: dict[str, Any]) -> None:
+    """Fire and forget: the firewall's own notice to the person in the chat."""
+    def send() -> None:
+        try:
+            _content_post("/notice", payload)
+        except (OSError, ValueError) as exc:
+            log.warning(f"[content-rules] notice not handed over: {exc}")
+    try:
+        task = asyncio.get_running_loop().create_task(asyncio.to_thread(send))
+        _phone_settle_tasks.add(task)
+        task.add_done_callback(_phone_settle_tasks.discard)
+    except RuntimeError:  # no event loop: a direct call from a test
+        send()
+
+
+_TG_METHOD_RE = re.compile(r"^/bot(\d+):[^/]+/([A-Za-z]+)$")
+_TG_FILE_RE = re.compile(r"^/file/bot\d+:[^/]+/[A-Za-z0-9_./-]+$")
+# The methods a held message can be sent with later (content-rules.ts holds the same list).
+_TG_HOLDABLE = {"sendMessage", "editMessageText", "editMessageCaption", "sendPhoto", "sendDocument", "sendVideo", "sendAudio", "sendAnimation", "sendVoice", "sendMediaGroup"}
+# Every field that carries words someone reads: messages, captions, polls, contacts, venues,
+# inline results, descriptions. Checked wherever they sit, at any depth.
+_TG_TEXT_KEYS = {"text", "caption", "question", "explanation", "title", "description", "short_description", "address",
+                 "first_name", "last_name", "name", "message_text", "vcard", "quote", "label", "options"}
+
+
+class _DuplicateKey(ValueError):
+    pass
+
+
+def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        # Which copy Telegram reads is not ours to guess: refuse rather than check the other one.
+        raise _DuplicateKey("a JSON object repeats a key")
+    return dict(pairs)
+
+
+def _tg_out_fields(flow: http.HTTPFlow) -> tuple[list[tuple[str, Any]], bool]:
+    """
+    Every field of an outgoing Telegram call, query string included, every value of a repeated
+    key; and whether the call is a JSON body with no fields in the query (only that can be held and
+    sent again as it was).
+    """
+    fields: list[tuple[str, Any]] = list(flow.request.query.items(multi=True))
+    ctype = (flow.request.headers.get("content-type") or "").lower()
+    is_json = False
+    if "multipart/form-data" in ctype:
+        fields += [(k.decode(errors="replace"), v.decode(errors="replace")) for k, v in flow.request.multipart_form.items(multi=True)]
+    elif "application/x-www-form-urlencoded" in ctype:
+        fields += list(flow.request.urlencoded_form.items(multi=True))
+    else:
+        raw = flow.request.get_text(strict=False) or ""
+        if raw.strip():
+            doc = json.loads(raw, object_pairs_hook=_no_duplicates)
+            if not isinstance(doc, dict):
+                raise ValueError("not a JSON object")
+            fields += list(doc.items())
+            is_json = not flow.request.query
+    return fields, is_json
+
+
+def _tg_texts(value: Any, under_text_key: bool, out: list[str], depth: int = 0) -> None:
+    if depth > 20:
+        raise ValueError("nested too deep")
+    if isinstance(value, str):
+        stripped = value.lstrip()
+        if stripped[:1] in ("[", "{"):
+            # Form and multipart calls carry objects as JSON in a string (media, options, results).
+            try:
+                _tg_texts(json.loads(value, object_pairs_hook=_no_duplicates), under_text_key, out, depth + 1)
+                return
+            except _DuplicateKey:
+                raise
+            except ValueError:
+                pass
+        if under_text_key:
+            out.append(value)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _tg_texts(v, under_text_key or k in _TG_TEXT_KEYS, out, depth + 1)
+    elif isinstance(value, list):
+        for v in value:
+            _tg_texts(v, under_text_key, out, depth + 1)
+
+
+def _tg_text(fields: list[tuple[str, Any]]) -> str:
+    out: list[str] = []
+    for key, value in fields:
+        _tg_texts(value, key in _TG_TEXT_KEYS, out)
+    return "\n".join(out)
+
+
+def _tg_refuse(flow: http.HTTPFlow, rule: dict[str, Any] | None, detail: str, reason: str | None = None) -> None:
+    reason = rule["reason"] if rule else (reason or "the check could not run")
+    flow.response = http.Response.make(400, json.dumps({"ok": False, "error_code": 400, "description": f"Bad Request: blocked by your organization's rules: {reason}{detail}"}), {"Content-Type": "application/json"})
+    flow.metadata["cc_effect"] = "block"
+    flow.metadata["cc_rule"] = f"content: {rule['id']}" if rule else "content: error"
+    rec = _http_record(flow, "block")
+    rec["status"] = 400
+    _log_once(flow, rec)
+
+
+async def content_rules_telegram_out(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    """An agent's outgoing Telegram call: True when it was answered here (blocked or held)."""
+    path = flow.request.path.split("?", 1)[0]
+    match = _TG_METHOD_RE.match(path)
+    if not match:
+        # A file download is a read. Anything else the pattern does not take (a trailing slash, an
+        # encoded method name) still reaches Telegram with the real token after the swap, so it is
+        # refused rather than passed unchecked.
+        if _TG_FILE_RE.match(path) and flow.request.method in ("GET", "HEAD"):
+            return False
+        _tg_refuse(flow, None, "", reason="this Telegram call could not be checked")
+        _content_audit(flow, "error", "telegram", "out", "block", detail="unmatched path")
+        return True
+    # Every method that is not a read: text can ride on a poll, a contact, a description, a GET.
+    if match.group(2).lower().startswith("get"):
+        return False
+    try:
+        fields, is_json = _tg_out_fields(flow)
+        text = _tg_text(fields)
+        if not text:
+            return False
+        rule, hits = content_evaluate(content_rules(), "out", "telegram", text)
+        for hit in hits:
+            if hit["action"] == "log":
+                _content_audit(flow, hit["id"], "telegram", "out", "log")
+        if rule is None or rule["action"] == "log":
+            return False
+        chat_id = next((v for k, v in fields if k == "chat_id"), None)
+        if rule["action"] == "hold":
+            if is_json and match.group(2) in _TG_HOLDABLE and chat_id is not None and len(flow.request.raw_content or b"") <= CONTENT_HOLD_BODY_MAX:
+                key = uuid.uuid4().hex
+                try:
+                    answer = await asyncio.to_thread(_content_post, "/hold", timeout=CONTENT_HOLD_WAIT, payload={
+                        "key": key, "botId": match.group(1), "method": match.group(2), "body": flow.request.get_text(strict=False),
+                        "chatId": str(chat_id), "vmId": vm_id, "rule": {"id": rule["id"], "name": rule.get("name") or rule["id"], "reason": rule["reason"]},
+                    })
+                except Exception:
+                    # Gave up waiting: the agent is told it was stopped, so a hold must not survive.
+                    try:
+                        await asyncio.to_thread(_content_post, "/cancel", {"key": key})
+                    except Exception as exc:
+                        log.warning(f"[content-rules] hold cancel not handed over: {exc!r}")
+                    raise
+                if answer.get("ok") is True and isinstance(answer.get("holdId"), str):
+                    # The agent is told it went (decided 2026-10-15): the people who get codes decide.
+                    first_text = next((v for k, v in fields if k == "text" and isinstance(v, str)), None)
+                    message = {"message_id": int(answer.get("messageId") or 0) or 1, "date": int(time.time()),
+                               "chat": {"id": chat_id}, **({"text": first_text} if first_text is not None else {})}
+                    flow.response = http.Response.make(200, json.dumps({"ok": True, "result": message}), {"Content-Type": "application/json"})
+                    flow.metadata["cc_effect"] = "hold"
+                    flow.metadata["cc_rule"] = f"content: {rule['id']}"
+                    _log_once(flow, {**_http_record(flow, "hold"), "status": 200})
+                    _content_audit(flow, rule["id"], "telegram", "out", "hold", hold=answer["holdId"])
+                    return True
+                detail = " (nobody could be asked to approve it)"
+            else:
+                detail = " (it could not be held for approval)"
+            _tg_refuse(flow, rule, detail)
+            _content_audit(flow, rule["id"], "telegram", "out", "block", held=False)
+        else:
+            _tg_refuse(flow, rule, "")
+            _content_audit(flow, rule["id"], "telegram", "out", "block")
+        if chat_id is not None:
+            _content_notice({"kind": "out", "botId": match.group(1), "chatId": str(chat_id), "vmId": vm_id, "reason": rule["reason"]})
+        return True
+    except ContentTooLong:
+        _tg_refuse(flow, None, "", reason="it is too long to check")
+        _content_audit(flow, "error", "telegram", "out", "block", detail="too long")
+        return True
+    except Exception as exc:  # fail closed, RecursionError and MemoryError included
+        log.warning(f"[content-rules] outgoing Telegram check failed, refusing: {exc!r}")
+        _tg_refuse(flow, None, "")
+        _content_audit(flow, "error", "telegram", "out", "block")
+        return True
+
+
+def content_rules_telegram_poll(flow: http.HTTPFlow) -> bool:
+    """
+    An agent asking Telegram for its messages (`getUpdates`) while the rules are unknown: refused
+    here, before Telegram is asked, with Telegram's own "retry after". Telegram keeps the messages,
+    and the agent gets them once the rules are known. Stripping them from the answer instead would
+    move the agent's offset past them, and they would be lost for good.
+    """
+    if not _TG_GET_UPDATES_RE.match(flow.request.path.split("?", 1)[0]):
+        return False
+    try:
+        content_rules()
+        return False
+    except ContentRulesUnreadable:
+        pass
+    flow.response = http.Response.make(429, json.dumps({"ok": False, "error_code": 429, "description": "Too Many Requests: retry after 5 (the firewall is loading its rules)", "parameters": {"retry_after": 5}}), {"Content-Type": "application/json"})
+    flow.metadata["cc_effect"] = "block"
+    flow.metadata["cc_rule"] = "content: rules unknown"
+    _log_once(flow, {**_http_record(flow, "block"), "status": 429})
+    _content_audit(flow, "error", "telegram", "in", "wait", detail="rules unknown")
+    return True
+
+
+_TG_MESSAGE_KEYS = ("message", "edited_message", "channel_post", "edited_channel_post", "business_message")
+
+
+def _tg_update_text(update: dict[str, Any]) -> tuple[str, Any, Any] | None:
+    """The text of one incoming update, its chat and its sender; None when it carries no text."""
+    for key in _TG_MESSAGE_KEYS:
+        msg = update.get(key)
+        if isinstance(msg, dict):
+            text = "\n".join(str(msg[k]) for k in ("text", "caption") if isinstance(msg.get(k), str))
+            return text, (msg.get("chat") or {}).get("id"), (msg.get("from") or {}).get("id")
+    return None
+
+
+def content_rules_telegram_in(flow: http.HTTPFlow) -> None:
+    """Messages coming in to the agent (`getUpdates`): a blocked one is taken out, offset kept moving."""
+    if not is_telegram_flow(flow) or flow.response is None or flow.response.status_code != 200:
+        return
+    match = _TG_GET_UPDATES_RE.match(flow.request.path.split("?", 1)[0])
+    if not match:
+        return
+    try:
+        doc = json.loads(flow.response.get_content() or b"")
+        if not isinstance(doc, dict) or doc.get("ok") is not True or not isinstance(doc.get("result"), list):
+            raise ValueError("not a getUpdates answer")
+    except Exception as exc:
+        # An answer that cannot be read cannot be checked: the agent gets nothing this time. Its
+        # offset stays where it was, so Telegram sends the same batch again on the next poll.
+        log.warning(f"[content-rules] incoming Telegram answer unreadable, held back: {exc!r}")
+        _content_audit(flow, "error", "telegram", "in", "block", detail="unreadable answer")
+        flow.response.set_content(json.dumps({"ok": True, "result": []}).encode())
+        return
+    updates = doc["result"]
+    if not updates:
+        return
+    vm_id = flow.metadata.get("cc_vm_id")
+    kept, notices = [], []
+    try:
+        rules = content_rules()
+        for update in updates:
+            found = _tg_update_text(update) if isinstance(update, dict) else None
+            if not found or not found[0]:
+                kept.append(update)
+                continue
+            try:
+                rule, hits = content_evaluate(rules, "in", "telegram", found[0])
+            except ContentTooLong:
+                rule, hits = {"id": "error", "reason": "it is too long to check", "action": "block"}, []
+            for hit in hits:
+                if hit["action"] == "log":
+                    _content_audit(flow, hit["id"], "telegram", "in", "log")
+            if rule is None or rule["action"] == "log":
+                kept.append(update)
+                continue
+            _content_audit(flow, rule["id"], "telegram", "in", "block")
+            if found[1] is not None:
+                notices.append({"kind": "in", "botId": match.group(1), "chatId": str(found[1]), "vmId": vm_id, "reason": rule["reason"]})
+    except ContentRulesUnreadable:
+        # The rules became unknown while Telegram answered: an empty answer, so the agent's offset
+        # does not move and Telegram sends the same messages again on the next poll.
+        _content_audit(flow, "error", "telegram", "in", "wait", detail="rules unknown")
+        flow.response.set_content(json.dumps({**doc, "result": []}).encode())
+        return
+    except Exception as exc:  # fail closed: nothing with text goes in unchecked
+        log.warning(f"[content-rules] incoming Telegram check failed, holding back messages: {exc!r}")
+        _content_audit(flow, "error", "telegram", "in", "block")
+        notices = []
+        try:
+            kept = [u for u in updates if not (isinstance(u, dict) and (_tg_update_text(u) or ("",))[0])]
+        except Exception:
+            # Not even that could be worked out: only the offset goes through.
+            kept = []
+    if len(kept) == len(updates):
+        return
+    kept = keep_top_update(updates, kept)
+    flow.response.set_content(json.dumps({**doc, "result": kept}).encode())
+    for notice in notices:
+        _content_notice(notice)
+
+
 def response(flow: http.HTTPFlow) -> None:
     telegram_taps_response(flow)
+    content_rules_telegram_in(flow)
     if flow.metadata.get("cc_email_reservation"):
         task = asyncio.create_task(asyncio.to_thread(email_settle, flow))
         _phone_settle_tasks.add(task)
