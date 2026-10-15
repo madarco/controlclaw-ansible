@@ -1,8 +1,8 @@
-import re
 """Pinned runtime patches must be atomic, idempotent and refuse unknown upstream code."""
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import tempfile

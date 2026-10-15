@@ -21,6 +21,8 @@ export const liveModel = (provider, model) => typeof model === 'string' && !!LIV
 const MAX_LOOKUPS = 24;
 // Presenting (present.js): how far back the request to share or stop is looked for.
 const PRESENT_WINDOW = 12000;
+// Words around a request to leave that do not change it: "Jarvis, please leave the meeting now, thanks".
+const LEAVE_FILLER = new Set(['please', 'hey', 'hi', 'ok', 'okay', 'so', 'now', 'alright', 'thanks', 'thank', 'bye', 'goodbye', 'cheers', 'then']);
 const PRESENT_RECHECK = 1500;
 const LOOKUP_TIMEOUT = 30000;
 const STILL_CHECKING_AFTER = 8000;
@@ -322,8 +324,8 @@ export class LiveBridge {
         say = `Done: a reminder for the owner is set for ${action.said}: "${action.text}". Tell them so once, in one sentence, with the time and "UTC".`;
       } else say = 'The reminder could not be set (a technical failure). Say that no reminder was set.';
     } else if (action.kind === 'leave') {
-      // The vm-agent reads the voice log every few seconds and ends the meeting on this line.
-      this.record.action('leave', { from: job.from ?? '' });
+      // The vm-agent ends the meeting when it reads the `leave` line, so it is written only once the goodbye was played.
+      this.leaveAfterGoodbye(job.from ?? '');
       say = 'Done: you are leaving the meeting now. Say a short goodbye, in a few words.';
     } else if (action.kind === 'present' && action.mode !== 'stop' && !job.addressed && (this.wakeRequired || this.config.always)) {
       // The consult can answer CC_PRESENT to a request nobody addressed to the agent: presenting starts
@@ -423,13 +425,37 @@ export class LiveBridge {
     this.presentUsedAt = Date.now();
     return mode;
   }
-  /** True when the last few seconds plainly ask the agent to leave the meeting (with its name, when always listening). */
+  /**
+   * True when the request is only to leave the meeting ("Jarvis, please leave the meeting", "you can go
+   * now"), with the agent's name when always listening. Leaving has to be the whole of the last clause
+   * said, so "after we leave the meeting, remind me…" is a normal request for the consult.
+   */
   leaveRequest(from = this.lastDelegationAt ?? 0) {
     if (this.phone) return false;
     const since = Math.max(from, Date.now() - PRESENT_WINDOW);
     const recent = this.heard.filter(f => f.at >= since).map(f => f.text).join('').toLowerCase();
-    if (!/\b(leave|exit|drop off from|hang up on)( the| this)? (meeting|call)\b|\byou can (go|leave) now\b/.test(recent)) return false;
+    const names = new Set(this.wake.names.flatMap(n => n.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []));
+    const clauses = recent.split(/[.,;!?]+/).map(c => (c.match(/[\p{L}\p{N}']+/gu) ?? []).filter(w => !names.has(w) && !LEAVE_FILLER.has(w)).join(' ')).filter(Boolean);
+    const m = /^((?:can|could|would|will) you |you can |you may |go ahead and )?(leave|exit|hang up|drop off|go)( (?:the|this) (?:meeting|call))?$/.exec(clauses.at(-1) ?? '');
+    if (!m || (m[2] === 'go' && !m[1])) return false;
     return !this.config.always || this.nameIn(recent);
+  }
+  /**
+   * Writes the `leave` line once the goodbye has been played: its audio started and then stopped for a
+   * moment. Without any audio it is written after a few seconds anyway, and never later than the limit.
+   */
+  leaveAfterGoodbye(from) {
+    if (this.leaving) return;
+    const t = { quiet: 2000, noAudio: 6000, max: 15000, ...this.deps.leaveTimes }, start = Date.now();
+    this.leaving = true;
+    const tick = () => {
+      const now = Date.now(), spoke = (this.lastOutputAt ?? 0) > start;
+      if ((spoke && now - this.lastOutputAt >= t.quiet) || (!spoke && now - start >= t.noAudio) || now - start >= t.max) {
+        this.record.action('leave', { from });
+        this.metric('leave', { spoke });
+      } else setTimeout(tick, Math.min(250, t.quiet)).unref?.();
+    };
+    setTimeout(tick, Math.min(250, t.quiet)).unref?.();
   }
   /** One of the agent's names anywhere in the text, as `named` looks for it. */
   nameIn(text) {

@@ -406,20 +406,45 @@ test('"leave the meeting", said to the agent: a goodbye and a leave line for the
   const bridge = new LiveBridge({
     providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
     onAudio: () => {}, onToolCall: t => tools.push(t), onClearAudio: () => {}, onClose: () => {}, onError: () => {},
-  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter: { reset: async () => {} }, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING, full: true }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter: { reset: async () => {} }, leaveTimes: { quiet: 300, noAudio: 600, max: 3000 }, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING, full: true }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
   await bridge.connect();
   const ws = all[0];
   const said = text => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: text }));
   const delegate = id => ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id } }));
+  const log = () => { try { return readFileSync(join(dir, 'meeting.jsonl'), 'utf8'); } catch { return ''; } };
+  const speak = () => ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.alloc(4800, 0x40).toString('base64') }));
   said("Bob, I think we should leave the meeting soon."); delegate('d1');
   await new Promise(r => setTimeout(r, 50));
   assert.equal(tools.length, 1, 'not said to the agent: the consult, as before');
   bridge.submitToolResult('d1', { text: 'Okay.' });
   await new Promise(r => setTimeout(r, 1300));
-  said(' Jarvis, you can leave the meeting now.'); delegate('d2');
+  // Leaving only mentioned, with the agent's name: a normal request, for the consult.
+  said(' Jarvis, after we leave the meeting, remind me to call Anna.'); delegate('d3');
   await new Promise(r => setTimeout(r, 50));
-  assert.equal(tools.length, 1, 'no consult, no task');
-  assert.match(readFileSync(join(dir, 'meeting.jsonl'), 'utf8'), /"kind":"leave"/);
+  assert.equal(tools.length, 2, 'a request that mentions leaving goes to the consult');
+  bridge.submitToolResult('d3', { text: 'Okay.' });
+  await new Promise(r => setTimeout(r, 1300));
+  said(' Jarvis, you can leave the meeting now, thanks.'); delegate('d2');
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(tools.length, 2, 'no consult, no task');
   assert.match(ws.sent.filter(e => e.type === 'session.commentary.append').at(-1).content, /leaving the meeting now/);
+  // The goodbye is played first: no leave line while its audio comes, then one once it stopped.
+  for (let i = 0; i < 4; i++) { speak(); await new Promise(r => setTimeout(r, 150)); }
+  assert.doesNotMatch(log(), /"kind":"leave"/, 'not while the goodbye plays');
+  await new Promise(r => setTimeout(r, 700));
+  assert.match(log(), /"kind":"leave"/);
   bridge.close();
+});
+
+test('only a whole request to leave counts; leaving that is only mentioned does not', async () => {
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
+    onAudio: () => {}, onToolCall: () => {}, onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { metric: () => {}, voiceDir: '/nonexistent' });
+  const asks = text => { bridge.heard = [{ at: Date.now(), text }]; return bridge.leaveRequest(0); };
+  for (const yes of ['Jarvis, please leave the meeting.', 'Jarvis, you can leave the meeting now, thanks.', 'Thanks Jarvis, you can go now.', 'Jarvis, leave.', 'Jarvis, could you hang up the call?', 'Jarvis. Exit this meeting. Bye!'])
+    assert.equal(asks(yes), true, yes);
+  for (const no of ['Jarvis, after we leave the meeting, remind me to call Anna.', 'Jarvis, should we leave the meeting early today?', 'Jarvis, go.', 'Jarvis, leave the meeting notes in the folder.', 'Please leave the meeting.', 'Jarvis, we can leave the meeting at five.'])
+    assert.equal(asks(no), false, no);
 });
