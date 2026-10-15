@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.20.0",
+    "date": "2026-10-15",
+    "changes": [
+      "In meetings, the agent's lookups now carry only what was said since its last answer, so they stay small in long meetings.",
+      "Groundwork for showing HTML widgets in the dashboard, signed in like the dashboard itself (not turned on yet)."
+    ]
+  },
+  {
     "version": "1.19.1",
     "date": "2026-10-15",
     "changes": [
