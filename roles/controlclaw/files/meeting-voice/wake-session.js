@@ -19,6 +19,7 @@ import { LiveBridge, audible } from './live.js';
 import { createWakeMatcher } from './wake.js';
 import { meetingLines, lastPart, voiceRecord } from './record.js';
 import { WAKE_TONE, STOP_TONE } from './tone.js';
+import { meetingTasks } from './tasks.js';
 const DETECTOR = fileURLToPath(new URL('./cc-wake.py', import.meta.url));
 const SECOND = 24000 * 2;
 // Meeting audio kept for replay: a request is replayed from its name, however long it took Vosk to
@@ -100,7 +101,27 @@ export class WakeSessionBridge {
     if (this.closed) { try { this.detector?.kill(); } catch { /* gone */ } throw new Error('Voice session closed'); }
     this.ready = true;
     this.timer = setInterval(() => this.tick(), this.t.tick); this.timer.unref?.();
+    // A full agent task's result (tasks.js): said in the confirmed session if one is open, otherwise a
+    // session opens just to say it (announce). Until it is ready the result waits in tasks.js.
+    this.speak = text => {
+      const entry = this.session;
+      if (entry?.confirmed && entry.ready) return entry.bridge.say(text);
+      this.announce();
+      return false;
+    };
+    this.tasks().setSpeaker(this.speak);
     this.req.onReady?.();
+  }
+  tasks() { return this.deps.tasks ?? meetingTasks; }
+  /** A session nobody called, opened to say a task's result: counted and toned like a request, nothing replayed. */
+  announce() {
+    if (this.closed || this.session || this.holding || this.sessions >= this.maxSessions) return;
+    this.open(this.names[0] ?? 'Agent', false, true);
+    const entry = this.session; if (!entry) return;
+    this.sessions++;
+    entry.confirmed = true; entry.announce = true; entry.confirmedAt = entry.lastActivity = Date.now();
+    if (!this.listening) { this.listening = true; this.cue(WAKE_TONE); }
+    this.metric('session_announce');
   }
   startDetector() {
     return new Promise((resolve, reject) => {
@@ -214,6 +235,8 @@ export class WakeSessionBridge {
       if (this.session !== entry) return;
       this.session = null;
       if (!entry.confirmed) { this.lastStart = 0; return; }
+      // A session opened to say a task's result is not retried: nothing is replayed, the result waits (tasks.js).
+      if (entry.announce) { this.sessions--; this.listening = false; this.cue(STOP_TONE); return; }
       // The previous session's socket may still be closing (the firewall allows one at a time):
       // a confirmed request gets one more try, with its audio kept meanwhile.
       this.sessions--;
@@ -309,6 +332,8 @@ export class WakeSessionBridge {
   replay(entry) {
     if (!entry.confirmed || this.session !== entry) return;
     if (entry.freshContext) { entry.bridge.appendContext(entry.freshContext); entry.freshContext = null; }
+    // Task results waiting to be said (tasks.js), first.
+    if (this.speak) this.tasks().setSpeaker(this.speak);
     this.pump();
   }
   /** Replayed and live audio, in order, as fast as the socket takes it. */
@@ -371,6 +396,7 @@ export class WakeSessionBridge {
     if (this.fallback) return this.fallback.close(reason);
     if (this.closed) return; this.closed = true; this.ready = false;
     clearInterval(this.timer); clearTimeout(this.pumpTimer);
+    if (this.speak) this.tasks().clearSpeaker(this.speak);
     if (this.session) { this.session.bridge.close('completed'); this.session = null; }
     try { this.detector?.kill(); } catch { /* already gone */ }
     this.req.onClearAudio?.(); this.req.onClose?.(reason);
