@@ -21,7 +21,6 @@ const QUALITY = 60;
 // How long Meet gets to say "You are presenting" after the click.
 const CONFIRM_MS = 10000;
 const SHARE = /\b(share screen|present now)\b/i;
-const PRESENTING = /\b(you are presenting|you('|’)re presenting|stop presenting)\b/i;
 // What Meet shows when the host does not let others share (wordings seen in Meet's help and UI).
 const REFUSED = /\b(host (has )?(turned off|disabled|doesn('|’)t allow|does not allow|hasn('|’)t allowed)|can('|’)t (share|present)|cannot (share|present)|sharing is (turned off|disabled)|only the host can (share|present))\b/i;
 
@@ -60,13 +59,14 @@ export function createPresenter(deps = {}) {
 
   const meetTab = async () => (await fetchJson(9223, '/json/list')).find(t => t.type === 'page' && /^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/.test(t.url));
   /**
-   * Meet's own words: presenting, refused, or neither. Only Meet's controls (their labels) and its
-   * dialogs and notices: never the page text, which holds the captions and the chat, where anyone can
-   * say "stop presenting".
+   * Meet's own words: presenting, refused, or neither. Presenting is Meet's own "Stop presenting"
+   * control, matched whole; refused is a Meet dialog or notice. Never the page text or other labels:
+   * the captions, the chat and participants' names are anyone's to choose.
    */
   const meetState = async meet => {
-    const text = value(await meet.send('Runtime.evaluate', { expression: `[...document.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label')).join(" ") + " " + [...document.querySelectorAll('button,[role=button],[role=dialog],[role=alertdialog],[role=alert]')].map(e => e.textContent).join(" ").slice(0, 20000)` })) ?? '';
-    return { presenting: PRESENTING.test(text), refused: REFUSED.test(text) };
+    const read = value(await meet.send('Runtime.evaluate', { expression: `JSON.stringify({ stop: [...document.querySelectorAll('button,[role=button]')].some(b => /^(cancel_presentation)?\\s*stop presenting$/i.test((b.getAttribute('aria-label') || b.textContent || '').trim())), notices: [...document.querySelectorAll('[role=dialog],[role=alertdialog],[role=alert]')].map(e => e.textContent).join(' ').slice(0, 5000) })` })) ?? '{}';
+    let state; try { state = JSON.parse(read); } catch { state = {}; }
+    return { presenting: state.stop === true, refused: REFUSED.test(state.notices ?? '') };
   };
   /** Stage tabs this process does not hold (a gateway restart left them): closed. True when there were any. */
   const closeOrphans = async () => {
@@ -104,9 +104,10 @@ export function createPresenter(deps = {}) {
         if (found?.id !== state.sourceId) { if (state.source && state.source !== found?.client) state.source.close(); state.source = found?.client ?? null; state.sourceId = found?.id ?? null; }
       }
       if (!state.source) { await state.stage.send('Runtime.evaluate', { expression: 'card("Nothing to show")' }); return; }
-      const size = JSON.parse(value(await state.source.send('Runtime.evaluate', { expression: 'JSON.stringify([innerWidth, innerHeight])' })) ?? '[0,0]');
+      // The clip is in document coordinates: what the agent sees starts at the page's scroll position.
+      const size = JSON.parse(value(await state.source.send('Runtime.evaluate', { expression: 'JSON.stringify([innerWidth, innerHeight, scrollX, scrollY])' })) ?? '[0,0,0,0]');
       if (!size[0] || !size[1]) return;
-      const shot = await state.source.send('Page.captureScreenshot', { format: 'jpeg', quality: QUALITY, optimizeForSpeed: true, clip: { x: 0, y: 0, width: size[0], height: size[1], scale: Math.min(1, MAX_WIDTH / size[0]) } });
+      const shot = await state.source.send('Page.captureScreenshot', { format: 'jpeg', quality: QUALITY, optimizeForSpeed: true, clip: { x: size[2] || 0, y: size[3] || 0, width: size[0], height: size[1], scale: Math.min(1, MAX_WIDTH / size[0]) } });
       if (shot.result?.data) await state.stage.send('Runtime.evaluate', { expression: `draw(${JSON.stringify(shot.result.data)})` });
     } catch { /* the next frame tries again */ }
     finally { if (state) state.busy = false; }
@@ -121,6 +122,8 @@ export function createPresenter(deps = {}) {
 
   return {
     presenting: () => !!state,
+    /** A voice session starts: a stage no one holds (a gateway restart) is closed. */
+    reset() { return serial(async () => { if (!state) await closeOrphans(); }); },
     /**
      * Present the agent's browser. Resolves with the real outcome: 'presenting', 'already', 'refused'
      * (Meet would not let the agent present), 'not_started' (no "You are presenting" in time),

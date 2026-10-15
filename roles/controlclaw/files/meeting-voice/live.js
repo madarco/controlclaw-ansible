@@ -134,6 +134,8 @@ export class LiveBridge {
     // One session for the whole meeting: it says full agent results (tasks.js). Always-listening and
     // woken sessions are opened by a bridge that does this for them.
     if (!this.phone && !this.config.always && !this.config.woken) { this.speak = text => this.say(text); this.tasks().setSpeaker(this.speak); }
+    // A stage left showing by a gateway restart is closed when the voice starts (present.js).
+    if (!this.phone) void (this.deps.presenter ?? meetingPresenter).reset?.().catch(() => {});
   }
   session() {
     const names = nameList(this.wake.names);
@@ -335,7 +337,11 @@ export class LiveBridge {
     else say = 'The request could not be handled (a technical failure). Say so plainly and offer to try again.';
     this.metric('action', { kind: action.kind });
     if (this.closed || job.answered) return;
-    if (quiet) { job.answered = true; this.final(job.id, say, false); } else this.answer(job, null, say);
+    if (quiet) { job.answered = true; this.final(job.id, say, false); }
+    // What Meet did is said even when the model delegated again meanwhile (it often asks twice for one
+    // request): a presenting outcome is not a stale lookup answer.
+    else if (action.kind === 'present') { job.answered = true; clearTimeout(job.still); clearTimeout(job.timer); this.final(job.id, say, job.addressed || (!this.wakeRequired && !this.config.always)); }
+    else this.answer(job, null, say);
   }
   /**
    * Lookups (D2). Each delegation is a job from the moment it arrives: its "still checking" note
@@ -372,7 +378,8 @@ export class LiveBridge {
     // here at once, without the consult (which can take half a minute). Anything less plain goes to the
     // consult, which may still answer CC_PRESENT.
     // `started`: the queue must never hand this job to a consult as well.
-    if (present) { job.started = true; job.present = true; void this.perform(job, { kind: 'present', mode: present }).finally(() => this.jobs.delete(id)); return; }
+    // Only a request someone addressed to the agent (the same rule as speaking a lookup's answer).
+    if (present && job.addressed) { job.started = true; job.present = true; void this.perform(job, { kind: 'present', mode: present }).finally(() => this.jobs.delete(id)); return; }
     // gpt-live can delegate before the request's transcript arrives: look once more a moment later, and
     // if it plainly asks to present, do that; the consult's answer is then ignored (the job is answered).
     if (!this.phone) {
@@ -380,7 +387,7 @@ export class LiveBridge {
         if (this.closed || job.answered || job.acting) return;
         const late = this.presentRequest(requestFrom);
         // The consult's answer is ignored from here on (submitToolResult skips an acting job).
-        if (late) { job.present = true; void this.perform(job, { kind: 'present', mode: late }).finally(() => { if (this.running !== id) this.jobs.delete(id); }); }
+        if (late && job.addressed) { job.present = true; void this.perform(job, { kind: 'present', mode: late }).finally(() => { if (this.running !== id) this.jobs.delete(id); }); }
       }, PRESENT_RECHECK);
       again.unref?.();
     }
@@ -397,8 +404,16 @@ export class LiveBridge {
     // "I'll share my screen" or "show me the first page" are not requests to present.
     const mode = /\bstop (presenting|sharing( your screen)?)\b/.test(recent) ? 'stop'
       : /\b(share|present) your (screen|browser)\b|\bshow us (your|the) (screen|browser|page you have open|page in your browser)\b|\b(can|could) you (start )?present(ing)?\b/.test(recent) ? 'browser' : null;
-    if (mode) this.presentUsedAt = Date.now();
+    // Said to the agent: in always listening the request must hold one of its names ("Bob, can you share
+    // your screen?" is not for it); with the wake word, a woken session is already called by name.
+    if (!mode || (this.config.always && !this.nameIn(recent))) return null;
+    this.presentUsedAt = Date.now();
     return mode;
+  }
+  /** One of the agent's names anywhere in the text, as `named` looks for it. */
+  nameIn(text) {
+    const words = String(text).match(/[\p{L}\p{N}]+/gu) ?? [];
+    return words.some((_, i) => this.wake.match(words.slice(i, i + 6).join(' ')));
   }
   start(job) {
     this.running = job.id; job.started = true;

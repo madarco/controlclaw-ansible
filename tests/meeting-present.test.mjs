@@ -27,15 +27,15 @@ function fixture({ share = 'ok', after = 'You are presenting', present = true, v
       if (url === 'meet') {
         if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') { calls.push(`click ${params.x},${params.y}`); meetText = after; }
         if (method === 'Runtime.evaluate' && params.expression.includes('b.offsetParent')) return { result: { result: { value: share === 'ok' ? JSON.stringify([600, 700]) : share } } };
-        // Meet's controls and dialogs only: captions are not part of what is read.
-        if (method === 'Runtime.evaluate' && params.expression.includes("[aria-label]")) return { result: { result: { value: meetText } } };
+        // Meet's own "Stop presenting" control and its notices: never captions, chat or names.
+        if (method === 'Runtime.evaluate' && params.expression.includes('JSON.stringify({ stop:')) return { result: { result: { value: JSON.stringify({ stop: /^(you are presenting|stop presenting)$/i.test(meetText), notices: meetText }) } } };
         return {};
       }
       if (url === 'stage') { if (method === 'Runtime.evaluate') draws.push(params.expression.slice(0, 20)); return {}; }
       if (url === 'agent') {
         if (method === 'Runtime.evaluate' && params.expression === 'document.visibilityState') return { result: { result: { value: visible ? 'visible' : 'hidden' } } };
-        if (method === 'Runtime.evaluate') return { result: { result: { value: '[1920,1080]' } } };
-        if (method === 'Page.captureScreenshot') { calls.push(`shot scale=${params.clip.scale.toFixed(3)} q=${params.quality}`); return { result: { data: 'AAAA' } }; }
+        if (method === 'Runtime.evaluate') return { result: { result: { value: '[1920,1080,0,2400]' } } };
+        if (method === 'Page.captureScreenshot') { calls.push(`shot scale=${params.clip.scale.toFixed(3)} q=${params.quality} at=${params.clip.x},${params.clip.y}`); return { result: { data: 'AAAA' } }; }
       }
       return {};
     },
@@ -59,7 +59,7 @@ test('presenting: the stage opens, frames are drawn at 2 fps from the visible ta
   assert.equal(await f.presenter.start(), 'presenting');
   assert.ok(f.calls.includes('9223 PUT /json/new?about:blank'), 'the stage tab opens in the meeting Chrome');
   assert.ok(f.calls.some(c => c === 'click 600,700'), 'Share screen clicked at its centre');
-  assert.ok(f.calls.some(c => c === 'shot scale=0.667 q=60'), 'the viewport only, 1280 wide, quality 60');
+  assert.ok(f.calls.some(c => c === 'shot scale=0.667 q=60 at=0,2400'), 'what the agent sees (the page scrolled to 2400), 1280 wide, quality 60');
   assert.ok(f.draws.some(d => d.startsWith('draw(')), 'a frame drawn on the stage before the click');
   assert.equal(f.intervals[0].ms, 500, '2 frames a second');
   assert.equal(f.presenter.presenting(), true);
@@ -290,5 +290,71 @@ test('the shortcut: only requests to the agent, and words used once are never us
   await new Promise(r => setTimeout(r, 1700));
   assert.deepEqual(asked, ['start'], 'neither the consult answer of d2 nor d3 presents again');
   assert.equal(tools.length, 3, 'd3 went to the consult');
+  bridge.close();
+});
+
+test("a participant named like Meet's words fools nothing: only Meet's own control counts", async () => {
+  const f = fixture({ after: 'You are presenting (a participant\'s name)' });
+  assert.equal(await f.presenter.start(), 'not_started');
+});
+
+test('always listening: only a request with the agent\'s name presents ("Bob, can you share your screen?" does not)', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const { voiceRecord } = await import('../roles/controlclaw/files/meeting-voice/record.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-present-')), all = [], tools = [], asked = [];
+  class WS extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.bufferedAmount = 0; this.sent = []; all.push(this); setImmediate(() => this.emit('open')); }
+    send(s) { const e = JSON.parse(s); this.sent.push(e); if (e.type === 'session.start') setImmediate(() => this.emit('message', JSON.stringify({ type: 'session.started', session: {} }))); }
+    terminate() {}
+  }
+  const presenter = { start: async () => { asked.push('start'); return 'presenting'; }, stop: async () => 'stopped', reset: async () => {} };
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
+    onAudio: () => {}, onToolCall: t => tools.push(t), onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING, present: true }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  await bridge.connect();
+  const ws = all[0];
+  const said = text => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: text }));
+  const delegate = id => ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id } }));
+  said('Bob, can you share your screen?'); delegate('d1');
+  await new Promise(r => setTimeout(r, 1700));
+  assert.deepEqual(asked, []);
+  await new Promise(r => setTimeout(r, 1300));
+  said(' Jarvis, share your screen please.'); delegate('d2');
+  await new Promise(r => setTimeout(r, 50));
+  assert.deepEqual(asked, ['start']);
+  bridge.close();
+});
+
+test('the outcome is said even when the model delegated again for the same request', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const { voiceRecord } = await import('../roles/controlclaw/files/meeting-voice/record.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-present-')), all = [];
+  class WS extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.bufferedAmount = 0; this.sent = []; all.push(this); setImmediate(() => this.emit('open')); }
+    send(s) { const e = JSON.parse(s); this.sent.push(e); if (e.type === 'session.start') setImmediate(() => this.emit('message', JSON.stringify({ type: 'session.started', session: {} }))); }
+    terminate() {}
+  }
+  let finish; const presenter = { start: () => new Promise(r => { finish = r; }), stop: async () => 'stopped', reset: async () => {} };
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
+    onAudio: () => {}, onToolCall: () => {}, onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING, present: true }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  await bridge.connect();
+  const ws = all[0];
+  ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: 'Jarvis, share your screen.' }));
+  ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd1' } }));
+  ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd2' } }));
+  finish('presenting'); await new Promise(r => setTimeout(r, 30));
+  const said = ws.sent.filter(e => e.type === 'session.commentary.append' && e.delegation_id === 'd1');
+  assert.equal(said.length, 1); assert.match(said[0].content, /now presenting/);
   bridge.close();
 });
