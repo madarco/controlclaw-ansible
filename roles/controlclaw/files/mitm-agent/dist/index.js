@@ -5594,6 +5594,22 @@ function parseFollowUpPolicy(value) {
   if (Object.keys(p2).some((k2) => k2 !== "enabled") || typeof p2.enabled !== "boolean") throw new Error("Invalid after-meeting setting");
   return { enabled: p2.enabled };
 }
+function parseFullAgentPolicy(value) {
+  const p2 = value;
+  if (!p2 || typeof p2 !== "object" || Array.isArray(p2) || Object.keys(p2).some((k2) => k2 !== "enabled") || typeof p2.enabled !== "boolean")
+    throw new Error("Invalid Full agent setting");
+  return { enabled: p2.enabled };
+}
+function fullAgentWidens(previous, next) {
+  return !!next?.enabled && !previous?.enabled;
+}
+function fullAgentSummary() {
+  return "Full agent in meetings: anyone in a meeting the agent was sent to can ask it to do anything it can do (files, packages, messages), and names in a meeting can be faked. This applies to meetings joined from the console and to events organized by the agent's own Google account. Firewall rules and confirmation codes still apply.";
+}
+function fullAgentMeeting(policy, claim2, ownAccount) {
+  if (!policy.fullAgent?.enabled) return false;
+  return !claim2 || claim2.source === "calendar" && !!ownAccount && claim2.organizer.toLowerCase() === ownAccount.toLowerCase();
+}
 var WAKE_SESSIONS = 40;
 function wakeSessions(policy) {
   const wakeOn = (policy.wake ?? MEETING_WAKE_DEFAULT).enabled;
@@ -5608,7 +5624,7 @@ function parseMeetingPolicy(value) {
     throw new Error("Invalid meetings settings");
   const p2 = value;
   if (Object.keys(p2).some(
-    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin"].includes(
+    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent"].includes(
       k2
     )
   ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean")
@@ -5627,7 +5643,8 @@ function parseMeetingPolicy(value) {
     ...autoJoin ? { autoJoin } : {},
     ...p2.followUp === void 0 ? {} : { followUp: parseFollowUpPolicy(p2.followUp) },
     ...p2.always === void 0 ? {} : { always: p2.always },
-    ...p2.reminders === void 0 ? {} : { reminders: p2.reminders }
+    ...p2.reminders === void 0 ? {} : { reminders: p2.reminders },
+    ...p2.fullAgent === void 0 ? {} : { fullAgent: parseFullAgentPolicy(p2.fullAgent) }
   };
 }
 function parseAutoJoinClaim(value) {
@@ -42128,7 +42145,8 @@ var MeetingsFirewall = class {
       return this.apply(proposal);
     }
     const widens3 = autoJoinWidens(current2?.policy.autoJoin, policy.autoJoin);
-    if (current2?.policy.enabled && !widens3 && JSON.stringify(current2.policy.speech ?? null) === JSON.stringify(policy.speech ?? null)) {
+    const fullWidens = fullAgentWidens(current2?.policy.enabled ? current2.policy.fullAgent : void 0, policy.fullAgent);
+    if (current2?.policy.enabled && !widens3 && !fullWidens && JSON.stringify(current2.policy.speech ?? null) === JSON.stringify(policy.speech ?? null)) {
       this.codes.drop(`meetings:${vmId}`);
       return this.apply(proposal);
     }
@@ -42140,13 +42158,16 @@ var MeetingsFirewall = class {
         data: { changeId }
       };
     const routes = this.opts.codeRoutes();
+    if (!routes.length && fullWidens)
+      return { ok: false, status: "failed", message: "Full agent needs a confirmation code. Connect a chat for codes first.", data: { changeId } };
     if (!routes.length) return this.apply(proposal);
-    const autoOnly = widens3 && current2?.policy.enabled && JSON.stringify(current2.policy.speech ?? null) === JSON.stringify(policy.speech ?? null);
+    const autoOnly = (widens3 || fullWidens) && current2?.policy.enabled && JSON.stringify(current2.policy.speech ?? null) === JSON.stringify(policy.speech ?? null);
+    const full = policy.fullAgent?.enabled ? ` ${fullAgentSummary()}` : "";
     const sent = await this.codes.send(
       `meetings:${vmId}`,
       proposal,
       target.hostname,
-      autoOnly ? `${autoJoinSummary(policy.autoJoin)} It joins as a guest; the camera stays off. Each call is counted and limited as today.` : `Enable guest Google Meet from your enrolled browser. ${policy.speech ? `Allow Bidi speech through ${policy.speech.provider}, model ${policy.speech.model}, for at most ${policy.speech.maxMinutes} minutes per call.${speechFamily(policy.speech.provider, policy.speech.model) === "live" ? wakeSessions(policy) ? " This model is billed for every connected second, about $3 an hour; with the wake word on, the agent listens on its own box and connects only when called by name." : " This model is billed for every connected second, about $3 an hour." : ""} The speech provider receives meeting audio. Meeting tools are read-only; actions need your private channel.` : "Transcript keeps microphone and camera off."} Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.${policy.followUp?.enabled ? " After each meeting the agent acts on the notes by your standing orders." : ""}${widens3 ? ` ${autoJoinSummary(policy.autoJoin)}` : ""}`,
+      autoOnly ? `${widens3 ? `${autoJoinSummary(policy.autoJoin)} It joins as a guest; the camera stays off. Each call is counted and limited as today.` : ""}${fullWidens ? full : ""}`.trim() : `Enable guest Google Meet from your enrolled browser. ${policy.speech ? `Allow Bidi speech through ${policy.speech.provider}, model ${policy.speech.model}, for at most ${policy.speech.maxMinutes} minutes per call.${speechFamily(policy.speech.provider, policy.speech.model) === "live" ? wakeSessions(policy) ? " This model is billed for every connected second, about $3 an hour; with the wake word on, the agent listens on its own box and connects only when called by name." : " This model is billed for every connected second, about $3 an hour." : ""} The speech provider receives meeting audio.${full || " Meeting tools are read-only; actions need your private channel."}` : "Transcript keeps microphone and camera off."} Allow uninspected Google TURN/TLS media for up to four hours and 512 MiB per call. Keep notes on the agent until deleted.${policy.followUp?.enabled ? " After each meeting the agent acts on the notes by your standing orders." : ""}${widens3 ? ` ${autoJoinSummary(policy.autoJoin)}` : ""}`,
       routes
     );
     return sent.ok ? {
@@ -42341,7 +42362,9 @@ var MeetingsFirewall = class {
         deadline: now2 + (found[1].policy.speech ? found[1].policy.speech.maxMinutes * 60 : MEDIA_MAX_SECONDS),
         max_bytes: MEDIA_MAX_BYTES,
         // The agent opens a voice session per request; the proxy allows that many (wakeSessions).
-        ...wakeSessions(found[1].policy) ? { wake_sessions: wakeSessions(found[1].policy) } : {}
+        ...wakeSessions(found[1].policy) ? { wake_sessions: wakeSessions(found[1].policy) } : {},
+        // Full agent only in meetings an owner or admin sent it to (fullAgentMeeting); the agent reads it from the lease.
+        ...found[1].policy.speech && fullAgentMeeting(found[1].policy, claim2, this.opts.ownAccount?.(vmId) ?? null) ? { full_agent: true } : {}
       };
       this.leases.set(vmId, lease);
     } else {
@@ -101482,8 +101505,8 @@ import { uptime } from "os";
 import { existsSync as existsSync17, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "a42ac62" : "unknown",
-  builtAt: true ? "2026-10-14T12:25:36+01:00" : "unknown"
+  commit: true ? "f2aa952" : "unknown",
+  builtAt: true ? "2026-10-15T10:02:39+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -102287,6 +102310,7 @@ async function main() {
         onCredentialsChanged: () => runSync(boxKey),
         // An invite makes the agent join only when its organizer is the org's own Google account or
         // an allowed sender of the mailbox it came through (docs/plans/meetjoin.md). No rules, no join.
+        ownAccount: () => google2?.summary().account?.accountLabel?.toLowerCase() ?? null,
         organizerAllowed: (vmId, claim2) => {
           const account = google2?.summary().account?.accountLabel?.toLowerCase() ?? null;
           if (claim2.source === "calendar")
@@ -103003,6 +103027,7 @@ async function main() {
           features.push("speech_wake_sessions");
           features.push("meeting_followup");
           features.push("speech_always");
+          features.push("meeting_full_agent");
           features.push("phone_voice_edit");
           if (controlPlaneMcpGateUp) features.push("controlplane_mcp");
           if (teamChat?.available() && teamChatWeb && access?.ready()) features.push("team_chat");

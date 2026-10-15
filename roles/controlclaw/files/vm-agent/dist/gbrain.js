@@ -8,7 +8,7 @@ var __require = /* @__PURE__ */ ((x2) => typeof require !== "undefined" ? requir
 
 // src/gbrain.ts
 import { createServer as createServer2 } from "http";
-import { readFileSync as readFileSync15 } from "fs";
+import { readFileSync as readFileSync16 } from "fs";
 
 // src/auth.ts
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
@@ -6258,7 +6258,7 @@ import { execSync } from "child_process";
 
 // src/software.ts
 import { uptime } from "os";
-import { existsSync as existsSync7, readFileSync as readFileSync10, realpathSync } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync11, realpathSync } from "fs";
 import { dirname as dirname5 } from "path";
 
 // src/access-state.ts
@@ -6339,7 +6339,7 @@ function consoleMcpConfigured() {
 
 // src/meeting-voice-log.ts
 import { execFile as execFile2 } from "child_process";
-import { existsSync as existsSync6, mkdirSync as mkdirSync5, openSync, closeSync, readSync, fstatSync, rmSync, writeFileSync as writeFileSync6, renameSync as renameSync4 } from "fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync5, openSync, closeSync, readSync, readFileSync as readFileSync10, fstatSync, rmSync, writeFileSync as writeFileSync6, renameSync as renameSync4 } from "fs";
 import { join as join3 } from "path";
 var MAX_READ = 4 * 1024 * 1024;
 var DETECTOR = "/opt/controlclaw/meeting-voice/cc-wake.py";
@@ -6351,8 +6351,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "cc5040d" : "unknown",
-  builtAt: true ? "2026-10-14T09:34:18+01:00" : "unknown"
+  commit: true ? "f2aa952" : "unknown",
+  builtAt: true ? "2026-10-15T10:02:39+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6368,7 +6368,7 @@ function clip(value) {
 }
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync10(path, "utf8"));
+    const parsed = JSON.parse(readFileSync11(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -6407,7 +6407,7 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
 var VOICE_CAPABILITIES = "/opt/controlclaw/meeting-voice/capabilities.json";
 function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalled) {
   try {
-    const caps = JSON.parse(readFileSync10(path, "utf8"));
+    const caps = JSON.parse(readFileSync11(path, "utf8"));
     const families = Array.isArray(caps.speechFamilies) ? caps.speechFamilies : [];
     return [
       ...["realtime", "live"].filter((f2) => families.includes(f2)).map((f2) => `speech_${f2}`),
@@ -6415,7 +6415,9 @@ function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalle
       // `speech_wake_local`: meetings in wake mode listen on this box (cc-wake and its model installed).
       ...caps.wakeLocal === true && localWake() ? ["speech_wake_local"] : [],
       // `speech_always`: the adapter has the always-listening mode and takes `always` and `reminders`.
-      ...caps.alwaysListening === true ? ["speech_always"] : []
+      ...caps.alwaysListening === true ? ["speech_always"] : [],
+      // `meeting_full_agent`: the adapter hands requests to a full agent run when the lease allows it (docs/plans/meeting-full-agent.md).
+      ...caps.fullAgent === true ? ["meeting_full_agent"] : []
     ];
   } catch {
     return [];
@@ -6664,7 +6666,7 @@ import { closeSync as closeSync2, fstatSync as fstatSync2, openSync as openSync2
 import { join as join5 } from "path";
 
 // src/redact.ts
-import { readFileSync as readFileSync11 } from "fs";
+import { readFileSync as readFileSync12 } from "fs";
 import { join as join4 } from "path";
 
 // ../log-redact/src/index.ts
@@ -6702,7 +6704,7 @@ function loadRedactionSecrets(keysDir2) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
-      const value = readFileSync11(join4(keysDir2, name), "utf-8").trim();
+      const value = readFileSync12(join4(keysDir2, name), "utf-8").trim();
       if (value.length >= MIN_SECRET_LENGTH) found.push(value);
     } catch {
     }
@@ -7147,12 +7149,12 @@ function getServiceStatus(service) {
 // src/routes/access.ts
 import { createHash as createHash4, randomBytes } from "crypto";
 import { execFile as execFile4 } from "child_process";
-import { readFileSync as readFileSync13 } from "fs";
+import { readFileSync as readFileSync14 } from "fs";
 import { join as join8 } from "path";
 
 // src/session.ts
 import crypto3 from "crypto";
-import { existsSync as existsSync8, readFileSync as readFileSync12, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync13, writeFileSync as writeFileSync7 } from "fs";
 import { join as join6 } from "path";
 
 // ../origin-guard/src/index.ts
@@ -7247,13 +7249,13 @@ function ensureSessionSecret(keysDir2) {
     writeFileSync7(path, crypto3.randomBytes(32).toString("hex"), { mode: 384 });
     console.log("[session] generated session secret");
   }
-  secret = Buffer.from(readFileSync12(path, "utf8").trim(), "hex");
+  secret = Buffer.from(readFileSync13(path, "utf8").trim(), "hex");
 }
 function rotateSessionSecret() {
   if (!secretDir) throw new Error("session secret not initialised");
   const path = join6(secretDir, "session_secret");
   writeFileSync7(path, crypto3.randomBytes(32).toString("hex"), { mode: 384 });
-  secret = Buffer.from(readFileSync12(path, "utf8").trim(), "hex");
+  secret = Buffer.from(readFileSync13(path, "utf8").trim(), "hex");
   clearRevoked();
   console.log("[session] rotated the session secret: every browser is signed out");
 }
@@ -7454,7 +7456,7 @@ var FORGET_PREVIOUS_GATEWAY_JS = `
   } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
-    return readFileSync13(join8(keysDir(), name), "utf-8").trim() || null;
+    return readFileSync14(join8(keysDir(), name), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -8211,7 +8213,7 @@ async function handleAccessPush(req, res, pathname) {
 
 // src/gbrain-gate.ts
 import { createServer, request as httpRequest } from "http";
-import { chmodSync, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync14, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
+import { chmodSync, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync15, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
 import { dirname as dirname6 } from "path";
 import { networkInterfaces } from "os";
 var GATE_PORT = 3131;
@@ -8263,7 +8265,7 @@ var BrainGate = class {
   load() {
     if (!existsSync9(this.statePath)) return [];
     try {
-      const s2 = JSON.parse(readFileSync14(this.statePath, "utf-8"));
+      const s2 = JSON.parse(readFileSync15(this.statePath, "utf-8"));
       const lock = parseLock(s2.lock ?? null);
       if (typeof lock !== "string") this.lockState = lock;
       return Array.isArray(s2.entries) ? s2.entries.filter((e) => e && typeof e.token === "string" && typeof e.ip === "string") : [];
@@ -8403,13 +8405,13 @@ if (process.env.CC_SERVICE !== "gbrain") {
   process.exit(1);
 }
 try {
-  setSaasPublicKey(readFileSync15(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
+  setSaasPublicKey(readFileSync16(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8"));
 } catch (err) {
   console.error("Failed to load SaaS public key:", err);
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync15(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync16(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
   setOwnHostnames(() => [readKeyFile(KEYS_DIR2, "vm_hostname"), readKeyFile(KEYS_DIR2, "access_hostname")]);
   setBoundTokensLatch(`${process.env.STATE_DIR ?? "/opt/controlclaw/state"}/firewall-tokens-bound`);
 } catch {

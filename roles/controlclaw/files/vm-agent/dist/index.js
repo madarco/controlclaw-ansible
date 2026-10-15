@@ -14306,7 +14306,7 @@ function consumeJti(jti, expSeconds) {
 
 // src/meeting-voice-log.ts
 import { execFile } from "child_process";
-import { existsSync as existsSync4, mkdirSync as mkdirSync4, openSync, closeSync, readSync, fstatSync, rmSync, writeFileSync as writeFileSync5, renameSync as renameSync4 } from "fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync4, openSync, closeSync, readSync, readFileSync as readFileSync5, fstatSync, rmSync, writeFileSync as writeFileSync5, renameSync as renameSync4 } from "fs";
 import { join as join4 } from "path";
 var MAX_READ = 4 * 1024 * 1024;
 function ownerChat(approved) {
@@ -14322,16 +14322,36 @@ var MeetingVoiceLog = class {
     return join4(this.dir, "meeting.jsonl");
   }
   /** A meeting starts: a fresh log, and the firewall's session allowance for it. */
-  start(wakeSessions, owner = null) {
+  start(wakeSessions, owner = null, meeting = {}) {
     mkdirSync4(this.dir, { recursive: true, mode: 448 });
     writeFileSync5(this.file, "", { mode: 384 });
     this.offset = 0;
     const lease = join4(this.dir, "lease.json");
-    writeFileSync5(`${lease}.tmp`, JSON.stringify({ wakeSessions, ...owner ? { owner } : {}, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+    writeFileSync5(`${lease}.tmp`, JSON.stringify({ wakeSessions, ...owner ? { owner } : {}, ...meeting.id ? { meetingId: meeting.id } : {}, ...meeting.full ? { full: true } : {}, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
     renameSync4(`${lease}.tmp`, lease);
   }
   end() {
     rmSync(join4(this.dir, "lease.json"), { force: true });
+  }
+  /** The meeting in progress may no longer drive a full agent (the settings changed under it). */
+  dropFull() {
+    const lease = join4(this.dir, "lease.json");
+    try {
+      const value2 = JSON.parse(readFileSync5(lease, "utf8"));
+      if (value2.full !== true) return;
+      delete value2.full;
+      writeFileSync5(`${lease}.tmp`, JSON.stringify(value2), { mode: 384 });
+      renameSync4(`${lease}.tmp`, lease);
+    } catch {
+    }
+  }
+  /** The full agent runs a meeting started (docs/plans/meeting-full-agent.md); [] when it had none. */
+  tasks(meetingId) {
+    return readTasks(this.dir, meetingId);
+  }
+  /** A meeting was deleted: its tasks go with it. */
+  forgetTasks(meetingId) {
+    if (MEETING_ID.test(meetingId)) rmSync(join4(this.dir, "tasks", `${meetingId}.json`), { force: true });
   }
   /** New complete entries since the last read. */
   read() {
@@ -14371,6 +14391,29 @@ var MeetingVoiceLog = class {
     }
   }
 };
+var MEETING_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+var MAX_TASKS = 20;
+function readTasks(dir, meetingId) {
+  if (!MEETING_ID.test(meetingId)) return [];
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync5(join4(dir, "tasks", `${meetingId}.json`), "utf8"));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  const text3 = (v2, max) => typeof v2 === "string" ? v2.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max) : "";
+  const time3 = (v2) => typeof v2 === "string" && Number.isFinite(Date.parse(v2)) ? new Date(v2).toISOString() : void 0;
+  const out = [];
+  for (const t2 of raw.slice(0, MAX_TASKS)) {
+    if (!t2 || typeof t2 !== "object" || !Number.isSafeInteger(t2.n) || !["running", "done", "failed"].includes(String(t2.state))) continue;
+    const startedAt = time3(t2.startedAt), session = text3(t2.session, 120);
+    if (!startedAt || !/^agent:main:meeting-[a-z0-9-]{1,80}$/.test(session)) continue;
+    const endedAt = time3(t2.endedAt), result = text3(t2.result, 600);
+    out.push({ n: t2.n, from: text3(t2.from, 80), text: text3(t2.text, 300), session, state: t2.state, startedAt, ...endedAt ? { endedAt } : {}, ...result ? { result } : {} });
+  }
+  return out;
+}
 function readPhoneUsage(dir) {
   const file2 = join4(dir, "phone.jsonl");
   if (!existsSync4(file2)) return [];
@@ -14616,6 +14659,12 @@ function parseFollowUpPolicy(value2) {
   if (Object.keys(p2).some((k2) => k2 !== "enabled") || typeof p2.enabled !== "boolean") throw new Error("Invalid after-meeting setting");
   return { enabled: p2.enabled };
 }
+function parseFullAgentPolicy(value2) {
+  const p2 = value2;
+  if (!p2 || typeof p2 !== "object" || Array.isArray(p2) || Object.keys(p2).some((k2) => k2 !== "enabled") || typeof p2.enabled !== "boolean")
+    throw new Error("Invalid Full agent setting");
+  return { enabled: p2.enabled };
+}
 var MEDIA_MAX_SECONDS = 4 * 60 * 60;
 var MEDIA_MAX_BYTES = 512 * 1024 * 1024;
 var OP_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -14624,7 +14673,7 @@ function parseMeetingPolicy(value2) {
     throw new Error("Invalid meetings settings");
   const p2 = value2;
   if (Object.keys(p2).some(
-    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin"].includes(
+    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent"].includes(
       k2
     )
   ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean")
@@ -14643,7 +14692,8 @@ function parseMeetingPolicy(value2) {
     ...autoJoin ? { autoJoin } : {},
     ...p2.followUp === void 0 ? {} : { followUp: parseFollowUpPolicy(p2.followUp) },
     ...p2.always === void 0 ? {} : { always: p2.always },
-    ...p2.reminders === void 0 ? {} : { reminders: p2.reminders }
+    ...p2.reminders === void 0 ? {} : { reminders: p2.reminders },
+    ...p2.fullAgent === void 0 ? {} : { fullAgent: parseFullAgentPolicy(p2.fullAgent) }
   };
 }
 function canonicalMeetUrl(value2) {
@@ -35668,12 +35718,12 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync37, existsSync as existsSync31, writeFileSync as writeFileSync25, rmSync as rmSync13 } from "fs";
+import { readFileSync as readFileSync38, existsSync as existsSync31, writeFileSync as writeFileSync25, rmSync as rmSync13 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash6, randomBytes as randomBytes2 } from "crypto";
 import { execFile as execFile4 } from "child_process";
-import { readFileSync as readFileSync6 } from "fs";
+import { readFileSync as readFileSync7 } from "fs";
 import { join as join12 } from "path";
 
 // src/routes/files-page.ts
@@ -35746,7 +35796,7 @@ import { closeSync as closeSync2, fstatSync as fstatSync2, openSync as openSync2
 import { join as join11 } from "path";
 
 // src/redact.ts
-import { readFileSync as readFileSync5 } from "fs";
+import { readFileSync as readFileSync6 } from "fs";
 import { join as join10 } from "path";
 
 // ../log-redact/src/index.ts
@@ -35784,7 +35834,7 @@ function loadRedactionSecrets(keysDir2) {
   const found = [];
   for (const name of SECRET_FILES) {
     try {
-      const value2 = readFileSync5(join10(keysDir2, name), "utf-8").trim();
+      const value2 = readFileSync6(join10(keysDir2, name), "utf-8").trim();
       if (value2.length >= MIN_SECRET_LENGTH) found.push(value2);
     } catch {
     }
@@ -36274,7 +36324,7 @@ var FORGET_PREVIOUS_GATEWAY_JS = `
   } catch (e) { /* storage blocked: the bootstrap link still works in a clean browser */ }`;
 function readKey(name) {
   try {
-    return readFileSync6(join12(keysDir(), name), "utf-8").trim() || null;
+    return readFileSync7(join12(keysDir(), name), "utf-8").trim() || null;
   } catch {
     return null;
   }
@@ -41331,10 +41381,10 @@ function readme(o2) {
 }
 
 // src/box-token.ts
-import { readFileSync as readFileSync7 } from "fs";
+import { readFileSync as readFileSync8 } from "fs";
 function readKeyFile(keysDir2, name) {
   try {
-    return readFileSync7(`${keysDir2}/${name}`, "utf-8").trim();
+    return readFileSync8(`${keysDir2}/${name}`, "utf-8").trim();
   } catch {
     return null;
   }
@@ -41359,17 +41409,17 @@ function saasBaseUrl(keysDir2) {
 
 // src/software.ts
 import { uptime } from "os";
-import { existsSync as existsSync7, readFileSync as readFileSync9, realpathSync } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync10, realpathSync } from "fs";
 import { dirname as dirname4 } from "path";
 
 // src/doctor.ts
 import { verify, createHash as createHash7 } from "crypto";
-import { readFileSync as readFileSync8, existsSync as existsSync6 } from "fs";
+import { readFileSync as readFileSync9, existsSync as existsSync6 } from "fs";
 var DOCTOR_KEY_DOMAIN = "controlclaw:doctor-key:v1\n";
 var DOCTOR_KEY_FILE = "/home/ccdoctor/.ssh/authorized_keys";
 function doctorHostKey() {
   try {
-    return readFileSync8("/etc/ssh/ssh_host_ed25519_key.pub", "utf8").trim();
+    return readFileSync9("/etc/ssh/ssh_host_ed25519_key.pub", "utf8").trim();
   } catch {
     return null;
   }
@@ -41379,7 +41429,7 @@ function doctorAvailable() {
 }
 function doctorStatus(path = DOCTOR_KEY_FILE) {
   try {
-    const key = readFileSync8(path, "utf8").match(/ssh-ed25519 ([A-Za-z0-9+/=]+)/)?.[1];
+    const key = readFileSync9(path, "utf8").match(/ssh-ed25519 ([A-Za-z0-9+/=]+)/)?.[1];
     return { fingerprint: key ? `SHA256:${createHash7("sha256").update(Buffer.from(key, "base64")).digest("base64").replace(/=+$/, "")}` : null };
   } catch {
     return { fingerprint: null };
@@ -41387,7 +41437,7 @@ function doctorStatus(path = DOCTOR_KEY_FILE) {
 }
 async function installDoctorKey(pub, sig2, opts = {}) {
   if (typeof pub !== "string" || !/^ssh-ed25519 [A-Za-z0-9+/=]{68}(?: [A-Za-z0-9_-]{1,64})?$/.test(pub) || typeof sig2 !== "string" || !/^[A-Za-z0-9+/=]{88}$/.test(sig2)) throw new Error("Invalid doctor key");
-  const pin = readFileSync8(opts.pinPath ?? `${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`, "utf8");
+  const pin = readFileSync9(opts.pinPath ?? `${process.env.KEYS_DIR ?? "/opt/controlclaw/keys"}/mitm_pinned_pubkey.pem`, "utf8");
   if (!verify(null, Buffer.from(DOCTOR_KEY_DOMAIN + pub), pin, Buffer.from(sig2, "base64"))) throw new Error("Invalid doctor key signature");
   await (opts.exec ?? defaultExec)("sudo", ["-n", "/usr/local/bin/cc-doctor-key-install"], 15e3, JSON.stringify({ pub, sig: sig2 }));
   return `SHA256:${createHash7("sha256").update(Buffer.from(pub.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
@@ -41472,8 +41522,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "cc5040d" : "unknown",
-  builtAt: true ? "2026-10-14T09:34:18+01:00" : "unknown"
+  commit: true ? "f2aa952" : "unknown",
+  builtAt: true ? "2026-10-15T10:02:39+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -41489,7 +41539,7 @@ function clip(value2) {
 }
 function readJson(path) {
   try {
-    const parsed = JSON.parse(readFileSync9(path, "utf8"));
+    const parsed = JSON.parse(readFileSync10(path, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -41528,7 +41578,7 @@ function readOpenClawVersion(candidates = OPENCLAW_CANDIDATES, bin = OPENCLAW_BI
 var VOICE_CAPABILITIES = "/opt/controlclaw/meeting-voice/capabilities.json";
 function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalled) {
   try {
-    const caps = JSON.parse(readFileSync9(path, "utf8"));
+    const caps = JSON.parse(readFileSync10(path, "utf8"));
     const families = Array.isArray(caps.speechFamilies) ? caps.speechFamilies : [];
     return [
       ...["realtime", "live"].filter((f2) => families.includes(f2)).map((f2) => `speech_${f2}`),
@@ -41536,7 +41586,9 @@ function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalle
       // `speech_wake_local`: meetings in wake mode listen on this box (cc-wake and its model installed).
       ...caps.wakeLocal === true && localWake() ? ["speech_wake_local"] : [],
       // `speech_always`: the adapter has the always-listening mode and takes `always` and `reminders`.
-      ...caps.alwaysListening === true ? ["speech_always"] : []
+      ...caps.alwaysListening === true ? ["speech_always"] : [],
+      // `meeting_full_agent`: the adapter hands requests to a full agent run when the lease allows it (docs/plans/meeting-full-agent.md).
+      ...caps.fullAgent === true ? ["meeting_full_agent"] : []
     ];
   } catch {
     return [];
@@ -41624,7 +41676,7 @@ function unclaimedStatus(method, path, ready) {
 }
 
 // src/handle-certificate.ts
-import { readFileSync as readFileSync10 } from "fs";
+import { readFileSync as readFileSync11 } from "fs";
 
 // src/https-ready.ts
 import { connect } from "tls";
@@ -41658,7 +41710,7 @@ async function waitForOwnCertificate(probe2, opts) {
 async function reportHandleCertificate(keysDir2) {
   let hostname3;
   try {
-    hostname3 = readFileSync10(`${keysDir2}/access_hostname`, "utf8").trim();
+    hostname3 = readFileSync11(`${keysDir2}/access_hostname`, "utf8").trim();
   } catch {
     return;
   }
@@ -41684,10 +41736,10 @@ async function reportHandleCertificate(keysDir2) {
 
 // src/keys.ts
 import crypto3 from "crypto";
-import { readFileSync as readFileSync11, writeFileSync as writeFileSync6, existsSync as existsSync8, mkdirSync as mkdirSync5 } from "fs";
+import { readFileSync as readFileSync12, writeFileSync as writeFileSync6, existsSync as existsSync8, mkdirSync as mkdirSync5 } from "fs";
 function readFile5(path) {
   try {
-    return readFileSync11(path, "utf8").trim();
+    return readFileSync12(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -41696,7 +41748,7 @@ function ensureVmKeypair(keysDir2) {
   const privPath = `${keysDir2}/vm_private_key.pem`;
   const pubPath = `${keysDir2}/vm_public_key.pem`;
   if (existsSync8(privPath)) {
-    return readFile5(pubPath) ?? derivePublicKey(readFileSync11(privPath, "utf8"));
+    return readFile5(pubPath) ?? derivePublicKey(readFileSync12(privPath, "utf8"));
   }
   const { publicKey, privateKey } = crypto3.generateKeyPairSync("ed25519", {
     publicKeyEncoding: { type: "spki", format: "pem" },
@@ -41766,12 +41818,12 @@ function sha256Hex(s2) {
 }
 
 // src/mitm-ca.ts
-import { readFileSync as readFileSync12, writeFileSync as writeFileSync7, existsSync as existsSync9 } from "fs";
+import { readFileSync as readFileSync13, writeFileSync as writeFileSync7, existsSync as existsSync9 } from "fs";
 import { execFileSync } from "child_process";
 import { getCACertificates, setDefaultCACertificates } from "tls";
 function readFile6(path) {
   try {
-    return readFileSync12(path, "utf8").trim();
+    return readFileSync13(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -41852,13 +41904,13 @@ function installCa(caSrcPath, caCert) {
 }
 
 // src/egress.ts
-import { readFileSync as readFileSync13 } from "fs";
+import { readFileSync as readFileSync14 } from "fs";
 import { execFileSync as execFileSync2 } from "child_process";
 import net from "net";
 var MITM_PROXY_PORT = parseInt(process.env.MITM_PROXY_PORT ?? "8080", 10);
 function readFile7(path) {
   try {
-    return readFileSync13(path, "utf8").trim();
+    return readFileSync14(path, "utf8").trim();
   } catch {
     return null;
   }
@@ -42082,7 +42134,7 @@ function handleStatus(res, drive2, gateway2) {
 
 // src/audit.ts
 import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync14, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync15, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
 import { dirname as dirname5 } from "path";
 var PAGE_LIMIT = 500;
 var MAX_PAGES = 40;
@@ -42141,7 +42193,7 @@ var AuditShipper = class {
   loadCursor() {
     try {
       if (!existsSync10(this.opts.cursorPath)) return null;
-      const c2 = JSON.parse(readFileSync14(this.opts.cursorPath, "utf-8"));
+      const c2 = JSON.parse(readFileSync15(this.opts.cursorPath, "utf-8"));
       if (typeof c2.sequence === "number" && typeof c2.occurredAt === "number") return { sequence: c2.sequence, occurredAt: c2.occurredAt };
     } catch {
     }
@@ -42780,7 +42832,7 @@ var ApprovalsBridge = class {
 
 // src/meeting-followup.ts
 import { createHash as createHash9, randomUUID } from "crypto";
-import { existsSync as existsSync12, readFileSync as readFileSync16, renameSync as renameSync7, rmSync as rmSync3, statSync as statSync2, writeFileSync as writeFileSync10, chownSync } from "fs";
+import { existsSync as existsSync12, readFileSync as readFileSync17, renameSync as renameSync7, rmSync as rmSync3, statSync as statSync2, writeFileSync as writeFileSync10, chownSync } from "fs";
 import { join as join16 } from "path";
 
 // ../meetings/src/archive.ts
@@ -42813,7 +42865,7 @@ function summarizeMeeting(m2) {
   };
 }
 function meetingDetail(m2) {
-  const { id, startedAt, endedAt, meetingCode, gaps, state, transcript, notes, notesSource, notesRetryAt, error: error62, voiceSeconds, voiceSessions, voiceEnds, transcriptNote, followUp } = m2;
+  const { id, startedAt, endedAt, meetingCode, gaps, state, transcript, notes, notesSource, notesRetryAt, error: error62, voiceSeconds, voiceSessions, voiceEnds, transcriptNote, followUp, tasks } = m2;
   return {
     id,
     startedAt,
@@ -42831,6 +42883,7 @@ function meetingDetail(m2) {
     voiceEnds,
     transcriptNote,
     followUp,
+    tasks,
     mode: m2.mode ?? "transcript",
     summary: summarizeMeeting(m2)
   };
@@ -42845,7 +42898,7 @@ function meetingsPage(all, page, pageSize = MEETINGS_PAGE_SIZE) {
 import {
   existsSync as existsSync11,
   mkdirSync as mkdirSync7,
-  readFileSync as readFileSync15,
+  readFileSync as readFileSync16,
   renameSync as renameSync6,
   rmSync as rmSync2,
   writeFileSync as writeFileSync9,
@@ -42905,7 +42958,7 @@ var MeetingArchive = class {
   }
   deleted() {
     if (!existsSync11(this.tombstonesPath)) return {};
-    return JSON.parse(readFileSync15(this.tombstonesPath, "utf8"));
+    return JSON.parse(readFileSync16(this.tombstonesPath, "utf8"));
   }
   save(record2) {
     if (this.deleted()[record2.id]) return false;
@@ -42917,7 +42970,7 @@ var MeetingArchive = class {
     const deleted = this.deleted();
     if (!existsSync11(this.root)) return [];
     return readdirSync3(this.root).filter((n2) => /^[a-f0-9-]{36}\.json$/.test(n2)).map(
-      (n2) => JSON.parse(readFileSync15(join15(this.root, n2), "utf8"))
+      (n2) => JSON.parse(readFileSync16(join15(this.root, n2), "utf8"))
     ).filter((r2) => !deleted[r2.id]).sort((a2, b2) => b2.startedAt.localeCompare(a2.startedAt));
   }
   tombstone(record2) {
@@ -43005,7 +43058,7 @@ function eraseNativeMeetings(stateDir, sessionIds) {
         throw new Error("Invalid transcript export");
       const metadata = join15(dir, "metadata.json");
       if (!existsSync11(metadata)) continue;
-      const raw = JSON.parse(readFileSync15(metadata, "utf8"));
+      const raw = JSON.parse(readFileSync16(metadata, "utf8"));
       if (raw.sessionId && sessionIds.includes(raw.sessionId))
         rmSync2(dir, { recursive: true, force: true });
     }
@@ -43131,11 +43184,11 @@ var MeetingFollowUpService = class {
     return join16(this.opts.workspace, "AGENTS.md");
   }
   readAgents() {
-    return existsSync12(this.agentsPath) ? readFileSync16(this.agentsPath, "utf8") : "";
+    return existsSync12(this.agentsPath) ? readFileSync17(this.agentsPath, "utf8") : "";
   }
   savedHash() {
     try {
-      const s2 = JSON.parse(readFileSync16(this.opts.statePath, "utf8"));
+      const s2 = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
       return typeof s2.hash === "string" ? s2.hash : null;
     } catch {
       return null;
@@ -43193,7 +43246,7 @@ var MeetingFollowUpService = class {
     const path = this.reportPath(id);
     try {
       if (!existsSync12(path)) return null;
-      const report = statSync2(path).size > REPORT_MAX_BYTES ? null : parseReport(readFileSync16(path, "utf8"));
+      const report = statSync2(path).size > REPORT_MAX_BYTES ? null : parseReport(readFileSync17(path, "utf8"));
       rmSync3(path, { force: true });
       return report;
     } catch {
@@ -43383,7 +43436,7 @@ var MeetingFollowUpService = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync14, mkdirSync as mkdirSync8, readFileSync as readFileSync17, renameSync as renameSync8, writeFileSync as writeFileSync11 } from "fs";
+import { existsSync as existsSync14, mkdirSync as mkdirSync8, readFileSync as readFileSync18, renameSync as renameSync8, writeFileSync as writeFileSync11 } from "fs";
 import { dirname as dirname6 } from "path";
 import { randomUUID as randomUUID2 } from "crypto";
 
@@ -43716,7 +43769,7 @@ function looksBusy2(message2) {
 function readChannelState(path) {
   if (!path || !existsSync14(path)) return { version: 1, seededAt: null, approved: [] };
   try {
-    const parsed = JSON.parse(readFileSync17(path, "utf8"));
+    const parsed = JSON.parse(readFileSync18(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
     return {
       version: 1,
@@ -44060,7 +44113,7 @@ var ChannelsService = class {
     for (const type of CHANNEL_TYPES) {
       let raw;
       try {
-        raw = readFileSync17(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
+        raw = readFileSync18(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
       } catch {
         continue;
       }
@@ -44613,7 +44666,7 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync18, renameSync as renameSync9, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync19, renameSync as renameSync9, writeFileSync as writeFileSync12 } from "fs";
 import { dirname as dirname7 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
@@ -44653,7 +44706,7 @@ function readMemory(config2) {
 function readReindexFailure(path) {
   if (!path || !existsSync15(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync18(path, "utf8"));
+    const parsed = JSON.parse(readFileSync19(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
   } catch {
     return null;
@@ -45047,7 +45100,7 @@ async function handleLlm(req, res, url3, service) {
 
 // src/meetings.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync16, readFileSync as readFileSync19, statfsSync } from "fs";
+import { existsSync as existsSync16, readFileSync as readFileSync20, statfsSync } from "fs";
 import { totalmem } from "os";
 import { join as join18 } from "path";
 
@@ -45436,7 +45489,7 @@ var MeetingService = class {
     this.ready = opts.browser(false).then(() => opts.reserve?.(false));
     void this.ready.catch(() => void 0);
     if (existsSync16(opts.statePath)) {
-      const saved = JSON.parse(readFileSync19(opts.statePath, "utf8"));
+      const saved = JSON.parse(readFileSync20(opts.statePath, "utf8"));
       this.applied = saved.applied;
       this.revision = saved.revision;
       this.wakeCheck = saved.wakeCheck ?? null;
@@ -45591,6 +45644,7 @@ var MeetingService = class {
     if (this.applied && this.applied.policy.enabled === policy.enabled && JSON.stringify(this.applied.speech ?? null) === JSON.stringify(speech ?? null) && // A wake-word change has to reach OpenClaw's config, so it is not a revision-only change.
     JSON.stringify(this.applied.policy.wake ?? null) === JSON.stringify(policy.wake ?? null) && this.applied.policy.always === true === (policy.always === true) && this.applied.policy.reminders !== false === (policy.reminders !== false) && this.applied.media.token === media.token && this.applied.media.origin === media.origin) {
       this.applied = input2;
+      if (this.current && !policy.fullAgent?.enabled) this.voice.dropFull();
       this.save();
       this.followUpSettings();
       return this.metadata();
@@ -45763,7 +45817,7 @@ var MeetingService = class {
       runtime.lease = await this.media("start", void 0, runtime.auto);
       if (!this.alive(runtime)) return;
       if (runtime.record.mode === "bidi") {
-        this.voice.start(runtime.lease.wake_sessions ?? 0, await this.opts.ownerChat?.().catch(() => null));
+        this.voice.start(runtime.lease.wake_sessions ?? 0, await this.opts.ownerChat?.().catch(() => null), { id: runtime.record.id, full: runtime.lease.full_agent === true });
         this.captionContext.start();
       }
       runtime.timer = setInterval(
@@ -46194,6 +46248,7 @@ var MeetingService = class {
     selected = this.opts.archive.list().filter((r2) => raw.id === "all" || r2.id === raw.id);
     for (const record2 of selected) {
       this.dropNotes(record2.id);
+      this.voice.forgetTasks(record2.id);
       await this.opts.followUp?.forget(record2).catch(() => void 0);
       this.opts.archive.tombstone(record2);
     }
@@ -46230,7 +46285,7 @@ var MeetingService = class {
   sanitizeRestoredConfig(staging) {
     const path = join18(staging, "openclaw.json");
     if (!existsSync16(path)) return;
-    const config2 = JSON.parse(readFileSync19(path, "utf8"));
+    const config2 = JSON.parse(readFileSync20(path, "utf8"));
     config2.plugins ??= {};
     config2.plugins.entries ??= {};
     config2.plugins.entries["google-meet"] = {
@@ -46258,13 +46313,17 @@ var MeetingService = class {
     config2.browser.profiles["cc-meetings"] = { cdpUrl: "http://127.0.0.1:9223", attachOnly: true };
     const livePath = join18(this.opts.openclawStateDir, "openclaw.json");
     if (existsSync16(livePath)) {
-      const live = JSON.parse(readFileSync19(livePath, "utf8"));
+      const live = JSON.parse(readFileSync20(livePath, "utf8"));
       if (live.plugins?.installs?.["google-meet"]) {
         config2.plugins.installs ??= {};
         config2.plugins.installs["google-meet"] = live.plugins.installs["google-meet"];
       }
     }
     atomicJson(path, config2);
+  }
+  /** The full agent runs a meeting started (docs/plans/meeting-full-agent.md), kept by the voice adapter. */
+  tasks(meetingId) {
+    return this.voice.tasks(meetingId);
   }
   applyDeletions(stateDir = this.opts.openclawStateDir) {
     const deleted = this.opts.archive.deleted();
@@ -46502,7 +46561,7 @@ var MeetingMic = class {
 };
 
 // src/meeting-signin.ts
-import { existsSync as existsSync17, readFileSync as readFileSync20, rmSync as rmSync5 } from "fs";
+import { existsSync as existsSync17, readFileSync as readFileSync21, rmSync as rmSync5 } from "fs";
 var LIST_ACCOUNTS = "https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard";
 var same = (a2, b2) => a2.trim().toLowerCase() === b2.trim().toLowerCase();
 function signinUrl(account) {
@@ -46589,7 +46648,7 @@ var MeetingSignin = class {
   constructor(opts) {
     this.opts = opts;
     try {
-      const raw = JSON.parse(readFileSync20(opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync21(opts.statePath, "utf8"));
       if (["ready", "expired"].includes(raw.status) && typeof raw.email === "string")
         this.saved = { status: raw.status, email: raw.email, ...typeof raw.signedInAt === "string" ? { signedInAt: raw.signedInAt } : {} };
       else if (raw.status === "pending") this.wipe();
@@ -46840,7 +46899,8 @@ async function handleMeetings(req, res, url3, service, schedule, context) {
   const item = MEETING_ITEM.exec(path);
   if (item && req.method === "GET") {
     const meeting = service.status().meetings.find((m2) => m2.id === item[1]);
-    return meeting ? sendJson(res, 200, meetingDetail(meeting)) : sendJson(res, 404, { error: "This meeting was deleted or never saved." });
+    const tasks = meeting ? service.tasks(meeting.id) : [];
+    return meeting ? sendJson(res, 200, meetingDetail(tasks.length ? { ...meeting, tasks } : meeting)) : sendJson(res, 404, { error: "This meeting was deleted or never saved." });
   }
   if (path === "/__cc/meetings/schedule" && req.method === "GET")
     return sendJson(res, 200, schedule?.list() ?? { enabled: false, mode: "transcript", entries: [] });
@@ -47184,7 +47244,7 @@ async function handleSearch(req, res, url3, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync18, mkdirSync as mkdirSync11, readFileSync as readFileSync21, renameSync as renameSync11, unlinkSync, writeFileSync as writeFileSync14 } from "fs";
+import { existsSync as existsSync18, mkdirSync as mkdirSync11, readFileSync as readFileSync22, renameSync as renameSync11, unlinkSync, writeFileSync as writeFileSync14 } from "fs";
 import { dirname as dirname8 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -47339,7 +47399,7 @@ var ConnectorsService = class {
 function readState(path) {
   if (!existsSync18(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
-    const parsed = JSON.parse(readFileSync21(path, "utf8"));
+    const parsed = JSON.parse(readFileSync22(path, "utf8"));
     return {
       gateway: parsed.gateway && typeof parsed.gateway.url === "string" && typeof parsed.gateway.token === "string" ? parsed.gateway : null,
       connections: Array.isArray(parsed.connections) ? parsed.connections : [],
@@ -47447,7 +47507,7 @@ async function handleConnectors(req, res, url3, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync19, mkdirSync as mkdirSync12, readFileSync as readFileSync22, renameSync as renameSync12, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync19, mkdirSync as mkdirSync12, readFileSync as readFileSync23, renameSync as renameSync12, writeFileSync as writeFileSync15 } from "fs";
 import { dirname as dirname9 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -47524,7 +47584,7 @@ var DriveService = class {
   modes() {
     const out = /* @__PURE__ */ new Map();
     try {
-      const desired = JSON.parse(readFileSync22(this.opts.desiredPath, "utf8"));
+      const desired = JSON.parse(readFileSync23(this.opts.desiredPath, "utf8"));
       for (const m2 of desired.mounts ?? []) if (m2?.name) out.set(m2.name, m2.mode);
     } catch {
     }
@@ -47538,7 +47598,7 @@ var DriveService = class {
    */
   readState() {
     try {
-      const raw = JSON.parse(readFileSync22(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync23(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object" || !Array.isArray(raw.mounts)) return null;
       const mounts = raw.mounts.filter((m2) => !!m2 && typeof m2.name === "string" && typeof m2.rcPort === "number");
       return {
@@ -47579,7 +47639,7 @@ var DriveService = class {
   /** The desired file as written, so a failed launch can put it back byte for byte. */
   readDesiredRaw() {
     try {
-      return readFileSync22(this.opts.desiredPath, "utf8");
+      return readFileSync23(this.opts.desiredPath, "utf8");
     } catch {
       return null;
     }
@@ -47727,7 +47787,7 @@ async function handleDrive(req, res, url3, service) {
 import {
   existsSync as existsSync20,
   mkdirSync as mkdirSync13,
-  readFileSync as readFileSync23,
+  readFileSync as readFileSync24,
   renameSync as renameSync13,
   writeFileSync as writeFileSync16
 } from "fs";
@@ -47808,7 +47868,7 @@ var SecretsService = class {
     this.opts = opts;
   }
   apply(input2) {
-    const current = existsSync20(this.opts.envPath) ? readFileSync23(this.opts.envPath, "utf8") : "";
+    const current = existsSync20(this.opts.envPath) ? readFileSync24(this.opts.envPath, "utf8") : "";
     const unmanaged = current.split(/\r?\n/).filter(
       (line2) => !/^[A-Z][A-Z0-9_]{0,63}=CC-SEC-[a-f0-9]{48}$/.test(line2)
     );
@@ -48098,7 +48158,7 @@ async function handleLogins(req, res, url3, browser, wake) {
 import {
   existsSync as existsSync21,
   mkdirSync as mkdirSync14,
-  readFileSync as readFileSync24,
+  readFileSync as readFileSync25,
   renameSync as renameSync14,
   writeFileSync as writeFileSync17
 } from "fs";
@@ -48170,7 +48230,7 @@ var AgentMailService = class {
       GATEWAY_READ_MS
     );
     if (!snapshot.hash) throw new Error("OpenClaw returned no config hash");
-    const current = existsSync21(this.opts.envPath) ? readFileSync24(this.opts.envPath, "utf8") : "";
+    const current = existsSync21(this.opts.envPath) ? readFileSync25(this.opts.envPath, "utf8") : "";
     const lines = current.split(/\r?\n/).filter(
       (line2) => !/^\s*(?:export\s+)?AGENTMAIL_(?:API_KEY|WEBHOOK_SECRET)\s*=/.test(
         line2
@@ -48267,7 +48327,7 @@ var AgentMailService = class {
 
 // src/meeting-schedule.ts
 import { randomUUID as randomUUID4 } from "crypto";
-import { existsSync as existsSync22, readFileSync as readFileSync25 } from "fs";
+import { existsSync as existsSync22, readFileSync as readFileSync26 } from "fs";
 
 // ../../node_modules/.pnpm/ical.js@2.2.1/node_modules/ical.js/dist/ical.js
 var Binary = class _Binary {
@@ -55771,7 +55831,7 @@ var MeetingSchedule = class {
     this.now = deps.now ?? Date.now;
     if (existsSync22(deps.statePath)) {
       try {
-        const saved = JSON.parse(readFileSync25(deps.statePath, "utf8"));
+        const saved = JSON.parse(readFileSync26(deps.statePath, "utf8"));
         this.store = { entries: saved.entries ?? [], invites: saved.invites ?? {}, seen: saved.seen ?? [], emailCursor: saved.emailCursor, emailFailures: saved.emailFailures };
       } catch {
       }
@@ -55998,7 +56058,7 @@ var MeetingSchedule = class {
 };
 
 // src/meeting-sources.ts
-import { existsSync as existsSync23, readFileSync as readFileSync26 } from "fs";
+import { existsSync as existsSync23, readFileSync as readFileSync27 } from "fs";
 var AGENTMAIL_API = "https://api.agentmail.to/v0";
 var CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 var FIRST_LOOK_BACK_MS = 14 * 24 * 36e5;
@@ -56006,7 +56066,7 @@ var MAX_PAGES2 = 5;
 function envFile(path) {
   if (!existsSync23(path)) return {};
   const out = {};
-  for (const line2 of readFileSync26(path, "utf8").split("\n")) {
+  for (const line2 of readFileSync27(path, "utf8").split("\n")) {
     const m2 = /^([A-Z0-9_]+)=(.*)$/.exec(line2.trim());
     if (m2) out[m2[1]] = m2[2].replace(/^(["'])(.*)\1$/, "$2");
   }
@@ -56137,7 +56197,7 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync24, mkdirSync as mkdirSync15, readFileSync as readFileSync27, renameSync as renameSync15, rmSync as rmSync6, writeFileSync as writeFileSync18 } from "fs";
+import { existsSync as existsSync24, mkdirSync as mkdirSync15, readFileSync as readFileSync28, renameSync as renameSync15, rmSync as rmSync6, writeFileSync as writeFileSync18 } from "fs";
 import { dirname as dirname12 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -56272,7 +56332,7 @@ var GoogleService = class {
   }
   readState() {
     try {
-      const raw = JSON.parse(readFileSync27(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync28(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object") return null;
       return {
         placeholder: null,
@@ -56344,7 +56404,7 @@ async function handleGoogle(req, res, url3, service) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync28 } from "fs";
+import { readFileSync as readFileSync29 } from "fs";
 import { spawn as spawn3 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -56376,7 +56436,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync28(path, "utf8");
+      raw = readFileSync29(path, "utf8");
     } catch {
       return null;
     }
@@ -56390,7 +56450,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync28(this.opts.statePath, "utf8");
+      raw = readFileSync29(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -57790,7 +57850,7 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash10 } from "crypto";
-import { mkdirSync as mkdirSync16, mkdtempSync, readFileSync as readFileSync29, rmSync as rmSync7, writeFileSync as writeFileSync19 } from "fs";
+import { mkdirSync as mkdirSync16, mkdtempSync, readFileSync as readFileSync30, rmSync as rmSync7, writeFileSync as writeFileSync19 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { dirname as dirname15, join as join21 } from "path";
 var MIN_SECONDS = 5 * 60;
@@ -57885,8 +57945,8 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync29(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync29(path, "utf8")
+        publicKey: readFileSync30(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync30(path, "utf8")
       };
     } finally {
       rmSync7(dir, { recursive: true, force: true });
@@ -57894,7 +57954,7 @@ var SshAccessService = class {
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync29(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync30(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -58462,7 +58522,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile6 } from "child_process";
-import { existsSync as existsSync25, mkdirSync as mkdirSync17, readFileSync as readFileSync30, rmSync as rmSync8, writeFileSync as writeFileSync20 } from "fs";
+import { existsSync as existsSync25, mkdirSync as mkdirSync17, readFileSync as readFileSync31, rmSync as rmSync8, writeFileSync as writeFileSync20 } from "fs";
 import { dirname as dirname16 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile6);
@@ -58543,7 +58603,7 @@ var GmailWatchService = class {
   async status() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync30(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync31(this.opts.statePath, "utf8"));
     } catch {
       cfg = null;
     }
@@ -58578,7 +58638,7 @@ var GmailWatchService = class {
   async renew() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync30(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync31(this.opts.statePath, "utf8"));
     } catch {
       return { ok: false, message: "This box is not watching a mailbox." };
     }
@@ -58598,7 +58658,7 @@ var GmailWatchService = class {
 
 // src/gmail-wake.ts
 import { randomBytes as randomBytes3 } from "crypto";
-import { existsSync as existsSync26, readFileSync as readFileSync31, renameSync as renameSync16, writeFileSync as writeFileSync21 } from "fs";
+import { existsSync as existsSync26, readFileSync as readFileSync32, renameSync as renameSync16, writeFileSync as writeFileSync21 } from "fs";
 var gmailWakeInput = external_exports.object({
   messageId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   threadId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -58637,7 +58697,7 @@ var GmailWakeService = class {
   readState() {
     try {
       if (!existsSync26(this.opts.statePath)) return null;
-      const s2 = JSON.parse(readFileSync31(this.opts.statePath, "utf8"));
+      const s2 = JSON.parse(readFileSync32(this.opts.statePath, "utf8"));
       return typeof s2.token === "string" && /^[a-f0-9]{64}$/.test(s2.token) ? s2 : null;
     } catch {
       return null;
@@ -58964,7 +59024,7 @@ import os from "os";
 // src/patch-check.ts
 import { execFile as execFile7 } from "child_process";
 import { createHash as createHash12 } from "crypto";
-import { existsSync as existsSync27, lstatSync, readFileSync as readFileSync32, readdirSync as readdirSync4 } from "fs";
+import { existsSync as existsSync27, lstatSync, readFileSync as readFileSync33, readdirSync as readdirSync4 } from "fs";
 import { homedir } from "os";
 import { join as join22 } from "path";
 var HOST = "/usr/lib/node_modules/openclaw";
@@ -58975,7 +59035,7 @@ var PHONE_VERSION = PHONE_PACKAGE.slice(PHONE_PACKAGE.lastIndexOf("@") + 1);
 var CHECK_TIMEOUT_MS = 15e3;
 var readJson2 = (path) => {
   try {
-    return JSON.parse(readFileSync32(path, "utf8"));
+    return JSON.parse(readFileSync33(path, "utf8"));
   } catch {
     return null;
   }
@@ -58999,7 +59059,7 @@ function findPlugin(stateDir, name) {
 function runMeetingCheck(host, stateDir) {
   let source = "";
   try {
-    source = readFileSync32(MEETING_PATCH, "utf8");
+    source = readFileSync33(MEETING_PATCH, "utf8");
   } catch {
     return Promise.resolve(null);
   }
@@ -59024,7 +59084,7 @@ function meetingsRuntimeItem(raw, openclaw) {
   const status = statuses.includes("unknown") ? "mismatch" : statuses.includes("missing") ? "missing" : statuses.includes("unpatched") ? "unpatched" : statuses.length ? "ok" : "unknown";
   return { id: "meetings_runtime", status, expected, actual: openclaw };
 }
-function phonePluginItem(dir, read = (p2) => readFileSync32(p2, "utf8")) {
+function phonePluginItem(dir, read = (p2) => readFileSync33(p2, "utf8")) {
   if (!dir) return { id: "phone_plugin", status: "not_installed", expected: PHONE_VERSION };
   const version2 = readJson2(join22(dir, "package.json"))?.version ?? null;
   if (version2 !== PHONE_VERSION) return { id: "phone_plugin", status: "mismatch", expected: PHONE_VERSION, actual: version2 };
@@ -59050,7 +59110,7 @@ function phoneRuntimeItem(host, openclaw) {
     const dist = join22(host, "dist");
     const files2 = readdirSync4(dist).filter((f2) => /^gateway-work-admission-[A-Za-z0-9_-]{8}\.mjs$/.test(f2));
     if (files2.length !== 1) return { id: "phone_runtime", status: "mismatch", actual: openclaw };
-    const ok = phoneAdmissionDigest(readFileSync32(join22(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
+    const ok = phoneAdmissionDigest(readFileSync33(join22(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
     return { id: "phone_runtime", status: ok ? "ok" : "mismatch", actual: openclaw };
   } catch {
     return { id: "phone_runtime", status: "missing", actual: openclaw };
@@ -59428,7 +59488,7 @@ async function handleTemplateCaptureSession(req, res, url3, templates) {
 }
 
 // src/cpu-sampler.ts
-import { readFileSync as readFileSync33 } from "fs";
+import { readFileSync as readFileSync34 } from "fs";
 var CPU_SAMPLE_MS = 1e4;
 var CPU_MISSED_WINDOWS = 2;
 function parseProcStat(text3) {
@@ -59445,7 +59505,7 @@ function cpuPct(prev, next) {
   const busy = 1 - (next.idle - prev.idle) / total;
   return Math.round(Math.min(1, Math.max(0, busy)) * 1e3) / 10;
 }
-var readProcStat = () => readFileSync33("/proc/stat", "utf8");
+var readProcStat = () => readFileSync34("/proc/stat", "utf8");
 function createCpuSampler(read = readProcStat, now = () => performance.now()) {
   let prev = null;
   let last = null;
@@ -59739,7 +59799,7 @@ function notesNameProblem(name) {
 }
 
 // ../templates/src/notes-folder.ts
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync18, readdirSync as readdirSync5, readFileSync as readFileSync34, rmSync as rmSync9, statSync as statSync3, writeFileSync as writeFileSync22 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync18, readdirSync as readdirSync5, readFileSync as readFileSync35, rmSync as rmSync9, statSync as statSync3, writeFileSync as writeFileSync22 } from "fs";
 import { dirname as dirname17, join as join23 } from "path";
 function notesPlace(env2 = process.env) {
   return { root: env2.CC_NOTES_DIR ?? "/var/lib/controlclaw-notes/sets", helper: env2.CC_NOTES_HELPER ? [env2.CC_NOTES_HELPER] : ["sudo", "-n", "/usr/local/sbin/cc-notes"] };
@@ -59758,7 +59818,7 @@ var recordPath = (home, set2) => join23(home, ".controlclaw", "notes", `${set2}.
 function readNotesRecord(home, set2) {
   if (notesNameProblem(set2)) return null;
   try {
-    const r2 = JSON.parse(readFileSync34(recordPath(home, set2), "utf8"));
+    const r2 = JSON.parse(readFileSync35(recordPath(home, set2), "utf8"));
     if (!r2 || r2.source !== "organization" && r2.source !== "template" || typeof r2.id !== "string" || typeof r2.hash !== "string" || !/^[0-9a-f]{64}$/.test(r2.hash)) return null;
     return { source: r2.source, id: r2.id, version: typeof r2.version === "string" ? r2.version : null, payload: typeof r2.payload === "string" ? r2.payload : null, hash: r2.hash, always: typeof r2.always === "string" ? r2.always : null, installedAt: typeof r2.installedAt === "string" ? r2.installedAt : "" };
   } catch {
@@ -59783,7 +59843,7 @@ function installedNotes(root, set2) {
       else {
         bytes += stat5.size;
         if (files2.length >= NOTES_LIMITS.files || stat5.size > NOTES_LIMITS.fileBytes || bytes > NOTES_LIMITS.totalBytes) return false;
-        files2.push({ path: `${prefix}${name}`, content: readFileSync34(path), executable: false });
+        files2.push({ path: `${prefix}${name}`, content: readFileSync35(path), executable: false });
       }
     }
     return true;
@@ -59854,7 +59914,7 @@ function reportNotes(home, place = notesPlace(), read = installedNotes) {
 
 // ../templates/src/skill-folder.ts
 import { randomBytes as randomBytes4 } from "crypto";
-import { existsSync as existsSync28, lstatSync as lstatSync3, readdirSync as readdirSync6, readFileSync as readFileSync35, realpathSync as realpathSync2, renameSync as renameSync17, rmSync as rmSync10, writeFileSync as writeFileSync23 } from "fs";
+import { existsSync as existsSync28, lstatSync as lstatSync3, readdirSync as readdirSync6, readFileSync as readFileSync36, realpathSync as realpathSync2, renameSync as renameSync17, rmSync as rmSync10, writeFileSync as writeFileSync23 } from "fs";
 import { join as join24, resolve as resolve3, sep as sep3 } from "path";
 var TooBig = class extends Error {
 };
@@ -59873,7 +59933,7 @@ function listFolder(dir, notes = false) {
       else {
         bytes += stat5.size;
         if (files2.length >= limits.files + 8 || stat5.size > limits.fileBytes || bytes > limits.totalBytes + 65536) throw new TooBig();
-        files2.push({ path: relative, content: readFileSync35(path), executable: (stat5.mode & 73) !== 0 });
+        files2.push({ path: relative, content: readFileSync36(path), executable: (stat5.mode & 73) !== 0 });
       }
     }
   };
@@ -59900,7 +59960,7 @@ function skillHash(dir) {
 }
 function readSkillRecord(dir) {
   try {
-    return parseSkillRecord(JSON.parse(readFileSync35(join24(dir, SKILL_RECORD), "utf8")));
+    return parseSkillRecord(JSON.parse(readFileSync36(join24(dir, SKILL_RECORD), "utf8")));
   } catch {
     return null;
   }
@@ -60226,7 +60286,7 @@ ${err.stderr ?? ""}`)) {
 
 // src/templates.ts
 import { createHash as createHash15 } from "crypto";
-import { existsSync as existsSync30, mkdirSync as mkdirSync19, readdirSync as readdirSync8, readFileSync as readFileSync36, renameSync as renameSync18, rmSync as rmSync12, statSync as statSync5, writeFileSync as writeFileSync24 } from "fs";
+import { existsSync as existsSync30, mkdirSync as mkdirSync19, readdirSync as readdirSync8, readFileSync as readFileSync37, renameSync as renameSync18, rmSync as rmSync12, statSync as statSync5, writeFileSync as writeFileSync24 } from "fs";
 import { homedir as homedir2 } from "os";
 import { dirname as dirname19, join as join26 } from "path";
 
@@ -60346,7 +60406,7 @@ function reviewFilesOf(raw) {
 }
 function readTemplateReview(stateDir, now = /* @__PURE__ */ new Date()) {
   try {
-    const raw = JSON.parse(readFileSync36(templateReviewPath(stateDir), "utf8"));
+    const raw = JSON.parse(readFileSync37(templateReviewPath(stateDir), "utf8"));
     if (typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template) || typeof raw.at !== "string") return null;
     const age = now.getTime() - new Date(raw.at).getTime();
     if (!(age >= 0 && age < TEMPLATE_REVIEW_MS)) return null;
@@ -60380,7 +60440,7 @@ var TemplateService = class {
   constructor(opts) {
     this.opts = opts;
     try {
-      const kept = JSON.parse(readFileSync36(this.unsentPath, "utf8"));
+      const kept = JSON.parse(readFileSync37(this.unsentPath, "utf8"));
       if (kept && typeof kept === "object") this.unsent = kept;
     } catch {
     }
@@ -60446,7 +60506,7 @@ var TemplateService = class {
   }
   marker() {
     try {
-      const raw = JSON.parse(readFileSync36(this.markerPath, "utf8"));
+      const raw = JSON.parse(readFileSync37(this.markerPath, "utf8"));
       if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
       const vars = varsOf(raw.vars);
       return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {}, ...vars ? { vars } : {} };
@@ -60460,7 +60520,7 @@ var TemplateService = class {
   /** The bundles applied beside this agent's template, oldest first. */
   beside() {
     try {
-      const raw = JSON.parse(readFileSync36(this.besidePath, "utf8"));
+      const raw = JSON.parse(readFileSync37(this.besidePath, "utf8"));
       const kept = {};
       for (const [id, b2] of Object.entries(raw ?? {})) {
         const vars = varsOf(b2?.vars);
@@ -60752,7 +60812,7 @@ var TemplateService = class {
   async captureSkill(req) {
     const done = join26(this.opts.stateDir, "skill-capture.json");
     try {
-      if (JSON.parse(readFileSync36(done, "utf8")).id === req.id) return;
+      if (JSON.parse(readFileSync37(done, "utf8")).id === req.id) return;
     } catch {
     }
     this.log(`reading the skill ${req.name} of this agent's own, to be saved in the organization's skills`);
@@ -60783,7 +60843,7 @@ var TemplateService = class {
   async capture(id) {
     const done = join26(this.opts.stateDir, "capture.json");
     try {
-      if (JSON.parse(readFileSync36(done, "utf8")).id === id) return;
+      if (JSON.parse(readFileSync37(done, "utf8")).id === id) return;
     } catch {
     }
     this.log("reading this agent's setup for Save as template");
@@ -60810,7 +60870,7 @@ var TemplateService = class {
     const closed = { id: "", at: "", items: [], tries: 0, done: true };
     let text3;
     try {
-      text3 = readFileSync36(this.startSkillsPath, "utf8");
+      text3 = readFileSync37(this.startSkillsPath, "utf8");
     } catch (error62) {
       return error62.code === "ENOENT" ? null : closed;
     }
@@ -60943,7 +61003,7 @@ var TemplateService = class {
   /** The skill this agent has prepared and is waiting for a ticket for, while it is recent. */
   skillPending() {
     try {
-      const raw = JSON.parse(readFileSync36(this.skillPendingPath, "utf8"));
+      const raw = JSON.parse(readFileSync37(this.skillPendingPath, "utf8"));
       const r2 = raw;
       if (r2.kind !== "skill" && r2.kind !== "notes" || typeof r2.ref !== "string" || !REQUEST_ID.test(r2.ref) || !this.fresh(r2.at, TEMPLATE_REVIEW_MS)) return null;
       if (typeof r2.name !== "string" || !SKILL_NAME_RE.test(r2.name) || typeof r2.hash !== "string" || !BUNDLE_HASH.test(r2.hash) || typeof r2.files !== "number") return null;
@@ -60989,7 +61049,7 @@ var TemplateService = class {
     }
     let done = null;
     try {
-      done = JSON.parse(readFileSync36(this.skillDonePath, "utf8")).id ?? null;
+      done = JSON.parse(readFileSync37(this.skillDonePath, "utf8")).id ?? null;
     } catch {
     }
     if (done === req.id) return;
@@ -61001,7 +61061,7 @@ var TemplateService = class {
     const report = (body2) => this.call("POST", { kind: "skills", requestId: req.id, ...body2 });
     let kept = null;
     try {
-      kept = JSON.parse(readFileSync36(this.skillPendingPath, "utf8"));
+      kept = JSON.parse(readFileSync37(this.skillPendingPath, "utf8"));
     } catch {
     }
     if (!kept || kept.ref !== req.id) {
@@ -61042,7 +61102,7 @@ var TemplateService = class {
       }
       let ticket = null;
       try {
-        ticket = JSON.parse(readFileSync36(this.skillTicketPath, "utf8"));
+        ticket = JSON.parse(readFileSync37(this.skillTicketPath, "utf8"));
       } catch {
       }
       if (!ticket) return;
@@ -61240,7 +61300,7 @@ var TemplateService = class {
       return facts;
     }
     try {
-      const raw = JSON.parse(readFileSync36(this.pendingPath, "utf8"));
+      const raw = JSON.parse(readFileSync37(this.pendingPath, "utf8"));
       if (raw.kind !== "template" || raw.ref !== ref || !this.fresh(raw.at, TEMPLATE_REVIEW_MS)) return null;
       if (typeof raw.template !== "string" || typeof raw.name !== "string" || typeof raw.hash !== "string" || typeof raw.steps !== "number" || typeof raw.change !== "number" || typeof raw.scripts !== "number") return null;
       const vars = varsOf(raw.vars);
@@ -61267,7 +61327,7 @@ var TemplateService = class {
     if (!pending || pending.payload !== payload) return false;
     let vars = null;
     try {
-      vars = varsOf(JSON.parse(readFileSync36(this.pendingPath, "utf8")).vars);
+      vars = varsOf(JSON.parse(readFileSync37(this.pendingPath, "utf8")).vars);
     } catch {
     }
     if (!vars) return false;
@@ -61284,7 +61344,7 @@ var TemplateService = class {
   async ticketed(request, dir) {
     let ticket = null;
     try {
-      ticket = JSON.parse(readFileSync36(this.ticketPath, "utf8"));
+      ticket = JSON.parse(readFileSync37(this.ticketPath, "utf8"));
     } catch {
     }
     rmSync12(this.ticketPath, { force: true });
@@ -61303,7 +61363,7 @@ var TemplateService = class {
   async asked(request, assignment) {
     let handled = null;
     try {
-      handled = JSON.parse(readFileSync36(this.handledPath, "utf8")).id ?? null;
+      handled = JSON.parse(readFileSync37(this.handledPath, "utf8")).id ?? null;
     } catch {
     }
     if (handled === request.id || this.marker()?.request === request.id || Object.values(this.beside()).some((b2) => b2.request === request.id)) return;
@@ -61395,7 +61455,7 @@ var TemplateService = class {
     if (wanted === void 0) return;
     const path = templateReviewPath(this.opts.stateDir);
     try {
-      if (JSON.parse(readFileSync36(path, "utf8")).template !== wanted) rmSync12(path, { force: true });
+      if (JSON.parse(readFileSync37(path, "utf8")).template !== wanted) rmSync12(path, { force: true });
     } catch {
       rmSync12(path, { force: true });
     }
@@ -61439,7 +61499,7 @@ var TemplateService = class {
     if (marker.vars) return marker.vars;
     let kept = null;
     try {
-      kept = varsOf(JSON.parse(readFileSync36(join26(this.opts.stateDir, APPLIED_VARS), "utf8")));
+      kept = varsOf(JSON.parse(readFileSync37(join26(this.opts.stateDir, APPLIED_VARS), "utf8")));
     } catch {
     }
     const vars = kept ?? { note: "", name: assignment.name, timeZone: "UTC" };
@@ -61479,7 +61539,7 @@ var TemplateService = class {
       if (!dir || !facts) return null;
       let failedSteps = [];
       try {
-        const state = JSON.parse(readFileSync36(join26(this.runbookState, `${marker.template}.json`), "utf8"));
+        const state = JSON.parse(readFileSync37(join26(this.runbookState, `${marker.template}.json`), "utf8"));
         const failed = (state.steps ?? []).filter((s2) => s2.status === "failed" && typeof s2.id === "string" && facts.steps.some((f2) => f2.id === s2.id));
         failedSteps = [...failed.filter((s2) => s2.optional !== true), ...failed.filter((s2) => s2.optional === true)].map((s2) => s2.id);
       } catch {
@@ -61509,7 +61569,7 @@ var TemplateService = class {
     let vars = marker.vars ?? null;
     if (!vars) {
       try {
-        vars = varsOf(JSON.parse(readFileSync36(join26(this.opts.stateDir, APPLIED_VARS), "utf8")));
+        vars = varsOf(JSON.parse(readFileSync37(join26(this.opts.stateDir, APPLIED_VARS), "utf8")));
       } catch {
         vars = null;
       }
@@ -62030,7 +62090,7 @@ if (POOL_UNCLAIMED && !existsSync31(`${KEYS_DIR2}/saas_public_key.pem`)) {
   writeFileSync25(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync37(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync38(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -62038,7 +62098,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync37(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync38(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
   setOwnHostnames(() => [readKeyFile(KEYS_DIR2, "vm_hostname"), readKeyFile(KEYS_DIR2, "access_hostname")]);
   setBoundTokensLatch(`${process.env.STATE_DIR ?? "/opt/controlclaw/state"}/firewall-tokens-bound`);
 } catch {
@@ -62615,7 +62675,7 @@ server.listen(PORT, BIND, () => {
       let inboxId = agentmail?.status()?.inboxId;
       if (!inboxId) {
         try {
-          inboxId = JSON.parse(readFileSync37(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
+          inboxId = JSON.parse(readFileSync38(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
         } catch {
         }
       }
