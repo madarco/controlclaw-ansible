@@ -46,14 +46,18 @@ const clock = at => { const d = new Date(at); return Number.isFinite(d.getTime()
  * own lines from meeting.jsonl. Without captions (the host turned them off), what the agent heard
  * in its sessions stands in. `final` is false for a block still being written.
  */
-export function meetingLines(name, dir = DIR()) {
+/**
+ * The meeting so far, one line each. `own: false` leaves out the agent's own lines: the always-listening
+ * voice gets the captions as context, and its own words there made it talk about them ("That was me").
+ */
+export function meetingLines(name, dir = DIR(), { own: withOwn = true } = {}) {
   const caption = c => typeof c?.text === 'string' && c.text.trim() && typeof c.at === 'string';
   const who = c => typeof c.speaker === 'string' && c.speaker ? c.speaker.slice(0, 80) : 'Someone';
   const finals = tail(join(dir, 'captions.jsonl')).filter(caption).map(c => ({ at: c.at, speaker: who(c), text: c.text, final: true }));
   let live = [];
   try { const rows = JSON.parse(readFileSync(join(dir, 'captions-live.json'), 'utf8'))?.rows; if (Array.isArray(rows)) live = rows.slice(0, 50).filter(caption).map(c => ({ at: c.at, speaker: who(c), text: c.text.slice(-4000), final: false })); } catch { /* none yet */ }
   const voice = tail(join(dir, 'meeting.jsonl')).filter(l => l?.kind === 'line' && typeof l.text === 'string' && typeof l.at === 'string');
-  const own = voice.filter(l => l.role === 'assistant').map(l => ({ at: l.at, speaker: name, text: l.text, final: true }));
+  const own = withOwn ? voice.filter(l => l.role === 'assistant').map(l => ({ at: l.at, speaker: name, text: l.text, final: true })) : [];
   const heard = finals.length || live.length ? [] : voice.filter(l => l.role === 'user').map(l => ({ at: l.at, speaker: 'Someone', text: l.text, final: true }));
   return [...finals, ...live, ...own, ...heard].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
     .map(l => ({ line: `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`, final: l.final }));

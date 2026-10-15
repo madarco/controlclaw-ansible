@@ -3,13 +3,15 @@
 import './fixtures/home.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPresenter, PRESENT_SAY } from '../roles/controlclaw/files/meeting-voice/present.js';
+import { createPresenter, PRESENT_SAY, presentUrl } from '../roles/controlclaw/files/meeting-voice/present.js';
 import { parseAction, consultRules } from '../roles/controlclaw/files/meeting-voice/actions.js';
 
 const MEETING = '0b9a3f43-5d0e-4c55-9d0c-3a1f2b4c5d6e';
 /** `share`: 'ok' | 'disabled' | 'none'. `after`: what Meet shows once Share screen is clicked. */
-function fixture({ share = 'ok', after = 'You are presenting', present = true, visible = true } = {}) {
+function fixture({ share = 'ok', after = 'You are presenting', present = true, visible = true, agentUrl = 'https://example.com/' } = {}) {
   const calls = [], draws = [], closed = [], intervals = [], orphans = [];
+  // The agent browser's tabs (CDP 9222): the one in front first.
+  const tabs = [{ type: 'page', id: 'a', url: agentUrl, webSocketDebuggerUrl: 'agent' }];
   let leaseNow = { present, meetingId: MEETING };
   let meetText = 'fgx-ftqo-yys';
   const json = async (port, path, method = 'GET') => {
@@ -17,7 +19,8 @@ function fixture({ share = 'ok', after = 'You are presenting', present = true, v
     if (port === 9223 && path === '/json/list') return [{ type: 'page', id: 'm', title: 'Meet', url: 'https://meet.google.com/fgx-ftqo-yys?hl=en', webSocketDebuggerUrl: 'meet' }, ...orphans];
     if (port === 9223 && path.startsWith('/json/new')) return { id: 's', webSocketDebuggerUrl: 'stage' };
     if (path.startsWith('/json/close/')) { closed.push(path.slice(12)); meetText = 'fgx-ftqo-yys'; return {}; }
-    if (port === 9222 && path === '/json/list') return [{ type: 'page', id: 'a', url: 'https://example.com/', webSocketDebuggerUrl: 'agent' }];
+    if (port === 9222 && path === '/json/list') return tabs;
+    if (port === 9222 && path.startsWith('/json/new?')) { const tab = { type: 'page', id: 'n', url: decodeURIComponent(path.slice(10)), webSocketDebuggerUrl: 'agent' }; tabs.unshift(tab); return tab; }
     return {};
   };
   const client = url => ({
@@ -34,6 +37,8 @@ function fixture({ share = 'ok', after = 'You are presenting', present = true, v
       if (url === 'stage') { if (method === 'Runtime.evaluate') draws.push(params.expression.slice(0, 20)); return {}; }
       if (url === 'agent') {
         if (method === 'Runtime.evaluate' && params.expression === 'document.visibilityState') return { result: { result: { value: visible ? 'visible' : 'hidden' } } };
+        if (method === 'Runtime.evaluate' && params.expression === 'document.readyState') return { result: { result: { value: 'complete' } } };
+        if (method === 'Page.navigate') { calls.push(`navigate ${params.url}`); tabs[0].url = params.url; return {}; }
         if (method === 'Runtime.evaluate') return { result: { result: { value: '[1920,1080,0,2400]' } } };
         if (method === 'Page.captureScreenshot') { calls.push(`shot scale=${params.clip.scale.toFixed(3)} q=${params.quality} at=${params.clip.x},${params.clip.y}`); return { result: { data: 'AAAA' } }; }
       }
@@ -42,7 +47,7 @@ function fixture({ share = 'ok', after = 'You are presenting', present = true, v
   });
   const timers = { setInterval: (fn, ms) => { const t = { fn, ms }; intervals.push(t); return t; }, clearInterval: t => { if (t) t.cleared = true; } };
   const presenter = createPresenter({ json, connect: client, lease: () => leaseNow, sleep: async () => {}, timers, metric: () => {} });
-  return { presenter, calls, draws, closed, intervals, orphans, setLease: l => { leaseNow = l; }, setMeet: t => { meetText = t; } };
+  return { presenter, calls, draws, closed, intervals, orphans, tabs, setLease: l => { leaseNow = l; }, setMeet: t => { meetText = t; } };
 }
 
 test('CC_PRESENT: only as the whole answer, browser or stop, and only offered when the lease allows it', () => {
@@ -109,11 +114,49 @@ test('while presenting: the meeting ending, the setting turned off or Meet stopp
   }
 });
 
-test('no tab in front in the agent browser: the stage says there is nothing to show', async () => {
-  const f = fixture({ visible: false });
+test('nothing open in the agent browser: no white screen is shared, and the voice asks what to show', async () => {
+  for (const f of [fixture({ visible: false }), fixture({ agentUrl: 'about:blank' })]) {
+    assert.equal(await f.presenter.start(), 'empty');
+    assert.ok(!f.calls.some(c => c.startsWith('click')), 'nothing is shared');
+  }
+  assert.match(PRESENT_SAY.empty, /nothing open/);
+});
+
+test('while presenting, a tab that turns blank shows the Nothing to show card, not a white page', async () => {
+  const f = fixture();
   assert.equal(await f.presenter.start(), 'presenting');
-  assert.ok(f.draws.some(d => d.startsWith('card(')));
+  f.tabs[0].url = 'about:blank';
+  await new Promise(r => setTimeout(r, 1100));
+  f.intervals.find(t => t.ms === 500).fn();
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(f.draws.at(-1).startsWith('card('), f.draws.at(-1));
   await f.presenter.stop();
+});
+
+test('"show us example.com": the page is opened in the agent browser, then shared; already presenting, it is opened there', async () => {
+  // A blank tab in front is reused.
+  const blank = fixture({ agentUrl: 'about:blank' });
+  assert.equal(await blank.presenter.start({ url: 'example.com' }), 'presenting');
+  assert.ok(blank.calls.includes('navigate https://example.com/'));
+  // A page in front stays: the site gets a new tab, brought to the front.
+  const busy = fixture();
+  assert.equal(await busy.presenter.start({ url: 'https://acme.com/pricing' }), 'presenting');
+  assert.ok(busy.calls.some(c => c === '9222 PUT /json/new?' + encodeURIComponent('https://acme.com/pricing')));
+  assert.ok(busy.calls.includes('9222 GET /json/activate/n'));
+  assert.equal(await busy.presenter.start({ url: 'https://example.org/' }), 'showing');
+  // Not a plain https address: nothing is opened or shared.
+  const bad = fixture();
+  assert.equal(await bad.presenter.start({ url: 'http://example.com' }), 'bad_url');
+  assert.ok(!bad.calls.some(c => c.startsWith('click') || c.startsWith('navigate') || c.includes('/json/new?')));
+});
+
+test('presentUrl: https only, no credentials, a real host name', () => {
+  assert.equal(presentUrl('example.com'), 'https://example.com/');
+  assert.equal(presentUrl(' https://acme.com/pricing?x=1 '), 'https://acme.com/pricing?x=1');
+  for (const bad of ['http://example.com', 'javascript:alert(1)', 'file:///etc/passwd', 'https://user:pw@example.com', 'https://localhost/', 'chrome://settings', 'example com', '', 7, 'data:text/html,hi'])
+    assert.equal(presentUrl(bad), null, String(bad));
+  assert.deepEqual(parseAction('CC_PRESENT {"mode":"browser","url":"https://example.com"}'), { kind: 'present', mode: 'browser', url: 'https://example.com' });
+  assert.match(consultRules(true, new Date(), false, true), /CC_PRESENT \{"mode":"browser","url":"https:\/\/example\.com"\}/);
 });
 
 test('in the meeting: the consult is offered CC_PRESENT, and the room hears the outcome Meet showed', async () => {
@@ -433,6 +476,87 @@ test('"leave the meeting", said to the agent: a goodbye and a leave line for the
   assert.doesNotMatch(log(), /"kind":"leave"/, 'not while the goodbye plays');
   await new Promise(r => setTimeout(r, 700));
   assert.match(log(), /"kind":"leave"/);
+  bridge.close();
+});
+
+test('a request to leave with no delegation (GPT-Live just says goodbye): read from the caption line, left after the goodbye', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const { voiceRecord } = await import('../roles/controlclaw/files/meeting-voice/record.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-leave-caption-')), all = [], tools = [];
+  class WS extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.bufferedAmount = 0; this.sent = []; all.push(this); setImmediate(() => this.emit('open')); }
+    send(s) { const e = JSON.parse(s); this.sent.push(e); if (e.type === 'session.start') setImmediate(() => this.emit('message', JSON.stringify({ type: 'session.started', session: {} }))); }
+    terminate() {}
+  }
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
+    onAudio: () => {}, onToolCall: t => tools.push(t), onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter: { reset: async () => {} }, leaveTimes: { quiet: 300, noAudio: 600, max: 3000 }, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  await bridge.connect();
+  const ws = all[0];
+  const said = text => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: text }));
+  const log = () => { try { return readFileSync(join(dir, 'meeting.jsonl'), 'utf8'); } catch { return ''; } };
+  const speak = () => ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.alloc(4800, 0x40).toString('base64') }));
+  // Without the agent's name (always listening): not for it.
+  said('Please leave the meeting.');
+  await new Promise(r => setTimeout(r, 2200));
+  assert.doesNotMatch(log(), /"kind":"leave"/, 'not said to the agent');
+  // With its name, and no delegation: the goodbye plays, then the leave line.
+  said(' Jarvis, please leave the meeting.');
+  await new Promise(r => setTimeout(r, 1000));
+  for (let i = 0; i < 6; i++) { speak(); await new Promise(r => setTimeout(r, 150)); }
+  assert.doesNotMatch(log(), /"kind":"leave"/, 'not while the goodbye plays');
+  // GPT-Live keeps sending silent frames after it: they do not hold the leave back.
+  const silence = () => ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.alloc(4800, 0).toString('base64') }));
+  for (let i = 0; i < 6; i++) { silence(); await new Promise(r => setTimeout(r, 150)); }
+  assert.match(log(), /"kind":"leave"/);
+  assert.equal(tools.length, 0, 'no consult');
+  bridge.close();
+});
+
+test('a request to present with no delegation (GPT-Live answered it alone): read from the caption line, presented once, the outcome told', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const { voiceRecord } = await import('../roles/controlclaw/files/meeting-voice/record.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-present-caption-')), all = [], tools = [], asked = [];
+  class WS extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.bufferedAmount = 0; this.sent = []; all.push(this); setImmediate(() => this.emit('open')); }
+    send(s) { const e = JSON.parse(s); this.sent.push(e); if (e.type === 'session.start') setImmediate(() => this.emit('message', JSON.stringify({ type: 'session.started', session: {} }))); }
+    terminate() {}
+  }
+  const outcomes = ['empty', 'presenting'];
+  const presenter = { start: async () => { asked.push('start'); return outcomes.shift(); }, stop: async () => 'stopped', reset: async () => {} };
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
+    onAudio: () => {}, onToolCall: t => tools.push(t), onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING, present: true }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  await bridge.connect();
+  const ws = all[0];
+  const said = text => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: text }));
+  const spoken = () => ws.sent.filter(e => e.type === 'session.commentary.append');
+  // Not said to the agent (always listening, no name): nothing.
+  said('Bob, can you share your screen?');
+  await new Promise(r => setTimeout(r, 1500));
+  assert.deepEqual(asked, []);
+  // Said to it, no delegation: presenting is asked once, and the outcome is spoken without a delegation id.
+  said(' Jarvis, please share your screen.');
+  await new Promise(r => setTimeout(r, 1500));
+  assert.deepEqual(asked, ['start']);
+  assert.equal(spoken().at(-1).delegation_id, null);
+  assert.match(spoken().at(-1).content, /nothing open/);
+  await new Promise(r => setTimeout(r, 1300));
+  said(' Jarvis, share your screen.');
+  await new Promise(r => setTimeout(r, 1500));
+  assert.deepEqual(asked, ['start', 'start']);
+  assert.match(spoken().at(-1).content, /now presenting/);
+  assert.equal(tools.length, 0, 'no consult');
   bridge.close();
 });
 

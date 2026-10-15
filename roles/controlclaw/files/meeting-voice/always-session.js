@@ -7,7 +7,9 @@
 //
 // What this adds to a plain LiveBridge:
 // - The meeting's captions, with speaker names: the meeting so far when a session starts, and the
-//   lines finished since as quiet context every 20 s.
+//   lines finished since once someone has called the agent by name (so "what did Anna say?" can be
+//   answered). Never on a timer: gpt-live answered every update, and with its own lines in them it
+//   talked to itself every 20 s ("That was me"). Never the agent's own lines.
 // - Silence pauses the voice instead of ending it. After five minutes with nobody speaking the
 //   session is closed (a connected session is billed, silence included) and the next speech
 //   reconnects, replaying the last seconds. A session the provider ends is reconnected the same
@@ -30,7 +32,7 @@ export const DEFAULT_SESSIONS = 4;
 // `pause`: silence before the session is closed. `speech`: how much loud audio, within `window`,
 // reconnects. `replay`: how far back the reconnected session hears. `startGap`: the firewall paces
 // session starts at 2 s. `lost`: a session that ends sooner than this after opening did not work.
-const TIMING = { pause: 5 * 60000, tick: 1000, context: 20000, startGap: 2500, speech: 300, window: 1500, replay: 4000, lost: 10000 };
+const TIMING = { pause: 5 * 60000, tick: 1000, startGap: 2500, speech: 300, window: 1500, replay: 4000, lost: 10000 };
 
 /** Mean level of a PCM16 chunk above the threshold LiveBridge uses for "someone is speaking". */
 const loud = (pcm) => {
@@ -73,7 +75,8 @@ export class AlwaysBridge {
     this.req.onReady?.();
   }
   tasks() { return this.deps.tasks ?? meetingTasks; }
-  lines() { try { return meetingLines(this.names[0] ?? 'Agent', this.deps.voiceDir); } catch { return []; } }
+  // Never the agent's own lines: answered back to it, they kept it talking every 20 s about who spoke.
+  lines() { try { return meetingLines(this.names[0] ?? 'Agent', this.deps.voiceDir, { own: false }); } catch { return []; } }
   /** Open a session with the meeting so far as context. Resolves when it is connected. */
   open(reason) {
     const lines = this.lines();
@@ -186,8 +189,9 @@ export class AlwaysBridge {
     const now = Date.now();
     // A session that has lasted is not a failure: the next one that ends early counts from zero.
     if (now - entry.openedAt > this.t.lost) this.failures = 0;
-    // Caption lines finished since the session last saw the transcript: who said what.
-    if (now - entry.contextAt >= this.t.context && entry.appends < MAX_CONTEXT_APPENDS) {
+    // Caption lines finished since the session last saw the transcript, who said what: only after the
+    // agent was called by name since the last update, never on a timer.
+    if ((entry.bridge.addressedAt ?? 0) > entry.contextAt && entry.appends < MAX_CONTEXT_APPENDS) {
       entry.contextAt = now;
       const fresh = this.lines().filter(l => l.final && !entry.sent.has(l.line));
       for (const l of fresh) entry.sent.add(l.line);

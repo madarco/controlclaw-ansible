@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import guard, { keepTabsDrawn, ownCdpUrl } from '../roles/controlclaw/files/meeting-guard/index.js';
+import guard, { keepTabsDrawn, ownCdpUrl, reachesMeetingBrowser } from '../roles/controlclaw/files/meeting-guard/index.js';
 
 // A Chrome debugger endpoint with three targets, and sockets that record what they are sent.
 const page = (id, port = 9222) => ({ type: 'page', id, webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/${id}` });
@@ -190,7 +190,7 @@ test('the hook asks the Chrome the role configured', async () => {
   } finally { plugin.restore(); }
 });
 
-test('the meeting reservation still refuses, before anything else', async () => {
+test('google_meet and the meeting profile are refused before anything else', async () => {
   const chrome = fakeChrome();
   const plugin = load(chrome);
   try {
@@ -198,4 +198,21 @@ test('the meeting reservation still refuses, before anything else', async () => 
     assert.equal((await plugin.before({ toolName: 'browser', params: { action: 'screenshot', profile: 'cc-meetings' } })).block, true);
     assert.equal(chrome.sockets.length, 0);
   } finally { plugin.restore(); }
+});
+
+test("during a meeting the agent's own browser works; the meeting's Chrome is refused by any name that reaches it", async () => {
+  const config = { browser: { defaultProfile: 'openclaw', profiles: { openclaw: { cdpUrl: 'http://127.0.0.1:9222' }, 'cc-meetings': { cdpUrl: 'http://127.0.0.1:9223', attachOnly: true }, sneaky: { cdpUrl: 'http://127.0.0.1:9223/' }, port: { cdpPort: 9223 }, other: { cdpUrl: 'http://127.0.0.1:92230' } } } };
+  const chrome = fakeChrome();
+  const plugin = load(chrome, config);
+  try {
+    // The agent's own browser, with or without the profile named: never refused, meeting or not.
+    for (const params of [{ action: 'navigate', targetUrl: 'https://example.com' }, { action: 'open', profile: 'openclaw', targetUrl: 'https://example.com' }, { action: 'tabs' }, { action: 'snapshot', profile: 'other' }])
+      assert.equal((await plugin.before({ toolName: 'browser', params }))?.block, undefined, JSON.stringify(params));
+    // The meeting's Chrome: its profile in any case, any profile on port 9223, an import into or from it.
+    for (const params of [{ action: 'open', profile: 'cc-meetings' }, { action: 'tabs', profile: ' CC-Meetings ' }, { action: 'snapshot', profile: 'sneaky' }, { action: 'tabs', profile: 'port' }, { action: 'importprofile', into: 'cc-meetings' }, { action: 'importprofile', systemProfile: 'cc-meetings' }, { action: 'importprofile', browser: '/home/controlclaw/.config/cc-meetings' }])
+      assert.equal((await plugin.before({ toolName: 'browser', params }))?.block, true, JSON.stringify(params));
+  } finally { plugin.restore(); }
+  // A default profile that is the meeting's: refused when no profile is named.
+  assert.equal(reachesMeetingBrowser({ action: 'tabs' }, { browser: { defaultProfile: 'cc-meetings' } }), true);
+  assert.equal(reachesMeetingBrowser({ action: 'tabs' }, {}), false);
 });

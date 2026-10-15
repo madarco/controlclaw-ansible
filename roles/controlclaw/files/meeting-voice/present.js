@@ -46,7 +46,23 @@ export function cdpClient(url, WebSocket) {
     close: () => { try { ws.close(); } catch { /* gone */ } },
   };
 }
+// How long a page asked for gets to load before it is shown anyway.
+const PAGE_LOAD_MS = 8000;
 const value = r => r?.result?.result?.value;
+/** A tab with nothing to show: blank, empty, or Chrome's new-tab page. */
+const blankUrl = url => !url || /^(about:blank|chrome:\/\/newtab|chrome-search:|data:,)/i.test(url);
+/**
+ * The page someone asked to see, as an https URL, or null. Plain checks only: https, no credentials,
+ * a host name with a dot. "example.com" is taken as https://example.com.
+ */
+export function presentUrl(raw) {
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim();
+  if (!text || text.length > 2000 || /\s/.test(text)) return null;
+  let url; try { url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(text) ? text : `https://${text}`); } catch { return null; }
+  if (url.protocol !== 'https:' || url.username || url.password || !url.hostname.includes('.')) return null;
+  return url.href;
+}
 
 export function createPresenter(deps = {}) {
   const fetchJson = deps.json ?? (async (port, path, method = 'GET') => (await fetch(`http://127.0.0.1:${port}${path}`, { method, signal: AbortSignal.timeout(5000) })).json());
@@ -85,13 +101,38 @@ export function createPresenter(deps = {}) {
   /** The agent browser's visible tab (the one in front), or null. */
   const visibleSource = async () => {
     for (const t of (await fetchJson(9222, '/json/list')).filter(t => t.type === 'page')) {
-      if (state?.sourceId === t.id && state.source) { if (value(await state.source.send('Runtime.evaluate', { expression: 'document.visibilityState' })) === 'visible') return { id: t.id, client: state.source }; continue; }
+      if (state?.sourceId === t.id && state.source) { if (value(await state.source.send('Runtime.evaluate', { expression: 'document.visibilityState' })) === 'visible') return { id: t.id, client: state.source, blank: blankUrl(t.url) }; continue; }
       const c = connect(t.webSocketDebuggerUrl);
       try { await c.ready; } catch { continue; }
-      if (value(await c.send('Runtime.evaluate', { expression: 'document.visibilityState' })) === 'visible') return { id: t.id, client: c };
+      if (value(await c.send('Runtime.evaluate', { expression: 'document.visibilityState' })) === 'visible') return { id: t.id, client: c, blank: blankUrl(t.url) };
       c.close();
     }
     return null;
+  };
+  /**
+   * Opens the page in the agent browser, in front: in the visible tab when that one is blank,
+   * otherwise in a new tab. True once it loaded (or after a few seconds of trying).
+   */
+  const openPage = async url => {
+    let tab;
+    try {
+      const front = await visibleSource();
+      if (front?.blank) { tab = front; await front.client.send('Page.navigate', { url }); }
+      else {
+        if (front && front.client !== state?.source) front.client.close();
+        const created = await fetchJson(9222, `/json/new?${encodeURIComponent(url)}`, 'PUT');
+        await fetchJson(9222, `/json/activate/${created.id}`).catch(() => {});
+        const c = connect(created.webSocketDebuggerUrl); await c.ready;
+        tab = { id: created.id, client: c };
+      }
+    } catch { return false; }
+    for (let waited = 0; waited < PAGE_LOAD_MS; waited += 500) {
+      if (value(await tab.client.send('Runtime.evaluate', { expression: 'document.readyState' })) === 'complete') break;
+      await sleep(500);
+    }
+    if (tab.client !== state?.source) tab.client.close();
+    if (state) state.checkedAt = 0;
+    return true;
   };
   const frame = async () => {
     if (!state || state.busy) return; state.busy = true;
@@ -102,8 +143,10 @@ export function createPresenter(deps = {}) {
         state.checkedAt = now;
         const found = await visibleSource();
         if (found?.id !== state.sourceId) { if (state.source && state.source !== found?.client) state.source.close(); state.source = found?.client ?? null; state.sourceId = found?.id ?? null; }
+        state.blank = !!found?.blank;
       }
-      if (!state.source) { await state.stage.send('Runtime.evaluate', { expression: 'card("Nothing to show")' }); return; }
+      // No tab, or a blank one (about:blank drew a white screen): the card, not an empty page.
+      if (!state.source || state.blank) { await state.stage.send('Runtime.evaluate', { expression: 'card("Nothing to show")' }); return; }
       // The clip is in document coordinates: what the agent sees starts at the page's scroll position.
       const size = JSON.parse(value(await state.source.send('Runtime.evaluate', { expression: 'JSON.stringify([innerWidth, innerHeight, scrollX, scrollY])' })) ?? '[0,0,0,0]');
       if (!size[0] || !size[1]) return;
@@ -129,12 +172,22 @@ export function createPresenter(deps = {}) {
      * (Meet would not let the agent present), 'not_started' (no "You are presenting" in time),
      * 'not_allowed' (the setting or the lease) or 'failed' (no Meet tab, the browsers not reachable).
      */
-    start() { return serial(() => this.startNow()); },
+    start(opts = {}) { return serial(() => this.startNow(opts)); },
     stop() { return serial(() => this.stopNow()); },
-    async startNow() {
+    async startNow({ url } = {}) {
       const l = lease();
       if (l.present !== true || !l.meetingId) return 'not_allowed';
-      if (state) return 'already';
+      const page = url === undefined ? null : presentUrl(url);
+      if (url !== undefined && !page) return 'bad_url';
+      // Already presenting: the page asked for is opened in front, and the presentation follows it.
+      if (state) { if (!page) return 'already'; return (await openPage(page)) ? 'showing' : 'page_failed'; }
+      if (page) { if (!(await openPage(page))) return 'page_failed'; }
+      else {
+        // Nothing open in the agent browser: nothing to share (it would be a white screen).
+        let front; try { front = await visibleSource(); } catch { front = null; }
+        front?.client.close();
+        if (!front || front.blank) { metric({ phase: 'empty' }); return 'empty'; }
+      }
       // A stage left by a gateway restart: closed first, so this process holds the only one.
       if (await closeOrphans()) await sleep(1500);
       let target;
@@ -204,4 +257,8 @@ export const PRESENT_SAY = {
   failed: 'Not done: presenting could not start (a technical failure); nothing is shared. Say so plainly.',
   stopped: 'Done: you stopped presenting. Say so in a few words.',
   not_presenting: 'You were not presenting. Say so in a few words.',
+  empty: 'Not done: your browser has nothing open, so there is nothing to show. Say so, and ask which page or site they want to see.',
+  showing: 'Done: the page they asked for is now open and shown in your presentation. Say so in a few words.',
+  bad_url: 'Not done: that is not a web address you can open (only https sites). Say so and ask for the site again.',
+  page_failed: 'Not done: the page could not be opened in your browser (a technical failure). Say so plainly.',
 };

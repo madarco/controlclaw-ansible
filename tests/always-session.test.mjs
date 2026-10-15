@@ -32,7 +32,7 @@ function fixture({ sessions, timing = {}, voiceDir, mint = () => true } = {}) {
   const deps = {
     WebSocket: ws.WS, metric: m => metrics.push(m), voiceDir, record: { usage: s => usage.push(s), line: () => {}, end: () => {} },
     fetch: async () => { out.mints++; return { ok: mint(out.mints), json: async () => ({ token: 'tok' }) }; },
-    timing: { pause: 150, tick: 10, context: 30, startGap: 0, speech: 300, window: 1500, replay: 4000, lost: 0, ...timing },
+    timing: { pause: 150, tick: 10, startGap: 0, speech: 300, window: 1500, replay: 4000, lost: 0, ...timing },
   };
   return { bridge: new AlwaysBridge(req, deps), ws, out, metrics, usage };
 }
@@ -162,7 +162,7 @@ test('a refused first session fails the join', async () => {
   assert.equal(f.out.ready, 0);
 });
 
-test('captions: the meeting so far starts a session, finished lines follow as quiet context', async () => {
+test('captions: the meeting so far starts a session; later lines go to it only after it was called by name, never on a timer', async () => {
   const voiceDir = mkdtempSync(join(tmpdir(), 'cc-always-'));
   const at = s => new Date(Date.now() - s * 1000).toISOString();
   writeFileSync(join(voiceDir, 'captions.jsonl'), JSON.stringify({ at: at(60), speaker: 'Anna', text: 'The launch moved to Thursday.' }) + '\n');
@@ -171,12 +171,43 @@ test('captions: the meeting so far starts a session, finished lines follow as qu
   const ws = f.ws.all[0];
   assert.match(ws.sent[0].session.instructions, /Anna: The launch moved to Thursday\./);
   appendFileSync(join(voiceDir, 'captions.jsonl'), JSON.stringify({ at: at(1), speaker: 'Bob', text: 'Fine by me.' }) + '\n');
+  // People talking to each other: nothing is sent to the voice, however long it goes on.
+  await wait(200);
+  assert.equal(ws.sent.filter(e => e.type === 'session.thinking.append').length, 0, 'no caption feed on a timer');
+  // Called by name ("what did Bob say?"): the lines it has not seen yet, once.
+  ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: 'Jarvis, what did Bob just say?' }));
   await until(() => ws.sent.some(e => e.type === 'session.thinking.append'));
   const note = ws.sent.find(e => e.type === 'session.thinking.append');
   assert.equal(note.delegation_id, null);
   assert.match(note.content, /Bob: Fine by me\./); assert.doesNotMatch(note.content, /Thursday/);
   await wait(100);
   assert.equal(ws.sent.filter(e => e.type === 'session.thinking.append').length, 1, 'a line is sent once');
+  f.bridge.close();
+});
+
+test("captions: never the agent's own lines, and no update when only the agent spoke (it kept talking about them every 20 s)", async () => {
+  const voiceDir = mkdtempSync(join(tmpdir(), 'cc-always-own-'));
+  const at = s => new Date(Date.now() - s * 1000).toISOString();
+  writeFileSync(join(voiceDir, 'captions.jsonl'), JSON.stringify({ at: at(60), speaker: 'Anna', text: 'The launch moved to Thursday.' }) + '\n');
+  writeFileSync(join(voiceDir, 'meeting.jsonl'), JSON.stringify({ at: at(50), kind: 'line', role: 'assistant', text: 'That was me speaking just now.' }) + '\n');
+  const f = fixture({ voiceDir, timing: { pause: 60000 } });
+  await f.bridge.connect();
+  const ws = f.ws.all[0];
+  assert.match(ws.sent[0].session.instructions, /Anna: The launch moved to Thursday\./);
+  assert.doesNotMatch(ws.sent[0].session.instructions, /That was me/, 'not in the meeting so far');
+  assert.match(ws.sent[0].session.instructions, /Caption updates .* never answer one/);
+  const named = () => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: ' Jarvis, who spoke last?' }));
+  // Called by name, but only the agent spoke since: no update at all.
+  appendFileSync(join(voiceDir, 'meeting.jsonl'), JSON.stringify({ at: at(1), kind: 'line', role: 'assistant', text: 'Me again.' }) + '\n');
+  named();
+  await wait(150);
+  assert.equal(ws.sent.filter(e => e.type === 'session.thinking.append').length, 0, 'nothing new from people');
+  // Someone else spoke, and the agent is called again: one update, with their line and none of the agent's.
+  appendFileSync(join(voiceDir, 'captions.jsonl'), JSON.stringify({ at: at(0.5), speaker: 'Bob', text: 'Fine by me.' }) + '\n');
+  await wait(50); named();
+  await until(() => ws.sent.some(e => e.type === 'session.thinking.append'));
+  const note = ws.sent.find(e => e.type === 'session.thinking.append');
+  assert.match(note.content, /Bob: Fine by me\./); assert.doesNotMatch(note.content, /Me again|That was me/);
   f.bridge.close();
 });
 

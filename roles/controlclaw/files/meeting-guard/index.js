@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-
 // OpenClaw gives a screenshot 20 seconds; a hold ends by itself a little after that.
 const HOLD_MS = 30_000;
 const SCREENCAST = { format: "jpeg", quality: 1, maxWidth: 16, maxHeight: 16, everyNthFrame: 60 };
@@ -63,6 +61,39 @@ export async function keepTabsDrawn({ cdp = ownCdpUrl(), targetId, fetchImpl = f
   return release;
 }
 
+/** The meeting's own Chrome (cc-meeting-browser.service): its profile name and its debugger port. */
+const MEETING_PROFILE = "cc-meetings";
+const MEETING_CDP_PORT = 9223;
+
+/**
+ * The browser profiles that reach the meeting's Chrome: `cc-meetings`, and any profile in OpenClaw's
+ * config whose debugger is port 9223. Lower case: names are matched without regard to case.
+ */
+export function meetingProfiles(config) {
+  const names = new Set([MEETING_PROFILE]);
+  for (const [name, profile] of Object.entries(config?.browser?.profiles ?? {})) {
+    const url = typeof profile?.cdpUrl === "string" ? profile.cdpUrl : "";
+    if (profile?.cdpPort === MEETING_CDP_PORT || new RegExp(`:${MEETING_CDP_PORT}(?![0-9])`).test(url)) names.add(name.toLowerCase());
+  }
+  return names;
+}
+
+/**
+ * True when a browser tool call would reach the meeting's Chrome. The tool takes no debugger URL of
+ * its own: it reaches a browser by a profile name from the config (`profile`, or the default one
+ * when it names none), and `importprofile` reads and writes profiles by name (`browser`,
+ * `systemProfile`, `into`). The agent's own browser (port 9222, profile `openclaw`) stays usable
+ * during a meeting: the meeting has had its own Chrome since meetings got one.
+ */
+export function reachesMeetingBrowser(params, config) {
+  const meeting = meetingProfiles(config);
+  const named = (v) => typeof v === "string" && meeting.has(v.trim().toLowerCase());
+  const profile = typeof params?.profile === "string" && params.profile.trim() ? params.profile : config?.browser?.defaultProfile;
+  if (named(profile)) return true;
+  if (params?.action === "importprofile") return [params.browser, params.systemProfile, params.into].some((v) => named(v) || (typeof v === "string" && v.toLowerCase().includes(MEETING_PROFILE)));
+  return false;
+}
+
 export default {
   id: "cc-meeting-guard",
   register(api) {
@@ -70,8 +101,8 @@ export default {
       // The box page is the only supported inviter in this release. This hook reserves
       // automation, not a boundary against an agent with arbitrary shell/root access.
       if (event.toolName === "google_meet") return { block: true, blockReason: "Use the owner's enrolled Meetings page." };
-      if (event.toolName === "browser" && (event.params.profile === "cc-meetings" || existsSync("/opt/controlclaw/state/meeting-browser-reserved"))) {
-        return { block: true, blockReason: "The guest browser is reserved for the owner's meeting. Stop the meeting before browser automation." };
+      if (event.toolName === "browser" && reachesMeetingBrowser(event.params, api.config)) {
+        return { block: true, blockReason: "That browser is the meeting's own. Use your browser (the default profile) instead." };
       }
     }, { priority: 1000 });
 
