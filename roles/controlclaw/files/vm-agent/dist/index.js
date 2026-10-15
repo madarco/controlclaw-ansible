@@ -14327,19 +14327,28 @@ var MeetingVoiceLog = class {
     writeFileSync5(this.file, "", { mode: 384 });
     this.offset = 0;
     const lease = join4(this.dir, "lease.json");
-    writeFileSync5(`${lease}.tmp`, JSON.stringify({ wakeSessions, ...owner ? { owner } : {}, ...meeting.id ? { meetingId: meeting.id } : {}, ...meeting.full ? { full: true } : {}, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+    writeFileSync5(`${lease}.tmp`, JSON.stringify({ wakeSessions, ...owner ? { owner } : {}, ...meeting.id ? { meetingId: meeting.id } : {}, ...meeting.full ? { full: true } : {}, ...meeting.present ? { present: true } : {}, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
     renameSync4(`${lease}.tmp`, lease);
   }
   end() {
     rmSync(join4(this.dir, "lease.json"), { force: true });
+    void closeStageTabs();
   }
   /** The meeting in progress may no longer drive a full agent (the settings changed under it). */
   dropFull() {
+    this.drop("full");
+  }
+  /** The meeting in progress may no longer present (the settings changed under it): the adapter stops presenting. */
+  dropPresent() {
+    this.drop("present");
+    void closeStageTabs();
+  }
+  drop(field) {
     const lease = join4(this.dir, "lease.json");
     try {
       const value2 = JSON.parse(readFileSync5(lease, "utf8"));
-      if (value2.full !== true) return;
-      delete value2.full;
+      if (value2[field] !== true) return;
+      delete value2[field];
       writeFileSync5(`${lease}.tmp`, JSON.stringify(value2), { mode: 384 });
       renameSync4(`${lease}.tmp`, lease);
     } catch {
@@ -14413,6 +14422,16 @@ function readTasks(dir, meetingId) {
     out.push({ n: t2.n, from: text3(t2.from, 80), text: text3(t2.text, 300), session, state: t2.state, startedAt, ...endedAt ? { endedAt } : {}, ...result ? { result } : {} });
   }
   return out;
+}
+async function closeStageTabs(fetchImpl = fetch) {
+  try {
+    const list = await (await fetchImpl("http://127.0.0.1:9223/json/list", { signal: AbortSignal.timeout(3e3) })).json();
+    const stages = list.filter((t2) => t2.type === "page" && t2.title === "CC Stage" && typeof t2.id === "string" && /^[A-Za-z0-9]{1,64}$/.test(t2.id));
+    for (const t2 of stages) await fetchImpl(`http://127.0.0.1:9223/json/close/${t2.id}`, { signal: AbortSignal.timeout(3e3) }).catch(() => void 0);
+    return stages.length;
+  } catch {
+    return 0;
+  }
 }
 function readPhoneUsage(dir) {
   const file2 = join4(dir, "phone.jsonl");
@@ -14673,10 +14692,10 @@ function parseMeetingPolicy(value2) {
     throw new Error("Invalid meetings settings");
   const p2 = value2;
   if (Object.keys(p2).some(
-    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent"].includes(
+    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent", "present"].includes(
       k2
     )
-  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean")
+  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean" || p2.present !== void 0 && typeof p2.present !== "boolean")
     throw new Error("Invalid owner-browser Google Meet settings");
   const speech = parseSpeechPolicy(p2.speech);
   if (p2.defaultMode === "bidi" && !speech) throw new Error("Bidi needs a speech provider");
@@ -14693,7 +14712,8 @@ function parseMeetingPolicy(value2) {
     ...p2.followUp === void 0 ? {} : { followUp: parseFollowUpPolicy(p2.followUp) },
     ...p2.always === void 0 ? {} : { always: p2.always },
     ...p2.reminders === void 0 ? {} : { reminders: p2.reminders },
-    ...p2.fullAgent === void 0 ? {} : { fullAgent: parseFullAgentPolicy(p2.fullAgent) }
+    ...p2.fullAgent === void 0 ? {} : { fullAgent: parseFullAgentPolicy(p2.fullAgent) },
+    ...p2.present === void 0 ? {} : { present: p2.present }
   };
 }
 function canonicalMeetUrl(value2) {
@@ -41522,8 +41542,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "87a65f6" : "unknown",
-  builtAt: true ? "2026-10-15T13:52:46+01:00" : "unknown"
+  commit: true ? "0959025" : "unknown",
+  builtAt: true ? "2026-10-15T14:46:00+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -41588,7 +41608,9 @@ function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalle
       // `speech_always`: the adapter has the always-listening mode and takes `always` and `reminders`.
       ...caps.alwaysListening === true ? ["speech_always"] : [],
       // `meeting_full_agent`: the adapter hands requests to a full agent run when the lease allows it (docs/plans/meeting-full-agent.md).
-      ...caps.fullAgent === true ? ["meeting_full_agent"] : []
+      ...caps.fullAgent === true ? ["meeting_full_agent"] : [],
+      // `meeting_present`: the adapter presents the agent's browser when the lease allows it (docs/plans/meeting-present.md).
+      ...caps.present === true ? ["meeting_present"] : []
     ];
   } catch {
     return [];
@@ -42845,6 +42867,16 @@ var MEETING_ORDERS_EXAMPLE = [
   "- Message me only when you did something or a request waits for me: one or two lines and a link to the meeting's page.",
   "- Never send anything to people outside my organization."
 ].join("\n");
+function sessionPath(key) {
+  const m2 = /^agent:([a-z0-9][a-z0-9_-]{0,63}):(.+)$/i.exec(key);
+  if (!m2 || key.length > 300) return null;
+  const [, agent, rest] = m2;
+  if (rest === "main") return `/chat/${encodeURIComponent(agent)}`;
+  const segments = rest.split(":").map((x2) => x2 === "." ? "~dot" : x2 === ".." ? "~dotdot" : x2.startsWith("~") ? `~${x2}` : x2);
+  if (segments.some((x2) => !x2)) return null;
+  return `/chat/${encodeURIComponent(agent)}/${segments.length === 1 ? "~key/" : ""}${segments.map(encodeURIComponent).join("/")}`;
+}
+var meetingConsultSession = (sessionId) => `agent:main:subagent:google-meet:${sessionId}`;
 var MEETINGS_PAGE_SIZE = 20;
 var LIVE = ["joining", "waiting", "active", "leaving"];
 function summarizeMeeting(m2) {
@@ -42885,7 +42917,8 @@ function meetingDetail(m2) {
     followUp,
     tasks,
     mode: m2.mode ?? "transcript",
-    summary: summarizeMeeting(m2)
+    summary: summarizeMeeting(m2),
+    ...m2.mode === "bidi" ? { lookupSessions: (m2.sessionIds ?? []).filter((id2) => /^meet_[0-9a-f-]{36}$/.test(id2)).slice(0, 20).map((id2) => ({ key: meetingConsultSession(id2), path: sessionPath(meetingConsultSession(id2)) })) } : {}
   };
 }
 function meetingsPage(all, page, pageSize = MEETINGS_PAGE_SIZE) {
@@ -45667,6 +45700,7 @@ var MeetingService = class {
     JSON.stringify(this.applied.policy.wake ?? null) === JSON.stringify(policy.wake ?? null) && this.applied.policy.always === true === (policy.always === true) && this.applied.policy.reminders !== false === (policy.reminders !== false) && this.applied.media.token === media.token && this.applied.media.origin === media.origin) {
       this.applied = input2;
       if (this.current && !policy.fullAgent?.enabled) this.voice.dropFull();
+      if (this.current && policy.present !== true) this.voice.dropPresent();
       this.save();
       this.followUpSettings();
       return this.metadata();
@@ -45839,7 +45873,7 @@ var MeetingService = class {
       runtime.lease = await this.media("start", void 0, runtime.auto);
       if (!this.alive(runtime)) return;
       if (runtime.record.mode === "bidi") {
-        this.voice.start(runtime.lease.wake_sessions ?? 0, await this.opts.ownerChat?.().catch(() => null), { id: runtime.record.id, full: runtime.lease.full_agent === true });
+        this.voice.start(runtime.lease.wake_sessions ?? 0, await this.opts.ownerChat?.().catch(() => null), { id: runtime.record.id, full: runtime.lease.full_agent === true, present: runtime.lease.present === true });
         this.captionContext.start();
       }
       runtime.timer = setInterval(
@@ -46900,6 +46934,32 @@ async function handleMeetings(req, res, url3, service, schedule, context) {
       })
     );
     return;
+  }
+  if (path === "/__cc/meetings/session" && req.method === "GET") {
+    const fetchSite = req.headers["sec-fetch-site"], fetchMode = req.headers["sec-fetch-mode"], fetchDest = req.headers["sec-fetch-dest"];
+    if (!(fetchSite === "same-origin" || fetchSite === "none") || fetchMode !== "navigate" || fetchDest !== "document")
+      return sendJson(res, 403, { error: "Open this link from the agent's Meetings page" });
+    if (!allowed) {
+      res.writeHead(403, PAGE_HEADERS3);
+      return void res.end(context.deniedPage());
+    }
+    const key = url3.searchParams.get("key") ?? "";
+    const target2 = key.startsWith("agent:main:") ? sessionPath(key) : null;
+    if (!target2) return sendJson(res, 404, { error: "Not an OpenClaw session of this agent" });
+    const host = context.shell.hostname;
+    const boot = host ? await (context.bootstrap ?? dashboardBootstrapUrl)(host).catch(() => ({ reason: "OpenClaw could not issue a pairing link", retryable: false })) : { reason: "this box does not know its own hostname", retryable: false };
+    if ("url" in boot && boot.url.startsWith("/#")) {
+      res.writeHead(302, { Location: target2 + boot.url.slice(1), "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" });
+      return void res.end();
+    }
+    const reason = "reason" in boot ? boot.reason : "OpenClaw could not issue a pairing link";
+    res.writeHead(200, { ...PAGE_HEADERS3, "Cache-Control": "no-store" });
+    return void res.end(shellPage({
+      ctx: context.shell,
+      title: `${agentNameOf(context.shell.hostname)} \xB7 session`,
+      active: "meetings",
+      body: `<main style="max-width:640px;margin:48px auto;padding:0 16px;font:15px/1.5 system-ui,sans-serif"><h1 style="font-size:20px">The dashboard could not pair this browser</h1><p>OpenClaw said: ${escapeHtml(reason)}.</p><p>If this browser opened the agent's dashboard before, the session still opens.</p><p><a href="${escapeHtml(target2)}">Open the session anyway</a></p></main>`
+    }));
   }
   if (!allowed)
     return sendJson(res, 403, {

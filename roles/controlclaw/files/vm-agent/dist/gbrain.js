@@ -6351,8 +6351,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "87a65f6" : "unknown",
-  builtAt: true ? "2026-10-15T13:52:46+01:00" : "unknown"
+  commit: true ? "0959025" : "unknown",
+  builtAt: true ? "2026-10-15T14:46:00+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6417,7 +6417,9 @@ function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalle
       // `speech_always`: the adapter has the always-listening mode and takes `always` and `reminders`.
       ...caps.alwaysListening === true ? ["speech_always"] : [],
       // `meeting_full_agent`: the adapter hands requests to a full agent run when the lease allows it (docs/plans/meeting-full-agent.md).
-      ...caps.fullAgent === true ? ["meeting_full_agent"] : []
+      ...caps.fullAgent === true ? ["meeting_full_agent"] : [],
+      // `meeting_present`: the adapter presents the agent's browser when the lease allows it (docs/plans/meeting-present.md).
+      ...caps.present === true ? ["meeting_present"] : []
     ];
   } catch {
     return [];
