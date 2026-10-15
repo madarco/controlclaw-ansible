@@ -5616,6 +5616,7 @@ function presentWidens(previous, next) {
 function presentSummary() {
   return "Let the agent present its own browser in meetings: everyone in the meeting sees the page it shows, including sites it is signed in to. Saved website logins stay on the firewall.";
 }
+var CONSULT_MODEL = /^(main|[a-z0-9][a-z0-9_-]{0,40}\/[A-Za-z0-9][A-Za-z0-9._:\/-]{0,120})$/;
 var WAKE_SESSIONS = 40;
 function wakeSessions(policy) {
   const wakeOn = (policy.wake ?? MEETING_WAKE_DEFAULT).enabled;
@@ -5630,10 +5631,10 @@ function parseMeetingPolicy(value) {
     throw new Error("Invalid meetings settings");
   const p2 = value;
   if (Object.keys(p2).some(
-    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent", "present"].includes(
+    (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent", "present", "consultModel"].includes(
       k2
     )
-  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean" || p2.present !== void 0 && typeof p2.present !== "boolean")
+  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean" || p2.present !== void 0 && typeof p2.present !== "boolean" || p2.consultModel !== void 0 && !(typeof p2.consultModel === "string" && CONSULT_MODEL.test(p2.consultModel)))
     throw new Error("Invalid owner-browser Google Meet settings");
   const speech = parseSpeechPolicy(p2.speech);
   if (p2.defaultMode === "bidi" && !speech) throw new Error("Bidi needs a speech provider");
@@ -5651,7 +5652,8 @@ function parseMeetingPolicy(value) {
     ...p2.always === void 0 ? {} : { always: p2.always },
     ...p2.reminders === void 0 ? {} : { reminders: p2.reminders },
     ...p2.fullAgent === void 0 ? {} : { fullAgent: parseFullAgentPolicy(p2.fullAgent) },
-    ...p2.present === void 0 ? {} : { present: p2.present }
+    ...p2.present === void 0 ? {} : { present: p2.present },
+    ...p2.consultModel === void 0 ? {} : { consultModel: p2.consultModel }
   };
 }
 function parseAutoJoinClaim(value) {
@@ -101557,8 +101559,8 @@ import { uptime } from "os";
 import { existsSync as existsSync17, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0959025" : "unknown",
-  builtAt: true ? "2026-10-15T14:46:00+01:00" : "unknown"
+  commit: true ? "9fe6cce" : "unknown",
+  builtAt: true ? "2026-10-15T15:53:14+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -103081,6 +103083,7 @@ async function main() {
           features.push("speech_always");
           features.push("meeting_full_agent");
           features.push("meeting_present");
+          features.push("meeting_consult_model");
           features.push("phone_voice_edit");
           if (controlPlaneMcpGateUp) features.push("controlplane_mcp");
           if (teamChat?.available() && teamChatWeb && access?.ready()) features.push("team_chat");

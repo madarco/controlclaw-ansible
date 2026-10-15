@@ -6351,8 +6351,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0959025" : "unknown",
-  builtAt: true ? "2026-10-15T14:46:00+01:00" : "unknown"
+  commit: true ? "9fe6cce" : "unknown",
+  builtAt: true ? "2026-10-15T15:53:14+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6419,7 +6419,9 @@ function speechFeatures(path = VOICE_CAPABILITIES, localWake = localWakeInstalle
       // `meeting_full_agent`: the adapter hands requests to a full agent run when the lease allows it (docs/plans/meeting-full-agent.md).
       ...caps.fullAgent === true ? ["meeting_full_agent"] : [],
       // `meeting_present`: the adapter presents the agent's browser when the lease allows it (docs/plans/meeting-present.md).
-      ...caps.present === true ? ["meeting_present"] : []
+      ...caps.present === true ? ["meeting_present"] : [],
+      // `meeting_consult_model`: the patched consult takes a model and a thinking level (docs/plans/meeting-model.md).
+      ...caps.consultModel === true ? ["meeting_consult_model"] : []
     ];
   } catch {
     return [];
