@@ -59,8 +59,10 @@ export function meetingLines(name, dir = DIR(), { own: withOwn = true } = {}) {
   const voice = tail(join(dir, 'meeting.jsonl')).filter(l => l?.kind === 'line' && typeof l.text === 'string' && typeof l.at === 'string');
   const own = withOwn ? voice.filter(l => l.role === 'assistant').map(l => ({ at: l.at, speaker: name, text: l.text, final: true })) : [];
   const heard = finals.length || live.length ? [] : voice.filter(l => l.role === 'user').map(l => ({ at: l.at, speaker: 'Someone', text: l.text, final: true }));
-  return [...finals, ...live, ...own, ...heard].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
-    .map(l => ({ line: `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`, final: l.final }));
+  // `own`: the agent's own line.
+  return [...finals, ...live, ...own.map(l => ({ ...l, own: true })), ...heard].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+    // `key`: the line's identity across reads (its full time, speaker and words), for what a consult already carried.
+    .map(l => ({ line: `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`, final: l.final, own: l.own === true, key: `${l.at}\u0000${l.speaker}\u0000${l.text}` }));
 }
 export const meetingTranscript = (name, dir = DIR()) => meetingLines(name, dir).map(l => l.line).join('\n');
 /** At most `max` characters: the start and the end, with a marker between. */

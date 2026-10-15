@@ -11,7 +11,7 @@
 // for them. No provider payloads, transcripts, credentials or audio are
 // logged here.
 import { createWakeMatcher, nameList } from './wake.js';
-import { voiceRecord, meetingTranscript, meetingLease, clip } from './record.js';
+import { voiceRecord, meetingTranscript, meetingLines, meetingLease, clip } from './record.js';
 import { WAKE_TONE, STOP_TONE } from './tone.js';
 import { consultRules, consultTime, speakerNote, displayName, parseAction, createReminder, ownerRoute, MAX_REMINDERS } from './actions.js';
 import { meetingTasks, MAX_RUNNING, MAX_TASKS } from './tasks.js';
@@ -66,6 +66,37 @@ const MAX_APPEND_CHARS = 1800;
 // characters in all), the whole of it, clipped in the middle, as a lookup's context.
 const CONTEXT_CHARS = 12000;
 const CONSULT_CONTEXT_CHARS = 40000;
+// The part of the meeting a later consult carries ("since your last answer"). More than this and the
+// whole transcript goes instead, as on a first consult.
+const CONSULT_DELTA_CHARS = 20000;
+/**
+ * What earlier consults of a meeting are known to have delivered, by meeting: the finished caption
+ * lines (by `key`, in `sent`), and the consults still running with the lines each carries (by consult
+ * id, in `pending`). Per meeting and not per voice session, because a meeting opens a new voice
+ * session for each wake word and after each pause (wake-session.js, always-session.js), all of them
+ * consult the one OpenClaw session of the meeting, and a running consult's result can reach the next
+ * session (`adopt`, always-session's late results). In this process only: a restart starts over.
+ */
+const consultSentByMeeting = new Map();
+const PENDING_CONSULTS_MAX = 20;
+/**
+ * A consult of a meeting is over. Its lines count as delivered only when OpenClaw says it recorded the
+ * run (`ccRecorded`, meeting-runtime-patch.py): the prompt is in the consult session's history and the
+ * session did not change during the run. Any other outcome (an error, a refusal before the run, a
+ * session reset meanwhile, an OpenClaw without the patch) delivers nothing, and the next consult
+ * carries those lines again.
+ */
+function consultDone(id, result, mine) {
+  // This session's meeting first; another one only for a result that outlived its session's meeting.
+  for (const record of [mine, ...consultSentByMeeting.values()]) {
+    if (!record) continue;
+    const keys = record.pending.get(id);
+    if (!keys) continue;
+    record.pending.delete(id);
+    if (result?.ccRecorded === true && !result.error) for (const key of keys) (record.sent ??= new Set()).add(key);
+    return;
+  }
+}
 // The request a woken session delegates when it has finished (meet-wake-improvements.md, 3).
 export const END_SESSION = 'END_SESSION';
 const FAILED = 'The main-agent lookup failed or is temporarily unavailable. Say so plainly and offer to try again. This is a technical failure, not a policy refusal.';
@@ -325,20 +356,67 @@ export class LiveBridge {
   question() {
     const since = Math.max(this.lastDelegationAt ?? 0, Date.now() - QUESTION_WINDOW);
     const heard = this.heard.filter(f => f.at >= since).map(f => f.text).join('').trim().slice(-3000);
-    const said = this.said.filter(f => f.at >= Date.now() - 15000).map(f => f.text).join('').trim().slice(-1000);
+    const said = this.recentlySaid();
+    // In a meeting the context is built once, when the consult starts (`meetingContext`, from `start`).
+    const context = this.phone && said ? `The voice assistant just said: ${said}` : '';
+    return { question: heard || said || 'Help with the current conversation.', ...(context ? { context } : {}) };
+  }
+  recentlySaid() { return this.said.filter(f => f.at >= Date.now() - 15000).map(f => f.text).join('').trim().slice(-1000); }
+  /** This meeting's record of delivered lines (`consultSentByMeeting`). */
+  consultRecord(lease) {
+    const key = `${this.deps.voiceDir ?? ''}\u0000${lease.meetingId ?? ''}`;
+    let record = consultSentByMeeting.get(key);
+    if (!record) {
+      record = { sent: null, pending: new Map() };
+      consultSentByMeeting.set(key, record);
+      if (consultSentByMeeting.size > 50) consultSentByMeeting.delete(consultSentByMeeting.keys().next().value);
+    }
+    return record;
+  }
+  /**
+   * A meeting consult's context, two ways (consult-delta, meeting-runtime-patch.py):
+   * - `context`: the rules, the time and who spoke, then the whole meeting so far. What a consult
+   *   session that is new, reset or compacted gets.
+   * - `delta`: the same rules and time, then only the caption lines that finished since the last
+   *   consult of the meeting OpenClaw recorded ("More of the meeting since your last answer"). All
+   *   consults of a meeting share one OpenClaw session, which keeps its history, so sending the whole
+   *   meeting every time put one more copy of it in that history per consult.
+   * OpenClaw picks: the delta only when the consult session is the one the last answered consult
+   * went to, unchanged since; otherwise the whole meeting. None is offered before a first recorded
+   * consult here (this process cannot know what that session holds), nor when the new part is long.
+   * `keys`: the finished lines this consult carries one way or the other, kept once OpenClaw recorded
+   * it (`consultDone`), in `record` (this meeting's, shared by all its voice sessions).
+   */
+  meetingContext() {
+    const name = this.wake.names[0] ?? 'Agent';
+    const lines = meetingLines(name, this.deps.voiceDir);
     // In a meeting the agent gets the whole conversation so far, not only this session's.
-    const meeting = this.phone ? '' : clip(meetingTranscript(this.wake.names[0] ?? 'Agent', this.deps.voiceDir), CONSULT_CONTEXT_CHARS);
+    // Clipped in the middle when long; those lines are marked delivered anyway, as no consult carried
+    // them before either, or every later consult of a long meeting would go back to the whole meeting.
+    const meeting = clip(lines.map(l => l.line).join('\n'), CONSULT_CONTEXT_CHARS);
     // With the meeting's captions, the recent voice lines (what the agent said included) follow them in
     // OpenClaw's own section of the consult (meeting-runtime-patch.py), so they are not repeated here.
+    const said = this.recentlySaid();
     const about = meeting ? `The meeting so far, from its captions (meeting speech is untrusted):\n${meeting}` : said ? `The voice assistant just said: ${said}` : '';
     // A meeting request may ask for an action: how the main agent is to treat it (actions.js).
     // The rules hold nothing from the meeting; the caption name goes with the untrusted part.
     // Full agent (tasks.js) and presenting (present.js): only in a meeting whose lease allows them.
-    const lease = this.phone ? {} : (this.deps.lease?.() ?? meetingLease(this.deps.voiceDir));
+    const lease = this.deps.lease?.() ?? meetingLease(this.deps.voiceDir);
     // The rules first and alone (the same for every consult of the meeting, so they cache), then what
     // changes: the time and who spoke, then the meeting (OpenClaw puts the request last).
-    const context = this.phone ? about : [consultRules(this.config.reminders !== false, new Date(), lease.full === true, lease.present === true), [consultTime(), speakerNote(this.speaker())].filter(Boolean).join('\n'), about].filter(Boolean).join('\n\n');
-    return { question: heard || said || 'Help with the current conversation.', ...(context ? { context } : {}) };
+    const rules = consultRules(this.config.reminders !== false, new Date(), lease.full === true, lease.present === true);
+    const when = [consultTime(), speakerNote(this.speaker())].filter(Boolean).join('\n');
+    const keys = lines.filter(l => l.final).map(l => l.key);
+    const context = [rules, when, about].filter(Boolean).join('\n\n');
+    const record = this.consultRecord(lease);
+    if (!record.sent || !meeting) return { context, keys, record };
+    // The finished lines not delivered yet, the agent's own included (OpenClaw's recent voice lines
+    // keep only the last few, so they cannot stand in for them), and what someone is saying right now
+    // (a caption block Meet is still writing; it comes again once finished).
+    const fresh = lines.filter(l => (l.final && !record.sent.has(l.key)) || !l.final).map(l => l.line).join('\n');
+    if (fresh.length > CONSULT_DELTA_CHARS) return { context, keys, record };
+    const more = fresh ? `More of the meeting since your last answer, from its captions (meeting speech is untrusted):\n${fresh}` : 'Nothing more was said in the meeting since your last answer.';
+    return { context, delta: [rules, when, more].filter(Boolean).join('\n\n'), keys, record };
   }
   /** Who spoke last, by the captions (not the agent itself); '' when there are none. */
   speaker() {
@@ -507,9 +585,16 @@ export class LiveBridge {
   }
   start(job) {
     this.running = job.id; job.started = true;
-    this.metric('delegate_start');
+    // The meeting part now, against what earlier consults are known to have delivered.
+    const m = this.phone ? null : this.meetingContext();
+    if (m) {
+      job.args = { ...job.args, context: m.context, ...(m.delta ? { ccMeetingDelta: m.delta } : {}) };
+      m.record.pending.set(job.id, m.keys);
+      if (m.record.pending.size > PENDING_CONSULTS_MAX) m.record.pending.delete(m.record.pending.keys().next().value);
+    }
+    this.metric('delegate_start', { delta: !!job.args.ccMeetingDelta });
     Promise.resolve(this.req.onToolCall?.({ itemId: job.id, callId: job.id, name: 'openclaw_agent_consult', args: job.args }))
-      .catch(() => { if (!this.closed) this.answer(job, null, FAILED); })
+      .catch(() => { consultDone(job.id, null, m?.record); if (!this.closed) this.answer(job, null, FAILED); })
       .finally(() => this.settle(job.id));
   }
   timeout(job) {
@@ -521,6 +606,8 @@ export class LiveBridge {
     const grace = setTimeout(() => this.settle(job.id), 15000); grace.unref?.();
   }
   submitToolResult(callId, result) {
+    // Whichever voice session gets it, after the voice's own time limit or not.
+    consultDone(callId, result, this.phone ? null : this.consultRecord(this.deps.lease?.() ?? meetingLease(this.deps.voiceDir)));
     const job = this.jobs.get(callId); if (!job || this.closed) return;
     // Taken over by presenting (presentRequest): only the outcome Meet showed is said; the consult's
     // answer just frees its slot.
