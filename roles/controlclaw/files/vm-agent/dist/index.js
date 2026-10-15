@@ -41522,8 +41522,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "f2aa952" : "unknown",
-  builtAt: true ? "2026-10-15T10:02:39+01:00" : "unknown"
+  commit: true ? "87a65f6" : "unknown",
+  builtAt: true ? "2026-10-15T13:52:46+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -44696,6 +44696,25 @@ function memoryPatch(want, have) {
     reindex: have.provider !== want.provider || have.model !== want.model
   };
 }
+function readBlocks(config2) {
+  const providers = config2.models?.providers ?? {};
+  const out = [];
+  for (const [provider, raw] of Object.entries(providers)) {
+    const list = raw?.models;
+    if (!Array.isArray(list)) continue;
+    const models = list.filter((m2) => typeof m2?.id === "string").map((m2) => ({ id: m2.id, compat: knownCompat(m2.compat) }));
+    out.push({ provider, models });
+  }
+  return out.sort((a2, b2) => a2.provider.localeCompare(b2.provider));
+}
+function knownCompat(raw) {
+  const c2 = raw;
+  if (!c2 || typeof c2 !== "object") return null;
+  const out = {};
+  if (typeof c2.supportsPromptCacheKey === "boolean") out.supportsPromptCacheKey = c2.supportsPromptCacheKey;
+  if (c2.cacheControlFormat === "anthropic") out.cacheControlFormat = "anthropic";
+  return Object.keys(out).length ? out : null;
+}
 function readMemory(config2) {
   const search2 = config2.memory?.search;
   const remote = search2?.remote;
@@ -44933,6 +44952,7 @@ var LlmService = class {
     }
     const models = config2.models;
     for (const id of Object.keys(models?.providers ?? {})) providers.add(id);
+    const blocks = readBlocks(config2);
     let authStatus = [];
     try {
       const r2 = await this.gateway().call("models.authStatus", {}, 1e4);
@@ -44961,7 +44981,8 @@ var LlmService = class {
         model: configured2.model,
         dreaming: configured2.dreaming,
         indexError: this.reindexing ? "the memory index is being rebuilt" : this.reindexFailed
-      }
+      },
+      blocks
     };
   }
   /** The models OpenClaw knows for a provider (`models.list`, full catalog), as `provider/model` refs. */
@@ -45002,7 +45023,8 @@ function parseProviderBlock(raw) {
   const models = [];
   for (const m2 of b2.models) {
     if (typeof m2?.id !== "string" || !/^[A-Za-z0-9._:/-]{1,120}$/.test(m2.id)) return "credentials[].providerBlock.models[].id is invalid";
-    models.push({ id: m2.id, name: typeof m2.name === "string" && m2.name ? m2.name.slice(0, 120) : m2.id });
+    const compat = knownCompat(m2.compat);
+    models.push({ id: m2.id, name: typeof m2.name === "string" && m2.name ? m2.name.slice(0, 120) : m2.id, ...compat ? { compat } : {} });
   }
   return { baseUrl: b2.baseUrl, api: b2.api, models };
 }

@@ -41440,8 +41440,27 @@ function parseSecret2(secret) {
 function parseProviderBlock(raw) {
   const b2 = raw;
   if (!b2 || !str5(b2.baseUrl) || !str5(b2.api) || !Array.isArray(b2.models)) return null;
-  const models = b2.models.filter((m2) => str5(m2?.id)).map((m2) => ({ id: String(m2.id), name: str5(m2.name) ?? String(m2.id) }));
+  const models = b2.models.filter((m2) => str5(m2?.id)).map((m2) => {
+    const compat = parseModelCompat(m2.compat);
+    return { id: String(m2.id), name: str5(m2.name) ?? String(m2.id), ...compat ? { compat } : {} };
+  });
   return models.length ? { baseUrl: String(b2.baseUrl), api: String(b2.api), models } : null;
+}
+function parseModelCompat(raw) {
+  const c2 = raw;
+  if (!c2 || typeof c2 !== "object") return null;
+  const out = {};
+  if (typeof c2.supportsPromptCacheKey === "boolean") out.supportsPromptCacheKey = c2.supportsPromptCacheKey;
+  if (c2.cacheControlFormat === "anthropic") out.cacheControlFormat = "anthropic";
+  return Object.keys(out).length ? out : null;
+}
+function parseProviderBlockRefresh(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((r2) => {
+    const credentialId = r2 ? str5(r2.credentialId) : null;
+    const providerBlock = r2 ? parseProviderBlock(r2.providerBlock) : null;
+    return credentialId && providerBlock ? [{ credentialId, providerBlock }] : [];
+  });
 }
 function parseMemorySearch(raw) {
   const m2 = raw;
@@ -41718,10 +41737,11 @@ var LlmFirewall = class {
     if (str5(payload.hostname)) agent.hostname = String(payload.hostname);
     if (name25) agent.name = name25;
     const refreshed = this.refreshCredential(payload.refresh);
+    const reblocked = this.refreshProviderBlocks(payload.providerBlocks);
     const movedEmbeddings = this.applyEmbeddings(vmId, embeddings);
     if (agent.bindings.length === 0 && !agent.embeddings && !agent.memory) {
       if (fresh) delete this.store.agents[vmId];
-      if (known) this.save();
+      if (known || reblocked) this.save();
       return { ok: true, status: "applied", data: { vmId, applied: [], failed: [] } };
     }
     this.save();
@@ -41736,6 +41756,28 @@ var LlmFirewall = class {
     };
   }
   // ---- applying ----
+  /**
+   * Replace the provider block of credentials this firewall already holds with the one the push
+   * carries. Only a credential that came with a block gets one: a block on a credential that had
+   * none would point a ChatGPT login or an API key somewhere it was never proposed for. The base
+   * URL and the API must match too, for the same reason; what may change is the model list and
+   * each model's `compat`. Returns whether anything changed.
+   */
+  refreshProviderBlocks(raw) {
+    let changed = false;
+    for (const { credentialId, providerBlock } of parseProviderBlockRefresh(raw)) {
+      const cred = this.store.credentials[credentialId];
+      if (!cred?.providerBlock) continue;
+      if (cred.providerBlock.baseUrl !== providerBlock.baseUrl || cred.providerBlock.api !== providerBlock.api) {
+        this.log(`[llm] ignoring a provider block for ${cred.provider}: its endpoint differs from the one proposed`);
+        continue;
+      }
+      if (JSON.stringify(cred.providerBlock) === JSON.stringify(providerBlock)) continue;
+      cred.providerBlock = providerBlock;
+      changed = true;
+    }
+    return changed;
+  }
   /**
    * Put the catalog data a push carries onto the credential it names. Returns whether anything
    * changed, because the model allow-list is also what the proxy enforces.
@@ -101505,8 +101547,8 @@ import { uptime } from "os";
 import { existsSync as existsSync17, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "f2aa952" : "unknown",
-  builtAt: true ? "2026-10-15T10:02:39+01:00" : "unknown"
+  commit: true ? "87a65f6" : "unknown",
+  builtAt: true ? "2026-10-15T13:52:46+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -101532,7 +101574,7 @@ function readRelease(path = RELEASE_PATH) {
   return version2 && SEMVER.test(version2) ? { commit, commitDate, installedAt, version: version2 } : { commit, commitDate, installedAt };
 }
 function boxSoftware(releasePath = RELEASE_PATH) {
-  return { agent: { ...BUILD }, release: readRelease(releasePath), rebootRequired: existsSync17("/var/run/reboot-required"), bootedAt: BOOTED_AT };
+  return { agent: { ...BUILD }, release: readRelease(releasePath), rebootRequired: existsSync17("/var/run/reboot-required"), bootedAt: BOOTED_AT, features: ["llm_blocks"] };
 }
 
 // src/ready.ts
