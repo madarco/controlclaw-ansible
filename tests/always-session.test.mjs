@@ -48,6 +48,11 @@ test('one session for the meeting, opened at once, with the always-listening rul
   assert.match(instructions, /by name \(Jarvis or Maria Rossi\)/);
   assert.match(instructions, /"I asked Jarvis yesterday"/);
   assert.doesNotMatch(instructions, /starts with one of your names|seemed to call you/);
+  // Acknowledging is forbidden when nobody talks to the agent, and required before delegating an addressed request.
+  assert.match(instructions, /When nobody is talking to you, never interject[^\n]*acknowledge \("okay", "got it", "mm-hm"\)/);
+  assert.match(instructions, /When they have finished a request to you that needs a lookup or an action, first say a very short acknowledgement \("ok", "let me check"\), then delegate\. Say you are still checking only while a lookup is running\./);
+  assert.match(instructions, /When in doubt, say nothing/);
+  assert.match(instructions, /When you answer: one short sentence, two at most/);
   f.bridge.close();
   assert.deepEqual(f.out.closed, ['completed']);
 });
