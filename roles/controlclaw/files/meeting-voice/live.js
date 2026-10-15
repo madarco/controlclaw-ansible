@@ -325,6 +325,11 @@ export class LiveBridge {
       // The vm-agent reads the voice log every few seconds and ends the meeting on this line.
       this.record.action('leave', { from: job.from ?? '' });
       say = 'Done: you are leaving the meeting now. Say a short goodbye, in a few words.';
+    } else if (action.kind === 'present' && action.mode !== 'stop' && !job.addressed && (this.wakeRequired || this.config.always)) {
+      // The consult can answer CC_PRESENT to a request nobody addressed to the agent: presenting starts
+      // only from an addressed one, the same rule as the shortcut. Stopping is always allowed.
+      say = 'Not done: presenting starts only when someone asks you for it by name. Say nothing about it.'; quiet = true;
+      this.metric('present', { mode: action.mode, outcome: 'unaddressed' });
     } else if (action.kind === 'present') {
       // The outcome Meet itself shows; the voice never says it is presenting before Meet does.
       const presenter = this.deps.presenter ?? meetingPresenter;

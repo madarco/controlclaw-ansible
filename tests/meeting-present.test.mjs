@@ -153,6 +153,37 @@ test('in the meeting: the consult is offered CC_PRESENT, and the room hears the 
   bridge.close();
 });
 
+test('with the wake word on, a CC_PRESENT answer to a request nobody addressed presents nothing; stop still works', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const { voiceRecord } = await import('../roles/controlclaw/files/meeting-voice/record.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-present-')), all = [], asked = [];
+  class WS extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.bufferedAmount = 0; this.sent = []; all.push(this); setImmediate(() => this.emit('open')); }
+    send(s) { const e = JSON.parse(s); this.sent.push(e); if (e.type === 'session.start') setImmediate(() => this.emit('message', JSON.stringify({ type: 'session.started', session: {} }))); }
+    terminate() {}
+  }
+  const presenter = { start: async () => { asked.push('start'); return 'presenting'; }, stop: async () => { asked.push('stop'); return 'stopped'; } };
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: true, words: ['Jarvis'] } },
+    onAudio: () => {}, onToolCall: () => {}, onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING, present: true }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  await bridge.connect();
+  assert.equal(bridge.wakeRequired, true);
+  const ws = all[0];
+  const ask = (id, text) => { ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id } })); bridge.submitToolResult(id, { text }); };
+  ask('d1', 'CC_PRESENT {"mode":"browser"}');
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(asked, [], 'an unaddressed request does not start presenting');
+  ask('d2', 'CC_PRESENT {"mode":"stop"}');
+  await new Promise(r => setTimeout(r, 20));
+  assert.deepEqual(asked, ['stop']);
+  bridge.close();
+});
+
 test('a plain request to share or stop is handled at once, without the consult; other requests still go to the consult', async () => {
   const { EventEmitter } = await import('node:events');
   const { mkdtempSync } = await import('node:fs');
