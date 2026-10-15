@@ -23,6 +23,15 @@ const MAX_LOOKUPS = 24;
 const PRESENT_WINDOW = 12000;
 // Words around a request to leave that do not change it: "Jarvis, please leave the meeting now, thanks".
 const LEAVE_FILLER = new Set(['please', 'hey', 'hi', 'ok', 'okay', 'so', 'now', 'alright', 'thanks', 'thank', 'bye', 'goodbye', 'cheers', 'then']);
+/**
+ * "browser" or "stop" for a plain request to present or to stop: "share your screen", "show us your
+ * browser", "stop presenting". "I'll share my screen" or "show me the first page" are neither.
+ */
+function presentMode(text) {
+  const t = String(text).toLowerCase();
+  return /\bstop (presenting|sharing( your screen)?)\b/.test(t) ? 'stop'
+    : /\b(share|present) your (screen|browser)\b|\bshow us (your|the) (screen|browser|page you have open|page in your browser)\b|\b(can|could) you (start )?present(ing)?\b/.test(t) ? 'browser' : null;
+}
 /** True when the last clause said is only a request to leave ("please leave the meeting", "you can go now"). */
 function wholeLeave(text, names) {
   const nameWords = new Set(names.flatMap(n => n.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []));
@@ -76,6 +85,7 @@ Say nothing in these cases:
 - A question is put to a person by name, or to the room.
 - Thanks, goodbyes, small talk, laughter, background noise.
 - You are not completely sure the words were meant for you. When in doubt, say nothing: a request you miss costs little, because they will say your name; talking when nobody asked disturbs the meeting.
+Caption updates ("Who said what just now…") are background for you, never a request: never answer one, never say who spoke or that it was you, and never comment on them.
 When nobody is talking to you, never interject, greet anyone, say that you are listening, acknowledge ("okay", "got it", "mm-hm"), offer help or comment. Never say that you are staying silent. When someone starts talking while you speak, stop.
 While someone is still saying their request, wait: no "mm-hmm" or "yes" at your name.
 When they have finished a request to you that needs a lookup or an action, first say a very short acknowledgement ("ok", "let me check"), then delegate. Say you are still checking only while a lookup is running.
@@ -99,6 +109,7 @@ export class LiveBridge {
     this.closed = false; this.ready = false; this.lastSpeech = Date.now(); this.lookups = 0;
     this.supportsToolResultContinuation = false;
     // Transcript fragments with their arrival time, for building a delegated question.
+    this.captionActions = 0;
     this.heard = []; this.said = []; this.inputText = ''; this.outputText = ''; this.request = '';
     // Lookups by delegation id (queued or running), the one running, and the ids already answered.
     this.jobs = new Map(); this.running = null; this.finished = new Set(); this.latestDelegation = null;
@@ -283,6 +294,22 @@ export class LiveBridge {
     if (!text) return;
     if (report && !this.closed) this.req.onTranscript?.(role, text, true);
     this.record.line(role, text, since);
+    // A plain request to present or to stop, said to the agent: GPT-Live often answers it without
+    // delegating ("I'll pass that along"), so it is read from the caption line too, by the same rules
+    // as the shortcut. The words are marked used, so a delegation for them does not present again.
+    if (role === 'user' && !delegating && !this.phone) {
+      const mode = presentMode(text), now = Date.now();
+      // A delegation just before these words looks at them itself (PRESENT_RECHECK): it acts, not this.
+      const delegated = now - (this.lastDelegationAt ?? 0) < PRESENT_RECHECK + 1000;
+      if (mode && !delegated && (this.deps.lease?.() ?? meetingLease(this.deps.voiceDir)).present === true && this.mayTalk(now) && (!this.config.always || this.nameIn(text))) {
+        this.presentUsedAt = now;
+        const job = { id: `cc_present_${++this.captionActions}`, from: this.speaker() ?? '', addressed: true, answered: false, present: true, started: true };
+        // Not a delegation of the provider's: the outcome goes to the voice with no delegation id.
+        (this.adopted ??= new Set()).add(job.id);
+        this.metric('present_heard', { mode });
+        void this.perform(job, { kind: 'present', mode });
+      }
+    }
     // "Leave the meeting", said to the agent: GPT-Live says goodbye on its own and often delegates
     // nothing, so the request is read from the caption line itself, with the rules of the shortcut.
     // A delegation that flushes the line handles the request itself (`delegate`).
@@ -354,7 +381,7 @@ export class LiveBridge {
     } else if (action.kind === 'present') {
       // The outcome Meet itself shows; the voice never says it is presenting before Meet does.
       const presenter = this.deps.presenter ?? meetingPresenter;
-      const outcome = await (action.mode === 'stop' ? presenter.stop() : presenter.start()).catch(() => 'failed');
+      const outcome = await (action.mode === 'stop' ? presenter.stop() : presenter.start(action.url ? { url: action.url } : {})).catch(() => 'failed');
       say = PRESENT_SAY[outcome] ?? PRESENT_SAY.failed;
       this.metric('present', { mode: action.mode, outcome });
     } else if (action.kind === 'task') {
@@ -437,8 +464,7 @@ export class LiveBridge {
     const recent = this.heard.filter(f => f.at >= since).map(f => f.text).join('').toLowerCase();
     // Only what is said to the agent: "share your screen", "show us your browser", "stop presenting".
     // "I'll share my screen" or "show me the first page" are not requests to present.
-    const mode = /\bstop (presenting|sharing( your screen)?)\b/.test(recent) ? 'stop'
-      : /\b(share|present) your (screen|browser)\b|\bshow us (your|the) (screen|browser|page you have open|page in your browser)\b|\b(can|could) you (start )?present(ing)?\b/.test(recent) ? 'browser' : null;
+    const mode = presentMode(recent);
     // Said to the agent: in always listening the request must hold one of its names ("Bob, can you share
     // your screen?" is not for it); with the wake word, a woken session is already called by name.
     if (!mode || (this.config.always && !this.nameIn(recent))) return null;
