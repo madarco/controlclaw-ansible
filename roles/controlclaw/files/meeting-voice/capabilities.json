@@ -6,5 +6,6 @@
   "wakeWords": true,
   "wakeLocal": true,
   "alwaysListening": true,
-  "fullAgent": true
+  "fullAgent": true,
+  "present": true
 }
