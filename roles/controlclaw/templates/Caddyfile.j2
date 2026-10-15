@@ -120,3 +120,63 @@
         }
     }
 }
+{% if widget_sandbox_enabled | default(false) | bool %}
+
+# The OpenClaw widget sandbox (mcp.apps.sandboxOrigin, set in tasks/openclaw.yml). Widget HTML runs
+# in an iframe on this host so that it never shares the dashboard's origin; OpenClaw refuses a sandbox
+# origin equal to the dashboard's. Its listener is loopback-only on the gateway port + 1. This host
+# serves exactly what that listener serves, and is signed in like the dashboard
+# (controlclaw docs/security-design.md, "The widget sandbox"):
+#   - the shell (/mcp-app-sandbox) only after the vm-agent's sandbox check (forward_auth). Without
+#     the sandbox cookie, the dashboard's iframe is sent once through a one-time ticket minted on the
+#     dashboard's own host; any other request is 403 and the shell is not served;
+#   - the two renderer bundles, public: they are loaded by the widget's inner frame, whose origin is
+#     opaque, so no cookie of ours could ever go with them. They are OpenClaw's static library code,
+#     the same on every box;
+#   - the ticket exchange, which sets this host's own __Host- cookie;
+#   - 404 for everything else.
+# frame-ancestors is added as a SECOND policy, not by rewriting OpenClaw's (`frame-ancestors http:
+# https:`): browsers enforce every policy they get, so this one holds whatever OpenClaw sends. The
+# handle a claim adds is appended here by cc-pool-local.cjs, as for the main site above.
+sandbox.{{ vm_hostname }} {
+    @renderer {
+        method GET HEAD
+        path /__openclaw__/a2ui/a2ui.bundle.js /__openclaw__/a2ui/a2ui-v0.9.bundle.js
+    }
+    handle @renderer {
+        reverse_proxy 127.0.0.1:{{ openclaw_sandbox_port }} {
+            header_up -Cookie
+            header_up -Authorization
+            header_down -Set-Cookie
+        }
+    }
+
+    handle /__cc/sandbox/exchange {
+        reverse_proxy 127.0.0.1:3100
+    }
+
+    @shell {
+        method GET HEAD
+        path /mcp-app-sandbox
+    }
+    handle @shell {
+        forward_auth 127.0.0.1:3100 {
+            uri /__cc/sandbox/verify
+            header_up -Connection
+            header_up -Upgrade
+        }
+        reverse_proxy 127.0.0.1:{{ openclaw_sandbox_port }} {
+            header_up -Cookie
+            header_up -Authorization
+            header_down -Set-Cookie
+            # OpenClaw marks a versioned shell immutable for a year; it is checked on every load instead.
+            header_down Cache-Control "no-store"
+            header_down +Content-Security-Policy "frame-ancestors https://{{ vm_hostname }}{% if cc_handle_alias | default('') and cc_handle_alias != vm_hostname %} https://{{ cc_handle_alias }}{% endif %}"
+        }
+    }
+
+    handle {
+        respond 404
+    }
+}
+{% endif %}

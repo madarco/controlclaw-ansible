@@ -497,13 +497,18 @@
          (vm_hostname is not defined or (
            openclaw_gateway_current.publicOrigin | default('') == 'https://' ~ vm_hostname and
            openclaw_gateway_current.trustedProxies | default([]) == ['127.0.0.1'] and
-           openclaw_gateway_current.controlUi.allowedOrigins | default([]) == ['https://' ~ vm_hostname])) }}
+           openclaw_gateway_current.controlUi.allowedOrigins | default([]) == ['https://' ~ vm_hostname] and
+           openclaw_mcp_apps_current.sandboxOrigin | default('') ==
+             (('https://sandbox.' ~ vm_hostname) if widget_sandbox_enabled | default(false) | bool else ''))) }}
   vars:
     openclaw_gateway_current: >-
       {{ (openclaw_config_raw.content | default('') | b64decode | from_json).gateway
          if openclaw_config_raw.content is defined else {} }}
     openclaw_browser_current: >-
       {{ (openclaw_config_raw.content | default('') | b64decode | from_json).browser | default({})
+         if openclaw_config_raw.content is defined else {} }}
+    openclaw_mcp_apps_current: >-
+      {{ ((openclaw_config_raw.content | default('') | b64decode | from_json).mcp | default({})).apps | default({})
          if openclaw_config_raw.content is defined else {} }}
     # Resolved a level at a time. A config with `browser.enabled` and no `profiles` is a real
     # shape (OpenClaw writes its own defaults), and whether a chained `.profiles.openclaw.x`
@@ -564,7 +569,7 @@
   ansible.builtin.shell:
     cmd: >-
       printf '%s'
-      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}{{ openclaw_origin_json }}}{{ openclaw_browser_json }}{{ openclaw_desktop_json }}}'
+      '{"gateway":{"mode":"local","bind":"loopback","port":{{ openclaw_gateway_port | int }},"auth":{"mode":"token","token":"{{ openclaw_token_b64.content | b64decode | trim }}"}{{ openclaw_origin_json }}}{{ openclaw_browser_json }}{{ openclaw_desktop_json }}{{ openclaw_sandbox_json }}}'
       | /usr/bin/openclaw config patch --stdin
   vars:
     openclaw_origin_json: >-
@@ -572,6 +577,18 @@
          if vm_hostname is defined else '' }}
     openclaw_browser_json: >-
       {{ ',"browser":{"enabled":true,"attachOnly":true,"defaultProfile":"openclaw","profiles":{"openclaw":{"cdpUrl":"' ~ openclaw_cdp_url ~ '","attachOnly":true}}}' }}
+    # The widget sandbox's own origin (HTML widgets, MCP Apps). Without it the dashboard frames
+    # https://<host>:18790, which nothing routes ("Widget sandbox host is unavailable"); OpenClaw
+    # refuses one equal to the dashboard's. Caddy serves this name (Caddyfile.j2), signed in like the
+    # dashboard. `mcp` is merged, so the vm-agent's mcp.servers stay as they are.
+    # Behind widget_sandbox_enabled (defaults/main.yml); off, one written earlier is cleared (null).
+    openclaw_sandbox_json: >-
+      {{ (',"mcp":{"apps":{"sandboxOrigin":"https://sandbox.' ~ vm_hostname ~ '"}}')
+           if (vm_hostname is defined and widget_sandbox_enabled | default(false) | bool)
+         else (',"mcp":{"apps":{"sandboxOrigin":null}}' if openclaw_sandbox_set | bool else '') }}
+    openclaw_sandbox_set: >-
+      {{ ((((openclaw_config_raw.content | default('') | b64decode | from_json).mcp | default({})).apps | default({})).sandboxOrigin | default('')) | length > 0
+         if openclaw_config_raw.content is defined else false }}
     openclaw_desktop_json: >-
       {{ (',"desktop":{"host":{"enabled":true,"port":' ~ browser_desktop_vnc_port | int ~ ',"passwordFile":"' ~ openclaw_desktop_password_file ~ '"}}')
          if openclaw_desktop_expected | bool else ',"desktop":{"host":{"enabled":false}}' }}

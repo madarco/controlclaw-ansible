@@ -28,7 +28,8 @@ def box(host, ip, domain=None, created="2026-09-30T10:00:00+00:00", role="agent"
 
 
 def lines(content):
-    return content.splitlines()
+    """The routes of the box names themselves. An agent's sandbox route is checked on its own (Sandbox)."""
+    return [l for l in content.splitlines() if not l.startswith("sandbox.")]
 
 
 class BuildMap(unittest.TestCase):
@@ -41,7 +42,7 @@ class BuildMap(unittest.TestCase):
 
     def test_old_call_shape_still_works(self):
         # No allow-list passed: exactly what the script did before T-105.
-        self.assertEqual(routes.build_map([box("a", "192.0.2.1")], LEGACY), "a.vm.controlclaw.com 192.0.2.1\n")
+        self.assertEqual(lines(routes.build_map([box("a", "192.0.2.1")], LEGACY)), ["a.vm.controlclaw.com 192.0.2.1"])
 
     def test_a_box_names_its_own_domain(self):
         out = routes.build_map(
@@ -104,3 +105,31 @@ class BuildMap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Sandbox(unittest.TestCase):
+    """An agent's widget sandbox origin, sandbox.<cc-host>.<domain> (mcp.apps.sandboxOrigin)."""
+
+    def setUp(self):
+        self.allowed = routes.allowed_domains(routes.normalize_domain(LEGACY), "ccl.bot")
+
+    def test_an_agent_gets_its_sandbox_name_on_its_own_ip(self):
+        out = routes.build_map([box("pool-ab12", "192.0.2.7", "ccl.bot")], LEGACY, self.allowed)
+        self.assertEqual(out.splitlines(), ["pool-ab12.ccl.bot 192.0.2.7", "sandbox.pool-ab12.ccl.bot 192.0.2.7"])
+
+    def test_only_for_the_pool_name_not_the_handle_alias(self):
+        b = box("pool-ab12", "192.0.2.7", "ccl.bot")
+        b["labels"]["cc-host-alias"] = "mjhtest"
+        out = routes.build_map([b], LEGACY, self.allowed)
+        self.assertIn("sandbox.pool-ab12.ccl.bot 192.0.2.7", out.splitlines())
+        self.assertNotIn("sandbox.mjhtest.ccl.bot 192.0.2.7", out.splitlines())
+        self.assertIn("mjhtest.ccl.bot 192.0.2.7", out.splitlines())
+
+    def test_firewalls_and_brains_get_none(self):
+        out = routes.build_map([box("mitm-ab12cd34", "192.0.2.3", "ccl.bot", role="mitm"), box("brain-1", "192.0.2.4", "ccl.bot", role="gbrain")], LEGACY, self.allowed)
+        self.assertFalse([l for l in out.splitlines() if l.startswith("sandbox.")])
+
+    def test_a_rebuilt_agent_moves_its_sandbox_name_too(self):
+        old = box("agent", "192.0.2.10", "ccl.bot", created="2026-09-29T10:00:00+00:00")
+        new = box("agent", "192.0.2.11", "ccl.bot", created="2026-09-30T10:00:00+00:00")
+        self.assertIn("sandbox.agent.ccl.bot 192.0.2.11", routes.build_map([old, new], LEGACY, self.allowed).splitlines())

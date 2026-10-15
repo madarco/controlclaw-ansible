@@ -18,7 +18,8 @@ const write = (path, data, mode = 0o644, owned = false) => {
   } finally { fs.closeSync(fd); }
   fs.renameSync(temporary, path);
 };
-const config = JSON.parse(read('/root/cc-pool-worker.json'));
+// Always there on a box; absent where this file is only loaded for claimCaddyfile (tests).
+const config = fs.existsSync('/root/cc-pool-worker.json') ? JSON.parse(read('/root/cc-pool-worker.json')) : null;
 function cert(hostname) {
   return new Promise((resolve) => {
     const sock = tls.connect({ host: '127.0.0.1', port: 443, servername: hostname, rejectUnauthorized: true }, () => { resolve(sock.authorized); sock.end(); });
@@ -113,15 +114,32 @@ function activate(vars) {
   // Caddy obtains this certificate asynchronously; transport keeps using the neutral name.
   if (vars.handle_hostname !== config.hostname) {
     const path = '/etc/caddy/Caddyfile';
-    const source = read(path);
-    if (!source.includes(`\n${config.hostname} {`)) throw Error('Caddy primary hostname missing');
-    write(path, source.replace(`\n${config.hostname} {`, `\n${config.hostname}, ${vars.handle_hostname} {`).replace(
-      '# Pool handle Origin rewrite (installed at claim).',
-      `# Pool handle Origin rewrite (installed at claim).\n            header_up Origin https://${config.hostname}`));
+    write(path, claimCaddyfile(read(path), config.hostname, vars.handle_hostname));
     cmd(['systemctl', 'reload', 'caddy']);
   }
 }
-(async () => {
+/**
+ * The rendered Caddyfile with the claimed handle added: as a second name of the agent's site, with
+ * OpenClaw's Origin kept on the pool name, and to the widget sandbox's frame-ancestors when the box
+ * has that site (Caddyfile.j2, widget_sandbox_enabled). Pure, so it can be run on a rendered file.
+ */
+function claimCaddyfile(source, hostname, handle) {
+  if (!source.includes(`\n${hostname} {`)) throw Error('Caddy primary hostname missing');
+  // The widget sandbox may be framed by the dashboard on its new name too.
+  const sandboxAncestors = `"frame-ancestors https://${hostname}"`;
+  // A Caddyfile with the sandbox site but not that line would leave the dashboard on its handle
+  // unable to frame its widgets, silently: refuse instead. A box without the sandbox site (the
+  // switch off, or a pool image from before it) has neither, and claims as it did.
+  const sandbox = source.includes(`\nsandbox.${hostname} {`);
+  if (sandbox && !source.includes(sandboxAncestors)) throw Error('Caddy sandbox frame-ancestors missing');
+  const out = source.replace(`\n${hostname} {`, `\n${hostname}, ${handle} {`).replace(
+    '# Pool handle Origin rewrite (installed at claim).',
+    `# Pool handle Origin rewrite (installed at claim).\n            header_up Origin https://${hostname}`);
+  return sandbox ? out.replace(sandboxAncestors, `"frame-ancestors https://${hostname} https://${handle}"`) : out;
+}
+module.exports = { claimCaddyfile };
+
+if (require.main === module) (async () => {
   const action = process.argv[2];
   if (action === 'facts') console.log(JSON.stringify(publicFacts()));
   else if (action === 'peer') pair(JSON.parse(fs.readFileSync(0, 'utf8')));

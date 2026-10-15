@@ -266,6 +266,14 @@ ssh_debug: false
 # proxy box is the only allowed source. The systemd unit is named `openclaw` because that is
 # what the vm-agent drives; do not rename it without changing vm-agent's SERVICE constant.
 openclaw_gateway_port: 18789
+# OpenClaw's widget sandbox listener (MCP Apps, board widgets): the gateway port + 1, loopback.
+# Caddy serves it as sandbox.<vm_hostname> (templates/Caddyfile.j2).
+openclaw_sandbox_port: "{{ openclaw_gateway_port | int + 1 }}"
+# HTML widgets' own host, sandbox.<vm_hostname> (Caddyfile.j2, tasks/openclaw.yml, cc-pool-local.cjs).
+# Off until the proxy box routes the sandbox names: before that, Caddy would ask Let's Encrypt for a
+# name nobody can reach (failed validations) and pool boxes would take a second certificate for nothing.
+# Off, every box is as before it: no sandbox site, no sandboxOrigin (an earlier one is cleared).
+widget_sandbox_enabled: false
 
 # Agent hostname and access path (openclaw boxes). vm_hostname is passed per box by the
 # control plane (<slug><vm_domain_suffix>); without it Caddy is installed but not configured.

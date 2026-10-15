@@ -17,6 +17,11 @@ default suffix is always allowed), so a label cannot route a domain this proxy w
 Who may reach a suffix (a source allow-list, T-104) is HAProxy's rule, not the map's: this script
 only says where a name goes.
 
+An AGENT box also gets "sandbox.<slug>.<domain>": the origin of its OpenClaw widget sandbox
+(mcp.apps.sandboxOrigin), which has to differ from the dashboard's. Only for its own cc-host, not
+the handle alias: the sandbox origin is one fixed name per box. Caddy on the box serves that name
+only the sandbox's two public paths (Caddyfile.j2).
+
 The proxy stays blind either way: it forwards ciphertext by server name and holds no
 certificate. What a firewall box serves on the far side of that route is one path prefix
 (Caddyfile-mitm.j2), not the agent console.
@@ -101,6 +106,8 @@ def build_map(servers: list[dict], suffix: str, allowed: set[str] | None = None)
         alias = labels.get("cc-host-alias", "")
         if alias and HOST_RE.fullmatch(alias):
             hosts.append(alias)
+        if labels.get("cc-role") == "agent":
+            hosts.append(f"sandbox.{host}")
         for name in hosts:
             fqdn = f"{name}.{domain}"
             previous = routes.get(fqdn)
