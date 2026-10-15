@@ -436,6 +436,45 @@ test('"leave the meeting", said to the agent: a goodbye and a leave line for the
   bridge.close();
 });
 
+test('a request to leave with no delegation (GPT-Live just says goodbye): read from the caption line, left after the goodbye', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const { voiceRecord } = await import('../roles/controlclaw/files/meeting-voice/record.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-leave-caption-')), all = [], tools = [];
+  class WS extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.bufferedAmount = 0; this.sent = []; all.push(this); setImmediate(() => this.emit('open')); }
+    send(s) { const e = JSON.parse(s); this.sent.push(e); if (e.type === 'session.start') setImmediate(() => this.emit('message', JSON.stringify({ type: 'session.started', session: {} }))); }
+    terminate() {}
+  }
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
+    onAudio: () => {}, onToolCall: t => tools.push(t), onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter: { reset: async () => {} }, leaveTimes: { quiet: 300, noAudio: 600, max: 3000 }, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  await bridge.connect();
+  const ws = all[0];
+  const said = text => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: text }));
+  const log = () => { try { return readFileSync(join(dir, 'meeting.jsonl'), 'utf8'); } catch { return ''; } };
+  const speak = () => ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.alloc(4800, 0x40).toString('base64') }));
+  // Without the agent's name (always listening): not for it.
+  said('Please leave the meeting.');
+  await new Promise(r => setTimeout(r, 2200));
+  assert.doesNotMatch(log(), /"kind":"leave"/, 'not said to the agent');
+  // With its name, and no delegation: the goodbye plays, then the leave line.
+  said(' Jarvis, please leave the meeting.');
+  await new Promise(r => setTimeout(r, 1000));
+  for (let i = 0; i < 6; i++) { speak(); await new Promise(r => setTimeout(r, 150)); }
+  assert.doesNotMatch(log(), /"kind":"leave"/, 'not while the goodbye plays');
+  // GPT-Live keeps sending silent frames after it: they do not hold the leave back.
+  const silence = () => ws.emit('message', JSON.stringify({ type: 'session.output_audio.delta', delta: Buffer.alloc(4800, 0).toString('base64') }));
+  for (let i = 0; i < 6; i++) { silence(); await new Promise(r => setTimeout(r, 150)); }
+  assert.match(log(), /"kind":"leave"/);
+  assert.equal(tools.length, 0, 'no consult');
+  bridge.close();
+});
+
 test('only a whole request to leave counts; leaving that is only mentioned does not', async () => {
   const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
   const bridge = new LiveBridge({
