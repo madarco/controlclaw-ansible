@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.17.0",
+    "date": "2026-10-15",
+    "changes": [
+      "Agents on the included AI tokens reuse their cached prompt between replies, so Claude models answer faster and cost less."
+    ]
+  },
+  {
     "version": "1.16.0",
     "date": "2026-10-15",
     "changes": [
