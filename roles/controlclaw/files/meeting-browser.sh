@@ -31,5 +31,8 @@ profile="$XDG_RUNTIME_DIR/cc-meetings/profile"
 if [ -e "$STATE/meeting-browser-signed" ] && [ -d "$SIGNED" ]; then profile="$SIGNED"; fi
 mkdir -p "$profile/Default"
 /usr/bin/python3 /opt/controlclaw/meeting-browser-preferences.py "$profile/Default/Preferences"
+# Presenting (controlclaw docs/plans/meeting-present.md): Meet's share picker is answered with the tab
+# titled "CC Stage", which the voice adapter opens in this browser (meeting-voice/present.js). This
+# browser holds the Meet tab and that stage tab, nothing else.
 # shellcheck disable=SC2086
-exec "$CHROME" --user-data-dir="$profile" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 $COMMON --force-webrtc-ip-handling-policy=disable_non_proxied_udp --autoplay-policy=no-user-gesture-required about:blank
+exec "$CHROME" --user-data-dir="$profile" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223 $COMMON --force-webrtc-ip-handling-policy=disable_non_proxied_udp --autoplay-policy=no-user-gesture-required "--auto-select-tab-capture-source-by-title=CC Stage" about:blank

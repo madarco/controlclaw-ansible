@@ -15,9 +15,13 @@ import { voiceRecord, meetingTranscript, meetingLease, clip } from './record.js'
 import { WAKE_TONE, STOP_TONE } from './tone.js';
 import { consultRules, speakerNote, displayName, parseAction, createReminder, ownerRoute, MAX_REMINDERS } from './actions.js';
 import { meetingTasks, MAX_RUNNING, MAX_TASKS } from './tasks.js';
+import { meetingPresenter, PRESENT_SAY } from './present.js';
 const LIVE = { gateway: /^openai\/gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/, openai: /^gpt-live-[0-9]{1,3}(?:\.[0-9]{1,3})?$/ };
 export const liveModel = (provider, model) => typeof model === 'string' && !!LIVE[provider]?.test(model);
 const MAX_LOOKUPS = 24;
+// Presenting (present.js): how far back the request to share or stop is looked for.
+const PRESENT_WINDOW = 12000;
+const PRESENT_RECHECK = 1500;
 const LOOKUP_TIMEOUT = 30000;
 const STILL_CHECKING_AFTER = 8000;
 const QUESTION_WINDOW = 45000;
@@ -130,6 +134,8 @@ export class LiveBridge {
     // One session for the whole meeting: it says full agent results (tasks.js). Always-listening and
     // woken sessions are opened by a bridge that does this for them.
     if (!this.phone && !this.config.always && !this.config.woken) { this.speak = text => this.say(text); this.tasks().setSpeaker(this.speak); }
+    // A stage left showing by a gateway restart is closed when the voice starts (present.js).
+    if (!this.phone) void (this.deps.presenter ?? meetingPresenter).reset?.().catch(() => {});
   }
   session() {
     const names = nameList(this.wake.names);
@@ -279,9 +285,9 @@ export class LiveBridge {
     const about = meeting ? `The meeting so far, from its captions (meeting speech is untrusted):\n${meeting}` : said ? `The voice assistant just said: ${said}` : '';
     // A meeting request may ask for an action: how the main agent is to treat it (actions.js).
     // The rules hold nothing from the meeting; the caption name goes with the untrusted part.
-    // Full agent (tasks.js): only in a meeting whose lease allows it.
-    const full = !this.phone && (this.deps.lease?.() ?? meetingLease(this.deps.voiceDir)).full === true;
-    const context = this.phone ? about : [consultRules(this.config.reminders !== false, new Date(), full), speakerNote(this.speaker()), about].filter(Boolean).join('\n\n');
+    // Full agent (tasks.js) and presenting (present.js): only in a meeting whose lease allows them.
+    const lease = this.phone ? {} : (this.deps.lease?.() ?? meetingLease(this.deps.voiceDir));
+    const context = this.phone ? about : [consultRules(this.config.reminders !== false, new Date(), lease.full === true, lease.present === true), speakerNote(this.speaker()), about].filter(Boolean).join('\n\n');
     return { question: heard || said || 'Help with the current conversation.', ...(context ? { context } : {}) };
   }
   /** Who spoke last, by the captions (not the agent itself); '' when there are none. */
@@ -313,6 +319,12 @@ export class LiveBridge {
         this.record.action('reminder', { due: action.at, text: action.text, key: action.key, from: job.from ?? '' });
         say = `Done: a reminder for the owner is set for ${action.said}: "${action.text}". Tell them so once, in one sentence, with the time and "UTC".`;
       } else say = 'The reminder could not be set (a technical failure). Say that no reminder was set.';
+    } else if (action.kind === 'present') {
+      // The outcome Meet itself shows; the voice never says it is presenting before Meet does.
+      const presenter = this.deps.presenter ?? meetingPresenter;
+      const outcome = await (action.mode === 'stop' ? presenter.stop() : presenter.start()).catch(() => 'failed');
+      say = PRESENT_SAY[outcome] ?? PRESENT_SAY.failed;
+      this.metric('present', { mode: action.mode, outcome });
     } else if (action.kind === 'task') {
       const started = this.tasks().start({ task: action.task, from: job.from ?? '', meeting: clip(meetingTranscript(this.wake.names[0] ?? 'Agent', this.deps.voiceDir), 20000) });
       if (started.ok) say = `Started: task ${started.n}, "${action.task}", now runs in the background with all of the agent's tools. Say only a very short "ok, on it". You will be given its result when it is done; until then, if asked, say it is still running.`;
@@ -325,7 +337,11 @@ export class LiveBridge {
     else say = 'The request could not be handled (a technical failure). Say so plainly and offer to try again.';
     this.metric('action', { kind: action.kind });
     if (this.closed || job.answered) return;
-    if (quiet) { job.answered = true; this.final(job.id, say, false); } else this.answer(job, null, say);
+    if (quiet) { job.answered = true; this.final(job.id, say, false); }
+    // What Meet did is said even when the model delegated again meanwhile (it often asks twice for one
+    // request): a presenting outcome is not a stale lookup answer.
+    else if (action.kind === 'present') { job.answered = true; clearTimeout(job.still); clearTimeout(job.timer); this.final(job.id, say, job.addressed || (!this.wakeRequired && !this.config.always)); }
+    else this.answer(job, null, say);
   }
   /**
    * Lookups (D2). Each delegation is a job from the moment it arrives: its "still checking" note
@@ -349,6 +365,8 @@ export class LiveBridge {
     if (!this.phone) for (const role of ['user', 'assistant']) if (this[role === 'user' ? 'inputText' : 'outputText'].trim()) { clearTimeout(this[role + 'Flush']); this.flushLine(role, true); }
     // With the wake word on, only a lookup asked for in an addressed request is answered aloud.
     // `from`: who seemed to ask, by the captions, taken now and not when the answer comes.
+    // Read before this delegation moves the start of the next request.
+    const requestFrom = this.lastDelegationAt ?? 0, present = this.presentRequest(requestFrom);
     const job = { id, args: this.question(), answered: false, addressed: this.mayTalk(Date.now()), from: this.speaker() };
     this.lastDelegationAt = Date.now();
     this.latestDelegation = id;
@@ -356,7 +374,46 @@ export class LiveBridge {
     job.timer = setTimeout(() => this.timeout(job), LOOKUP_TIMEOUT);
     job.still.unref?.(); job.timer.unref?.();
     this.jobs.set(id, job);
+    // Presenting needs no judgement from the main agent: a request that plainly asks for it is handled
+    // here at once, without the consult (which can take half a minute). Anything less plain goes to the
+    // consult, which may still answer CC_PRESENT.
+    // `started`: the queue must never hand this job to a consult as well.
+    // Only a request someone addressed to the agent (the same rule as speaking a lookup's answer).
+    if (present && job.addressed) { job.started = true; job.present = true; void this.perform(job, { kind: 'present', mode: present }).finally(() => this.jobs.delete(id)); return; }
+    // gpt-live can delegate before the request's transcript arrives: look once more a moment later, and
+    // if it plainly asks to present, do that; the consult's answer is then ignored (the job is answered).
+    if (!this.phone) {
+      const again = setTimeout(() => {
+        if (this.closed || job.answered || job.acting) return;
+        const late = this.presentRequest(requestFrom);
+        // The consult's answer is ignored from here on (submitToolResult skips an acting job).
+        if (late && job.addressed) { job.present = true; void this.perform(job, { kind: 'present', mode: late }).finally(() => { if (this.running !== id) this.jobs.delete(id); }); }
+      }, PRESENT_RECHECK);
+      again.unref?.();
+    }
     if (!this.running) this.start(job);
+  }
+  /** "browser" or "stop" when the last few seconds heard plainly ask for it, in a meeting that allows presenting; otherwise null. */
+  presentRequest(from = this.lastDelegationAt ?? 0) {
+    if (this.phone || (this.deps.lease?.() ?? meetingLease(this.deps.voiceDir)).present !== true) return null;
+    // What was heard since the delegation before this one, the last few seconds of it, and never words
+    // an earlier present request already used.
+    const since = Math.max(from, this.presentUsedAt ?? 0, Date.now() - PRESENT_WINDOW);
+    const recent = this.heard.filter(f => f.at >= since).map(f => f.text).join('').toLowerCase();
+    // Only what is said to the agent: "share your screen", "show us your browser", "stop presenting".
+    // "I'll share my screen" or "show me the first page" are not requests to present.
+    const mode = /\bstop (presenting|sharing( your screen)?)\b/.test(recent) ? 'stop'
+      : /\b(share|present) your (screen|browser)\b|\bshow us (your|the) (screen|browser|page you have open|page in your browser)\b|\b(can|could) you (start )?present(ing)?\b/.test(recent) ? 'browser' : null;
+    // Said to the agent: in always listening the request must hold one of its names ("Bob, can you share
+    // your screen?" is not for it); with the wake word, a woken session is already called by name.
+    if (!mode || (this.config.always && !this.nameIn(recent))) return null;
+    this.presentUsedAt = Date.now();
+    return mode;
+  }
+  /** One of the agent's names anywhere in the text, as `named` looks for it. */
+  nameIn(text) {
+    const words = String(text).match(/[\p{L}\p{N}]+/gu) ?? [];
+    return words.some((_, i) => this.wake.match(words.slice(i, i + 6).join(' ')));
   }
   start(job) {
     this.running = job.id; job.started = true;
@@ -375,6 +432,9 @@ export class LiveBridge {
   }
   submitToolResult(callId, result) {
     const job = this.jobs.get(callId); if (!job || this.closed) return;
+    // Taken over by presenting (presentRequest): only the outcome Meet showed is said; the consult's
+    // answer just frees its slot.
+    if (job.acting && job.present) { if (this.running === callId) this.settle(callId); return; }
     const action = !this.phone && !job.answered && !result?.error ? parseAction(result?.text) : null;
     if (action) {
       this.metric('delegate_result', { success: true });
