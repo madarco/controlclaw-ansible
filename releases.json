@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.18.0",
+    "date": "2026-10-15",
+    "changes": [
+      "Meetings: an owner can let the agent present its browser in a meeting (confirmed with a code); ask it to share its screen or stop.",
+      "Meetings: each meeting's page links every session the agent ran for it to that session in the agent's dashboard."
+    ]
+  },
+  {
     "version": "1.17.0",
     "date": "2026-10-15",
     "changes": [
