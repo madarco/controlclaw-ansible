@@ -2384,7 +2384,7 @@ var require_extension = __commonJS({
       if (dest[name] === void 0) dest[name] = [elem];
       else dest[name].push(elem);
     }
-    function parse6(header3) {
+    function parse6(header4) {
       const offers = /* @__PURE__ */ Object.create(null);
       let params = /* @__PURE__ */ Object.create(null);
       let mustUnescape = false;
@@ -2396,8 +2396,8 @@ var require_extension = __commonJS({
       let code = -1;
       let end = -1;
       let i2 = 0;
-      for (; i2 < header3.length; i2++) {
-        code = header3.charCodeAt(i2);
+      for (; i2 < header4.length; i2++) {
+        code = header4.charCodeAt(i2);
         if (extensionName === void 0) {
           if (end === -1 && tokenChars[code] === 1) {
             if (start === -1) start = i2;
@@ -2408,7 +2408,7 @@ var require_extension = __commonJS({
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
             if (end === -1) end = i2;
-            const name = header3.slice(start, end);
+            const name = header4.slice(start, end);
             if (code === 44) {
               push(offers, name, params);
               params = /* @__PURE__ */ Object.create(null);
@@ -2429,7 +2429,7 @@ var require_extension = __commonJS({
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
             if (end === -1) end = i2;
-            push(params, header3.slice(start, end), true);
+            push(params, header4.slice(start, end), true);
             if (code === 44) {
               push(offers, extensionName, params);
               params = /* @__PURE__ */ Object.create(null);
@@ -2437,7 +2437,7 @@ var require_extension = __commonJS({
             }
             start = end = -1;
           } else if (code === 61 && start !== -1 && end === -1) {
-            paramName = header3.slice(start, i2);
+            paramName = header4.slice(start, i2);
             start = end = -1;
           } else {
             throw new SyntaxError(`Unexpected character at index ${i2}`);
@@ -2461,7 +2461,7 @@ var require_extension = __commonJS({
             } else {
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
-          } else if (code === 34 && header3.charCodeAt(i2 - 1) === 61) {
+          } else if (code === 34 && header4.charCodeAt(i2 - 1) === 61) {
             inQuotes = true;
           } else if (end === -1 && tokenChars[code] === 1) {
             if (start === -1) start = i2;
@@ -2472,7 +2472,7 @@ var require_extension = __commonJS({
               throw new SyntaxError(`Unexpected character at index ${i2}`);
             }
             if (end === -1) end = i2;
-            let value2 = header3.slice(start, end);
+            let value2 = header4.slice(start, end);
             if (mustUnescape) {
               value2 = value2.replace(/\\/g, "");
               mustUnescape = false;
@@ -2494,7 +2494,7 @@ var require_extension = __commonJS({
         throw new SyntaxError("Unexpected end of input");
       }
       if (end === -1) end = i2;
-      const token = header3.slice(start, end);
+      const token = header4.slice(start, end);
       if (extensionName === void 0) {
         push(offers, token, params);
       } else {
@@ -3540,13 +3540,13 @@ var require_subprotocol = __commonJS({
   "../../node_modules/.pnpm/ws@8.22.0_bufferutil@4.1.0_utf-8-validate@6.0.6/node_modules/ws/lib/subprotocol.js"(exports, module) {
     "use strict";
     var { tokenChars } = require_validation();
-    function parse6(header3) {
+    function parse6(header4) {
       const protocols = /* @__PURE__ */ new Set();
       let start = -1;
       let end = -1;
       let i2 = 0;
-      for (i2; i2 < header3.length; i2++) {
-        const code = header3.charCodeAt(i2);
+      for (i2; i2 < header4.length; i2++) {
+        const code = header4.charCodeAt(i2);
         if (end === -1 && tokenChars[code] === 1) {
           if (start === -1) start = i2;
         } else if (i2 !== 0 && (code === 32 || code === 9)) {
@@ -3556,7 +3556,7 @@ var require_subprotocol = __commonJS({
             throw new SyntaxError(`Unexpected character at index ${i2}`);
           }
           if (end === -1) end = i2;
-          const protocol2 = header3.slice(start, end);
+          const protocol2 = header4.slice(start, end);
           if (protocols.has(protocol2)) {
             throw new SyntaxError(`The "${protocol2}" subprotocol is duplicated`);
           }
@@ -3569,7 +3569,7 @@ var require_subprotocol = __commonJS({
       if (start === -1 || end !== -1) {
         throw new SyntaxError("Unexpected end of input");
       }
-      const protocol = header3.slice(start, i2);
+      const protocol = header4.slice(start, i2);
       if (protocols.has(protocol)) {
         throw new SyntaxError(`The "${protocol}" subprotocol is duplicated`);
       }
@@ -6218,9 +6218,9 @@ ${indent}`) + "'";
         start = start.replace(/\n+/g, `$&${indent}`);
       }
       const indentSize = indent ? "2" : "1";
-      let header3 = (startWithSpace ? indentSize : "") + chomp;
+      let header4 = (startWithSpace ? indentSize : "") + chomp;
       if (comment) {
-        header3 += " " + commentString(comment.replace(/ ?[\r\n]+/g, " "));
+        header4 += " " + commentString(comment.replace(/ ?[\r\n]+/g, " "));
         if (onComment)
           onComment();
       }
@@ -6235,11 +6235,11 @@ ${indent}`) + "'";
         }
         const body2 = foldFlowLines.foldFlowLines(`${start}${foldedValue}${end}`, indent, foldFlowLines.FOLD_BLOCK, foldOptions);
         if (!literalFallback)
-          return `>${header3}
+          return `>${header4}
 ${indent}${body2}`;
       }
       value2 = value2.replace(/\n+/g, `$&${indent}`);
-      return `|${header3}
+      return `|${header4}
 ${indent}${start}${value2}${end}`;
     }
     function plainString(item, ctx, onComment, onChompKeep) {
@@ -9342,10 +9342,10 @@ var require_resolve_block_scalar = __commonJS({
     var Scalar = require_Scalar();
     function resolveBlockScalar(ctx, scalar, onError) {
       const start = scalar.offset;
-      const header3 = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
-      if (!header3)
+      const header4 = parseBlockScalarHeader(scalar, ctx.options.strict, onError);
+      if (!header4)
         return { value: "", type: null, comment: "", range: [start, start, start] };
-      const type = header3.mode === ">" ? Scalar.Scalar.BLOCK_FOLDED : Scalar.Scalar.BLOCK_LITERAL;
+      const type = header4.mode === ">" ? Scalar.Scalar.BLOCK_FOLDED : Scalar.Scalar.BLOCK_LITERAL;
       const lines = scalar.source ? splitLines(scalar.source) : [];
       let chompStart = lines.length;
       for (let i2 = lines.length - 1; i2 >= 0; --i2) {
@@ -9356,26 +9356,26 @@ var require_resolve_block_scalar = __commonJS({
           break;
       }
       if (chompStart === 0) {
-        const value3 = header3.chomp === "+" && lines.length > 0 ? "\n".repeat(Math.max(1, lines.length - 1)) : "";
-        let end2 = start + header3.length;
+        const value3 = header4.chomp === "+" && lines.length > 0 ? "\n".repeat(Math.max(1, lines.length - 1)) : "";
+        let end2 = start + header4.length;
         if (scalar.source)
           end2 += scalar.source.length;
-        return { value: value3, type, comment: header3.comment, range: [start, end2, end2] };
+        return { value: value3, type, comment: header4.comment, range: [start, end2, end2] };
       }
-      let trimIndent = scalar.indent + header3.indent;
-      let offset = scalar.offset + header3.length;
+      let trimIndent = scalar.indent + header4.indent;
+      let offset = scalar.offset + header4.length;
       let contentStart = 0;
       for (let i2 = 0; i2 < chompStart; ++i2) {
         const [indent, content] = lines[i2];
         if (content === "" || content === "\r") {
-          if (header3.indent === 0 && indent.length > trimIndent)
+          if (header4.indent === 0 && indent.length > trimIndent)
             trimIndent = indent.length;
         } else {
           if (indent.length < trimIndent) {
             const message2 = "Block scalars with more-indented leading empty lines must use an explicit indentation indicator";
             onError(offset + indent.length, "MISSING_CHAR", message2);
           }
-          if (header3.indent === 0)
+          if (header4.indent === 0)
             trimIndent = indent.length;
           contentStart = i2;
           if (trimIndent === 0 && !ctx.atRoot) {
@@ -9402,7 +9402,7 @@ var require_resolve_block_scalar = __commonJS({
         if (crlf)
           content = content.slice(0, -1);
         if (content && indent.length < trimIndent) {
-          const src = header3.indent ? "explicit indentation indicator" : "first line";
+          const src = header4.indent ? "explicit indentation indicator" : "first line";
           const message2 = `Block scalar lines must not be less indented than their ${src}`;
           onError(offset - content.length - (crlf ? 2 : 1), "BAD_INDENT", message2);
           indent = "";
@@ -9429,7 +9429,7 @@ var require_resolve_block_scalar = __commonJS({
           prevMoreIndented = false;
         }
       }
-      switch (header3.chomp) {
+      switch (header4.chomp) {
         case "-":
           break;
         case "+":
@@ -9441,8 +9441,8 @@ var require_resolve_block_scalar = __commonJS({
         default:
           value2 += "\n";
       }
-      const end = start + header3.length + scalar.source.length;
-      return { value: value2, type, comment: header3.comment, range: [start, end, end] };
+      const end = start + header4.length + scalar.source.length;
+      return { value: value2, type, comment: header4.comment, range: [start, end, end] };
     }
     function parseBlockScalarHeader({ offset, props }, strict, onError) {
       if (props[0].type !== "block-scalar-header") {
@@ -10281,10 +10281,10 @@ var require_cst_scalar = __commonJS({
             type = "QUOTE_DOUBLE";
             break;
           case "block-scalar": {
-            const header3 = token.props[0];
-            if (header3.type !== "block-scalar-header")
+            const header4 = token.props[0];
+            if (header4.type !== "block-scalar-header")
               throw new Error("Invalid block scalar header");
-            type = header3.source[0] === ">" ? "BLOCK_FOLDED" : "BLOCK_LITERAL";
+            type = header4.source[0] === ">" ? "BLOCK_FOLDED" : "BLOCK_LITERAL";
             break;
           }
           default:
@@ -10316,10 +10316,10 @@ var require_cst_scalar = __commonJS({
       const head = source.substring(0, he2);
       const body2 = source.substring(he2 + 1) + "\n";
       if (token.type === "block-scalar") {
-        const header3 = token.props[0];
-        if (header3.type !== "block-scalar-header")
+        const header4 = token.props[0];
+        if (header4.type !== "block-scalar-header")
           throw new Error("Invalid block scalar header");
-        header3.source = head;
+        header4.source = head;
         token.source = body2;
       } else {
         const { offset } = token;
@@ -12403,9 +12403,9 @@ function isObject(input2) {
 }
 function isDisjoint(...headers) {
   const parameters = /* @__PURE__ */ new Set();
-  for (const header3 of headers)
-    if (header3)
-      for (const parameter of Object.keys(header3)) {
+  for (const header4 of headers)
+    if (header4)
+      for (const parameter of Object.keys(header4)) {
         if (parameters.has(parameter))
           return false;
         parameters.add(parameter);
@@ -12479,10 +12479,10 @@ function validateB64(protectedHeader, extensions) {
   }
   return true;
 }
-function serializeJoseHeader(Err, header3) {
+function serializeJoseHeader(Err, header4) {
   let serialized, parsed;
   try {
-    serialized = JSON.stringify(header3), parsed = JSON.parse(serialized);
+    serialized = JSON.stringify(header4), parsed = JSON.parse(serialized);
   } catch (cause) {
     throw new Err("JOSE Header is not valid JSON", { cause });
   }
@@ -12821,10 +12821,10 @@ function encodeCompactUnencodedPayload(payload) {
   }
 }
 async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedProtected) {
-  const { protected: encodedProtected, header: header3, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
-  if (!isDisjoint(parsedProt, header3))
+  const { protected: encodedProtected, header: header4, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
+  if (!isDisjoint(parsedProt, header4))
     throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
-  const joseHeader = { ...parsedProt, ...header3 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
+  const joseHeader = { ...parsedProt, ...header4 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
   if (typeof alg != "string" || !alg)
     throw new JWSInvalid('JWS "alg" (Algorithm) Header Parameter missing or invalid');
   if (shared[0] && !shared[0].has(alg))
@@ -12847,7 +12847,7 @@ async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedP
   if (!verified)
     throw new JWSSignatureVerificationFailed();
   const result = { payload: typeof signingPayload == "string" ? decodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload };
-  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header3 !== void 0 && (result.unprotectedHeader = header3), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
+  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header4 !== void 0 && (result.unprotectedHeader = header4), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
 }
 async function verifyCompact(jws, shared, key) {
   if (jws instanceof Uint8Array && (jws = decoder.decode(jws)), typeof jws != "string")
@@ -14092,10 +14092,10 @@ function nodeRequestFacts(req, methodOverride) {
     credentialed: one(headers.cookie) !== null
   };
 }
-function cookieValues(header3, name) {
-  if (!header3) return [];
+function cookieValues(header4, name) {
+  if (!header4) return [];
   const out = [];
-  for (const part of header3.split(";")) {
+  for (const part of header4.split(";")) {
     const trimmed = part.trim();
     const eq = trimmed.indexOf("=");
     if (eq < 1) continue;
@@ -14104,8 +14104,8 @@ function cookieValues(header3, name) {
   }
   return out;
 }
-function readUniqueCookie(header3, name) {
-  const values = cookieValues(header3, name);
+function readUniqueCookie(header4, name) {
+  const values = cookieValues(header4, name);
   if (values.length === 1) return { value: values[0] ?? null, duplicated: false };
   return { value: null, duplicated: values.length > 1 };
 }
@@ -14252,15 +14252,18 @@ function clearSessionCookie() {
   return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
 async function readSession(cookieHeader, vmId) {
+  return (await readSessionWithExpiry(cookieHeader, vmId))?.claims ?? null;
+}
+async function readSessionWithExpiry(cookieHeader, vmId) {
   if (!secret || !cookieHeader) return null;
   const token = uniqueCookie(cookieHeader, SESSION_COOKIE);
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
-    if (payload.sub !== vmId || payload.aud !== void 0) return null;
+    if (payload.sub !== vmId || payload.aud !== void 0 || typeof payload.exp !== "number") return null;
     const deviceId = typeof payload.dev === "string" ? payload.dev : void 0;
     if (deviceId && isRevoked(deviceId)) return null;
-    return { canWrite: payload.canWrite === true, ...deviceId ? { deviceId } : {} };
+    return { claims: { canWrite: payload.canWrite === true, ...deviceId ? { deviceId } : {} }, exp: payload.exp };
   } catch {
     return null;
   }
@@ -14290,8 +14293,8 @@ async function verifyViewSession(cookieHeader, vmId) {
     return false;
   }
 }
-function uniqueCookie(header3, name) {
-  const reading = readUniqueCookie(header3, name);
+function uniqueCookie(header4, name) {
+  const reading = readUniqueCookie(header4, name);
   if (reading.duplicated) console.warn(`[session] ${name} arrived more than once \u2014 ignoring it (cookie tossing)`);
   return reading.value;
 }
@@ -14302,6 +14305,50 @@ function consumeJti(jti, expSeconds) {
   if (seenJti.has(jti)) return false;
   seenJti.set(jti, expSeconds);
   return true;
+}
+var SANDBOX_COOKIE = "__Host-cc_sandbox";
+var SANDBOX_AUDIENCE = "sandbox";
+var SANDBOX_TICKET_AUDIENCE = "sandbox-ticket";
+var SANDBOX_TICKET_TTL_SECONDS = 60;
+var SANDBOX_TTL_SECONDS = 60 * 60;
+async function issueSandboxTicket(cookieHeader, vmId) {
+  if (!secret) return null;
+  const session = await readSessionWithExpiry(cookieHeader, vmId);
+  if (!session) return null;
+  const deviceId = session.claims.deviceId;
+  return new SignJWT({ sub: vmId, sexp: session.exp, ...deviceId ? { dev: deviceId } : {} }).setProtectedHeader({ alg: "HS256" }).setAudience(SANDBOX_TICKET_AUDIENCE).setJti(crypto2.randomUUID()).setIssuedAt().setExpirationTime(`${SANDBOX_TICKET_TTL_SECONDS}s`).sign(secret);
+}
+async function redeemSandboxTicket(ticket, vmId) {
+  if (!secret || !ticket) return null;
+  try {
+    const { payload } = await jwtVerify(ticket, secret, { algorithms: ["HS256"], audience: SANDBOX_TICKET_AUDIENCE, currentDate: new Date(Date.now()) });
+    if (payload.sub !== vmId || typeof payload.jti !== "string" || typeof payload.exp !== "number" || typeof payload.sexp !== "number") return null;
+    const deviceId = typeof payload.dev === "string" ? payload.dev : void 0;
+    if (deviceId && isRevoked(deviceId)) return null;
+    if (!consumeJti(`sandbox:${payload.jti}`, payload.exp)) return null;
+    const now = Math.floor(Date.now() / 1e3);
+    const exp = Math.min(payload.sexp, now + SANDBOX_TTL_SECONDS);
+    if (exp <= now) return null;
+    const token = await new SignJWT({ sub: vmId, ...deviceId ? { dev: deviceId } : {} }).setProtectedHeader({ alg: "HS256" }).setAudience(SANDBOX_AUDIENCE).setIssuedAt().setExpirationTime(exp).sign(secret);
+    return { token, maxAge: exp - now };
+  } catch {
+    return null;
+  }
+}
+function sandboxCookie(token, maxAge) {
+  return `${SANDBOX_COOKIE}=${token}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+}
+async function verifySandboxSession(cookieHeader, vmId) {
+  if (!secret || !cookieHeader) return false;
+  const token = uniqueCookie(cookieHeader, SANDBOX_COOKIE);
+  if (!token) return false;
+  try {
+    const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"], audience: SANDBOX_AUDIENCE, currentDate: new Date(Date.now()) });
+    if (typeof payload.dev === "string" && isRevoked(payload.dev)) return false;
+    return payload.sub === vmId;
+  } catch {
+    return false;
+  }
 }
 
 // src/meeting-voice-log.ts
@@ -17870,10 +17917,10 @@ function isValidJWT(token, algorithm = null) {
     const tokensParts = token.split(".");
     if (tokensParts.length !== 3)
       return false;
-    const [header3] = tokensParts;
-    if (!header3)
+    const [header4] = tokensParts;
+    if (!header4)
       return false;
-    const parsedHeader = JSON.parse(atob(header3));
+    const parsedHeader = JSON.parse(atob(header4));
     if ("typ" in parsedHeader && parsedHeader?.typ !== "JWT")
       return false;
     if (!parsedHeader.alg)
@@ -36892,12 +36939,102 @@ async function dashboardAttempt(hostname3, opts) {
   }
   return last;
 }
+function sandboxHost() {
+  const box = allowedOrigins().box;
+  return box ? `sandbox.${new URL(box).host}` : null;
+}
+var SANDBOX_SHELL = "/mcp-app-sandbox";
+function sandboxReturn(value2) {
+  if (!value2 || value2.length > 4e3) return null;
+  try {
+    const url3 = new URL(value2, "https://sandbox.invalid");
+    return url3.origin === "https://sandbox.invalid" && url3.pathname === SANDBOX_SHELL ? url3.pathname + url3.search : null;
+  } catch {
+    return null;
+  }
+}
+var SANDBOX_TICKETS_PER_MINUTE = 10;
+var sandboxTicketsBySession = /* @__PURE__ */ new Map();
+function sandboxTicketAllowed(cookieHeader, back, now = Date.now()) {
+  const session = readUniqueCookie(cookieHeader ?? "", SESSION_COOKIE).value ?? "";
+  const key = createHash6("sha256").update(`${session}\0${back}`).digest("base64url");
+  for (const [k2, times] of sandboxTicketsBySession) if (times.every((t2) => now - t2 > 6e4)) sandboxTicketsBySession.delete(k2);
+  const recent = (sandboxTicketsBySession.get(key) ?? []).filter((t2) => now - t2 <= 6e4);
+  if (recent.length >= SANDBOX_TICKETS_PER_MINUTE) return false;
+  sandboxTicketsBySession.set(key, [...recent, now]);
+  return true;
+}
+function sandboxDashboard(req) {
+  try {
+    const origin = new URL(header2(req, "referer") ?? "").origin;
+    return ownOrigins().includes(origin) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+function header2(req, name) {
+  const value2 = req.headers[name];
+  return typeof value2 === "string" ? value2 : void 0;
+}
+var SANDBOX_DENIED = "This widget can only be shown inside your agent's dashboard. Open the agent from your console and try again.";
+function redirect(res, location, extra = {}) {
+  res.writeHead(302, { Location: location, "Cache-Control": "no-store", ...extra });
+  res.end();
+}
+async function handleSandboxAccess(req, res, pathname, vmId) {
+  if (!pathname.startsWith("/__cc/sandbox/")) return false;
+  const host = sandboxHost();
+  const dest = header2(req, "sec-fetch-dest");
+  const onSandboxHost = !!host && (header2(req, "x-forwarded-host") ?? header2(req, "host"))?.toLowerCase() === host;
+  const deny = () => {
+    const ancestors = ownOrigins().filter((o2) => !!o2).join(" ") || "'none'";
+    res.writeHead(403, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors ${ancestors}`
+    });
+    res.end(`<!doctype html><meta charset="utf-8"><title>Not available</title><p style="font:14px system-ui;margin:16px">${escapeHtml(SANDBOX_DENIED)}</p>`);
+  };
+  if (req.method !== "GET" || !host) return deny(), true;
+  if (pathname === "/__cc/sandbox/verify") {
+    if (!onSandboxHost || dest !== "iframe") return deny(), true;
+    if (await verifySandboxSession(req.headers.cookie, vmId)) {
+      res.writeHead(200, { "Cache-Control": "no-store" });
+      res.end();
+      return true;
+    }
+    const back = sandboxReturn(header2(req, "x-forwarded-uri"));
+    const dashboard = sandboxDashboard(req);
+    if (!back || !dashboard) return deny(), true;
+    redirect(res, `${dashboard}/__cc/sandbox/ticket?r=${encodeURIComponent(back)}`);
+    return true;
+  }
+  if (pathname === "/__cc/sandbox/ticket") {
+    const back = sandboxReturn(new URL(req.url ?? "/", "http://localhost").searchParams.get("r"));
+    if (onSandboxHost || dest !== "iframe" || header2(req, "sec-fetch-site") === "cross-site" || !back || !sandboxDashboard(req)) return deny(), true;
+    const ticket = await issueSandboxTicket(req.headers.cookie, vmId);
+    if (!ticket || !sandboxTicketAllowed(req.headers.cookie, back)) return deny(), true;
+    redirect(res, `https://${host}/__cc/sandbox/exchange?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(back)}`);
+    return true;
+  }
+  if (pathname === "/__cc/sandbox/exchange") {
+    const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const back = sandboxReturn(params.get("r"));
+    if (!onSandboxHost || dest !== "iframe" || !back) return deny(), true;
+    const spent = await redeemSandboxTicket(params.get("t") ?? "", vmId);
+    if (!spent) return deny(), true;
+    redirect(res, back, { "Set-Cookie": sandboxCookie(spent.token, spent.maxAge) });
+    return true;
+  }
+  return deny(), true;
+}
 async function handleAccess(req, res, pathname, opts = {}) {
   const vmId = readKey("vm_id");
   if (!vmId) {
     json2(res, 500, { error: "Box has no vm_id" });
     return;
   }
+  if (!opts.only && await handleSandboxAccess(req, res, pathname, vmId)) return;
   if (pathname === "/__cc/shell.js" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
     res.end(SHELL_JS);
@@ -40558,10 +40695,10 @@ function frame(body2) {
 async function makeEncryptor(dataKeyB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const { state, header: header3 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
+  const { state, header: header4 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
   let closed = false;
   return {
-    header: toB64(header3),
+    header: toB64(header4),
     push(plain) {
       if (closed) throw new Error("the archive stream is already closed");
       if (plain.length > CHUNK_BYTES) throw new Error(`chunk of ${plain.length} bytes is over the ${CHUNK_BYTES} limit`);
@@ -40588,11 +40725,11 @@ var TRUNCATED = "This archive ended early \u2014 it is incomplete. Nothing was r
 async function makeDecryptor(dataKeyB64, headerB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const header3 = fromB64(headerB64);
-  if (header3.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
+  const header4 = fromB64(headerB64);
+  if (header4.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
   let state;
   try {
-    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header3, fromB64(dataKeyB64));
+    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header4, fromB64(dataKeyB64));
   } catch {
     throw new Error(WRONG_KEY);
   }
@@ -40673,7 +40810,7 @@ function writeString(buf, at2, s2, width) {
   buf.set(bytes, at2);
 }
 var TYPEFLAG = { file: "0", dir: "5", link: "2" };
-function header2(entry, typeflag = TYPEFLAG[entry.type], name = entry.path) {
+function header3(entry, typeflag = TYPEFLAG[entry.type], name = entry.path) {
   const h2 = new Uint8Array(BLOCK);
   writeString(h2, 0, name, 100);
   writeString(h2, 100, octal(entry.mode & 4095, 8), 8);
@@ -40697,7 +40834,7 @@ function padding(size2) {
 }
 function longLink(value2, typeflag) {
   const bytes = new TextEncoder().encode(value2);
-  const head = header2({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
+  const head = header3({ path: "././@LongLink", type: "file", size: bytes.length + 1, mode: 420, mtime: 0 }, typeflag, "././@LongLink");
   const body2 = new Uint8Array(bytes.length + 1);
   body2.set(bytes);
   return [head, body2, padding(body2.length)].filter((b2) => b2.length > 0);
@@ -40709,7 +40846,7 @@ function tarHeader(entry) {
   if (target2.length > 100) out.push(...longLink(entry.target, "K"));
   if (name.length > 100) out.push(...longLink(entry.path, "L"));
   out.push(
-    header2(
+    header3(
       // The real header's own fields must still fit; the long-link pair is what carries the value.
       { ...entry, path: name.length > 100 ? "././@LongLink" : entry.path, target: target2.length > 100 ? "" : entry.target },
       TYPEFLAG[entry.type],
@@ -41546,8 +41683,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "fb7bb9b" : "unknown",
-  builtAt: true ? "2026-10-15T18:43:30+01:00" : "unknown"
+  commit: true ? "9fd1e86" : "unknown",
+  builtAt: true ? "2026-10-15T23:51:00+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -57165,13 +57302,13 @@ function parseRestore(body2, kinds = AGENT_KINDS) {
   if (typeof c2 === "string") return c2;
   const downloadUrl = url2(body2, "downloadUrl");
   if (!downloadUrl) return "downloadUrl must be an https URL";
-  const header3 = str5(body2, "header");
+  const header4 = str5(body2, "header");
   const hash3 = str5(body2, "manifestHash");
-  if (!header3 || header3.length !== 32 || !B64.test(header3)) return "header is required";
+  if (!header4 || header4.length !== 32 || !B64.test(header4)) return "header is required";
   if (!hash3 || !HEX64.test(hash3)) return "manifestHash is required";
   const source = str5(body2, "sourceVmId");
   if (source !== null && !ID.test(source)) return "sourceVmId must be a vm id";
-  return { ...c2, downloadUrl, header: header3, manifestHash: hash3, ...source ? { sourceVmId: source } : {} };
+  return { ...c2, downloadUrl, header: header4, manifestHash: hash3, ...source ? { sourceVmId: source } : {} };
 }
 async function handleBackup(req, res, url3, service, kinds = AGENT_KINDS) {
   const write = req.method === "POST";

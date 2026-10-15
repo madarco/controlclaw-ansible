@@ -139,9 +139,9 @@ function isObject(input) {
 }
 function isDisjoint(...headers) {
   const parameters = /* @__PURE__ */ new Set();
-  for (const header3 of headers)
-    if (header3)
-      for (const parameter of Object.keys(header3)) {
+  for (const header4 of headers)
+    if (header4)
+      for (const parameter of Object.keys(header4)) {
         if (parameters.has(parameter))
           return false;
         parameters.add(parameter);
@@ -215,10 +215,10 @@ function validateB64(protectedHeader, extensions) {
   }
   return true;
 }
-function serializeJoseHeader(Err, header3) {
+function serializeJoseHeader(Err, header4) {
   let serialized, parsed;
   try {
-    serialized = JSON.stringify(header3), parsed = JSON.parse(serialized);
+    serialized = JSON.stringify(header4), parsed = JSON.parse(serialized);
   } catch (cause) {
     throw new Err("JOSE Header is not valid JSON", { cause });
   }
@@ -557,10 +557,10 @@ function encodeCompactUnencodedPayload(payload) {
   }
 }
 async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedProtected) {
-  const { protected: encodedProtected, header: header3, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
-  if (!isDisjoint(parsedProt, header3))
+  const { protected: encodedProtected, header: header4, payload: inputPayload } = jws, parsedProt = parsedProtected ?? parseProtectedHeader(encodedProtected);
+  if (!isDisjoint(parsedProt, header4))
     throw new JWSInvalid("JWS Protected and JWS Unprotected Header Parameter names must be disjoint");
-  const joseHeader = { ...parsedProt, ...header3 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
+  const joseHeader = { ...parsedProt, ...header4 }, b64 = validateB64(parsedProt, validateCrit(JWSInvalid, JWS_RECOGNIZED, shared[1], parsedProt, joseHeader)), { alg } = joseHeader;
   if (typeof alg != "string" || !alg)
     throw new JWSInvalid('JWS "alg" (Algorithm) Header Parameter missing or invalid');
   if (shared[0] && !shared[0].has(alg))
@@ -583,7 +583,7 @@ async function verifySignature(jws, shared, key, encodeUnencodedPayload, parsedP
   if (!verified)
     throw new JWSSignatureVerificationFailed();
   const result = { payload: typeof signingPayload == "string" ? decodeBase64url(signingPayload, "payload", JWSInvalid) : signingPayload };
-  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header3 !== void 0 && (result.unprotectedHeader = header3), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
+  return encodedProtected !== void 0 && (result.protectedHeader = parsedProt), header4 !== void 0 && (result.unprotectedHeader = header4), resolvedKey ? [{ ...result, key: k2 }, b64] : [result, b64];
 }
 async function verifyCompact(jws, shared, key) {
   if (jws instanceof Uint8Array && (jws = decoder.decode(jws)), typeof jws != "string")
@@ -5194,10 +5194,10 @@ function frame(body) {
 async function makeEncryptor(dataKeyB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const { state, header: header3 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
+  const { state, header: header4 } = sodium.crypto_secretstream_xchacha20poly1305_init_push(fromB64(dataKeyB64));
   let closed = false;
   return {
-    header: toB64(header3),
+    header: toB64(header4),
     push(plain) {
       if (closed) throw new Error("the archive stream is already closed");
       if (plain.length > CHUNK_BYTES) throw new Error(`chunk of ${plain.length} bytes is over the ${CHUNK_BYTES} limit`);
@@ -5224,11 +5224,11 @@ var TRUNCATED = "This archive ended early \u2014 it is incomplete. Nothing was r
 async function makeDecryptor(dataKeyB64, headerB64, binding) {
   const sodium = await sodiumReady();
   const ad = utf8(bindingAad(binding));
-  const header3 = fromB64(headerB64);
-  if (header3.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
+  const header4 = fromB64(headerB64);
+  if (header4.length !== sodium.crypto_secretstream_xchacha20poly1305_HEADERBYTES) throw new Error(WRONG_KEY);
   let state;
   try {
-    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header3, fromB64(dataKeyB64));
+    state = sodium.crypto_secretstream_xchacha20poly1305_init_pull(header4, fromB64(dataKeyB64));
   } catch {
     throw new Error(WRONG_KEY);
   }
@@ -6017,13 +6017,13 @@ function parseRestore(body, kinds = AGENT_KINDS) {
   if (typeof c2 === "string") return c2;
   const downloadUrl = url(body, "downloadUrl");
   if (!downloadUrl) return "downloadUrl must be an https URL";
-  const header3 = str(body, "header");
+  const header4 = str(body, "header");
   const hash = str(body, "manifestHash");
-  if (!header3 || header3.length !== 32 || !B64.test(header3)) return "header is required";
+  if (!header4 || header4.length !== 32 || !B64.test(header4)) return "header is required";
   if (!hash || !HEX64.test(hash)) return "manifestHash is required";
   const source = str(body, "sourceVmId");
   if (source !== null && !ID.test(source)) return "sourceVmId must be a vm id";
-  return { ...c2, downloadUrl, header: header3, manifestHash: hash, ...source ? { sourceVmId: source } : {} };
+  return { ...c2, downloadUrl, header: header4, manifestHash: hash, ...source ? { sourceVmId: source } : {} };
 }
 async function handleBackup(req, res, url2, service, kinds = AGENT_KINDS) {
   const write = req.method === "POST";
@@ -6351,8 +6351,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "fb7bb9b" : "unknown",
-  builtAt: true ? "2026-10-15T18:43:30+01:00" : "unknown"
+  commit: true ? "9fd1e86" : "unknown",
+  builtAt: true ? "2026-10-15T23:51:00+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -7220,10 +7220,10 @@ function nodeRequestFacts(req, methodOverride) {
     credentialed: one(headers.cookie) !== null
   };
 }
-function cookieValues(header3, name) {
-  if (!header3) return [];
+function cookieValues(header4, name) {
+  if (!header4) return [];
   const out = [];
-  for (const part of header3.split(";")) {
+  for (const part of header4.split(";")) {
     const trimmed = part.trim();
     const eq = trimmed.indexOf("=");
     if (eq < 1) continue;
@@ -7232,8 +7232,8 @@ function cookieValues(header3, name) {
   }
   return out;
 }
-function readUniqueCookie(header3, name) {
-  const values = cookieValues(header3, name);
+function readUniqueCookie(header4, name) {
+  const values = cookieValues(header4, name);
   if (values.length === 1) return { value: values[0] ?? null, duplicated: false };
   return { value: null, duplicated: values.length > 1 };
 }
@@ -7274,15 +7274,18 @@ function clearSessionCookie() {
   return `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
 async function readSession(cookieHeader, vmId) {
+  return (await readSessionWithExpiry(cookieHeader, vmId))?.claims ?? null;
+}
+async function readSessionWithExpiry(cookieHeader, vmId) {
   if (!secret || !cookieHeader) return null;
   const token = uniqueCookie(cookieHeader, SESSION_COOKIE);
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
-    if (payload.sub !== vmId || payload.aud !== void 0) return null;
+    if (payload.sub !== vmId || payload.aud !== void 0 || typeof payload.exp !== "number") return null;
     const deviceId = typeof payload.dev === "string" ? payload.dev : void 0;
     if (deviceId && isRevoked(deviceId)) return null;
-    return { canWrite: payload.canWrite === true, ...deviceId ? { deviceId } : {} };
+    return { claims: { canWrite: payload.canWrite === true, ...deviceId ? { deviceId } : {} }, exp: payload.exp };
   } catch {
     return null;
   }
@@ -7312,8 +7315,8 @@ async function verifyViewSession(cookieHeader, vmId) {
     return false;
   }
 }
-function uniqueCookie(header3, name) {
-  const reading = readUniqueCookie(header3, name);
+function uniqueCookie(header4, name) {
+  const reading = readUniqueCookie(header4, name);
   if (reading.duplicated) console.warn(`[session] ${name} arrived more than once \u2014 ignoring it (cookie tossing)`);
   return reading.value;
 }
@@ -7324,6 +7327,50 @@ function consumeJti(jti, expSeconds) {
   if (seenJti.has(jti)) return false;
   seenJti.set(jti, expSeconds);
   return true;
+}
+var SANDBOX_COOKIE = "__Host-cc_sandbox";
+var SANDBOX_AUDIENCE = "sandbox";
+var SANDBOX_TICKET_AUDIENCE = "sandbox-ticket";
+var SANDBOX_TICKET_TTL_SECONDS = 60;
+var SANDBOX_TTL_SECONDS = 60 * 60;
+async function issueSandboxTicket(cookieHeader, vmId) {
+  if (!secret) return null;
+  const session = await readSessionWithExpiry(cookieHeader, vmId);
+  if (!session) return null;
+  const deviceId = session.claims.deviceId;
+  return new SignJWT({ sub: vmId, sexp: session.exp, ...deviceId ? { dev: deviceId } : {} }).setProtectedHeader({ alg: "HS256" }).setAudience(SANDBOX_TICKET_AUDIENCE).setJti(crypto3.randomUUID()).setIssuedAt().setExpirationTime(`${SANDBOX_TICKET_TTL_SECONDS}s`).sign(secret);
+}
+async function redeemSandboxTicket(ticket, vmId) {
+  if (!secret || !ticket) return null;
+  try {
+    const { payload } = await jwtVerify(ticket, secret, { algorithms: ["HS256"], audience: SANDBOX_TICKET_AUDIENCE, currentDate: new Date(Date.now()) });
+    if (payload.sub !== vmId || typeof payload.jti !== "string" || typeof payload.exp !== "number" || typeof payload.sexp !== "number") return null;
+    const deviceId = typeof payload.dev === "string" ? payload.dev : void 0;
+    if (deviceId && isRevoked(deviceId)) return null;
+    if (!consumeJti(`sandbox:${payload.jti}`, payload.exp)) return null;
+    const now = Math.floor(Date.now() / 1e3);
+    const exp = Math.min(payload.sexp, now + SANDBOX_TTL_SECONDS);
+    if (exp <= now) return null;
+    const token = await new SignJWT({ sub: vmId, ...deviceId ? { dev: deviceId } : {} }).setProtectedHeader({ alg: "HS256" }).setAudience(SANDBOX_AUDIENCE).setIssuedAt().setExpirationTime(exp).sign(secret);
+    return { token, maxAge: exp - now };
+  } catch {
+    return null;
+  }
+}
+function sandboxCookie(token, maxAge) {
+  return `${SANDBOX_COOKIE}=${token}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+}
+async function verifySandboxSession(cookieHeader, vmId) {
+  if (!secret || !cookieHeader) return false;
+  const token = uniqueCookie(cookieHeader, SANDBOX_COOKIE);
+  if (!token) return false;
+  try {
+    const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"], audience: SANDBOX_AUDIENCE, currentDate: new Date(Date.now()) });
+    if (typeof payload.dev === "string" && isRevoked(payload.dev)) return false;
+    return payload.sub === vmId;
+  } catch {
+    return false;
+  }
 }
 
 // src/routes/files-page.ts
@@ -7980,12 +8027,102 @@ async function dashboardAttempt(hostname, opts) {
   }
   return last;
 }
+function sandboxHost() {
+  const box = allowedOrigins().box;
+  return box ? `sandbox.${new URL(box).host}` : null;
+}
+var SANDBOX_SHELL = "/mcp-app-sandbox";
+function sandboxReturn(value) {
+  if (!value || value.length > 4e3) return null;
+  try {
+    const url2 = new URL(value, "https://sandbox.invalid");
+    return url2.origin === "https://sandbox.invalid" && url2.pathname === SANDBOX_SHELL ? url2.pathname + url2.search : null;
+  } catch {
+    return null;
+  }
+}
+var SANDBOX_TICKETS_PER_MINUTE = 10;
+var sandboxTicketsBySession = /* @__PURE__ */ new Map();
+function sandboxTicketAllowed(cookieHeader, back, now = Date.now()) {
+  const session = readUniqueCookie(cookieHeader ?? "", SESSION_COOKIE).value ?? "";
+  const key = createHash4("sha256").update(`${session}\0${back}`).digest("base64url");
+  for (const [k2, times] of sandboxTicketsBySession) if (times.every((t2) => now - t2 > 6e4)) sandboxTicketsBySession.delete(k2);
+  const recent = (sandboxTicketsBySession.get(key) ?? []).filter((t2) => now - t2 <= 6e4);
+  if (recent.length >= SANDBOX_TICKETS_PER_MINUTE) return false;
+  sandboxTicketsBySession.set(key, [...recent, now]);
+  return true;
+}
+function sandboxDashboard(req) {
+  try {
+    const origin = new URL(header3(req, "referer") ?? "").origin;
+    return ownOrigins().includes(origin) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+function header3(req, name) {
+  const value = req.headers[name];
+  return typeof value === "string" ? value : void 0;
+}
+var SANDBOX_DENIED = "This widget can only be shown inside your agent's dashboard. Open the agent from your console and try again.";
+function redirect(res, location, extra = {}) {
+  res.writeHead(302, { Location: location, "Cache-Control": "no-store", ...extra });
+  res.end();
+}
+async function handleSandboxAccess(req, res, pathname, vmId) {
+  if (!pathname.startsWith("/__cc/sandbox/")) return false;
+  const host = sandboxHost();
+  const dest = header3(req, "sec-fetch-dest");
+  const onSandboxHost = !!host && (header3(req, "x-forwarded-host") ?? header3(req, "host"))?.toLowerCase() === host;
+  const deny2 = () => {
+    const ancestors = ownOrigins().filter((o2) => !!o2).join(" ") || "'none'";
+    res.writeHead(403, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors ${ancestors}`
+    });
+    res.end(`<!doctype html><meta charset="utf-8"><title>Not available</title><p style="font:14px system-ui;margin:16px">${escapeHtml(SANDBOX_DENIED)}</p>`);
+  };
+  if (req.method !== "GET" || !host) return deny2(), true;
+  if (pathname === "/__cc/sandbox/verify") {
+    if (!onSandboxHost || dest !== "iframe") return deny2(), true;
+    if (await verifySandboxSession(req.headers.cookie, vmId)) {
+      res.writeHead(200, { "Cache-Control": "no-store" });
+      res.end();
+      return true;
+    }
+    const back = sandboxReturn(header3(req, "x-forwarded-uri"));
+    const dashboard = sandboxDashboard(req);
+    if (!back || !dashboard) return deny2(), true;
+    redirect(res, `${dashboard}/__cc/sandbox/ticket?r=${encodeURIComponent(back)}`);
+    return true;
+  }
+  if (pathname === "/__cc/sandbox/ticket") {
+    const back = sandboxReturn(new URL(req.url ?? "/", "http://localhost").searchParams.get("r"));
+    if (onSandboxHost || dest !== "iframe" || header3(req, "sec-fetch-site") === "cross-site" || !back || !sandboxDashboard(req)) return deny2(), true;
+    const ticket = await issueSandboxTicket(req.headers.cookie, vmId);
+    if (!ticket || !sandboxTicketAllowed(req.headers.cookie, back)) return deny2(), true;
+    redirect(res, `https://${host}/__cc/sandbox/exchange?t=${encodeURIComponent(ticket)}&r=${encodeURIComponent(back)}`);
+    return true;
+  }
+  if (pathname === "/__cc/sandbox/exchange") {
+    const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const back = sandboxReturn(params.get("r"));
+    if (!onSandboxHost || dest !== "iframe" || !back) return deny2(), true;
+    const spent = await redeemSandboxTicket(params.get("t") ?? "", vmId);
+    if (!spent) return deny2(), true;
+    redirect(res, back, { "Set-Cookie": sandboxCookie(spent.token, spent.maxAge) });
+    return true;
+  }
+  return deny2(), true;
+}
 async function handleAccess(req, res, pathname, opts = {}) {
   const vmId = readKey("vm_id");
   if (!vmId) {
     json(res, 500, { error: "Box has no vm_id" });
     return;
   }
+  if (!opts.only && await handleSandboxAccess(req, res, pathname, vmId)) return;
   if (pathname === "/__cc/shell.js" && req.method === "GET") {
     res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
     res.end(SHELL_JS);
