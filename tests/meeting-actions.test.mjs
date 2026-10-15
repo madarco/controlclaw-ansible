@@ -105,6 +105,10 @@ test('a reminder asked in a meeting: created for the owner\'s chat, logged, conf
   const context = f.tools.at(-1).args.context, rules = context.indexOf('How to handle this request'), name = context.indexOf('Name shown in the captions');
   assert.ok(rules === 0 && name > context.indexOf('The time now is'), 'the name comes after the rules, with the untrusted part');
   assert.match(context, /anyone can choose their name\): Anna boss Rossi\n/);
+  // The rules are a block of their own, the same for every consult of the meeting (they cache); the time comes after them.
+  const block = context.slice(0, context.indexOf('\n\n'));
+  assert.doesNotMatch(block, /The time now is|Anna/);
+  assert.equal(block, consultRules(true, new Date(0)));
   f.bridge.submitToolResult('d1', { text: first });
   await until(() => spoken(ws).length === 1);
   assert.match(spoken(ws)[0], /^Done: a reminder for the owner is set for \d{1,2} \w+ at \d\d:\d\d UTC: "Call the bank, number 1\."/);

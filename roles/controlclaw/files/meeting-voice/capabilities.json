@@ -7,5 +7,6 @@
   "wakeLocal": true,
   "alwaysListening": true,
   "fullAgent": true,
-  "present": true
+  "present": true,
+  "consultModel": true
 }

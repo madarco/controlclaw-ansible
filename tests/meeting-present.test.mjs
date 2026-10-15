@@ -358,3 +358,37 @@ test('the outcome is said even when the model delegated again for the same reque
   assert.equal(said.length, 1); assert.match(said[0].content, /now presenting/);
   bridge.close();
 });
+
+test('"leave the meeting", said to the agent: a goodbye and a leave line for the vm-agent, no consult and no task', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { mkdtempSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { LiveBridge } = await import('../roles/controlclaw/files/meeting-voice/live.js');
+  const { voiceRecord } = await import('../roles/controlclaw/files/meeting-voice/record.js');
+  const dir = mkdtempSync(join(tmpdir(), 'cc-leave-')), all = [], tools = [];
+  class WS extends EventEmitter {
+    constructor() { super(); this.readyState = 1; this.bufferedAmount = 0; this.sent = []; all.push(this); setImmediate(() => this.emit('open')); }
+    send(s) { const e = JSON.parse(s); this.sent.push(e); if (e.type === 'session.start') setImmediate(() => this.emit('message', JSON.stringify({ type: 'session.started', session: {} }))); }
+    terminate() {}
+  }
+  const bridge = new LiveBridge({
+    providerConfig: { provider: 'gateway', model: 'openai/gpt-live-1', placeholder: 'cc-speech-' + '0'.repeat(48), maxMinutes: 30, wake: { enabled: false, words: ['Jarvis'] }, always: true },
+    onAudio: () => {}, onToolCall: t => tools.push(t), onClearAudio: () => {}, onClose: () => {}, onError: () => {},
+  }, { WebSocket: WS, metric: () => {}, voiceDir: dir, record: voiceRecord('meeting', dir), presenter: { reset: async () => {} }, lease: () => ({ at: new Date().toISOString(), meetingId: MEETING, full: true }), fetch: async () => ({ ok: true, json: async () => ({ token: 'tok' }) }) });
+  await bridge.connect();
+  const ws = all[0];
+  const said = text => ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: text }));
+  const delegate = id => ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id } }));
+  said("Bob, I think we should leave the meeting soon."); delegate('d1');
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(tools.length, 1, 'not said to the agent: the consult, as before');
+  bridge.submitToolResult('d1', { text: 'Okay.' });
+  await new Promise(r => setTimeout(r, 1300));
+  said(' Jarvis, you can leave the meeting now.'); delegate('d2');
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(tools.length, 1, 'no consult, no task');
+  assert.match(readFileSync(join(dir, 'meeting.jsonl'), 'utf8'), /"kind":"leave"/);
+  assert.match(ws.sent.filter(e => e.type === 'session.commentary.append').at(-1).content, /leaving the meeting now/);
+  bridge.close();
+});

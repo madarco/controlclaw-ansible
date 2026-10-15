@@ -1,3 +1,4 @@
+import re
 """Pinned runtime patches must be atomic, idempotent and refuse unknown upstream code."""
 import importlib.util
 import json
@@ -62,5 +63,42 @@ class MeetingPins(unittest.TestCase):
                     (root / target_spec['kind'] / target_spec['path']).write_text(versions[digest])
                     patcher.patch(root / 'host', root / 'plugin')
                     self.assertEqual(patcher.hashlib.sha256((root / target_spec['kind'] / target_spec['path']).read_bytes()).hexdigest(), target_spec['after'])
+
+    def test_patched_host_of_another_month_build_upgrades(self):
+        """An agent on a later 2026.9.x build (other bundle hashes, the same code) that carries the
+        previous release's patch gets only the replacements added since (HOST_UPGRADES)."""
+        upstream = Path(os.environ.get('MEET_UPSTREAM', '/tmp/meet-upstream'))
+        later = os.environ.get('MEET_UPSTREAM_LATER')
+        if not upstream.exists() or not later:
+            self.skipTest('set MEET_UPSTREAM_LATER to an extracted later 2026.9.x OpenClaw package')
+        for spec in (p for p in patcher.PATCHES if p['kind'] == 'host' and p['path'] in patcher.HOST_UPGRADES):
+            with self.subTest(path=spec['path']), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                for other in patcher.PATCHES:
+                    base = Path(later) if other['kind'] == 'host' else upstream / 'package'
+                    source = base / other['path']
+                    if other['kind'] == 'host' and not source.exists():
+                        source = next(source.parent.glob(re.sub(r'-[A-Za-z0-9_-]{8}(?=\.mjs$)', '-????????', source.name)))
+                    target = root / other['kind'] / other['path']
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, target)
+                # The runtime modules the patch imports, as the installed package has them.
+                for module in (Path(later) / 'dist').glob('*.mjs'):
+                    link = root / 'host' / 'dist' / module.name
+                    if not link.exists():
+                        link.symlink_to(module)
+                # The previous release's patch: the replacements before the ones it was upgraded with.
+                target = root / 'host' / spec['path']
+                text = target.read_text()
+                previous = spec['replacements'][:len(spec['replacements']) - len(spec['upgrades'][spec['previousAfter']])]
+                for old, new, count in previous:
+                    text = text.replace(patcher.host_imports(old, root / 'host'), patcher.host_imports(new, root / 'host'))
+                self.assertEqual(patcher.host_digest(text), patcher.HOST_UPGRADES[spec['path']])
+                target.write_text(text)
+                self.assertEqual(patcher.check(root / 'host', root / 'plugin')['files'][patcher.PATCHES.index(spec)]['status'], 'unpatched')
+                patcher.patch(root / 'host', root / 'plugin')
+                self.assertEqual(patcher.host_digest(target.read_text()), patcher.HOST_DIGESTS[spec['path']][1])
+                patcher.patch(root / 'host', root / 'plugin')
+                self.assertEqual(patcher.check(root / 'host', root / 'plugin')['files'][patcher.PATCHES.index(spec)]['status'], 'patched')
 
 if __name__ == '__main__': unittest.main()
