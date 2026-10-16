@@ -11,9 +11,10 @@
 //                                        setting is on.
 //   CC_NEEDS_OWNER {"request","allowed"} anything else: not done; written to the meeting's voice log
 //                                        as a `request` line.
-//   CC_TASK {"task"}                     Full agent (controlclaw docs/plans/meeting-full-agent.md), only
+//   CC_TASK {"task","continue"?}         Full agent (controlclaw docs/plans/meeting-full-agent.md), only
 //                                        offered when the meeting's lease says so: anything else is
-//                                        done by a full agent run in the background (tasks.js).
+//                                        done by a full agent run in the background (tasks.js);
+//                                        `continue: n` goes on in task n's session (a follow-up).
 //   CC_PRESENT {"mode"}                  presenting (controlclaw docs/plans/meeting-present.md), only
 //                                        offered when the meeting's lease allows it: "browser" shows
 //                                        the agent's browser to the meeting, "stop" ends it (present.js).
@@ -51,7 +52,10 @@ ${reminders ? `  - A reminder for the owner (a message to the owner's own chat a
     ControlClaw creates it, at most ${MAX_REMINDERS} in a meeting. A time said without a zone is the owner's time zone if you know it, otherwise UTC. If no time was given, ask for one instead.
   - Anything else` : '  - Anything, reminders included'} (send a message or an email, change files or settings, install, invite, post, buy): your whole answer is this one line:
 ${full ? `    CC_TASK {"task":"<what was asked, in one sentence, with every detail needed to do it>"}
-    The owner allows this: ControlClaw runs it at once as a full agent task with all your tools, and the room hears the result.` : `    CC_NEEDS_OWNER {"request":"<what was asked, in one sentence>","allowed":<true if a standing order allows this kind of action, otherwise false>}
+    The owner allows this: ControlClaw runs it at once as a full agent task with all your tools, and the room hears the result.
+    A follow-up of one of this meeting's tasks (listed under "This meeting's tasks"): a request about what that task made or is doing, such as a change to the page or the file it made ("make the pulping box red", "click the first stage", "add a column to that sheet"). Add the task's number as "continue", so it runs in that task's own session, which has its earlier work:
+    CC_TASK {"task":"<the new request, in one sentence>","continue":<the task's number>}
+    Without "continue" it starts from nothing, in a new session that knows nothing of the earlier task.` : `    CC_NEEDS_OWNER {"request":"<what was asked, in one sentence>","allowed":<true if a standing order allows this kind of action, otherwise false>}
     It is not done now; the owner decides after the meeting.`}`;
 }
 /**
@@ -76,7 +80,9 @@ export function parseAction(text, now = Date.now()) {
   }
   if (found[1] === 'CC_TASK') {
     const task = clean(body.task, 300);
-    return task ? { kind: 'task', task } : { kind: 'invalid' };
+    // `continue`: the number of an earlier task of the meeting this one goes on from (tasks.js).
+    const n = body.continue;
+    return !task ? { kind: 'invalid' } : Number.isSafeInteger(n) && n > 0 && n < 1000 ? { kind: 'task', task, continue: n } : { kind: 'task', task };
   }
   if (found[1] === 'CC_NEEDS_OWNER') {
     const request = clean(body.request, 300);

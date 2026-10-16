@@ -62,7 +62,7 @@ export function meetingLines(name, dir = DIR(), { own: withOwn = true } = {}) {
   // `own`: the agent's own line.
   return [...finals, ...live, ...own.map(l => ({ ...l, own: true })), ...heard].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
     // `key`: the line's identity across reads (its full time, speaker and words), for what a consult already carried.
-    .map(l => ({ line: `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`, final: l.final, own: l.own === true, key: `${l.at}\u0000${l.speaker}\u0000${l.text}` }));
+    .map(l => ({ line: `[${clock(l.at)}] ${l.speaker}: ${l.text.replace(/\s+/g, ' ').trim()}`, final: l.final, own: l.own === true, at: l.at, key: `${l.at}\u0000${l.speaker}\u0000${l.text}` }));
 }
 export const meetingTranscript = (name, dir = DIR()) => meetingLines(name, dir).map(l => l.line).join('\n');
 /** At most `max` characters: the start and the end, with a marker between. */

@@ -194,3 +194,72 @@ test('a meeting lookup hands OpenClaw the lines said up to now first, so its con
  assert.match(f.tools[0].args.question,/what did Anna say/,'the request is still the question');
  f.bridge.close();
 });
+// Every request the agent acts on is acknowledged at once (the `ack`): a short forced response.
+const acks=f=>f.appends().filter(e=>e.type==='session.commentary.append'&&/^Acknowledge the request now/.test(e.content));
+const loud=Buffer.alloc(960);for(let i=0;i<480;i++)loud.writeInt16LE(i%2?3000:-3000,i*2);
+test('a delegated request is acknowledged once, at once, with no delegation id; not when the model just spoke',t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:1_000_000});
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});
+ said(f,'user','ControlClaw, what is the picnic snack?');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
+ assert.equal(acks(f).length,0,'not before the model had a moment to say its own');
+ t.mock.timers.tick(300);
+ assert.equal(acks(f).length,1);assert.equal(acks(f)[0].delegation_id,null,'not an answer to the lookup');
+ t.mock.timers.tick(5000);
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d3'}});t.mock.timers.tick(400);
+ assert.equal(acks(f).length,1,'the model asked again for the same words: no second acknowledgement');
+ // The next request; the model says its own "ok" first.
+ t.mock.timers.tick(30000);said(f,'user','ControlClaw, and the venue?');said(f,'assistant','Ok, let me check.');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d4'}});t.mock.timers.tick(400);
+ assert.equal(acks(f).length,1,'it acknowledged itself');
+ f.bridge.close();
+});
+test('the acknowledgement waits while someone talks, and gives up when they go on',t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:2_000_000});
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});
+ said(f,'user','ControlClaw, check my notes');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ f.bridge.sendAudio(loud);t.mock.timers.tick(300);
+ assert.equal(acks(f).length,0,'not over someone talking');
+ t.mock.timers.tick(200);assert.equal(acks(f).length,1,'said in the pause');
+ // Someone keeps talking: none at all.
+ t.mock.timers.tick(30000);said(f,'user','ControlClaw, another thing');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});
+ for(let i=0;i<40;i++){f.bridge.sendAudio(loud);t.mock.timers.tick(100);}
+ assert.equal(acks(f).length,1);
+ f.bridge.close();
+});
+test('no acknowledgement for a request nobody addressed to the agent, an answer already given, or leaving',t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:3_000_000});
+ const f=fixture('meeting',LiveBridge,{enabled:true,words:['ControlClaw']});
+ said(f,'user','Bob, what is the snack?');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});t.mock.timers.tick(500);
+ assert.equal(acks(f).length,0,'wake word on, no name: not addressed');
+ const g=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});
+ said(g,'user','ControlClaw, the snack?');g.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ g.bridge.submitToolResult('d1',{text:'Lemon shortbread.'});t.mock.timers.tick(500);
+ assert.equal(acks(g).length,0,'the answer came first');
+ const h=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});
+ said(h,'user','ControlClaw, please leave the meeting.');h.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});t.mock.timers.tick(500);
+ assert.equal(acks(h).length,0,'the goodbye is the answer');
+ for(const x of [f,g,h])x.bridge.close();
+});
+test('phone: a lookup is acknowledged too',t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:4_000_000});
+ const f=fixture('phone');said(f,'user','Which dessert do I like?');
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'p1'}});t.mock.timers.tick(300);
+ assert.equal(acks(f).length,1);f.bridge.close();
+});
+test('acknowledged when the request turns out addressed after the delegation; a repeat in a noisy room is not acknowledged twice',t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:5_000_000});
+ const f=fixture('meeting',LiveBridge,{enabled:true,words:['ControlClaw']});
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});
+ said(f,'user','ControlClaw, what is the snack?');t.mock.timers.tick(300);
+ assert.equal(acks(f).length,1,'the name came with the late transcript');
+ // Others talk on; the model asks again for the same words two seconds later.
+ for(let i=0;i<20;i++){f.bridge.sendAudio(loud);t.mock.timers.tick(100);}
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d2'}});t.mock.timers.tick(5000);
+ assert.equal(acks(f).length,1);
+ f.bridge.close();
+});

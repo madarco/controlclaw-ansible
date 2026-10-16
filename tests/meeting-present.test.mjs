@@ -310,7 +310,10 @@ test('the request transcript arrives after the delegation: presenting still star
   assert.deepEqual(asked, ['start']);
   bridge.submitToolResult('d1', { text: 'CC_NEEDS_OWNER {"request":"Share the screen","allowed":false}' });
   const spoken = ws.sent.filter(e => e.type === 'session.commentary.append').map(e => e.content);
-  assert.equal(spoken.length, 1); assert.match(spoken[0], /now presenting/);
+  // The request is acknowledged once, though its transcript came after the delegation.
+  assert.equal(spoken.filter(c => /^Acknowledge the request now/.test(c)).length, 1);
+  const told = spoken.filter(c => !/^Acknowledge the request now/.test(c));
+  assert.equal(told.length, 1); assert.match(told[0], /now presenting/);
   bridge.close();
 });
 

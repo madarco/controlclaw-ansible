@@ -45,7 +45,7 @@ class MeetingPins(unittest.TestCase):
         upstream = Path(os.environ.get('MEET_UPSTREAM', '/tmp/meet-upstream'))
         if not upstream.exists():
             self.skipTest('download the documented pinned npm archives for this integration test')
-        for target_spec in (p for p in patcher.PATCHES if p.get('upgrades')):
+        for target_spec in (p for p in patcher.PATCHES if p.get('upgrades')):  # plugin archives: exact pins
             source = (upstream / ('host/package' if target_spec['kind'] == 'host' else 'package') / target_spec['path']).read_text()
             versions = {patcher.hashlib.sha256(source.encode()).hexdigest(): source}
             for old, new, count in target_spec['replacements']:
@@ -64,15 +64,45 @@ class MeetingPins(unittest.TestCase):
                     patcher.patch(root / 'host', root / 'plugin')
                     self.assertEqual(patcher.hashlib.sha256((root / target_spec['kind'] / target_spec['path']).read_bytes()).hexdigest(), target_spec['after'])
 
+    def test_earlier_host_patches_on_the_pinned_build_upgrade(self):
+        """Every earlier patched state of a host file (HOST_UPGRADES) on the pinned archive gets only
+        the replacements after the ones it has, and a second run changes nothing."""
+        upstream = Path(os.environ.get('MEET_UPSTREAM', '/tmp/meet-upstream'))
+        if not upstream.exists():
+            self.skipTest('download the documented pinned npm archives for this integration test')
+        cases = [(p, applied) for p in patcher.PATCHES if p['kind'] == 'host' for applied in patcher.HOST_UPGRADES.get(p['path'], {}).values()]
+        self.assertTrue(cases)
+        for target_spec, applied in cases:
+            with self.subTest(path=target_spec['path'], applied=applied), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                for spec in patcher.PATCHES:
+                    target = root / spec['kind'] / spec['path']
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(upstream / ('host/package' if spec['kind'] == 'host' else 'package') / spec['path'], target)
+                for module in (upstream / 'host/package/dist').glob('*.mjs'):
+                    link = root / 'host' / 'dist' / module.name
+                    if not link.exists():
+                        link.symlink_to(module)
+                target = root / 'host' / target_spec['path']
+                text = target.read_text()
+                for old, new, count in target_spec['replacements'][:applied]:
+                    text = text.replace(old, new)
+                target.write_text(text)
+                self.assertEqual(patcher.check(root / 'host', root / 'plugin')['files'][patcher.PATCHES.index(target_spec)]['status'], 'unpatched')
+                patcher.patch(root / 'host', root / 'plugin')
+                self.assertEqual(patcher.hashlib.sha256(target.read_bytes()).hexdigest(), target_spec['after'])
+
     def test_patched_host_of_another_month_build_upgrades(self):
-        """An agent on a later 2026.9.x build (other bundle hashes, the same code) that carries the
-        previous release's patch gets only the replacements added since (HOST_UPGRADES)."""
+        """An agent on a later 2026.9.x build (other bundle hashes, the same code) that carries an
+        earlier release's patch gets only the replacements added since (HOST_UPGRADES)."""
         upstream = Path(os.environ.get('MEET_UPSTREAM', '/tmp/meet-upstream'))
         later = os.environ.get('MEET_UPSTREAM_LATER')
         if not upstream.exists() or not later:
             self.skipTest('set MEET_UPSTREAM_LATER to an extracted later 2026.9.x OpenClaw package')
-        for spec in (p for p in patcher.PATCHES if p['kind'] == 'host' and p['path'] in patcher.HOST_UPGRADES):
-            with self.subTest(path=spec['path']), tempfile.TemporaryDirectory() as d:
+        cases = [(p, canonical, applied) for p in patcher.PATCHES if p['kind'] == 'host' for canonical, applied in patcher.HOST_UPGRADES.get(p['path'], {}).items()]
+        self.assertTrue(cases)
+        for spec, canonical, applied in cases:
+            with self.subTest(path=spec['path'], applied=applied), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
                 for other in patcher.PATCHES:
                     base = Path(later) if other['kind'] == 'host' else upstream / 'package'
@@ -87,13 +117,14 @@ class MeetingPins(unittest.TestCase):
                     link = root / 'host' / 'dist' / module.name
                     if not link.exists():
                         link.symlink_to(module)
-                # The previous release's patch: the replacements before the ones it was upgraded with.
+                # The earlier release's patch: the replacements it had.
                 target = root / 'host' / spec['path']
+                if not target.exists():
+                    target = next(target.parent.glob(re.sub(r'-[A-Za-z0-9_-]{8}(?=\.mjs$)', '-????????', target.name)))
                 text = target.read_text()
-                previous = spec['replacements'][:len(spec['replacements']) - len(spec['upgrades'][spec['previousAfter']])]
-                for old, new, count in previous:
+                for old, new, count in spec['replacements'][:applied]:
                     text = text.replace(patcher.host_imports(old, root / 'host'), patcher.host_imports(new, root / 'host'))
-                self.assertEqual(patcher.host_digest(text), patcher.HOST_UPGRADES[spec['path']])
+                self.assertEqual(patcher.host_digest(text), canonical)
                 target.write_text(text)
                 self.assertEqual(patcher.check(root / 'host', root / 'plugin')['files'][patcher.PATCHES.index(spec)]['status'], 'unpatched')
                 patcher.patch(root / 'host', root / 'plugin')
