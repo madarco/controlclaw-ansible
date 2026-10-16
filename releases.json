@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.20.1",
+    "date": "2026-10-16",
+    "changes": [
+      "HTML widgets and pages the agent makes now open in its dashboard. Only signed-in members of the organization can see them."
+    ]
+  },
+  {
     "version": "1.20.0",
     "date": "2026-10-15",
     "changes": [
