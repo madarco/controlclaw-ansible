@@ -117,8 +117,8 @@ class Claim(unittest.TestCase):
 
 
 class Switch(unittest.TestCase):
-    def test_off_by_default(self):
-        self.assertIn("\nwidget_sandbox_enabled: false\n", (ROLE / "defaults/main.yml").read_text())
+    def test_on_by_default(self):
+        self.assertIn("\nwidget_sandbox_enabled: true\n", (ROLE / "defaults/main.yml").read_text())
 
     def test_off_the_caddyfile_is_the_one_before_this_change(self):
         before = subprocess.run(["git", "show", "4059775974f822631d6e63e1935af16740f40dab:roles/controlclaw/templates/Caddyfile.j2"],
