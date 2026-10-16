@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.21.1",
+    "date": "2026-10-16",
+    "changes": [
+      "In meetings, follow-up requests to a task are no longer dropped after the agent's acknowledgement."
+    ]
+  },
+  {
     "version": "1.21.0",
     "date": "2026-10-16",
     "changes": [
