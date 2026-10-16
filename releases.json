@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.21.0",
+    "date": "2026-10-16",
+    "changes": [
+      "In meetings, the agent always acknowledges a request with a short word before it works on it.",
+      "A follow-up to a task started in a meeting now continues that task, with what it did so far.",
+      "Meeting lookups no longer repeat their instructions each time, so they stay small in long meetings."
+    ]
+  },
+  {
     "version": "1.20.1",
     "date": "2026-10-16",
     "changes": [
