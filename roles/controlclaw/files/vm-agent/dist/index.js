@@ -14451,6 +14451,7 @@ var MeetingVoiceLog = class {
 };
 var MEETING_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 var MAX_TASKS = 20;
+var MAX_FOLLOW_UPS = 20;
 function readTasks(dir, meetingId) {
   if (!MEETING_ID.test(meetingId)) return [];
   let raw;
@@ -14460,17 +14461,30 @@ function readTasks(dir, meetingId) {
     return [];
   }
   if (!Array.isArray(raw)) return [];
-  const text3 = (v2, max) => typeof v2 === "string" ? v2.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max) : "";
-  const time3 = (v2) => typeof v2 === "string" && Number.isFinite(Date.parse(v2)) ? new Date(v2).toISOString() : void 0;
   const out = [];
   for (const t2 of raw.slice(0, MAX_TASKS)) {
-    if (!t2 || typeof t2 !== "object" || !Number.isSafeInteger(t2.n) || !["running", "done", "failed"].includes(String(t2.state))) continue;
-    const startedAt = time3(t2.startedAt), session = text3(t2.session, 120);
-    if (!startedAt || !/^agent:main:meeting-[a-z0-9-]{1,80}$/.test(session)) continue;
-    const endedAt = time3(t2.endedAt), result = text3(t2.result, 600);
-    out.push({ n: t2.n, from: text3(t2.from, 80), text: text3(t2.text, 300), session, state: t2.state, startedAt, ...endedAt ? { endedAt } : {}, ...result ? { result } : {} });
+    const fields = taskFields(t2, ["running", "done", "failed"]);
+    const session = fields && Number.isSafeInteger(t2.n) ? cleanText(t2.session, 120) : "";
+    if (!fields || !/^agent:main:meeting-[a-z0-9-]{1,80}$/.test(session)) continue;
+    const followUps = [], seen = /* @__PURE__ */ new Set();
+    for (const u2 of Array.isArray(t2.followUps) ? t2.followUps.slice(-MAX_FOLLOW_UPS) : []) {
+      const up = taskFields(u2, ["queued", "running", "done", "failed", "left"]);
+      if (!up || !Number.isSafeInteger(u2.k) || seen.has(u2.k)) continue;
+      seen.add(u2.k);
+      followUps.push({ k: u2.k, ...up });
+    }
+    out.push({ n: t2.n, ...fields, session, ...followUps.length ? { followUps } : {} });
   }
   return out;
+}
+var cleanText = (v2, max) => typeof v2 === "string" ? v2.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max) : "";
+var cleanTime = (v2) => typeof v2 === "string" && Number.isFinite(Date.parse(v2)) ? new Date(v2).toISOString() : void 0;
+function taskFields(t2, states) {
+  if (!t2 || typeof t2 !== "object" || !states.includes(String(t2.state))) return null;
+  const startedAt = cleanTime(t2.startedAt);
+  if (!startedAt) return null;
+  const endedAt = cleanTime(t2.endedAt), result = cleanText(t2.result, 600);
+  return { from: cleanText(t2.from, 80), text: cleanText(t2.text, 300), state: t2.state, startedAt, ...endedAt ? { endedAt } : {}, ...result ? { result } : {} };
 }
 async function closeStageTabs(fetchImpl = fetch) {
   try {
@@ -41683,8 +41697,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "9fd1e86" : "unknown",
-  builtAt: true ? "2026-10-15T23:51:00+01:00" : "unknown"
+  commit: true ? "676d932" : "unknown",
+  builtAt: true ? "2026-10-16T14:03:58+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

@@ -6351,8 +6351,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "9fd1e86" : "unknown",
-  builtAt: true ? "2026-10-15T23:51:00+01:00" : "unknown"
+  commit: true ? "676d932" : "unknown",
+  builtAt: true ? "2026-10-16T14:03:58+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
