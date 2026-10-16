@@ -306,13 +306,13 @@ test('the request transcript arrives after the delegation: presenting still star
   ws.emit('message', JSON.stringify({ type: 'session.delegation.created', delegation: { id: 'd1' } }));
   assert.equal(tools.length, 1, 'nothing heard yet: the consult starts');
   ws.emit('message', JSON.stringify({ type: 'session.input_transcript.delta', delta: 'Jarvis, share your screen please.' }));
-  await new Promise(r => setTimeout(r, 1700));
+  await new Promise(r => setTimeout(r, 2300));
   assert.deepEqual(asked, ['start']);
   bridge.submitToolResult('d1', { text: 'CC_NEEDS_OWNER {"request":"Share the screen","allowed":false}' });
   const spoken = ws.sent.filter(e => e.type === 'session.commentary.append').map(e => e.content);
-  // The request is acknowledged once, though its transcript came after the delegation.
-  assert.equal(spoken.filter(c => /^Acknowledge the request now/.test(c)).length, 1);
-  const told = spoken.filter(c => !/^Acknowledge the request now/.test(c));
+  // Presenting answered within the 2 s the model has for its own "ok": no forced acknowledgement.
+  assert.equal(spoken.filter(c => /^Acknowledge the request/.test(c)).length, 0);
+  const told = spoken.filter(c => !/^Acknowledge the request/.test(c));
   assert.equal(told.length, 1); assert.match(told[0], /now presenting/);
   bridge.close();
 });
@@ -359,7 +359,7 @@ test('the shortcut: only requests to the agent, and words used once are never us
   // A request whose words came late: presented once, and the next question is not taken for it again.
   await new Promise(r => setTimeout(r, 1300));
   delegate('d2'); said(' Jarvis, share your screen.');
-  await new Promise(r => setTimeout(r, 1700));
+  await new Promise(r => setTimeout(r, 2300));
   assert.deepEqual(asked, ['start']);
   bridge.submitToolResult('d2', { text: 'CC_PRESENT {"mode":"browser"}' });
   await new Promise(r => setTimeout(r, 1300));

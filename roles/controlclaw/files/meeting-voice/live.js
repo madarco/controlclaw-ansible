@@ -42,17 +42,19 @@ function wholeLeave(text, names) {
 const PRESENT_RECHECK = 1500;
 // The acknowledgement of a request the agent acts on (`ack`): not when it spoke this recently (it
 // acknowledged itself), not while someone is talking (input audio this recent), given up when
-// nobody stopped talking for this long. ACK_DELAY lets the model's own "ok" start first.
+// nobody stopped talking for this long. ACK_DELAY lets the model's own "ok" come first: it says one
+// about 2 s after the request ends, and a forced one sent before that (300 ms in 1.21.0) left it
+// answering the next request with only "ok", or nothing, and no delegation (smoke of 1.21.0).
 const ACK_SPOKE = 2000;
 const ACK_TALKING = 400;
 const ACK_GIVE_UP = 3000;
-const ACK_DELAY = 300;
+const ACK_DELAY = 2000;
 // A follow-up's captions: from this long before its task's last message was written.
 const SINCE_MARGIN = 30000;
 // Two delegations this close with no new words between them are one request (the model asks twice).
 const ACK_SAME_REQUEST = 10000;
 const TASKS_OFF = "This meeting's tasks (kept by ControlClaw): Full agent is off now; this meeting no longer runs tasks or follow-ups.";
-const ACK = 'Acknowledge the request now, in one or two words only ("ok", "on it", "let me check"). The answer comes later; say nothing else now.';
+const ACK = 'Acknowledge the request in one or two words ("ok", "let me check").';
 const LOOKUP_TIMEOUT = 30000;
 const STILL_CHECKING_AFTER = 8000;
 const QUESTION_WINDOW = 45000;
@@ -568,10 +570,11 @@ export class LiveBridge {
     if (!this.running) this.start(job);
   }
   /**
-   * Every request the agent acts on is acknowledged at once ("ok", "let me check"): a lookup or an
-   * action takes a few seconds at least, and the system prompt alone did not make the model say it
-   * every time. Only for a request someone addressed to the agent; not when the model spoke in the
-   * last ACK_SPOKE (it acknowledged itself); once per request (a second delegation for the same words
+   * Every request the agent acts on is acknowledged ("ok", "let me check"): a lookup or an action
+   * takes a few seconds at least, and the system prompt alone did not make the model say it every
+   * time. The model gets ACK_DELAY to say its own; only then is one forced. Only for a request
+   * someone addressed to the agent; not when the model spoke from ACK_SPOKE before the delegation on
+   * (it acknowledged itself); once per request (a second delegation for the same words
    * gets none); never over someone talking: it waits for a pause, at most ACK_GIVE_UP.
    */
   ack(job) {
@@ -589,9 +592,9 @@ export class LiveBridge {
       // be late), loud input counts only once the last acknowledgement is a while ago: the model
       // often delegates twice for one request, seconds apart, while others go on talking.
       if (!this.heard.some(f => f.at > since) && !((this.lastLoud ?? 0) > since && now - since > ACK_SAME_REQUEST)) return end('repeat');
-      // It spoke just now: its own "ok", which stands for this request's.
+      // It spoke since shortly before the delegation: its own "ok", which stands for this request's.
       const spoke = Math.max(this.lastAudibleAt ?? 0, this.said.at(-1)?.at ?? 0);
-      if (now - spoke < ACK_SPOKE) { this.ackedAt = now; return end('spoke'); }
+      if (spoke > start - ACK_SPOKE) { this.ackedAt = now; return end('spoke'); }
       if (now - (this.lastLoud ?? 0) < ACK_TALKING) {
         if (now - start >= ACK_GIVE_UP) return end('talking');
         const t = setTimeout(attempt, 100); t.unref?.(); return;
