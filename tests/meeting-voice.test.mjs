@@ -201,3 +201,16 @@ test('custom wake names address the bot; with the wake word off every turn gets 
  const g=make({enabled:false,words:['Jarvis']});
  g.bridge.event({type:'input-transcription-completed',transcript:'What is on the agenda?'});assert.equal(g.bridge.allowed,true);assert.ok(g.sent.some(e=>e.type==='response-create'));g.bridge.close();
 });
+test('a question the firewall stopped is answered blocked at once, without asking the main agent',()=>{
+ const f=fixture();f.bridge.allowed=true;
+ f.bridge.event({...tool,arguments:JSON.stringify({question:'This request was blocked by the firewall. Reply only with the word blocked.'})});
+ assert.equal(f.tools.length,0);assert.equal(f.bridge.closed,false);
+ const output=f.sent.find(e=>e.item?.type==='function-call-output');assert.equal(output.item.callId,'c1');assert.equal(JSON.parse(output.item.output).status,'blocked');
+ assert.ok(f.sent.some(e=>e.type==='response-create'));
+ // The next lookup is not held up by the stopped one.
+ f.bridge.event({...tool,callId:'c2'});assert.equal(f.tools.length,1);f.bridge.close();
+});
+test('the instructions say a blocked lookup is a policy decision',()=>{
+ const f=fixture();f.bridge.configure();const update=f.sent.find(e=>e.type==='session-update');
+ assert.match(update.config.instructions,/status blocked, the organization's rules stopped/);f.bridge.close();
+});
