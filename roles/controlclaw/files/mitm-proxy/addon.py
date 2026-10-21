@@ -1264,12 +1264,12 @@ def email_send_request(flow: http.HTTPFlow, vm_id: str | None) -> dict[str, Any]
     return payload
 
 
-def _email_refuse(flow: http.HTTPFlow, reason: str) -> None:
+def _email_refuse(flow: http.HTTPFlow, reason: str, message: str | None = None, rule: str | None = None) -> None:
     flow.response = http.Response.make(
-        403, json.dumps({"error": "email_refused", "reason": reason, "message": _EMAIL_REASONS.get(reason, "Email refused by the firewall.")}),
+        403, json.dumps({"error": "email_refused", "reason": reason, "message": message or _EMAIL_REASONS.get(reason, "Email refused by the firewall.")}),
         {"Content-Type": "application/json"})
     flow.metadata["cc_effect"] = "block"
-    flow.metadata["cc_rule"] = "email"
+    flow.metadata["cc_rule"] = rule or "email"
     rec = _http_record(flow, "block")
     rec.update({"status": 403, "email_reason": reason})
     _log_once(flow, rec)
@@ -1377,12 +1377,13 @@ def _hide_message(m: dict[str, Any]) -> None:
             m[field] = [] if field == "attachments" else {}
 
 
-def agentmail_filter(doc: Any, decide) -> Any:
+def agentmail_filter(doc: Any, decide, blocked=None) -> Any:
     """
     Apply the firewall's keep/strip/hide answer to an AgentMail JSON response. `decide(items)`
     takes [(inbox_id, item)] and returns one action per item. A message asked for by id is kept
     but marked blocked and emptied (the channel then settles it for good); list and thread
-    members are dropped.
+    members are dropped. `blocked(original)`, when given, is the content rules' word on an item the
+    email rules kept: True hides it as well.
     """
     targets: list[tuple[str, dict[str, Any], dict[str, Any]]] = []  # (inbox, item, original)
 
@@ -1408,6 +1409,10 @@ def agentmail_filter(doc: Any, decide) -> Any:
         return doc
     actions = decide([(inbox, item) for inbox, item, _ in targets])
     verdict = {id(orig): (a.get("action") if isinstance(a, dict) else "hide") for (_, _, orig), a in zip(targets, actions)}
+    if blocked is not None:
+        for _, _, orig in targets:
+            if verdict.get(id(orig)) != "hide" and blocked(orig):
+                verdict[id(orig)] = "hide"
 
     def prune(container: list[Any]) -> list[Any]:
         kept = []
@@ -1479,7 +1484,29 @@ def agentmail_response(flow: http.HTTPFlow) -> None:
     except (ValueError, UnicodeError):
         flow.response = http.Response.make(502, '{"error":"unreadable_response"}', {"Content-Type": "application/json"})
         return
-    filtered = agentmail_filter(doc, _decide_via_admission)
+    try:
+        # A write read the rules before it went (`content_rules_agentmail_before`): its answer is not
+        # turned into "try again" after the mail was sent, which the agent would send again.
+        rules = flow.metadata["cc_content_rules"] if "cc_content_rules" in flow.metadata else content_rules()
+    except ContentRulesUnreadable:
+        # Asked again in a moment, once the rules are known. Hiding would be for good: the agent's
+        # channel settles a message it was shown as blocked.
+        flow.response = http.Response.make(503, '{"error":"rules_loading","message":"The firewall is loading its rules. Try again in a few seconds."}', {"Content-Type": "application/json"})
+        return
+    try:
+        filtered = agentmail_filter(doc, _decide_via_admission, _agentmail_blocked(flow, rules))
+    except Exception as exc:
+        if "cc_content_rules" in flow.metadata:
+            # A write that already went: its ids, and nothing it carried back, rather than "try again".
+            log.warning(f"[content-rules] the answer to an email write could not be checked, ids only: {exc!r}")
+            _content_audit(flow, "error", "email", "in", "block")
+            kept = {k: doc[k] for k in ("message_id", "thread_id", "draft_id", "inbox_id") if isinstance(doc, dict) and isinstance(doc.get(k), str)}
+            flow.response.set_content(json.dumps(kept).encode())
+            return
+        log.warning(f"[content-rules] incoming email check failed, asked to try again: {exc!r}")
+        _content_audit(flow, "error", "email", "in", "wait")
+        flow.response = http.Response.make(503, '{"error":"check_failed","message":"The firewall could not check this mail. Try again."}', {"Content-Type": "application/json"})
+        return
     flow.response.set_content(json.dumps(filtered).encode())
 
 
@@ -1499,7 +1526,10 @@ def _agentmail_ws_decide(message) -> bool:
     msg = event.get("message")
     if kind != "message.received" or not _is_message(msg):
         return False
-    return _decide_via_admission([(msg["inbox_id"], {"kind": "message", **msg})])[0].get("action") == "keep"
+    if _decide_via_admission([(msg["inbox_id"], {"kind": "message", **msg})])[0].get("action") != "keep":
+        return False
+    # Off the event loop: while the rules are not known yet (a firewall starting), wait for them.
+    return not _agentmail_blocked(None, content_rules_wait())(msg)
 
 
 _email_tasks: set = set()
@@ -4351,6 +4381,9 @@ def websocket_message(flow):
     if flow.request.pretty_host.lower() == AGENTMAIL_WS:
         agentmail_ws_message(flow)
         return
+    if is_slack_socket(flow):
+        content_rules_slack_socket(flow)
+        return
     voice = flow.metadata.get("cc_voice")
     if not voice or not flow.websocket.messages:
         return
@@ -4638,15 +4671,21 @@ async def request(flow: http.HTTPFlow) -> None:
             return
 
     if host.lower() in (AGENTMAIL_API, AGENTMAIL_WS) or is_googleapis(host):
+        if content_rules_agentmail_raw(flow) or content_rules_agentmail_before(flow):
+            return
         if not await agentmail_attachment_allowed(flow):
             _email_refuse(flow, "thread_attachment" if _AM_THREAD_ATTACHMENT.match(flow.request.path.split("?", 1)[0]) else "held_back")
             return
         if not await email_outbound(flow, vm_id):
             return
+        if await content_rules_email_out(flow, vm_id):
+            return
 
     # Content rules (docs/plans/firewall-content-rules.md): after the organization's host rules have
     # let the request through, before any credential is swapped in.
     if is_telegram_flow(flow) and (content_rules_telegram_poll(flow) or await content_rules_telegram_out(flow, vm_id)):
+        return
+    if is_slack_out_flow(flow) and await content_rules_slack_out(flow, vm_id):
         return
 
     if host.lower() == "api.twilio.com" and (not phone_authorized(flow, phone_credential(flow, vm_id)) or not await phone_reserve(flow, phone_credential(flow, vm_id))):
@@ -4676,6 +4715,9 @@ async def request(flow: http.HTTPFlow) -> None:
         rec = _http_record(flow, "block")
         rec["status"] = INCLUDED_BLOCK_STATUS
         _log_once(flow, rec)
+        return
+
+    if content_rules_web(flow, vm_id):
         return
 
     # allow -> swap credentials in (vm-scoped with org fallback). Logged once the upstream
@@ -4804,18 +4846,25 @@ CONTENT_RULES_PATH = os.environ.get("MITM_CONTENT_RULES_PATH", os.path.join(os.p
 CONTENT_RULES_URL = os.environ.get("MITM_CONTENT_RULES_URL", "http://127.0.0.1:8794")
 CONTENT_AUDIT_PATH = os.environ.get("MITM_CONTENT_AUDIT_FILE", os.path.join(os.path.dirname(LOG_PATH), "content-rules.jsonl") if LOG_PATH else "")
 CONTENT_TEXT_MAX = 65536
+# Email and web bodies are longer than any chat message; more than this is stopped, never cut.
+CONTENT_TEXT_MAX_LONG = 524288
+CONTENT_LONG_CHANNELS = ("email", "web")
 CONTENT_HOLD_BODY_MAX = 262144
+# The text the engine read, handed over with a hold: the approver's preview is built from it, not from one field.
+CONTENT_HOLD_TEXT_MAX = 8192
 CONTENT_HOLD_WAIT = 25
 CONTENT_ACTIONS = ("log", "hold", "block")  # weakest to strongest
 
 CORE_SECRETS_RULE = {
-    "id": "core-leaking-secrets", "name": "Leaking secrets", "direction": "out", "channels": ["*"],
+    # Not the web: a browser signing in posts tokens on purpose (an OpenID `form_post` carries an
+    # `id_token`), and so does an OAuth refresh (docs/plans/firewall-content-rules.md §5.1).
+    "id": "core-leaking-secrets", "name": "Leaking secrets", "direction": "out", "channels": ["telegram", "slack", "email", "teamchat"],
     "patterns": [], "detectors": ["secrets"], "action": "block",
     "reason": "it looks like it contains a password, key or token",
 }
 
-# Our own expressions, each linear: no nested repetition. Organization rules never reach `re` as a
-# pattern; their words are escaped (see `_content_phrase`).
+# Our own expressions, each linear: no nested repetition. Organization rules never reach `re`: their
+# words are found with a plain search (see `content_phrase_in`).
 _SECRET_RES = [re.compile(p) for p in (
     r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----",
     r"\bsk-(?:proj-|ant-|svcacct-)?[A-Za-z0-9_-]{32,}",
@@ -4867,17 +4916,49 @@ def content_detect(name: str, text: str) -> bool:
     raise ValueError(f"unknown detector {name}")
 
 
-_phrase_cache: dict[str, re.Pattern[str]] = {}
+def _is_word_char(c: str) -> bool:
+    return c.isalnum() or c == "_"
 
 
-def _content_phrase(phrase: str) -> re.Pattern[str]:
-    """A word or phrase, case-insensitive, on word boundaries. Always escaped: never a regex."""
-    found = _phrase_cache.get(phrase)
-    if found is None:
-        found = re.compile(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", re.IGNORECASE)
-        if len(_phrase_cache) < 4096:
-            _phrase_cache[phrase] = found
-    return found
+# Spaces and line breaks, the same set as `content-engine.ts` (Python's own `str.split()` and the
+# JavaScript `\s` each miss a few the other has).
+_CONTENT_WS = re.compile("[\t\n\v\f\r\x1c-\x1f \x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+")
+
+
+def content_fold(text: str) -> str:
+    """Lower case, every run of spaces and line breaks (a non-breaking space included) one space."""
+    return _CONTENT_WS.sub(" ", text.lower()).strip(" ")
+
+
+def _phrase_in_folded(needle: str, hay: str) -> bool:
+    if not needle:
+        return False
+    start = hay.find(needle)
+    while start >= 0:
+        end = start + len(needle)
+        if (start == 0 or not _is_word_char(hay[start - 1])) and (end == len(hay) or not _is_word_char(hay[end])):
+            return True
+        start = hay.find(needle, start + 1)
+    return False
+
+
+def content_phrase_in(phrase: str, text: str) -> bool:
+    """
+    A word or phrase in a text, case-insensitive, on word edges: "customer list" is in "the Customer
+    List." and in "customer\nlist", but not in "customer listing". A plain search, never a regex, so a
+    phrase cannot be made to backtrack, and a long body is read at the speed of `str.find`.
+    `content-engine.ts` in the mitm-agent does the same; `content-vectors.json` holds both to it.
+    """
+    return _phrase_in_folded(content_fold(phrase), content_fold(text))
+
+
+def content_text_max(channel: str) -> int:
+    return CONTENT_TEXT_MAX_LONG if channel in CONTENT_LONG_CHANNELS else CONTENT_TEXT_MAX
+
+
+def content_applies(rules: list[dict[str, Any]], direction: str, channel: str) -> bool:
+    """Whether any rule looks at this direction and channel: when none does, nothing is read."""
+    return any(r["direction"] in (direction, "both") and (channel in r["channels"] or "*" in r["channels"]) for r in rules)
 
 
 def content_evaluate(rules: list[dict[str, Any]], direction: str, channel: str, text: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -4886,18 +4967,21 @@ def content_evaluate(rules: list[dict[str, Any]], direction: str, channel: str, 
     one whose action wins (block over hold over log; the first listed among equals). Pure: no I/O,
     so the same function can run in the console's test box and in the Rust rewrite.
 
-    Never cut: a text over `CONTENT_TEXT_MAX` is refused by the adapters before it gets here, so
-    padding one field cannot push what matters out of reach.
+    Never cut: a text over the channel's limit (`content_text_max`) raises, and the adapter refuses
+    it, so padding one field cannot push what matters out of reach.
     """
-    if len(text) > CONTENT_TEXT_MAX:
+    if len(text) > content_text_max(channel):
         raise ContentTooLong(len(text))
     hits = []
+    folded = None  # once per text, not once per phrase
     for rule in rules:
         if rule["direction"] not in (direction, "both"):
             continue
         if channel not in rule["channels"] and "*" not in rule["channels"]:
             continue
-        if any(_content_phrase(p).search(text) for p in rule["patterns"]) or any(content_detect(d, text) for d in rule["detectors"]):
+        if rule["patterns"] and folded is None:
+            folded = content_fold(text)
+        if any(_phrase_in_folded(content_fold(p), folded) for p in rule["patterns"]) or any(content_detect(d, text) for d in rule["detectors"]):
             hits.append(rule)
     winner = None
     for rule in hits:
@@ -4952,8 +5036,35 @@ def content_rules() -> list[dict[str, Any]]:
     return [CORE_SECRETS_RULE, *_content_cache["rules"]]
 
 
-def _content_audit(flow: http.HTTPFlow | None, rule_id: str, channel: str, direction: str, action: str, **extra: Any) -> None:
-    """The firewall's own record of a rule that fired. Metadata only, never the text."""
+def content_rules_wait(seconds: float = 15) -> list[dict[str, Any]]:
+    """`content_rules`, waiting up to `seconds` for them to be known. Blocking: only off the event loop."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            return content_rules()
+        except ContentRulesUnreadable:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.5)
+
+
+_audit_seen: dict[str, float] = {}
+CONTENT_AUDIT_ONCE = 3600
+
+
+def _content_audit(flow: http.HTTPFlow | None, rule_id: str, channel: str, direction: str, action: str, once: str | None = None, **extra: Any) -> None:
+    """
+    The firewall's own record of a rule that fired. Metadata only, never the text. `once` names the
+    message on a read the agent repeats (a list it polls): recorded once an hour, not on every poll.
+    """
+    if once is not None:
+        key = f"{rule_id}|{channel}|{direction}|{action}|{once}"
+        now = time.monotonic()
+        if now - _audit_seen.get(key, -CONTENT_AUDIT_ONCE) < CONTENT_AUDIT_ONCE:
+            return
+        if len(_audit_seen) > 10000:
+            _audit_seen.clear()
+        _audit_seen[key] = now
     rec = {"ts": time.time(), "rule": rule_id, "channel": channel, "direction": direction, "action": action,
            "vm_id": flow.metadata.get("cc_vm_id") if flow else None, "flow_id": flow.id if flow else None, **extra}
     log.info(f"[content-rules] {json.dumps(rec)}")
@@ -5044,7 +5155,8 @@ def _tg_out_fields(flow: http.HTTPFlow) -> tuple[list[tuple[str, Any]], bool]:
     return fields, is_json
 
 
-def _tg_texts(value: Any, under_text_key: bool, out: list[str], depth: int = 0) -> None:
+def _tg_texts(value: Any, under_text_key: bool, out: list[str], depth: int = 0, keys: set[str] = _TG_TEXT_KEYS) -> None:
+    """The strings under any of `keys`, at any depth (`under_text_key=True` takes every string)."""
     if depth > 20:
         raise ValueError("nested too deep")
     if isinstance(value, str):
@@ -5052,7 +5164,7 @@ def _tg_texts(value: Any, under_text_key: bool, out: list[str], depth: int = 0) 
         if stripped[:1] in ("[", "{"):
             # Form and multipart calls carry objects as JSON in a string (media, options, results).
             try:
-                _tg_texts(json.loads(value, object_pairs_hook=_no_duplicates), under_text_key, out, depth + 1)
+                _tg_texts(json.loads(value, object_pairs_hook=_no_duplicates), under_text_key, out, depth + 1, keys)
                 return
             except _DuplicateKey:
                 raise
@@ -5062,16 +5174,16 @@ def _tg_texts(value: Any, under_text_key: bool, out: list[str], depth: int = 0) 
             out.append(value)
     elif isinstance(value, dict):
         for k, v in value.items():
-            _tg_texts(v, under_text_key or k in _TG_TEXT_KEYS, out, depth + 1)
+            _tg_texts(v, under_text_key or k in keys, out, depth + 1, keys)
     elif isinstance(value, list):
         for v in value:
-            _tg_texts(v, under_text_key, out, depth + 1)
+            _tg_texts(v, under_text_key, out, depth + 1, keys)
 
 
-def _tg_text(fields: list[tuple[str, Any]]) -> str:
+def _tg_text(fields: list[tuple[str, Any]], keys: set[str] = _TG_TEXT_KEYS) -> str:
     out: list[str] = []
     for key, value in fields:
-        _tg_texts(value, key in _TG_TEXT_KEYS, out)
+        _tg_texts(value, key in keys, out, 0, keys)
     return "\n".join(out)
 
 
@@ -5120,6 +5232,7 @@ async def content_rules_telegram_out(flow: http.HTTPFlow, vm_id: str | None) -> 
                     answer = await asyncio.to_thread(_content_post, "/hold", timeout=CONTENT_HOLD_WAIT, payload={
                         "key": key, "botId": match.group(1), "method": match.group(2), "body": flow.request.get_text(strict=False),
                         "chatId": str(chat_id), "vmId": vm_id, "rule": {"id": rule["id"], "name": rule.get("name") or rule["id"], "reason": rule["reason"]},
+                        "text": text[:CONTENT_HOLD_TEXT_MAX],
                     })
                 except Exception:
                     # Gave up waiting: the agent is told it was stopped, so a hold must not survive.
@@ -5262,9 +5375,638 @@ def content_rules_telegram_in(flow: http.HTTPFlow) -> None:
         _content_notice(notice)
 
 
+def _content_acting(flow: http.HTTPFlow | None, rules: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None) -> dict[str, Any] | None:
+    """The engine on one text: every log-only hit recorded, and the rule that acts (block or hold), or None."""
+    rule, hits = content_evaluate(rules, direction, channel, text)
+    for hit in hits:
+        if hit["action"] == "log":
+            _content_audit(flow, hit["id"], channel, direction, "log", once=once)
+    return None if rule is None or rule["action"] == "log" else rule
+
+
+def _held_answer(flow: http.HTTPFlow, rule: dict[str, Any], channel: str, hold_id: str, status: int, body: dict[str, Any]) -> None:
+    """The agent is told its message went (decided 2026-10-15): the people who get codes decide."""
+    flow.response = http.Response.make(status, json.dumps(body), {"Content-Type": "application/json"})
+    flow.metadata["cc_effect"] = "hold"
+    flow.metadata["cc_rule"] = f"content: {rule['id']}"
+    _log_once(flow, {**_http_record(flow, "hold"), "status": status})
+    _content_audit(flow, rule["id"], channel, "out", "hold", hold=hold_id)
+
+
+async def _content_hold(flow: http.HTTPFlow, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Hand a message to the mitm-agent to keep and ask about; its answer, or None when nobody could be asked."""
+    key = uuid.uuid4().hex
+    try:
+        answer = await asyncio.to_thread(_content_post, "/hold", {**payload, "key": key}, CONTENT_HOLD_WAIT)
+    except Exception:
+        # Gave up waiting: the agent is told it was stopped, so a hold must not survive.
+        try:
+            await asyncio.to_thread(_content_post, "/cancel", {"key": key})
+        except Exception as exc:
+            log.warning(f"[content-rules] hold cancel not handed over: {exc!r}")
+        raise
+    return answer if answer.get("ok") is True and isinstance(answer.get("holdId"), str) else None
+
+
+def _rule_brief(rule: dict[str, Any]) -> dict[str, Any]:
+    return {"id": rule["id"], "name": rule.get("name") or rule["id"], "reason": rule["reason"]}
+
+
+# ---- Slack ---------------------------------------------------------------------------------------
+# Out: the Web API (`slack.com/api/<method>`) and incoming webhooks (`hooks.slack.com`). In: the
+# Socket Mode websocket the agent's Slack app holds open (`wss-*.slack.com`), one JSON frame per
+# event, each acknowledged by the client with its `envelope_id`.
+
+_SLACK_API_HOSTS = ("slack.com", "api.slack.com")
+_SLACK_METHOD_RE = re.compile(r"^/api/([A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)+)$")
+_SLACK_TEXT_KEYS = {"text", "initial_comment", "title", "pretext", "fallback", "footer", "author_name", "alt_text", "topic",
+                    "purpose", "description", "markdown", "markdown_text", "status_text", "label", "placeholder", "name", "value",
+                    "header", "subtitle", "content"}
+_SLACK_HOLDABLE = {"chat.postMessage", "chat.update"}
+
+
+def _flow_names(flow: http.HTTPFlow) -> set[str]:
+    return {n.lower() for n in (flow.request.pretty_host, getattr(flow.client_conn, "sni", None) or "") if n}
+
+
+def is_slack_out_flow(flow: http.HTTPFlow) -> bool:
+    names = _flow_names(flow)
+    return (bool(names & set(_SLACK_API_HOSTS)) and flow.request.path.startswith("/api/")) or "hooks.slack.com" in names
+
+
+def _slack_refuse(flow: http.HTTPFlow, rule: dict[str, Any] | None, detail: str, reason: str | None = None) -> None:
+    reason = rule["reason"] if rule else (reason or "the check could not run")
+    # Slack answers its errors with HTTP 200 and `ok: false`; its clients raise on that.
+    flow.response = http.Response.make(200, json.dumps({
+        "ok": False, "error": "blocked_by_organization_rules",
+        "response_metadata": {"messages": [f"Blocked by your organization's rules: {reason}{detail}"]},
+    }), {"Content-Type": "application/json"})
+    flow.metadata["cc_effect"] = "block"
+    flow.metadata["cc_rule"] = f"content: {rule['id']}" if rule else "content: error"
+    _log_once(flow, {**_http_record(flow, "block"), "status": 200})
+
+
+def _slack_auth(flow: http.HTTPFlow, fields: list[tuple[str, Any]]) -> str | None:
+    """The token the call was made with (a placeholder on a secured box), for the mitm-agent to find the bot."""
+    header = flow.request.headers.get("authorization") or ""
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()[:200] or None
+    token = next((v for k, v in fields if k == "token" and isinstance(v, str)), None)
+    return token[:200] if token else None
+
+
+async def content_rules_slack_out(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    """An agent's outgoing Slack call: True when it was answered here (blocked or held)."""
+    try:
+        hook = "hooks.slack.com" in _flow_names(flow)
+        match = None if hook else _SLACK_METHOD_RE.match(flow.request.path.split("?", 1)[0])
+        if not hook and not match:
+            # Anything else under /api/ still reaches Slack with the real token after the swap.
+            _slack_refuse(flow, None, "", reason="this Slack call could not be checked")
+            _content_audit(flow, "error", "slack", "out", "block", detail="unmatched path")
+            return True
+        if flow.request.method.upper() in ("GET", "HEAD") and not flow.request.query:
+            return False
+        fields, is_json = _tg_out_fields(flow)
+        text = _tg_text(fields, _SLACK_TEXT_KEYS)
+        if not text:
+            return False
+        rule = _content_acting(flow, content_rules(), "out", "slack", text)
+        if rule is None:
+            return False
+        method = match.group(1) if match else None
+        channel = next((v for k, v in fields if k == "channel" and isinstance(v, str)), None)
+        auth = _slack_auth(flow, fields)
+        if rule["action"] == "hold":
+            detail = " (it could not be held for approval)"
+            if method in _SLACK_HOLDABLE and channel and not flow.request.query and len(flow.request.raw_content or b"") <= CONTENT_HOLD_BODY_MAX:
+                answer = await _content_hold(flow, {
+                    "channel": "slack", "method": method, "body": flow.request.get_text(strict=False),
+                    "contentType": "json" if is_json else "form", "chatId": channel, "auth": auth, "vmId": vm_id,
+                    "rule": _rule_brief(rule), "text": text[:CONTENT_HOLD_TEXT_MAX]})
+                if answer:
+                    first_text = next((v for k, v in fields if k == "text" and isinstance(v, str)), "")
+                    ts = next((v for k, v in fields if k == "ts" and isinstance(v, str)), None) or f"{int(time.time())}.{secrets.randbelow(1_000_000):06d}"
+                    body = ({"ok": True, "channel": channel, "ts": ts, "message": {"type": "message", "text": first_text, "ts": ts}}
+                            if method == "chat.postMessage" else {"ok": True, "channel": channel, "ts": ts, "text": first_text})
+                    _held_answer(flow, rule, "slack", answer["holdId"], 200, body)
+                    return True
+                detail = " (nobody could be asked to approve it)"
+            _slack_refuse(flow, rule, detail)
+            _content_audit(flow, rule["id"], "slack", "out", "block", held=False)
+        else:
+            _slack_refuse(flow, rule, "")
+            _content_audit(flow, rule["id"], "slack", "out", "block")
+        if channel:
+            thread = next((v for k, v in fields if k == "thread_ts" and isinstance(v, str)), None)
+            _content_notice({"kind": "out", "channel": "slack", "chatId": channel, "auth": auth, "vmId": vm_id, "reason": rule["reason"],
+                             **({"threadTs": thread} if thread else {})})
+        return True
+    except ContentTooLong:
+        _slack_refuse(flow, None, "", reason="it is too long to check")
+        _content_audit(flow, "error", "slack", "out", "block", detail="too long")
+        return True
+    except Exception as exc:  # fail closed, the rules being unknown included
+        log.warning(f"[content-rules] outgoing Slack check failed, refusing: {exc!r}")
+        _slack_refuse(flow, None, "")
+        _content_audit(flow, "error", "slack", "out", "block")
+        return True
+
+
+def is_slack_socket(flow) -> bool:
+    host = flow.request.pretty_host.lower()
+    return host.endswith(".slack.com") and host.startswith("wss")
+
+
+def _slack_ack(flow, envelope_id: str) -> None:
+    """Acknowledge an event the agent will not see, so Slack does not send it again."""
+    try:
+        _mitm_ctx.master.commands.call("inject.websocket", flow, False, json.dumps({"envelope_id": envelope_id}).encode())
+    except Exception as exc:  # no master (a test), or the socket is closing: Slack sends it again, and it is stopped again
+        log.warning(f"[content-rules] could not acknowledge a stopped Slack event: {exc!r}")
+
+
+def content_rules_slack_socket(flow) -> None:
+    """One frame from Slack to the agent's Socket Mode client: an event with a message on it is checked."""
+    message = flow.websocket.messages[-1] if flow.websocket and flow.websocket.messages else None
+    if message is None or message.from_client:
+        return
+    try:
+        try:
+            frame = json.loads(message.content)
+        except (ValueError, UnicodeError):
+            return  # not an event: Slack's pings and the like
+        if not isinstance(frame, dict) or frame.get("type") not in ("events_api", "slash_commands"):
+            return
+        payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+        event = payload.get("event") if frame["type"] == "events_api" else payload
+        if not isinstance(event, dict):
+            return
+        out: list[str] = []
+        _tg_texts(event, False, out, 0, _SLACK_TEXT_KEYS)
+        text = "\n".join(out)
+        if not text:
+            return
+        try:
+            rule = _content_acting(flow, content_rules(), "in", "slack", text)
+        except ContentTooLong:
+            rule = {"id": "error", "reason": "it is too long to check", "action": "block"}
+        if rule is None:
+            return
+        message.drop()
+        if isinstance(frame.get("envelope_id"), str):
+            _slack_ack(flow, frame["envelope_id"])
+        _content_audit(flow, rule["id"], "slack", "in", "block")
+        channel = event.get("channel") or event.get("channel_id")
+        user = event.get("user") or event.get("user_id")
+        if isinstance(channel, str) and isinstance(user, str):
+            _content_notice({"kind": "in", "channel": "slack", "chatId": channel, "userId": user, "vmId": flow.metadata.get("cc_vm_id"), "reason": rule["reason"]})
+    except Exception as exc:  # fail closed: the frame is not passed on, and not acknowledged, so Slack sends it again
+        log.warning(f"[content-rules] incoming Slack check failed, held back: {exc!r}")
+        _content_audit(flow, "error", "slack", "in", "block")
+        message.drop()
+    finally:
+        flow.websocket.messages.clear()
+
+
+# ---- Email ---------------------------------------------------------------------------------------
+# Out: after the email rules let a write through (recipients, limits), the text of the message:
+# AgentMail's JSON (subject, text, HTML) and Gmail's MIME message (subject, text and HTML parts).
+# Drafts are read when they are written, because sending one carries no text. In: AgentMail messages
+# the email rules kept (`agentmail_filter`), and Gmail's `messages.get` and `threads.get`.
+
+_TAG_RE = re.compile(r"<[^<>]{0,4000}>")
+
+
+def _html_text(html: str) -> str:
+    return html_unescape(_TAG_RE.sub(" ", html))
+
+
+def _mime_text(message: bytes) -> str:
+    """The subject and the text and HTML parts of a MIME message, decoded."""
+    import email.parser
+    import email.policy
+    msg = email.parser.BytesParser(policy=email.policy.default).parsebytes(message)
+    out = [str(msg.get("subject") or "")]
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        if part.is_multipart() or ctype not in ("text/plain", "text/html") or part.get_filename():
+            continue
+        body = part.get_content()
+        out.append(_html_text(body) if ctype == "text/html" else body)
+    return "\n".join(t for t in out if t)
+
+
+def _agentmail_text(item: dict[str, Any]) -> str:
+    out = [item.get(k) for k in ("subject", "preview", "text", "extracted_text")]
+    out += [_html_text(item[k]) for k in ("html", "extracted_html") if isinstance(item.get(k), str)]
+    return "\n".join(t for t in out if isinstance(t, str) and t)
+
+
+_GM_DRAFT_WRITE = re.compile(r"^/(upload/)?gmail/v1/users/[^/]+/drafts(?:/[^/]+)?$")
+
+
+def _email_out_text(flow: http.HTTPFlow) -> tuple[str, bool] | None:
+    """The text of an outgoing message and whether it can be held, or None when the request carries no message."""
+    from urllib.parse import unquote
+    host = flow.request.pretty_host.lower()
+    method = flow.request.method.upper()
+    path = flow.request.path.split("?", 1)[0]
+    if method not in ("POST", "PUT", "PATCH"):
+        return None
+    if host == AGENTMAIL_API:
+        body = _json_body(flow)
+        if body is None or not any(k in body for k in ("subject", "text", "html")):
+            return None
+        return _agentmail_text(body), bool(_AM_SEND.match(path) or _AM_MSG_OP.match(path))
+    if not is_googleapis(host):
+        return None
+    path = re.sub(r"/+", "/", unquote(path)).rstrip("/")
+    if not (_GM_SEND.match(path) or _GM_DRAFT_WRITE.match(path)):
+        return None
+    if path.startswith("/upload/"):
+        upload_type = flow.request.query.get("uploadType", "")
+        if upload_type not in ("media", "multipart"):
+            # A resumable upload sends the message in a later request this check cannot tie back:
+            # refused, as the email rules refuse it for a send.
+            raise ValueError("an upload the firewall cannot read")
+        message = flow.request.get_content() if upload_type == "media" else _multipart_message(flow)
+        if not message:
+            raise ValueError("an upload the firewall cannot read")
+    else:
+        body = _json_body(flow) or {}
+        inner = body.get("message") if isinstance(body.get("message"), dict) else body
+        message = _b64url(inner.get("raw")) if inner.get("raw") is not None else None
+    if not message:
+        return None  # a draft sent by its id: its text was read when it was written
+    return _mime_text(message), False
+
+
+def _agentmail_forward(flow: http.HTTPFlow) -> tuple[str, str] | None:
+    """The inbox and message of an AgentMail forward, or None."""
+    from urllib.parse import unquote
+    if flow.request.pretty_host.lower() != AGENTMAIL_API or flow.request.method.upper() != "POST":
+        return None
+    m = _AM_MSG_OP.match(flow.request.path.split("?", 1)[0])
+    return (unquote(m.group(1)), unquote(m.group(2))) if m and m.group(3) == "forward" else None
+
+
+AGENTMAIL_FORWARD_READ_MAX = 4 * 1024 * 1024
+
+
+def _agentmail_get(url: str, key: str) -> dict[str, Any]:
+    """One AgentMail read from the firewall itself. Blocking: run it off the event loop."""
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as res:
+        raw = res.read(AGENTMAIL_FORWARD_READ_MAX + 1)
+    if len(raw) > AGENTMAIL_FORWARD_READ_MAX:
+        raise ContentTooLong(len(raw))
+    doc = json.loads(raw)
+    if not isinstance(doc, dict):
+        raise ValueError("not a message")
+    return doc
+
+
+def _agentmail_message_text(flow: http.HTTPFlow, vm_id: str | None, inbox: str, message_id: str) -> str:
+    """The text of a message a forward sends on. Raises when it cannot be read: the forward is refused."""
+    from urllib.parse import quote
+    auth = flow.request.headers.get("authorization", "")
+    token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    # The agent holds a placeholder; the key is the one the proxy would put in its place.
+    key = next((_secret_value(c) for c in credentials_for(AGENTMAIL_API, vm_id) if token and c.get("placeholder") == token), None) or token
+    if not key:
+        raise ValueError("a forward with no key")
+    try:
+        doc = _agentmail_get(f"https://{AGENTMAIL_API}/v0/inboxes/{quote(inbox, safe='@')}/messages/{quote(message_id, safe='')}", key)
+    except ContentTooLong:
+        raise
+    except Exception as exc:
+        # Its own words only: an error about the request can carry the key (a header that would not encode).
+        raise ValueError(f"the forwarded mail could not be read ({type(exc).__name__})") from None
+    return _agentmail_text(doc)
+
+
+async def content_rules_email_out(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    """An agent's outgoing email, after the email rules: True when it was answered here (blocked or held)."""
+    def refuse(rule: dict[str, Any] | None, detail: str, reason: str | None = None) -> None:
+        why = rule["reason"] if rule else (reason or "the check could not run")
+        _email_refuse(flow, "content_rule", f"Blocked by your organization's rules: {why}{detail}", f"content: {rule['id']}" if rule else "content: error")
+    try:
+        found = _email_out_text(flow)
+        forward = _agentmail_forward(flow)
+        if not forward and (not found or not found[0]):
+            return False
+        rules = content_rules()
+        if not content_applies(rules, "out", "email"):
+            return False
+        text, holdable = found or ("", True)
+        if forward:
+            # A forward sends a received mail on, which its body does not carry: read with the
+            # agent's own key, as the agent could read it, and checked with the forward's own words.
+            original = await asyncio.to_thread(_agentmail_message_text, flow, vm_id, *forward)
+            text = "\n".join(t for t in (text, original) if t)
+            if not text:
+                return False
+        rule = _content_acting(flow, rules, "out", "email", text)
+        if rule is None:
+            return False
+        if rule["action"] == "hold":
+            detail = " (it could not be held for approval)"
+            m = _AM_SEND.match(flow.request.path.split("?", 1)[0]) or _AM_MSG_OP.match(flow.request.path.split("?", 1)[0])
+            if holdable and m and len(flow.request.raw_content or b"") <= CONTENT_HOLD_BODY_MAX:
+                from urllib.parse import unquote
+                answer = await _content_hold(flow, {
+                    "channel": "email", "method": flow.request.method.upper(), "path": flow.request.path.split("?", 1)[0],
+                    "body": flow.request.get_text(strict=False), "chatId": unquote(m.group(1)), "vmId": vm_id, "rule": _rule_brief(rule),
+                    "text": text[:CONTENT_HOLD_TEXT_MAX]})
+                if answer:
+                    held = f"held-{answer['holdId']}"
+                    _held_answer(flow, rule, "email", answer["holdId"], 200, {"message_id": held, "thread_id": held})
+                    return True
+                detail = " (nobody could be asked to approve it)"
+            refuse(rule, detail)
+            _content_audit(flow, rule["id"], "email", "out", "block", held=False)
+        else:
+            refuse(rule, "")
+            _content_audit(flow, rule["id"], "email", "out", "block")
+        return True
+    except ContentTooLong:
+        refuse(None, "", reason="it is too long to check")
+        _content_audit(flow, "error", "email", "out", "block", detail="too long")
+        return True
+    except Exception as exc:  # fail closed
+        log.warning(f"[content-rules] outgoing email check failed, refusing: {exc!r}")
+        refuse(None, "")
+        _content_audit(flow, "error", "email", "out", "block")
+        return True
+
+
+def _agentmail_blocked(flow: http.HTTPFlow | None, rules: list[dict[str, Any]]):
+    """The content rules' word on one AgentMail message or thread the email rules kept. Errors hide it."""
+    applies = content_applies(rules, "in", "email")
+
+    def blocked(item: dict[str, Any]) -> bool:
+        """Raises on a check that could not run: the caller answers "try again" rather than hide the
+        message, which the agent's channel would settle for good."""
+        if not applies:
+            return False
+        once = str(item.get("message_id") or item.get("thread_id") or "")[:200] or None
+        text = _agentmail_text(item)
+        try:
+            rule = _content_acting(flow, rules, "in", "email", text, once) if text else None
+        except ContentTooLong:
+            rule = {"id": "error"}  # stopped like a block: more than a check reads
+        if rule is not None:
+            _content_audit(flow, rule["id"], "email", "in", "block", once=once)
+        return rule is not None
+    return blocked
+
+
+def content_rules_agentmail_before(flow: http.HTTPFlow) -> bool:
+    """
+    An AgentMail write reads the rules before it goes, for its answer to be checked with: while they
+    are not known it is refused ("try again") here, before anything was sent. True when refused.
+    """
+    if flow.request.pretty_host.lower() != AGENTMAIL_API or flow.request.method.upper() in ("GET", "HEAD", "OPTIONS"):
+        return False
+    try:
+        flow.metadata["cc_content_rules"] = content_rules()
+        return False
+    except ContentRulesUnreadable:
+        flow.response = http.Response.make(503, '{"error":"rules_loading","message":"The firewall is loading its rules. Try again in a few seconds."}', {"Content-Type": "application/json"})
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = "content: rules unknown"
+        _log_once(flow, {**_http_record(flow, "block"), "status": 503})
+        return True
+
+
+_AM_RAW = re.compile(r"^/v0/inboxes/[^/]+/messages/[^/]+/raw$")
+
+
+def content_rules_agentmail_raw(flow: http.HTTPFlow) -> bool:
+    """
+    The raw message is the whole mail, which the JSON filter never sees: while a rule reads mail
+    coming in, it is refused (the agent reads the message itself, which is checked). True when refused.
+    """
+    if flow.request.pretty_host.lower() != AGENTMAIL_API or not _AM_RAW.match(flow.request.path.split("?", 1)[0]):
+        return False
+    try:
+        if not content_applies(content_rules(), "in", "email"):
+            return False
+    except ContentRulesUnreadable:
+        pass
+    _email_refuse(flow, "content_rule", "Read the message instead of its raw form: your organization's content rules check messages coming in.", "content: raw read")
+    return True
+
+
+_GM_READ = re.compile(r"^/gmail/v1/users/[^/]+/(messages|threads)/[^/]+$")
+_GM_NOT_FOUND = json.dumps({"error": {"code": 404, "message": "Requested entity was not found.", "status": "NOT_FOUND"}})
+
+
+def _gmail_message_text(m: dict[str, Any]) -> str:
+    out = [m.get("snippet") if isinstance(m.get("snippet"), str) else ""]
+    raw = _b64url(m.get("raw")) if m.get("raw") is not None else None
+    if raw:
+        out.append(_mime_text(raw))
+
+    def walk(part: Any, depth: int = 0) -> None:
+        if not isinstance(part, dict) or depth > 30:
+            return
+        for h in part.get("headers") or []:
+            if isinstance(h, dict) and str(h.get("name", "")).lower() == "subject" and isinstance(h.get("value"), str):
+                out.append(h["value"])
+        mime = str(part.get("mimeType") or "")
+        data = (part.get("body") or {}).get("data") if isinstance(part.get("body"), dict) else None
+        if mime in ("text/plain", "text/html") and not part.get("filename") and data:
+            decoded = (_b64url(data) or b"").decode("utf-8", errors="replace")
+            out.append(_html_text(decoded) if mime == "text/html" else decoded)
+        for child in part.get("parts") or []:
+            walk(child, depth + 1)
+    walk(m.get("payload"))
+    return "\n".join(t for t in out if t)
+
+
+def content_rules_gmail_in(flow: http.HTTPFlow) -> None:
+    """A message or thread the agent reads from Gmail: a blocked message is not found, or left out of its thread."""
+    from urllib.parse import unquote
+    if not is_googleapis(flow.request.pretty_host) or flow.request.method.upper() != "GET" or flow.response is None or flow.response.status_code != 200:
+        return
+    m = _GM_READ.match(re.sub(r"/+", "/", unquote(flow.request.path.split("?", 1)[0])).rstrip("/"))
+    if not m:
+        return
+    try:
+        rules = content_rules()
+        if not content_applies(rules, "in", "email"):
+            return
+    except ContentRulesUnreadable:
+        flow.response = http.Response.make(503, json.dumps({"error": {"code": 503, "message": "The firewall is loading its rules. Try again in a few seconds.", "status": "UNAVAILABLE"}}), {"Content-Type": "application/json"})
+        return
+    # A raw message is the whole mail (up to 25 MB): decoded and parsed off the event loop.
+    if not _off_loop(flow, lambda: _gmail_in_check(flow, m.group(1), rules)):
+        _gmail_in_check(flow, m.group(1), rules)
+
+
+def _gmail_in_check(flow: http.HTTPFlow, kind: str, rules: list[dict[str, Any]]) -> None:
+    """`content_rules_gmail_in`'s check of one answer. Blocking."""
+    try:
+        doc = json.loads(flow.response.get_content() or b"")
+        if not isinstance(doc, dict):
+            raise ValueError("not a Gmail answer")
+
+        def blocked(msg: Any) -> bool:
+            if not isinstance(msg, dict):
+                return False
+            once = str(msg.get("id") or "")[:200] or None
+            try:
+                rule = _content_acting(flow, rules, "in", "email", _gmail_message_text(msg), once)
+            except ContentTooLong:
+                rule = {"id": "error"}
+            if rule is not None:
+                _content_audit(flow, rule["id"], "email", "in", "block", once=once)
+            return rule is not None
+        if kind == "messages":
+            if blocked(doc):
+                flow.response = http.Response.make(404, _GM_NOT_FOUND, {"Content-Type": "application/json"})
+            return
+        messages = doc.get("messages") if isinstance(doc.get("messages"), list) else []
+        kept = [x for x in messages if not blocked(x)]
+        if len(kept) == len(messages):
+            return
+        if not kept:
+            flow.response = http.Response.make(404, _GM_NOT_FOUND, {"Content-Type": "application/json"})
+            return
+        flow.response.set_content(json.dumps({**doc, "messages": kept}).encode())
+    except Exception as exc:  # fail closed
+        log.warning(f"[content-rules] incoming Gmail check failed, holding it back: {exc!r}")
+        _content_audit(flow, "error", "email", "in", "block")
+        flow.response = http.Response.make(404, _GM_NOT_FOUND, {"Content-Type": "application/json"})
+
+
+# ---- The web -------------------------------------------------------------------------------------
+# The body of every other request the host rules let through. Not the model providers (§1: a rule
+# there would stop the agent's every later turn), the control plane, Twilio, or the channels above,
+# which have adapters of their own.
+
+MODEL_HOSTS = frozenset({
+    "ai-gateway.vercel.sh", "api.openai.com", "chatgpt.com", "api.anthropic.com", "generativelanguage.googleapis.com",
+    "aiplatform.googleapis.com", "openrouter.ai", "api.x.ai", "api.mistral.ai", "api.groq.com", "api.deepseek.com",
+    "api.moonshot.ai", "api.together.xyz", "api.fireworks.ai", "api.cerebras.ai", "api.perplexity.ai",
+})
+
+
+def _is_gmail_api_path(raw_path: str) -> bool:
+    """The Gmail API, which the email checks read: by the path alone, as they read it (never the query)."""
+    from urllib.parse import unquote
+    path = re.sub(r"/+", "/", unquote(raw_path.split("?", 1)[0]))
+    return path.startswith(("/gmail/", "/upload/gmail/"))
+
+
+def _web_flow(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    host = flow.request.pretty_host.lower()
+    if flow.request.method.upper() in ("GET", "HEAD", "OPTIONS") or not flow.request.raw_content:
+        return False
+    if is_telegram_flow(flow) or is_slack_out_flow(flow) or host in (AGENTMAIL_API, AGENTMAIL_WS, "api.twilio.com"):
+        return False
+    if is_googleapis(host) and _is_gmail_api_path(flow.request.path):
+        return False
+    if CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, host):
+        return False
+    if host in MODEL_HOSTS or any(c.get("model") for c in credentials_for(host, vm_id)):
+        return False
+    return True
+
+
+# Bytes of a text body (after its content encoding) the web check parses: twice what it reads, as
+# JSON's quotes, keys and escapes take room. More is stopped before it is parsed.
+WEB_BODY_READ_MAX = 2 * CONTENT_TEXT_MAX_LONG
+
+
+def _web_text(flow: http.HTTPFlow) -> str | None:
+    """The words in a request body: string values of JSON, form values, text parts, plain text. None when it is not text."""
+    ctype = (flow.request.headers.get("content-type") or "").lower()
+    if "multipart/form-data" in ctype:
+        out = []
+        for _k, v in flow.request.multipart_form.items(multi=True):
+            try:
+                out.append(v.decode("utf-8"))
+            except UnicodeDecodeError:
+                continue  # a file (`multipart_form` does not say which part had a filename)
+        return "\n".join(out)
+    textual = ctype.startswith("text/") or any(t in ctype for t in ("json", "xml", "javascript", "graphql", "x-www-form-urlencoded"))
+    # The size before any parsing: more text than a check reads is stopped without reading it.
+    # A body that says nothing of its type is read as text, as below.
+    if (textual or not ctype) and len(flow.request.raw_content or b"") > WEB_BODY_READ_MAX:
+        raise ContentTooLong(len(flow.request.raw_content or b""))
+    raw = flow.request.get_content()
+    if raw is None:
+        raise ValueError("an encoding the firewall cannot read")
+    if len(raw) > WEB_BODY_READ_MAX:
+        if textual or not ctype:
+            raise ContentTooLong(len(raw))
+        return None  # a file, not read
+    if "application/x-www-form-urlencoded" in ctype:
+        return "\n".join(v for _k, v in flow.request.urlencoded_form.items(multi=True))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        if not textual:
+            return None  # binary
+        text = raw.decode("utf-8", errors="replace")  # another charset: its ASCII words still read
+    if "json" in ctype or text.lstrip()[:1] in ("{", "["):
+        try:
+            out = []
+            _tg_texts(json.loads(text), True, out, 0, set())
+            return "\n".join(out)
+        except (ValueError, RecursionError):
+            pass
+    if ctype and not textual:
+        return None
+    return text
+
+
+def _web_refuse(flow: http.HTTPFlow, rule: dict[str, Any] | None, detail: str, reason: str | None = None) -> None:
+    why = rule["reason"] if rule else (reason or "the check could not run")
+    flow.response = http.Response.make(BLOCK_STATUS, json.dumps({
+        "error": "blocked_by_content_rule", "host": flow.request.pretty_host,
+        "message": f"Blocked by your organization's rules: {why}{detail}"}), {"Content-Type": "application/json"})
+    flow.metadata["cc_effect"] = "block"
+    flow.metadata["cc_rule"] = f"content: {rule['id']}" if rule else "content: error"
+    _log_once(flow, {**_http_record(flow, "block"), "status": BLOCK_STATUS})
+
+
+def content_rules_web(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    """A request body to any other site: True when it was refused here. Nothing can be held."""
+    if not _web_flow(flow, vm_id):
+        return False
+    try:
+        rules = content_rules()
+        if not content_applies(rules, "out", "web"):
+            return False
+        text = _web_text(flow)
+        if not text:
+            return False
+        rule = _content_acting(flow, rules, "out", "web", text)
+        if rule is None:
+            return False
+        # A website's answer cannot be made up, so a hold stops the request.
+        _web_refuse(flow, rule, " (a request to a website cannot be held for approval)" if rule["action"] == "hold" else "")
+        _content_audit(flow, rule["id"], "web", "out", "block", **({"held": False} if rule["action"] == "hold" else {}))
+        return True
+    except ContentTooLong:
+        _web_refuse(flow, None, "", reason="it is too long to check")
+        _content_audit(flow, "error", "web", "out", "block", detail="too long")
+        return True
+    except Exception as exc:  # fail closed
+        log.warning(f"[content-rules] web check failed, refusing: {exc!r}")
+        _web_refuse(flow, None, "")
+        _content_audit(flow, "error", "web", "out", "block")
+        return True
+
+
 def response(flow: http.HTTPFlow) -> None:
     telegram_taps_response(flow)
     content_rules_telegram_in(flow)
+    content_rules_gmail_in(flow)
     if flow.metadata.get("cc_email_reservation"):
         task = asyncio.create_task(asyncio.to_thread(email_settle, flow))
         _phone_settle_tasks.add(task)
