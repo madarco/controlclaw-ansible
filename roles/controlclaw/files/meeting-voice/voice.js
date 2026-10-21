@@ -165,11 +165,12 @@ export class VoiceBridge {
     if(typeof e.callId!=='string'||e.callId.length>200||typeof e.arguments!=='string'||e.arguments.length>24576){this.fail();return;}
     let args;try{args=JSON.parse(e.arguments);}catch{this.fail();return;}
     if(!args||typeof args.question!=='string'||args.question.length>3000||args.context!==undefined&&(typeof args.context!=='string'||args.context.length>1000)||Object.keys(args).some(k=>!['question','context'].includes(k))){this.fail();return;}
-    // Stopped by the firewall: the main agent is not asked; the firewall puts its reason in this output.
-    if(args.question===FIREWALL_BLOCKED){console.info(JSON.stringify({event:'cc.meeting.voice.ask_agent',phase:'blocked'}));this.toolOutput(e.callId,{status:'blocked',message:'The organization\'s rules stopped this request.'});this.continueAfterTool();return;}
     // One lookup at a time. A second request is answered, not fatal: the first one's answer is still coming.
     if(this.calls.size){this.toolOutput(e.callId,{status:'busy',message:'Only one lookup can run at a time and one is still running. Ask this again after the current one answers.'});this.continueAfterTool();return;}
     if(++this.callCount>MAX_TOOL_CALLS){this.fail();return;}
+    // Stopped by the firewall: the main agent is not asked, and the firewall puts its reason in this
+    // output. It counts as a lookup, so a model that keeps asking it reaches the limit like any other.
+    if(args.question===FIREWALL_BLOCKED){console.info(JSON.stringify({event:'cc.meeting.voice.ask_agent',phase:'blocked'}));this.toolOutput(e.callId,{status:'blocked',message:'The organization\'s rules stopped this request.'});this.continueAfterTool();return;}
     const timer=setTimeout(()=>{if(!this.closed)this.submitToolResult(e.callId,{error:'Main-agent lookup timed out'});},TOOL_TIMEOUT);
     this.calls.set(e.callId,{timer});
     this.phoneMetric('delegate_start');console.info(JSON.stringify({event:'cc.meeting.voice.ask_agent',phase:'start'}));

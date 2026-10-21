@@ -214,3 +214,8 @@ test('the instructions say a blocked lookup is a policy decision',()=>{
  const f=fixture();f.bridge.configure();const update=f.sent.find(e=>e.type==='session-update');
  assert.match(update.config.instructions,/status blocked, the organization's rules stopped/);f.bridge.close();
 });
+test('lookups the firewall stopped count towards the session limit',()=>{
+ const f=fixture();f.bridge.allowed=true;
+ for(let i=0;i<30&&!f.bridge.closed;i++)f.bridge.event({...tool,callId:'b'+i,arguments:JSON.stringify({question:'This request was blocked by the firewall. Reply only with the word blocked.'})});
+ assert.equal(f.bridge.closed,true);assert.equal(f.tools.length,0);
+});
