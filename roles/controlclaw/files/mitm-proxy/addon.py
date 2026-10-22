@@ -56,6 +56,7 @@ unit pins every MITM_DEV_* flag to 0.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import base64
 import collections
 import secrets
@@ -4377,6 +4378,37 @@ def websocket_start(flow):
     _voice_tasks[flow.id] = asyncio.create_task(_voice_watch(flow))
 
 
+def _voice_judged(voice: dict[str, Any], message, event: Any) -> bool:
+    """
+    Whether `content_rules_voice` reads this frame's text: a question to the main agent, its answer,
+    the box's spoken lines. Only these wait for the AI; audio and everything else never do.
+    """
+    if not isinstance(event, dict) or getattr(message, "injected", False):
+        return False
+    kind = event.get("type")
+    if voice.get("family") == "live":
+        if not message.from_client:
+            return kind == "session.delegation.created"
+        if kind == "session.commentary.append":
+            return True
+        return kind == "session.thinking.append" and isinstance(event.get("content"), str) and (
+            event.get("delegation_id") is not None or event["content"].startswith(VOICE_ANSWER_PREFIXES))
+    if not message.from_client:
+        return kind in ("function-call-arguments-done", "response.function_call_arguments.done")
+    item = event.get("item")
+    return kind in ("conversation-item-create", "conversation.item.create") and isinstance(item, dict) and item.get("type") in ("function-call-output", "function_call_output")
+
+
+
+def _voice_policies() -> bool:
+    """Whether a policy covers voice either way: its frames are then checked off the event loop."""
+    try:
+        rules = content_rules()
+    except ContentRulesUnreadable:
+        return False  # refused on the loop, as before
+    return content_policy_applies(rules, "in", "voice") or content_policy_applies(rules, "out", "voice")
+
+
 def websocket_message(flow):
     if flow.request.pretty_host.lower() == AGENTMAIL_WS:
         agentmail_ws_message(flow)
@@ -4414,6 +4446,23 @@ def websocket_message(flow):
             reject |= usage["responses"] > 120
     except (ValueError, TypeError):
         reject = True
+    if not reject and _voice_judged(voice, message, event) and _voice_policies():
+        # A question or an answer a policy covers: the AI is asked off the event loop, with the
+        # socket paused so the frames stay in order. The voice already waits for the main agent.
+        loop = _running_loop()
+
+        def work():
+            try:
+                content_rules_voice(flow, voice, message, event, loop)
+            except Exception as exc:  # fail closed: a frame that could not be checked ends the voice
+                log.warning(f"[content-rules] voice check failed, the voice was closed: {type(exc).__name__}")
+                _content_audit(flow, "error", "voice", "out" if message.from_client else "in", "block", purpose=voice.get("purpose", "meeting"))
+                message.drop()
+                loop.call_soon_threadsafe(_voice_close, flow)
+            finally:
+                flow.websocket.messages.clear()
+        if loop is not None and _off_loop(flow, work):
+            return
     if not reject:
         try:
             content_rules_voice(flow, voice, message, event)
@@ -4724,7 +4773,7 @@ async def request(flow: http.HTTPFlow) -> None:
         _log_once(flow, rec)
         return
 
-    if content_rules_web(flow, vm_id):
+    if await content_rules_web(flow, vm_id):
         return
 
     # allow -> swap credentials in (vm-scoped with org fallback). Logged once the upstream
@@ -4865,6 +4914,15 @@ CONTENT_HOLD_TEXT_MAX = 8192
 CONTENT_STOPPED_TEXT_MAX = 2000
 CONTENT_HOLD_WAIT = 25
 CONTENT_ACTIONS = ("log", "hold", "block")  # weakest to strongest
+# Policies (docs/plans/firewall-content-rules.md §5.4): the judge's `/content`, next to its `/judge`.
+CONTENT_POLICY_URL = os.environ.get("MITM_CONTENT_POLICY_URL", AI_JUDGE_URL.rsplit("/", 1)[0] + "/content" if AI_JUDGE_URL else "").strip()
+# The judge gives the model 2.5 s (Jev measured at p50 220 ms, the slowest of 46 calls 1 s); the
+# pieces of a long text are judged at once.
+CONTENT_POLICY_TIMEOUT = float(os.environ.get("MITM_CONTENT_POLICY_TIMEOUT", "3.5"))
+# The most text the AI judges (`CONTENT_AI_TEXT_MAX` in content-engine.ts: four overlapping pieces).
+# More is not judged in part: the rules act on it as on a check that could not run.
+CONTENT_AI_TEXT_MAX = 4 * (16000 - 500) + 500
+CONTENT_AI_FAILED = " (the AI check could not run)"
 
 CORE_SECRETS_RULE = {
     # Not the web: a browser signing in posts tokens on purpose (an OpenID `form_post` carries an
@@ -5002,6 +5060,97 @@ def content_evaluate(rules: list[dict[str, Any]], direction: str, channel: str, 
     return winner, hits
 
 
+def content_policy_applies(rules: list[dict[str, Any]], direction: str, channel: str) -> bool:
+    """Whether a policy looks at this direction and channel: when none does, the model is not called."""
+    return any(r.get("policy") and r["direction"] in (direction, "both") and (channel in r["channels"] or "*" in r["channels"]) for r in rules)
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _on_event_loop() -> bool:
+    return _running_loop() is not None
+
+
+def _content_policy_ask(direction: str, channel: str, text: str, asked: list[dict[str, Any]], vm_id: str | None = None) -> set[str] | None:
+    """
+    The judge's answer (`/content`): the ids of the policies the message goes against, or None when
+    it could not answer. Blocking: never on the event loop, where it is refused (fail closed).
+    """
+    if _on_event_loop():
+        log.warning("[content-rules] a policy check was asked on the event loop; refused")
+        return None
+    if not CONTENT_POLICY_URL:
+        return None
+    # Secrets out first, as the judge does (the length is what it will judge).
+    for pattern in _SECRET_RES:
+        text = pattern.sub("[secret]", text)
+    if len(text) > CONTENT_AI_TEXT_MAX:
+        log.warning(f"[content-rules] the AI check could not run: {len(text)} characters is more than it judges")
+        return None
+    payload = {"direction": direction, "channel": channel, "text": text, "rules": [{"id": r["id"], "policy": r["policy"]} for r in asked],
+               "vm_id": vm_id if isinstance(vm_id, str) else None}
+    try:
+        req = urllib.request.Request(CONTENT_POLICY_URL, data=json.dumps(payload).encode("utf-8"), headers={"content-type": "application/json"}, method="POST")
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=CONTENT_POLICY_TIMEOUT) as res:
+            doc = json.loads(res.read(64 * 1024))
+    except Exception as exc:  # a 400, a timeout, the judge not listening
+        log.warning(f"[content-rules] the AI check could not run: {type(exc).__name__}")
+        return None
+    matches = doc.get("matches") if isinstance(doc, dict) else None
+    if not isinstance(matches, list) or not all(isinstance(m, str) for m in matches):
+        log.warning(f"[content-rules] the AI check could not run: {str(doc.get('why') if isinstance(doc, dict) else 'answer')[:40]}")
+        return None
+    return set(matches)
+
+
+def content_judge(rules: list[dict[str, Any]], direction: str, channel: str, text: str,
+                  found: tuple[dict[str, Any] | None, list[dict[str, Any]]] | None = None, vm_id: str | None = None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """
+    `content_evaluate`, then the AI on the policies that cover the text and did not match already,
+    unless a rule already blocks it: one call to the judge. A hit the AI made carries `by: "found"`.
+    When it could not answer, every block or hold policy it was asked about acts, with its reason
+    and "(the AI check could not run)" and `by: "failed"`; a log-only one records nothing (fail
+    closed). Blocking when a policy is asked: only off the event loop. `found`: `content_evaluate`'s
+    answer on this text, when the caller has it.
+    """
+    winner, hits = found if found is not None else content_evaluate(rules, direction, channel, text)
+    if (winner is not None and winner["action"] == "block") or not text.strip():
+        return winner, hits
+    hit_ids = {h["id"] for h in hits}
+    asked = [r for r in rules if r.get("policy") and r["id"] not in hit_ids and r["direction"] in (direction, "both")
+             and (channel in r["channels"] or "*" in r["channels"])]
+    if not asked:
+        return winner, hits
+    matched = _content_policy_ask(direction, channel, text, asked, vm_id)
+    if matched is None:
+        # "Pay is not discussed (the AI check could not run)": the reason's own full stop is dropped.
+        more = [{**r, "reason": f"{r['reason'].rstrip(' .')}{CONTENT_AI_FAILED}", "by": "failed"} for r in asked if r["action"] != "log"]
+    else:
+        more = [{**r, "by": "found"} for r in asked if r["id"] in matched]
+    hits = hits + more
+    for rule in more:
+        if winner is None or CONTENT_ACTIONS.index(rule["action"]) > CONTENT_ACTIONS.index(winner["action"]):
+            winner = rule
+    return winner, hits
+
+
+def _content_mark(flow: http.HTTPFlow | None, hits: list[dict[str, Any]]) -> None:
+    """The AI's part in each hit, left on the flow for the audit lines (`ai: found | failed`)."""
+    if flow is not None:
+        for hit in hits:
+            if hit.get("by"):
+                flow.metadata.setdefault("cc_content_ai", {})[hit["id"]] = hit["by"]
+
+
+class ContentCheckUnavailable(Exception):
+    """A message coming in that the AI could not judge: answered "try again" where the channel can, not hidden."""
+
+
 class ContentRulesUnreadable(Exception):
     """The rules cannot be known (no file, a broken one, a store the firewall could not open): every check refuses."""
 
@@ -5018,7 +5167,8 @@ def _content_rule_ok(r: Any) -> bool:
             and r.get("direction") in ("in", "out", "both") and r.get("action") in CONTENT_ACTIONS
             and isinstance(r.get("channels"), list) and all(isinstance(c, str) for c in r["channels"])
             and isinstance(r.get("patterns"), list) and all(isinstance(p, str) and 0 < len(p) <= 100 for p in r["patterns"])
-            and isinstance(r.get("detectors"), list) and all(d in ("secrets", "iban", "card", "emails") for d in r["detectors"]))
+            and isinstance(r.get("detectors"), list) and all(d in ("secrets", "iban", "card", "emails") for d in r["detectors"])
+            and (r.get("policy") is None or (isinstance(r["policy"], str) and 0 < len(r["policy"]) <= 300)))
 
 
 def content_rules() -> list[dict[str, Any]]:
@@ -5085,8 +5235,9 @@ def _content_audit(flow: http.HTTPFlow | None, rule_id: str, channel: str, direc
             _audit_seen.clear()
         _audit_seen[key] = now
         line_id = hashlib.sha256(key.encode()).hexdigest()[:24]
+    by = flow.metadata.get("cc_content_ai", {}).get(rule_id) if flow is not None else None
     rec = {"ts": time.time(), "id": line_id, "rule": rule_id, "channel": channel, "direction": direction, "action": action,
-           "vm_id": vm_id, "flow_id": flow.id if flow else None, **extra}
+           "vm_id": vm_id, "flow_id": flow.id if flow else None, **({"ai": by} if by else {}), **extra}
     log.info(f"[content-rules] {json.dumps(rec)}")
     # Holds are recorded by the mitm-agent, which keeps them; a check that failed has no text worth keeping.
     if stopping is not None and rule_id != "error":
@@ -5123,7 +5274,7 @@ def _content_stopped(vm_id: str | None, rule: dict[str, Any], channel: str, dire
     """
     secret = rule.get("id") == CORE_SECRETS_RULE["id"] or "secrets" in rule.get("detectors", ())
     payload = {"vmId": vm_id if isinstance(vm_id, str) and vm_id else None,
-               "rule": {"id": str(rule.get("id"))[:64], "name": str(rule.get("name") or rule.get("id"))[:80], "reason": str(rule.get("reason", ""))[:200]},
+               "rule": _rule_brief(rule),
                "channel": channel, "direction": direction, "id": line_id,
                # One more than the record keeps, so it knows the text was cut.
                "text": "" if secret else text[:CONTENT_STOPPED_TEXT_MAX + 1]}
@@ -5277,7 +5428,8 @@ async def content_rules_telegram_out(flow: http.HTTPFlow, vm_id: str | None) -> 
         text = _tg_text(fields)
         if not text:
             return False
-        rule, hits, text = await _content_out_evaluate(content_rules(), "telegram", text)
+        rule, hits, text = await _content_out_evaluate(content_rules(), "telegram", text, vm_id)
+        _content_mark(flow, hits)
         for hit in hits:
             if hit["action"] == "log":
                 _content_audit(flow, hit["id"], "telegram", "out", "log")
@@ -5292,7 +5444,7 @@ async def content_rules_telegram_out(flow: http.HTTPFlow, vm_id: str | None) -> 
                     _content_unstop(flow, rule["id"])
                     answer = await asyncio.to_thread(_content_post, "/hold", timeout=CONTENT_HOLD_WAIT, payload={
                         "key": key, "botId": match.group(1), "method": match.group(2), "body": flow.request.get_text(strict=False),
-                        "chatId": str(chat_id), "vmId": vm_id, "rule": {"id": rule["id"], "name": rule.get("name") or rule["id"], "reason": rule["reason"]},
+                        "chatId": str(chat_id), "vmId": vm_id, "rule": _rule_brief(rule),
                         "text": text[:CONTENT_HOLD_TEXT_MAX],
                     })
                 except Exception:
@@ -5391,19 +5543,43 @@ def content_rules_telegram_in(flow: http.HTTPFlow) -> None:
     updates = doc["result"]
     if not updates:
         return
+    try:
+        policies = content_policy_applies(content_rules(), "in", "telegram")
+    except ContentRulesUnreadable:
+        policies = False  # the check below answers that
+    # A policy is a call to the AI: the answer waits for it off the event loop, the flow paused.
+    if policies and _off_loop(flow, lambda: _tg_in_filter(flow, match, doc, updates)):
+        return
+    _tg_in_filter(flow, match, doc, updates)
+
+
+def _tg_in_filter(flow: http.HTTPFlow, match: "re.Match[str]", doc: dict[str, Any], updates: list[Any]) -> None:
+    """`content_rules_telegram_in`'s check of one answer. Blocking when a policy covers it."""
     vm_id = flow.metadata.get("cc_vm_id")
     kept, notices = [], []
     try:
         rules = content_rules()
-        for update in updates:
-            found = _tg_update_text(update) if isinstance(update, dict) else None
+        texts = [(_tg_update_text(u) if isinstance(u, dict) else None) for u in updates]
+
+        def judged(found):
+            try:
+                return content_judge(rules, "in", "telegram", found[0], vm_id=vm_id)
+            except ContentTooLong:
+                return {"id": "error", "reason": "it is too long to check", "action": "block"}, []
+        # Each may be a call to the AI: a few at once, so a batch waits about as long as one.
+        todo = [i for i, found in enumerate(texts) if found and found[0]]
+        if len(todo) > 1 and content_policy_applies(rules, "in", "telegram"):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(todo))) as pool:
+                answers = dict(zip(todo, pool.map(lambda i: judged(texts[i]), todo)))
+        else:
+            answers = {i: judged(texts[i]) for i in todo}
+        for i, update in enumerate(updates):
+            found = texts[i]
             if not found or not found[0]:
                 kept.append(update)
                 continue
-            try:
-                rule, hits = content_evaluate(rules, "in", "telegram", found[0])
-            except ContentTooLong:
-                rule, hits = {"id": "error", "reason": "it is too long to check", "action": "block"}, []
+            rule, hits = answers[i]
+            _content_mark(flow, hits)
             for hit in hits:
                 if hit["action"] == "log":
                     _content_audit(flow, hit["id"], "telegram", "in", "log")
@@ -5413,7 +5589,9 @@ def content_rules_telegram_in(flow: http.HTTPFlow) -> None:
             _content_stopping(flow, rule, found[0])
             _content_audit(flow, rule["id"], "telegram", "in", "block")
             if found[1] is not None:
-                notices.append({"kind": "in", "botId": match.group(1), "chatId": str(found[1]), "vmId": vm_id, "reason": rule["reason"]})
+                # Not judged (the AI could not run): Telegram will not send it again, so the person is asked to.
+                notices.append({"kind": "in", "botId": match.group(1), "chatId": str(found[1]), "vmId": vm_id, "reason": rule["reason"],
+                                **({"failed": True} if rule.get("by") == "failed" else {})})
     except ContentRulesUnreadable:
         # The rules became unknown while Telegram answered: an empty answer, so the agent's offset
         # does not move and Telegram sends the same messages again on the next poll.
@@ -5467,24 +5645,28 @@ def _content_own_ask(text: str) -> str | None:
     return rest if isinstance(rest, str) else None
 
 
-async def _content_out_evaluate(rules: list[dict[str, Any]], channel: str, text: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
+async def _content_out_evaluate(rules: list[dict[str, Any]], channel: str, text: str, vm_id: str | None = None) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
     """
-    The engine on a Telegram or Slack message going out (the channels a code goes on). When a rule
-    would act and the marker is fresh, the mitm-agent is asked, off the event loop, for the message
-    with the firewall's own text taken out (a code it had the agent send, which quotes the rule),
-    and the rest is checked.
+    The engine and the policies on a Telegram or Slack message going out (the channels a code goes
+    on). When a rule would act, or a policy is to be asked, and the marker is fresh, the mitm-agent
+    is asked, off the event loop, for the message with the firewall's own text taken out (a code it
+    had the agent send, which quotes the rule and its policy), and the rest is checked.
     """
     rule, hits = content_evaluate(rules, "out", channel, text)
-    if rule is not None and rule["action"] != "log" and _content_own_marker_fresh():
+    policies = content_policy_applies(rules, "out", channel)
+    if ((rule is not None and rule["action"] != "log") or policies) and _content_own_marker_fresh():
         rest = await asyncio.to_thread(_content_own_ask, text)
         if rest is not None:
-            rule, hits = content_evaluate(rules, "out", channel, rest)
             text = rest
+            rule, hits = content_evaluate(rules, "out", channel, text)
+    if policies:
+        rule, hits = await asyncio.to_thread(content_judge, rules, "out", channel, text, (rule, hits), vm_id)
     return rule, hits, text
 
 
 def _content_acted(flow: http.HTTPFlow | None, rule: dict[str, Any] | None, hits: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None) -> dict[str, Any] | None:
     """Every log-only hit recorded, and the rule that acts (block or hold), or None."""
+    _content_mark(flow, hits)
     for hit in hits:
         if hit["action"] == "log":
             _content_audit(flow, hit["id"], channel, direction, "log", once=once)
@@ -5495,8 +5677,11 @@ def _content_acted(flow: http.HTTPFlow | None, rule: dict[str, Any] | None, hits
 
 
 def _content_acting(flow: http.HTTPFlow | None, rules: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None) -> dict[str, Any] | None:
-    """The engine on one text: every log-only hit recorded, and the rule that acts (block or hold), or None."""
-    rule, hits = content_evaluate(rules, direction, channel, text)
+    """
+    The engine and the policies on one text: every log-only hit recorded, and the rule that acts
+    (block or hold), or None. Blocking when a policy covers it: off the event loop only.
+    """
+    rule, hits = content_judge(rules, direction, channel, text, vm_id=flow.metadata.get("cc_vm_id") if flow is not None else None)
     return _content_acted(flow, rule, hits, direction, channel, text, once)
 
 
@@ -5526,7 +5711,9 @@ async def _content_hold(flow: http.HTTPFlow, payload: dict[str, Any]) -> dict[st
 
 
 def _rule_brief(rule: dict[str, Any]) -> dict[str, Any]:
-    return {"id": rule["id"], "name": rule.get("name") or rule["id"], "reason": rule["reason"]}
+    """A rule as a hold or the stopped record names it; `ai` when the AI found it or could not run."""
+    return {"id": str(rule.get("id"))[:64], "name": str(rule.get("name") or rule.get("id"))[:80], "reason": str(rule.get("reason", ""))[:240],
+            **({"ai": rule["by"]} if rule.get("by") in ("found", "failed") else {})}
 
 
 # ---- Slack ---------------------------------------------------------------------------------------
@@ -5588,7 +5775,7 @@ async def content_rules_slack_out(flow: http.HTTPFlow, vm_id: str | None) -> boo
         text = _tg_text(fields, _SLACK_TEXT_KEYS)
         if not text:
             return False
-        rule, hits, text = await _content_out_evaluate(content_rules(), "slack", text)
+        rule, hits, text = await _content_out_evaluate(content_rules(), "slack", text, vm_id)
         rule = _content_acted(flow, rule, hits, "out", "slack", text)
         if rule is None:
             return False
@@ -5650,6 +5837,20 @@ def content_rules_slack_socket(flow) -> None:
     if message is None or message.from_client:
         return
     try:
+        policies = content_policy_applies(content_rules(), "in", "slack")
+    except ContentRulesUnreadable:
+        policies = False  # the check answers that
+    if policies:
+        # A policy is a call to the AI: the frame waits for it off the event loop, the socket paused.
+        loop = _running_loop()
+        if loop is not None and _off_loop(flow, lambda: _slack_socket_check(flow, message, loop)):
+            return
+    _slack_socket_check(flow, message, None)
+
+
+def _slack_socket_check(flow, message, loop: asyncio.AbstractEventLoop | None) -> None:
+    """`content_rules_slack_socket`'s check of one frame. Blocking when a policy covers it."""
+    try:
         try:
             frame = json.loads(message.content)
         except (ValueError, UnicodeError):
@@ -5672,13 +5873,20 @@ def content_rules_slack_socket(flow) -> None:
         if rule is None:
             return
         message.drop()
-        if isinstance(frame.get("envelope_id"), str):
-            _slack_ack(flow, frame["envelope_id"])
+        failed = rule.get("by") == "failed"
+        # Not judged (the AI could not run): not acknowledged, so Slack sends it again later.
+        if isinstance(frame.get("envelope_id"), str) and not failed:
+            # mitmproxy's injection runs on its event loop, not in this thread.
+            if loop is not None:
+                loop.call_soon_threadsafe(_slack_ack, flow, frame["envelope_id"])
+            else:
+                _slack_ack(flow, frame["envelope_id"])
         _content_audit(flow, rule["id"], "slack", "in", "block")
         channel = event.get("channel") or event.get("channel_id")
         user = event.get("user") or event.get("user_id")
         if isinstance(channel, str) and isinstance(user, str):
-            _content_notice({"kind": "in", "channel": "slack", "chatId": channel, "userId": user, "vmId": flow.metadata.get("cc_vm_id"), "reason": rule["reason"]})
+            _content_notice({"kind": "in", "channel": "slack", "chatId": channel, "userId": user, "vmId": flow.metadata.get("cc_vm_id"), "reason": rule["reason"],
+                             **({"failed": True} if failed else {})})
     except Exception as exc:  # fail closed: the frame is not passed on, and not acknowledged, so Slack sends it again
         log.warning(f"[content-rules] incoming Slack check failed, held back: {exc!r}")
         _content_audit(flow, "error", "slack", "in", "block")
@@ -5779,8 +5987,11 @@ def _voice_reads_in(state: dict[str, Any]) -> bool:
     return state["applies"]
 
 
-def content_rules_voice(flow, voice: dict[str, Any], message, event: Any) -> None:
-    """One frame the voice policy let through. Raises on a frame it cannot check: the caller closes the voice."""
+def content_rules_voice(flow, voice: dict[str, Any], message, event: Any, loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """
+    One frame the voice policy let through. Raises on a frame it cannot check: the caller closes the
+    voice. `loop` when it runs in a thread (a policy to ask): a frame is then injected on the loop.
+    """
     if not isinstance(event, dict) or getattr(message, "injected", False):
         return
     kind = event.get("type")
@@ -5808,8 +6019,11 @@ def content_rules_voice(flow, voice: dict[str, Any], message, event: Any) -> Non
                 # The box never starts this lookup. The answer is spoken, but the box plays the voice
                 # only to someone who addressed it (wake word, always listening), as for its own answers.
                 message.drop()
-                answer = {"type": "session.commentary.append", "delegation_id": did, "content": _voice_refusal(rule["reason"])}
-                _mitm_ctx.master.commands.call("inject.websocket", flow, False, json.dumps(answer).encode())
+                answer = json.dumps({"type": "session.commentary.append", "delegation_id": did, "content": _voice_refusal(rule["reason"])}).encode()
+                if loop is not None:
+                    loop.call_soon_threadsafe(lambda: _mitm_ctx.master.commands.call("inject.websocket", flow, False, answer))
+                else:
+                    _mitm_ctx.master.commands.call("inject.websocket", flow, False, answer)
             return
         if kind in ("session.commentary.append", "session.thinking.append") and isinstance(event.get("content"), str):
             content = event["content"]
@@ -5998,7 +6212,8 @@ async def content_rules_email_out(flow: http.HTTPFlow, vm_id: str | None) -> boo
             text = "\n".join(t for t in (text, original) if t)
             if not text:
                 return False
-        rule = _content_acting(flow, rules, "out", "email", text)
+        rule = (await asyncio.to_thread(_content_acting, flow, rules, "out", "email", text) if content_policy_applies(rules, "out", "email")
+                else _content_acting(flow, rules, "out", "email", text))
         if rule is None:
             return False
         if rule["action"] == "hold":
@@ -6047,6 +6262,10 @@ def _agentmail_blocked(flow: http.HTTPFlow | None, rules: list[dict[str, Any]]):
             rule = _content_acting(flow, rules, "in", "email", text, once) if text else None
         except ContentTooLong:
             rule = {"id": "error"}  # stopped like a block: more than a check reads
+        if rule is not None and rule.get("by") == "failed":
+            # Not judged: "try again" keeps the mail, where hiding it would settle it for good.
+            _content_audit(flow, rule["id"], "email", "in", "wait", once=once)
+            raise ContentCheckUnavailable("the AI check could not run")
         if rule is not None:
             _content_audit(flow, rule["id"], "email", "in", "block", once=once)
         return rule is not None
@@ -6152,6 +6371,9 @@ def _gmail_in_check(flow: http.HTTPFlow, kind: str, rules: list[dict[str, Any]])
                 rule = _content_acting(flow, rules, "in", "email", _gmail_message_text(msg), once)
             except ContentTooLong:
                 rule = {"id": "error"}
+            if rule is not None and rule.get("by") == "failed":
+                _content_audit(flow, rule["id"], "email", "in", "wait", once=once)
+                raise ContentCheckUnavailable("the AI check could not run")
             if rule is not None:
                 _content_audit(flow, rule["id"], "email", "in", "block", once=once)
             return rule is not None
@@ -6167,6 +6389,9 @@ def _gmail_in_check(flow: http.HTTPFlow, kind: str, rules: list[dict[str, Any]])
             flow.response = http.Response.make(404, _GM_NOT_FOUND, {"Content-Type": "application/json"})
             return
         flow.response.set_content(json.dumps({**doc, "messages": kept}).encode())
+    except ContentCheckUnavailable:
+        # Not judged: Gmail's own "try again", so the agent reads it once the AI answers.
+        flow.response = http.Response.make(503, json.dumps({"error": {"code": 503, "message": "The firewall could not check this mail just now. Try again later.", "status": "UNAVAILABLE"}}), {"Content-Type": "application/json"})
     except Exception as exc:  # fail closed
         log.warning(f"[content-rules] incoming Gmail check failed, holding it back: {exc!r}")
         _content_audit(flow, "error", "email", "in", "block")
@@ -6265,7 +6490,7 @@ def _web_refuse(flow: http.HTTPFlow, rule: dict[str, Any] | None, detail: str, r
     _log_once(flow, {**_http_record(flow, "block"), "status": BLOCK_STATUS})
 
 
-def content_rules_web(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+async def content_rules_web(flow: http.HTTPFlow, vm_id: str | None) -> bool:
     """A request body to any other site: True when it was refused here. Nothing can be held."""
     if not _web_flow(flow, vm_id):
         return False
@@ -6276,7 +6501,8 @@ def content_rules_web(flow: http.HTTPFlow, vm_id: str | None) -> bool:
         text = _web_text(flow)
         if not text:
             return False
-        rule = _content_acting(flow, rules, "out", "web", text)
+        rule = (await asyncio.to_thread(_content_acting, flow, rules, "out", "web", text) if content_policy_applies(rules, "out", "web")
+                else _content_acting(flow, rules, "out", "web", text))
         if rule is None:
             return False
         # A website's answer cannot be made up, so a hold stops the request.
