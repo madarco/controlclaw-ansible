@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.23.0",
+    "date": "2026-10-22",
+    "changes": [
+      "Content rules can now be written as a sentence, such as \"Don't share salaries\", and the firewall's AI checks every message against it, in chat, email, websites, webhooks, meetings and calls.",
+      "When the AI check cannot run, messages a stop or hold rule covers are stopped, and the person writing is asked to send again later."
+    ]
+  },
+  {
     "version": "1.22.0",
     "date": "2026-10-22",
     "changes": [
