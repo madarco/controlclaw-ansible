@@ -4851,6 +4851,8 @@ _phone_settle_tasks = set()
 
 CONTENT_RULES_PATH = os.environ.get("MITM_CONTENT_RULES_PATH", os.path.join(os.path.dirname(CREDS_PATH), "content-rules.json"))
 CONTENT_RULES_URL = os.environ.get("MITM_CONTENT_RULES_URL", "http://127.0.0.1:8794")
+# Written by the mitm-agent while it remembers a text it had an agent send for it (`own-messages.ts`).
+CONTENT_OWN_PATH = os.path.join(os.path.dirname(CONTENT_RULES_PATH), "content-own.json")
 CONTENT_AUDIT_PATH = os.environ.get("MITM_CONTENT_AUDIT_FILE", os.path.join(os.path.dirname(LOG_PATH), "content-rules.jsonl") if LOG_PATH else "")
 CONTENT_TEXT_MAX = 65536
 # Email and web bodies are longer than any chat message; more than this is stopped, never cut.
@@ -4859,6 +4861,8 @@ CONTENT_LONG_CHANNELS = ("email", "web")
 CONTENT_HOLD_BODY_MAX = 262144
 # The text the engine read, handed over with a hold: the approver's preview is built from it, not from one field.
 CONTENT_HOLD_TEXT_MAX = 8192
+# Of a stopped text, the mitm-agent keeps this much (`STOPPED_TEXT_MAX` in content-stopped.ts).
+CONTENT_STOPPED_TEXT_MAX = 2000
 CONTENT_HOLD_WAIT = 25
 CONTENT_ACTIONS = ("log", "hold", "block")  # weakest to strongest
 
@@ -5062,20 +5066,31 @@ CONTENT_AUDIT_ONCE = 3600
 
 def _content_audit(flow: http.HTTPFlow | None, rule_id: str, channel: str, direction: str, action: str, once: str | None = None, **extra: Any) -> None:
     """
-    The firewall's own record of a rule that fired. Metadata only, never the text. `once` names the
-    message on a read the agent repeats (a list it polls): recorded once an hour, not on every poll.
+    The firewall's own record of a rule that fired. Metadata only, never the text: a block's text
+    goes to the mitm-agent's encrypted record instead (`_content_stopping`). `once` names the message
+    on a read the agent repeats (a list it polls): recorded once an hour, not on every poll.
     """
+    # The text this rule stopped on this flow, taken whatever happens next, so it cannot be kept under another line.
+    stopping = flow.metadata.get("cc_content_stopped", {}).pop(rule_id, None) if flow is not None and action == "block" else None
+    vm_id = flow.metadata.get("cc_vm_id") if flow else None
+    # The id is the console's dedupe key for the line (activity source `content_rule`). A read the
+    # agent repeats gets the same id every hour, so the console counts it once.
+    line_id = uuid.uuid4().hex[:24]
     if once is not None:
-        key = f"{rule_id}|{channel}|{direction}|{action}|{once}"
+        key = f"{rule_id}|{channel}|{direction}|{action}|{vm_id}|{once}"
         now = time.monotonic()
         if now - _audit_seen.get(key, -CONTENT_AUDIT_ONCE) < CONTENT_AUDIT_ONCE:
             return
         if len(_audit_seen) > 10000:
             _audit_seen.clear()
         _audit_seen[key] = now
-    rec = {"ts": time.time(), "rule": rule_id, "channel": channel, "direction": direction, "action": action,
-           "vm_id": flow.metadata.get("cc_vm_id") if flow else None, "flow_id": flow.id if flow else None, **extra}
+        line_id = hashlib.sha256(key.encode()).hexdigest()[:24]
+    rec = {"ts": time.time(), "id": line_id, "rule": rule_id, "channel": channel, "direction": direction, "action": action,
+           "vm_id": vm_id, "flow_id": flow.id if flow else None, **extra}
     log.info(f"[content-rules] {json.dumps(rec)}")
+    # Holds are recorded by the mitm-agent, which keeps them; a check that failed has no text worth keeping.
+    if stopping is not None and rule_id != "error":
+        _content_stopped(rec["vm_id"], stopping[0], channel, direction, stopping[1], line_id)
     if not CONTENT_AUDIT_PATH:
         return
     try:
@@ -5088,6 +5103,42 @@ def _content_audit(flow: http.HTTPFlow | None, rule_id: str, channel: str, direc
             fh.write(json.dumps(rec) + "\n")
     except OSError as exc:
         log.warning(f"[content-rules] audit write failed: {exc}")
+
+
+def _content_stopping(flow: http.HTTPFlow | None, rule: dict[str, Any], text: str) -> None:
+    """The text a rule acts on, left on the flow (one per rule) for the audit line that records the block."""
+    if flow is not None and rule.get("action") in ("block", "hold"):
+        flow.metadata.setdefault("cc_content_stopped", {})[rule.get("id")] = (rule, text)
+
+
+def _content_unstop(flow: http.HTTPFlow, rule_id: Any) -> None:
+    """A hold: the mitm-agent records it, kept or not, so the proxy does not."""
+    flow.metadata.get("cc_content_stopped", {}).pop(rule_id, None)
+
+
+def _content_stopped(vm_id: str | None, rule: dict[str, Any], channel: str, direction: str, text: str, line_id: str) -> None:
+    """
+    Fire and forget: a stopped text to the mitm-agent's encrypted record, for the firewall's own
+    Content rules page. A rule that looks for secrets sends none: the record would be one more copy.
+    """
+    secret = rule.get("id") == CORE_SECRETS_RULE["id"] or "secrets" in rule.get("detectors", ())
+    payload = {"vmId": vm_id if isinstance(vm_id, str) and vm_id else None,
+               "rule": {"id": str(rule.get("id"))[:64], "name": str(rule.get("name") or rule.get("id"))[:80], "reason": str(rule.get("reason", ""))[:200]},
+               "channel": channel, "direction": direction, "id": line_id,
+               # One more than the record keeps, so it knows the text was cut.
+               "text": "" if secret else text[:CONTENT_STOPPED_TEXT_MAX + 1]}
+
+    def send() -> None:
+        try:
+            _content_post("/stopped", payload)
+        except (OSError, ValueError) as exc:
+            log.warning(f"[content-rules] stopped text not handed over: {exc}")
+    try:
+        task = asyncio.get_running_loop().create_task(asyncio.to_thread(send))
+        _phone_settle_tasks.add(task)
+        task.add_done_callback(_phone_settle_tasks.discard)
+    except RuntimeError:  # no event loop: a direct call from a test
+        send()
 
 
 def _content_post(path: str, payload: dict[str, Any], timeout: float = 5) -> dict[str, Any]:
@@ -5226,17 +5277,19 @@ async def content_rules_telegram_out(flow: http.HTTPFlow, vm_id: str | None) -> 
         text = _tg_text(fields)
         if not text:
             return False
-        rule, hits = content_evaluate(content_rules(), "out", "telegram", text)
+        rule, hits, text = await _content_out_evaluate(content_rules(), "telegram", text)
         for hit in hits:
             if hit["action"] == "log":
                 _content_audit(flow, hit["id"], "telegram", "out", "log")
         if rule is None or rule["action"] == "log":
             return False
+        _content_stopping(flow, rule, text)
         chat_id = next((v for k, v in fields if k == "chat_id"), None)
         if rule["action"] == "hold":
             if is_json and match.group(2) in _TG_HOLDABLE and chat_id is not None and len(flow.request.raw_content or b"") <= CONTENT_HOLD_BODY_MAX:
                 key = uuid.uuid4().hex
                 try:
+                    _content_unstop(flow, rule["id"])
                     answer = await asyncio.to_thread(_content_post, "/hold", timeout=CONTENT_HOLD_WAIT, payload={
                         "key": key, "botId": match.group(1), "method": match.group(2), "body": flow.request.get_text(strict=False),
                         "chatId": str(chat_id), "vmId": vm_id, "rule": {"id": rule["id"], "name": rule.get("name") or rule["id"], "reason": rule["reason"]},
@@ -5357,6 +5410,7 @@ def content_rules_telegram_in(flow: http.HTTPFlow) -> None:
             if rule is None or rule["action"] == "log":
                 kept.append(update)
                 continue
+            _content_stopping(flow, rule, found[0])
             _content_audit(flow, rule["id"], "telegram", "in", "block")
             if found[1] is not None:
                 notices.append({"kind": "in", "botId": match.group(1), "chatId": str(found[1]), "vmId": vm_id, "reason": rule["reason"]})
@@ -5383,13 +5437,67 @@ def content_rules_telegram_in(flow: http.HTTPFlow) -> None:
         _content_notice(notice)
 
 
-def _content_acting(flow: http.HTTPFlow | None, rules: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None) -> dict[str, Any] | None:
-    """The engine on one text: every log-only hit recorded, and the rule that acts (block or hold), or None."""
-    rule, hits = content_evaluate(rules, direction, channel, text)
+_own_marker: tuple[float, float] = (0.0, 0.0)  # (the marker's mtime, until when it says to ask)
+
+
+def _content_own_marker_fresh() -> bool:
+    """Whether the mitm-agent's marker says it remembers a text it had an agent send. A stat and, when it changed, a small read."""
+    global _own_marker
+    try:
+        mtime = os.stat(CONTENT_OWN_PATH).st_mtime
+    except OSError:
+        return False
+    if mtime != _own_marker[0]:
+        try:
+            with open(CONTENT_OWN_PATH, encoding="utf-8") as fh:
+                until = float(json.load(fh)["until"])
+        except (OSError, ValueError, KeyError, TypeError):
+            until = 0.0
+        _own_marker = (mtime, until)
+    return time.time() <= _own_marker[1]
+
+
+def _content_own_ask(text: str) -> str | None:
+    """Blocking: the mitm-agent's answer to `/own`. Any failure is None, so the message is checked whole."""
+    try:
+        rest = _content_post("/own", {"text": text}, timeout=2).get("rest")
+    except (OSError, ValueError) as exc:
+        log.warning(f"[content-rules] could not ask about the firewall's own text: {exc}")
+        return None
+    return rest if isinstance(rest, str) else None
+
+
+async def _content_out_evaluate(rules: list[dict[str, Any]], channel: str, text: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
+    """
+    The engine on a Telegram or Slack message going out (the channels a code goes on). When a rule
+    would act and the marker is fresh, the mitm-agent is asked, off the event loop, for the message
+    with the firewall's own text taken out (a code it had the agent send, which quotes the rule),
+    and the rest is checked.
+    """
+    rule, hits = content_evaluate(rules, "out", channel, text)
+    if rule is not None and rule["action"] != "log" and _content_own_marker_fresh():
+        rest = await asyncio.to_thread(_content_own_ask, text)
+        if rest is not None:
+            rule, hits = content_evaluate(rules, "out", channel, rest)
+            text = rest
+    return rule, hits, text
+
+
+def _content_acted(flow: http.HTTPFlow | None, rule: dict[str, Any] | None, hits: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None) -> dict[str, Any] | None:
+    """Every log-only hit recorded, and the rule that acts (block or hold), or None."""
     for hit in hits:
         if hit["action"] == "log":
             _content_audit(flow, hit["id"], channel, direction, "log", once=once)
-    return None if rule is None or rule["action"] == "log" else rule
+    if rule is None or rule["action"] == "log":
+        return None
+    _content_stopping(flow, rule, text)
+    return rule
+
+
+def _content_acting(flow: http.HTTPFlow | None, rules: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None) -> dict[str, Any] | None:
+    """The engine on one text: every log-only hit recorded, and the rule that acts (block or hold), or None."""
+    rule, hits = content_evaluate(rules, direction, channel, text)
+    return _content_acted(flow, rule, hits, direction, channel, text, once)
 
 
 def _held_answer(flow: http.HTTPFlow, rule: dict[str, Any], channel: str, hold_id: str, status: int, body: dict[str, Any]) -> None:
@@ -5403,6 +5511,7 @@ def _held_answer(flow: http.HTTPFlow, rule: dict[str, Any], channel: str, hold_i
 
 async def _content_hold(flow: http.HTTPFlow, payload: dict[str, Any]) -> dict[str, Any] | None:
     """Hand a message to the mitm-agent to keep and ask about; its answer, or None when nobody could be asked."""
+    _content_unstop(flow, (payload.get("rule") or {}).get("id"))
     key = uuid.uuid4().hex
     try:
         answer = await asyncio.to_thread(_content_post, "/hold", {**payload, "key": key}, CONTENT_HOLD_WAIT)
@@ -5479,7 +5588,8 @@ async def content_rules_slack_out(flow: http.HTTPFlow, vm_id: str | None) -> boo
         text = _tg_text(fields, _SLACK_TEXT_KEYS)
         if not text:
             return False
-        rule = _content_acting(flow, content_rules(), "out", "slack", text)
+        rule, hits, text = await _content_out_evaluate(content_rules(), "slack", text)
+        rule = _content_acted(flow, rule, hits, "out", "slack", text)
         if rule is None:
             return False
         method = match.group(1) if match else None
@@ -5605,7 +5715,8 @@ _JSON_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 
 
 def _voice_refusal(reason: str) -> str:
-    return (f"Blocked by your organization's rules: {reason}. Tell the person plainly that you cannot help with this "
+    # A reason that ends a sentence itself is not given a second full stop.
+    return (f"Blocked by your organization's rules: {reason.rstrip(' .')}. Tell the person plainly that you cannot help with this "
             "here. This is a policy decision, not a technical failure.")[:VOICE_APPEND_MAX]
 
 
