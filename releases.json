@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.23.1",
+    "date": "2026-10-22",
+    "changes": [
+      "On your firewall's Content rules page, Back to console now opens your Messages rules."
+    ]
+  },
+  {
     "version": "1.23.0",
     "date": "2026-10-22",
     "changes": [
