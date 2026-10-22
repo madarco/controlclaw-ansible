@@ -77,6 +77,12 @@ const NAMED_REQUEST_MAX = 30000;
 const MAX_QUEUED = 2;
 // Appends are capped at 500 tokens by the provider; stay well under it.
 const MAX_APPEND_CHARS = 1800;
+// The main agent's words with no delegation of this session (a task's result, an answer to a lookup
+// taken over from an ended session) start with one of these, so the firewall's content rules check
+// them as answers (controlclaw docs/plans/firewall-content-rules.md §5.2).
+const LOOKUP_PREFIX = 'Result of the lookup: ';
+const TASK_PREFIX = 'Result of a task: ';
+const ADOPTED_PREFIX = 'Answer to an earlier lookup: ';
 // The meeting so far: the end of it in a woken session's instructions (the firewall allows 32,000
 // characters in all), the whole of it, clipped in the middle, as a lookup's context.
 const CONTEXT_CHARS = 12000;
@@ -714,7 +720,7 @@ export class LiveBridge {
   say(text) {
     if (this.closed || !this.ready || typeof text !== 'string' || !text) return false;
     this.addressedAt = Date.now();
-    this.append('session.commentary.append', null, text.slice(0, MAX_APPEND_CHARS));
+    this.append('session.commentary.append', null, (TASK_PREFIX + text).slice(0, MAX_APPEND_CHARS));
     return true;
   }
   /** Exactly one final answer per lookup. A result for a lookup newer ones have overtaken is given quietly. */
@@ -724,7 +730,7 @@ export class LiveBridge {
     let text = message;
     if (!text) {
       const value = typeof result?.text === 'string' ? result.text : JSON.stringify(result ?? null);
-      text = `Result of the lookup: ${value}`;
+      text = LOOKUP_PREFIX + value;
     }
     // The model sometimes re-asks while a lookup runs (someone said "okay, take your time"). The
     // same answer again within a minute is passed quietly, so it is not read out twice.
@@ -747,7 +753,10 @@ export class LiveBridge {
     this.append(spoken ? 'session.commentary.append' : 'session.thinking.append', id, text);
   }
   // A lookup taken over from a session that ended has no delegation in this one.
-  append(type, delegationId, content) { this.send({ type, delegation_id: this.adopted?.has(delegationId) ? null : delegationId, content }); }
+  append(type, delegationId, content) {
+    if (!this.adopted?.has(delegationId)) { this.send({ type, delegation_id: delegationId, content }); return; }
+    this.send({ type, delegation_id: null, content: content.startsWith(LOOKUP_PREFIX) ? content : ADOPTED_PREFIX + content });
+  }
   /**
    * Take over what a session that ended left (always-session.js): its unanswered lookups, whose
    * consults are still running and will answer here, and the windows in which the agent may speak.

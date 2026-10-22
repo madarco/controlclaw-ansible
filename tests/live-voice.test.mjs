@@ -270,3 +270,18 @@ test('acknowledged when the request turns out addressed after the delegation; a 
  assert.equal(acks(f).length,1);
  f.bridge.close();
 });
+test('the main agent\'s words with no delegation of this session are marked, so the firewall checks them',t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture('meeting',LiveBridge,{enabled:false,words:['ControlClaw']});
+ assert.equal(f.bridge.say('Task 1 is done: the file is created.'),true);
+ assert.equal(f.appends().at(-1).content,'Result of a task: Task 1 is done: the file is created.');assert.equal(f.appends().at(-1).delegation_id,null);
+ // Lookups taken over from a session that ended: an answer keeps its own mark, anything else gets one.
+ f.bridge.adopt({jobs:[{id:'a1'},{id:'a2'}]});
+ f.bridge.submitToolResult('a1',{text:'Lemon shortbread.'});
+ f.bridge.final('a2','Done: a reminder for the owner is set.',false);
+ assert.deepEqual(f.appends().slice(-2).map(e=>[e.delegation_id,e.content]),[[null,'Result of the lookup: Lemon shortbread.'],[null,'Answer to an earlier lookup: Done: a reminder for the owner is set.']]);
+ // Its own delegations are unchanged.
+ f.bridge.event({type:'session.delegation.created',delegation:{id:'d1'}});f.bridge.submitToolResult('d1',{text:'Tuesday.'});
+ assert.equal(f.appends().find(e=>e.delegation_id==='d1'&&/Tuesday/.test(e.content)).content,'Result of the lookup: Tuesday.');
+ f.bridge.close();
+});

@@ -163,7 +163,7 @@ test('in the meeting: the consult is offered CC_TASK, the voice says "on it" at 
   f.finish[0](reply('Created meeting-task.txt.'));
   await until(() => spoken(ws).length === 2);
   assert.equal(spoken(ws)[1].delegation_id, null);
-  assert.match(spoken(ws)[1].content, /^Task 1 \("Create the file meeting-task\.txt with the word done in it\."\), is done: Created meeting-task\.txt\./);
+  assert.match(spoken(ws)[1].content, /^Result of a task: Task 1 \("Create the file meeting-task\.txt with the word done in it\."\), is done: Created meeting-task\.txt\./);
   v.bridge.close();
 });
 
@@ -314,7 +314,7 @@ test('in the meeting: a follow-up the consult asks for is queued behind its runn
   f.finish[0](reply('Made paper.html.'));
   await until(() => f.finish.length === 2);
   f.finish[1](reply('Made it red.'));
-  await until(() => spoken(ws).some(e => /^Task 1, follow-up 1 \("Make the pulping box red\."\), is done: Made it red\./.test(e.content)));
+  await until(() => spoken(ws).some(e => /^Result of a task: Task 1, follow-up 1 \("Make the pulping box red\."\), is done: Made it red\./.test(e.content)));
   v.bridge.close();
 });
 
