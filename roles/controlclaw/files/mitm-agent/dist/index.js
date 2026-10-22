@@ -103452,7 +103452,7 @@ import { existsSync as existsSync18, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
   commit: true ? "unknown" : "unknown",
-  builtAt: true ? "2026-10-22T10:37:01.251Z" : "unknown"
+  builtAt: true ? "2026-10-22T13:56:11.735Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -104447,7 +104447,7 @@ async function main() {
         held: () => contentRules?.heldNow() ?? [],
         stopped: () => contentStopped,
         agentName: (vmId2) => identities.find((i2) => String(i2.vm_id) === vmId2)?.name ?? null,
-        consoleUrl: () => FIREWALL_URL.startsWith("http") ? new URL("/dashboard/security#content-rules", FIREWALL_URL).toString() : null
+        consoleUrl: () => FIREWALL_URL.startsWith("http") ? new URL("/dashboard/security?type=messages", FIREWALL_URL).toString() : null
       });
       const as = access.status();
       console.log(
