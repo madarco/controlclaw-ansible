@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.22.0",
+    "date": "2026-10-22",
+    "changes": [
+      "Content rules: your organization can stop or hold messages your agents send or receive on Telegram, Slack, email, websites, webhooks and team chat.",
+      "Content rules also cover meetings and calls: a blocked question never reaches your agent, and a blocked answer is not spoken.",
+      "Held and stopped messages are listed on your firewall's own page, with their text kept on the firewall."
+    ]
+  },
+  {
     "version": "1.21.1",
     "date": "2026-10-16",
     "changes": [
