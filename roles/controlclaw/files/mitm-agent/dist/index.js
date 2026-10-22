@@ -40074,7 +40074,7 @@ import { appendFileSync as appendFileSync5, chmodSync, existsSync as existsSync7
 import { dirname as dirname5 } from "path";
 
 // src/content-rules-schema.ts
-var CONTENT_CHANNELS = ["telegram", "slack", "email", "web", "webhook", "teamchat"];
+var CONTENT_CHANNELS = ["telegram", "slack", "email", "web", "webhook", "teamchat", "voice"];
 var CONTENT_IN_ONLY = ["webhook"];
 var CONTENT_OUT_ONLY = ["web"];
 var CONTENT_DETECTORS = ["secrets", "iban", "card", "emails"];
@@ -40114,7 +40114,7 @@ var CORE_SECRETS_RULE = {
   id: "core-leaking-secrets",
   name: "Leaking secrets",
   direction: "out",
-  channels: ["telegram", "slack", "email", "teamchat"],
+  channels: ["telegram", "slack", "email", "teamchat", "voice"],
   patterns: [],
   detectors: ["secrets"],
   action: "block",
@@ -40296,7 +40296,8 @@ var CHANNEL_WORDS = {
   email: "email",
   web: "website requests",
   webhook: "webhooks",
-  teamchat: "team chat"
+  teamchat: "team chat",
+  voice: "meetings and calls"
 };
 function channelWords(channels2) {
   const words = channels2.map((c2) => CHANNEL_WORDS[c2]);
@@ -102693,7 +102694,7 @@ import { existsSync as existsSync18, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
   commit: true ? "unknown" : "unknown",
-  builtAt: true ? "2026-10-21T16:53:46.466Z" : "unknown"
+  builtAt: true ? "2026-10-22T06:05:41.873Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

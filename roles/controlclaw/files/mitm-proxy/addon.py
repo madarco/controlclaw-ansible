@@ -4414,6 +4414,13 @@ def websocket_message(flow):
             reject |= usage["responses"] > 120
     except (ValueError, TypeError):
         reject = True
+    if not reject:
+        try:
+            content_rules_voice(flow, voice, message, event)
+        except Exception as exc:  # fail closed: a frame that could not be checked ends the voice
+            log.warning(f"[content-rules] voice check failed, the voice was closed: {type(exc).__name__}")
+            _content_audit(flow, "error", "voice", "out" if message.from_client else "in", "block", purpose=voice.get("purpose", "meeting"))
+            reject = True
     if reject:
         message.drop()
         _voice_close(flow)
@@ -4857,8 +4864,9 @@ CONTENT_ACTIONS = ("log", "hold", "block")  # weakest to strongest
 
 CORE_SECRETS_RULE = {
     # Not the web: a browser signing in posts tokens on purpose (an OpenID `form_post` carries an
-    # `id_token`), and so does an OAuth refresh (docs/plans/firewall-content-rules.md §5.1).
-    "id": "core-leaking-secrets", "name": "Leaking secrets", "direction": "out", "channels": ["telegram", "slack", "email", "teamchat"],
+    # `id_token`), and so does an OAuth refresh (docs/plans/firewall-content-rules.md §5.1). Voice: a
+    # key the main agent answers with would be read aloud in the meeting (§5.2).
+    "id": "core-leaking-secrets", "name": "Leaking secrets", "direction": "out", "channels": ["telegram", "slack", "email", "teamchat", "voice"],
     "patterns": [], "detectors": ["secrets"], "action": "block",
     "reason": "it looks like it contains a password, key or token",
 }
@@ -5567,6 +5575,178 @@ def content_rules_slack_socket(flow) -> None:
         message.drop()
     finally:
         flow.websocket.messages.clear()
+
+
+# ---- Voice ---------------------------------------------------------------------------------------
+# Meetings and calls (docs/plans/firewall-content-rules.md §5.2), on the voice socket that
+# `voice_request` admitted, after its frame policy. In: the question to the main agent. gpt-realtime
+# carries it in the `ask_agent` arguments, which become a fixed sentence. gpt-live delegates with no
+# text and the box builds the question from what it heard since its last delegation and what the
+# voice just said, so the firewall checks all of the last VOICE_QUESTION_WINDOW of both: never less
+# than the box sends. A stopped delegation is answered here and never reaches the box. Out: the main
+# agent's answer, replaced with the refusal. A hold stops (a voice cannot wait). No transcript is
+# filtered and nothing is kept past the socket.
+
+VOICE_BLOCKED_QUESTION = "This request was blocked by the firewall. Reply only with the word blocked."
+# At least the box's own windows (`live.js`: QUESTION_WINDOW, 45 s, for what was heard, 15 s for what
+# was said), with a margin: the firewall times a line by its arrival, the box by its own event loop.
+VOICE_QUESTION_WINDOW = 50
+# The main agent's words as the box marks them (`live.js`): a lookup's answer, and with no delegation
+# of the session, a task's result and an answer to a lookup taken over from an ended session.
+VOICE_ANSWER_PREFIXES = ("Result of the lookup:", "Result of a task:", "Answer to an earlier lookup:")
+# Said instead of a rule's reason that itself contains what the rule stops: the voice would say the
+# words aloud, and hear them again in the next question.
+VOICE_PLAIN_REASON = "this is not discussed here"
+VOICE_APPEND_MAX = 4000
+# How often a socket asks whether any rule reads voice coming in, to skip keeping its transcript.
+VOICE_APPLIES_EVERY = 5
+_JSON_ESCAPE_RE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))')
+_JSON_ESCAPES = {"b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _voice_refusal(reason: str) -> str:
+    return (f"Blocked by your organization's rules: {reason}. Tell the person plainly that you cannot help with this "
+            "here. This is a policy decision, not a technical failure.")[:VOICE_APPEND_MAX]
+
+
+def _voice_rule(flow, voice: dict[str, Any], direction: str, text: str, must_check: bool = True) -> dict[str, Any] | None:
+    """
+    The rule that stops this text, recorded; None when it may pass. Rules that cannot be read stop it
+    when `must_check` (a question, an answer of the agent's), and let the box's own lines through.
+    """
+    extra = {"purpose": voice.get("purpose", "meeting")}
+    try:
+        rules = content_rules()
+    except ContentRulesUnreadable:
+        if not must_check:
+            return None
+        # Once per socket and direction: a call does not write a line for every frame.
+        _content_audit(flow, "error", "voice", direction, "block", once=getattr(flow, "id", None), detail="rules unknown", **extra)
+        return {"id": "error", "reason": "the firewall's rules are not available", "action": "block"}
+    if not text or not content_applies(rules, direction, "voice"):
+        return None
+    try:
+        rule = _content_acting(flow, rules, direction, "voice", text)
+    except ContentTooLong:
+        rule = {"id": "error", "reason": "it is too long to check", "action": "block"}
+    if rule is None:
+        return None
+    _content_audit(flow, rule["id"], "voice", direction, "block", **extra, **({"held": False} if rule["action"] == "hold" else {}))
+    if any(content_evaluate(rules, d, "voice", rule["reason"])[1] for d in ("in", "out")):
+        rule = {**rule, "reason": VOICE_PLAIN_REASON}
+    return rule
+
+
+def _json_unescape_loose(text: str) -> str:
+    """JSON escapes undone in a string that may not parse (an answer the box cut to fit)."""
+    def one(m: "re.Match[str]") -> str:
+        if m.group(1):
+            return chr(int(m.group(1), 16))
+        return _JSON_ESCAPES.get(m.group(2), m.group(2))
+    return _JSON_ESCAPE_RE.sub(one, text)
+
+
+def _voice_texts(value: Any) -> str:
+    """Every string in an answer, JSON in a string included; escapes undone where it does not parse."""
+    out: list[str] = []
+    try:
+        _tg_texts(value, True, out)
+    except ValueError:  # a repeated key, too deep: the raw text is checked instead
+        out = [value if isinstance(value, str) else json.dumps(value)]
+    return "\n".join(_json_unescape_loose(t) if "\\" in t else t for t in out)
+
+
+def _voice_reads_in(state: dict[str, Any]) -> bool:
+    """Whether to keep this socket's transcript: a rule reads voice coming in, or the rules are unknown."""
+    now = time.monotonic()
+    if now - state.get("applies_at", -VOICE_APPLIES_EVERY) >= VOICE_APPLIES_EVERY:
+        try:
+            state["applies"] = content_applies(content_rules(), "in", "voice")
+        except ContentRulesUnreadable:
+            state["applies"] = True
+        state["applies_at"] = now
+    return state["applies"]
+
+
+def content_rules_voice(flow, voice: dict[str, Any], message, event: Any) -> None:
+    """One frame the voice policy let through. Raises on a frame it cannot check: the caller closes the voice."""
+    if not isinstance(event, dict) or getattr(message, "injected", False):
+        return
+    kind = event.get("type")
+    state = voice.setdefault("content", {})
+    if voice.get("family") == "live":
+        if not message.from_client:
+            if kind in ("session.input_transcript.delta", "session.output_transcript.delta") and isinstance(event.get("delta"), str):
+                if not _voice_reads_in(state):
+                    return
+                now = time.monotonic()
+                heard = state.setdefault("heard", collections.deque())
+                heard.append((now, event["delta"]))
+                while heard and now - heard[0][0] > VOICE_QUESTION_WINDOW:
+                    heard.popleft()
+            elif kind == "session.delegation.created":
+                delegation = event.get("delegation")
+                did = delegation.get("id") if isinstance(delegation, dict) else None
+                if not isinstance(did, str) or not did or len(did) > 200:
+                    return  # the box refuses it itself
+                now = time.monotonic()
+                text = "".join(t for at, t in state.get("heard", ()) if now - at <= VOICE_QUESTION_WINDOW).strip()
+                rule = _voice_rule(flow, voice, "in", text)
+                if rule is None:
+                    return
+                # The box never starts this lookup. The answer is spoken, but the box plays the voice
+                # only to someone who addressed it (wake word, always listening), as for its own answers.
+                message.drop()
+                answer = {"type": "session.commentary.append", "delegation_id": did, "content": _voice_refusal(rule["reason"])}
+                _mitm_ctx.master.commands.call("inject.websocket", flow, False, json.dumps(answer).encode())
+            return
+        if kind in ("session.commentary.append", "session.thinking.append") and isinstance(event.get("content"), str):
+            content = event["content"]
+            answer = event.get("delegation_id") is not None or content.startswith(VOICE_ANSWER_PREFIXES)
+            # Quiet context (lines of the meeting heard) is not the agent's words.
+            if kind == "session.thinking.append" and not answer:
+                return
+            # The box's own spoken lines (the greeting, an acknowledgement, an older box's task result)
+            # are checked when the rules are known, and not stopped for want of them.
+            rule = _voice_rule(flow, voice, "out", content, must_check=answer)
+            if rule is not None:
+                event["content"] = _voice_refusal(rule["reason"])
+                message.content = json.dumps(event).encode()
+        return
+    gateway = voice.get("provider") == "gateway"
+    call_key = "callId" if gateway else "call_id"
+    if not message.from_client:
+        if kind not in ("function-call-arguments-done", "response.function_call_arguments.done"):
+            return
+        call_id, raw = event.get(call_key), event.get("arguments")
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else None
+        except ValueError:
+            return  # the box refuses it itself
+        if not isinstance(args, dict) or not isinstance(call_id, str):
+            return
+        rule = _voice_rule(flow, voice, "in", _voice_texts({k: args.get(k) for k in ("question", "context")}))
+        if rule is None:
+            return
+        event["arguments"] = json.dumps({"question": VOICE_BLOCKED_QUESTION})
+        message.content = json.dumps(event).encode()
+        blocked = state.setdefault("blocked", {})
+        blocked[call_id] = rule["reason"]
+        while len(blocked) > 50:
+            del blocked[next(iter(blocked))]
+        return
+    if kind not in ("conversation-item-create", "conversation.item.create"):
+        return
+    item = event.get("item")
+    if not isinstance(item, dict) or item.get("type") not in ("function-call-output", "function_call_output"):
+        return
+    reason = state.get("blocked", {}).pop(item.get(call_key), None)
+    if reason is None:
+        rule = _voice_rule(flow, voice, "out", _voice_texts(item.get("output")))
+        reason = rule["reason"] if rule is not None else None
+    if reason is not None:
+        item["output"] = json.dumps({"status": "blocked", "message": _voice_refusal(reason)})
+        message.content = json.dumps(event).encode()
 
 
 # ---- Email ---------------------------------------------------------------------------------------
