@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.26.0",
+    "date": "2026-10-23",
+    "changes": [
+      "Each agent's Home tab shows its CPU and memory over time, its activity of the last 12 hours, and a few counts.",
+      "The Brain page has an Overview with how many pages the brain keeps, by type, and which agents use it."
+    ]
+  },
+  {
     "version": "1.25.0",
     "date": "2026-10-23",
     "changes": [
