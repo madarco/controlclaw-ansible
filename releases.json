@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.29.0",
+    "date": "2026-10-23",
+    "changes": [
+      "AI Log Review is separate from the AI Firewall, with its own switch and who gets an email about its findings.",
+      "Agent cards and the agent's Home tab show a small picture of the agent's screen, refreshed every 30 seconds."
+    ]
+  },
+  {
     "version": "1.28.0",
     "date": "2026-10-23",
     "changes": [
