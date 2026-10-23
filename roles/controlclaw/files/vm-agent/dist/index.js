@@ -13434,6 +13434,8 @@ var CONTROL_PLANE_ROUTES = {
     "GET /backup/plan",
     "GET /search/status",
     "GET /meetings/status",
+    // The meeting instructions, for the console's editor: read only. The firewall writes them.
+    "GET /meetings/instructions",
     "GET /connectors/status",
     // The skills report: names, versions and hashes, no content. The one write switches a skill
     // that is already on this agent on or off (`skills.entries`); it cannot add or change a skill,
@@ -41742,8 +41744,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d80831a" : "unknown",
-  builtAt: true ? "2026-10-23T17:29:05+01:00" : "unknown"
+  commit: true ? "f70bbe4" : "unknown",
+  builtAt: true ? "2026-10-23T18:11:30+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -41831,11 +41833,12 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
+    // `meeting_instructions`: the firewall writes its meeting instructions (console-v3 unit 11).
     features: [
       ...speechFeatures(),
       ...consoleMcpConfigured() ? ["console_mcp"] : [],
       ...doctorAvailable() ? ["doctor_v1"] : [],
-      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "templates_steps2", "templates_bundles", "templates_check", "templates_repair", "templates_capture_ai", "skills_start", "skills_remove", "skills_capture", "notes_start", "storage_grow"],
+      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "meeting_instructions", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "templates_steps2", "templates_bundles", "templates_check", "templates_repair", "templates_capture_ai", "skills_start", "skills_remove", "skills_capture", "notes_start", "storage_grow"],
       // `disk_partners`: this box's disk report says how many partners the disk is bound to (the
       // role writes the marker with the container daemon that sends it). The console then knows a
       // count will follow and may note "no partner" itself in the meantime (disk-pairing.server.ts).
@@ -47303,6 +47306,9 @@ var PAGE_HEADERS3 = {
   "X-Frame-Options": "DENY",
   "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 };
+function meetingsTabUrl(consoleUrl2) {
+  return /^https:\/\/[^/]+\/dashboard\/agents\/[^/?#]+$/.test(consoleUrl2) ? `${consoleUrl2}/meetings` : null;
+}
 async function handleMeetings(req, res, url3, service, schedule, context) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
@@ -47322,6 +47328,23 @@ async function handleMeetings(req, res, url3, service, schedule, context) {
       });
     }
     return;
+  }
+  if (path === "/meetings/instructions" && (req.method === "GET" || req.method === "POST")) {
+    const write = req.method === "POST";
+    const firewall = await verifyMitmRequest(req, "meetings");
+    if (!firewall && (write || !await verifyRequest(req)))
+      return sendJson(res, 401, { error: write ? "Firewall signature required" : "Unauthorized" });
+    if (!service) return sendJson(res, 503, { error: "Meetings unavailable" });
+    try {
+      if (!write) return sendJson(res, 200, service.orders());
+      const body2 = await readJsonBody(req);
+      if (!body2) return sendJson(res, 400, { error: "Invalid request" });
+      return sendJson(res, 200, service.saveOrders(body2));
+    } catch (error62) {
+      if (error62 instanceof OrdersError) return sendJson(res, 409, { error: error62.message });
+      console.error(`[meetings] instructions: ${error62 instanceof Error ? error62.message.slice(0, 200) : "unknown error"}`);
+      return sendJson(res, 409, { error: "The meeting instructions could not be read or saved." });
+    }
   }
   if (path === "/meetings/status" && req.method === "GET") {
     if (!await verifyMitmRequest(req, "meetings") && !await verifyRequest(req))
@@ -47344,7 +47367,7 @@ async function handleMeetings(req, res, url3, service, schedule, context) {
         ctx: context.shell,
         title: `${agentName} \xB7 meetings`,
         active: "meetings",
-        body: `<div id="root"></div><script id="cc-meetings" type="application/json">${inlineJson({ agentName, meetingId: pageId?.[1] ?? null })}</script><script type="module" src="/__cc/files-ui/meetings.js"></script>`
+        body: `<div id="root"></div><script id="cc-meetings" type="application/json">${inlineJson({ agentName, meetingId: pageId?.[1] ?? null, consoleUrl: meetingsTabUrl(context.shell.consoleUrl) })}</script><script type="module" src="/__cc/files-ui/meetings.js"></script>`
       })
     );
     return;
@@ -47400,18 +47423,16 @@ async function handleMeetings(req, res, url3, service, schedule, context) {
   }
   if (path === "/__cc/meetings/schedule" && req.method === "GET")
     return sendJson(res, 200, schedule?.list() ?? { enabled: false, mode: "transcript", entries: [] });
-  if (path === "/__cc/meetings/instructions" && (req.method === "GET" || req.method === "POST")) {
+  if (path === "/__cc/meetings/instructions" && req.method === "GET") {
     try {
-      if (req.method === "GET") return sendJson(res, 200, service.orders());
-      const body2 = await readJsonBody(req);
-      if (!body2) return sendJson(res, 400, { error: "Invalid request" });
-      return sendJson(res, 200, service.saveOrders(body2));
+      return sendJson(res, 200, service.orders());
     } catch (error62) {
-      if (error62 instanceof OrdersError) return sendJson(res, 409, { error: error62.message });
       console.error(`[meetings] instructions: ${error62 instanceof Error ? error62.message.slice(0, 200) : "unknown error"}`);
-      return sendJson(res, 409, { error: "The meeting instructions could not be read or saved. Update this agent and try again." });
+      return sendJson(res, 409, { error: "The meeting instructions could not be read. Update this agent and try again." });
     }
   }
+  if (path === "/__cc/meetings/instructions" && req.method === "POST")
+    return sendJson(res, 405, { error: "Change the meeting instructions on this agent's Meetings tab in your console." });
   if (req.method !== "POST") return sendJson(res, 404, { error: "Not found" });
   const signin = context.signin;
   if (path.startsWith("/__cc/meetings/signin/")) {

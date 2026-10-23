@@ -1164,6 +1164,8 @@ var CONTROL_PLANE_ROUTES = {
     "GET /backup/plan",
     "GET /search/status",
     "GET /meetings/status",
+    // The meeting instructions, for the console's editor: read only. The firewall writes them.
+    "GET /meetings/instructions",
     "GET /connectors/status",
     // The skills report: names, versions and hashes, no content. The one write switches a skill
     // that is already on this agent on or off (`skills.entries`); it cannot add or change a skill,
@@ -6464,8 +6466,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "d80831a" : "unknown",
-  builtAt: true ? "2026-10-23T17:29:05+01:00" : "unknown"
+  commit: true ? "f70bbe4" : "unknown",
+  builtAt: true ? "2026-10-23T18:11:30+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6553,11 +6555,12 @@ function boxSoftware(opts = {}) {
     // `phone_voice_edit`: the phone apply replaces the wake names, so the console may change the
     // speech model and wake words of an assigned number in place (T-phonevoice).
     // `meeting_followup`: this agent acts on a meeting's notes after it ends (meeting-followup.ts).
+    // `meeting_instructions`: the firewall writes its meeting instructions (console-v3 unit 11).
     features: [
       ...speechFeatures(),
       ...consoleMcpConfigured() ? ["console_mcp"] : [],
       ...doctorAvailable() ? ["doctor_v1"] : [],
-      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "templates_steps2", "templates_bundles", "templates_check", "templates_repair", "templates_capture_ai", "skills_start", "skills_remove", "skills_capture", "notes_start", "storage_grow"],
+      ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "meeting_instructions", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "templates_steps2", "templates_bundles", "templates_check", "templates_repair", "templates_capture_ai", "skills_start", "skills_remove", "skills_capture", "notes_start", "storage_grow"],
       // `disk_partners`: this box's disk report says how many partners the disk is bound to (the
       // role writes the marker with the container daemon that sends it). The console then knows a
       // count will follow and may note "no partner" itself in the meantime (disk-pairing.server.ts).
