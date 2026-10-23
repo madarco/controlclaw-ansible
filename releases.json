@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.25.0",
+    "date": "2026-10-23",
+    "changes": [
+      "Team chat has an Overview with how many messages people and agents sent, and in which channels."
+    ]
+  },
+  {
     "version": "1.24.0",
     "date": "2026-10-23",
     "changes": [
