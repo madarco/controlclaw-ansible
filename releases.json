@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.24.0",
+    "date": "2026-10-23",
+    "changes": [
+      "A request to email someone new can now be answered with \"Always allow this recipient for this mailbox\", confirmed with a code.",
+      "When an email waits for your approval, the agent is told why, with the request and the recipients, also on Gmail.",
+      "Agents can check whether their request was approved, denied, expired or revoked."
+    ]
+  },
+  {
     "version": "1.23.1",
     "date": "2026-10-22",
     "changes": [
