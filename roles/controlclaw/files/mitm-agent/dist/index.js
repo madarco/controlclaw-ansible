@@ -39352,6 +39352,7 @@ var MODE_WORDS = {
   anyone: "be able to email anyone, with no list and no request to you"
 };
 var sameEntry = (a2, b2) => a2.value === b2.value && a2.mailbox === b2.mailbox;
+var EMAIL_GRANT_SECONDS = 30 * 60;
 function applyChange(rules, change) {
   const next = structuredClone(rules);
   const add = (list2, entry) => {
@@ -39647,12 +39648,19 @@ function recipientsFromHeaderBlock(head) {
 var HOUR = 36e5;
 var DAY = 24 * HOUR;
 var HELD_DAYS = 7;
-var EMAIL_GRANT_SECONDS = 30 * 60;
 var CODE_SCOPE = "email";
 function recipientScope(mailbox, recipient, n2 = 0) {
   return `EMAIL ${mailbox} -> ${recipient}${n2 ? ` #${n2}` : ""}`;
 }
+function parseRecipientScope(scope) {
+  const m2 = /^EMAIL ((?:agentmail|gmail):\S+) -> (\S+?)(?: #\d+)?$/.exec(scope);
+  return m2 ? { mailbox: m2[1], recipient: m2[2] } : null;
+}
+function listedRecipient(rules, address, mailbox) {
+  return listed(rules.outbound.recipients, address, mailbox) || rules.outbound.repliesToSenders && listed(rules.inbound.senders, address, mailbox);
+}
 var STALE_ASK_MS = HOUR;
+var DROPPED_KEEP_MS = 2 * HOUR;
 function permissionIdFor(scope) {
   return "perm_" + createHash10("sha256").update(scope, "utf8").digest("hex").slice(0, 32);
 }
@@ -39770,6 +39778,7 @@ var EmailRulesFirewall = class {
       else delete this.counters.sends[k2];
     }
     this.counters.held = this.counters.held.filter((h2) => now2 - h2.at < HELD_DAYS * DAY).slice(-500);
+    if (this.counters.dropped) this.counters.dropped = this.counters.dropped.filter((d2) => now2 - d2.at < DROPPED_KEEP_MS);
     for (const [k2, ep] of Object.entries(this.counters.episodes ?? {}))
       if (!ep.used && ep.askedAt !== null && now2 - ep.askedAt > 30 * DAY) delete this.counters.episodes[k2];
     const tmp = join(dirname4(this.opts.countersPath), `.${basename(this.opts.countersPath)}.tmp`);
@@ -39847,14 +39856,42 @@ var EmailRulesFirewall = class {
     }
   }
   async apply(change) {
-    this.store = { ...this.store, rules: applyChange(this.store.rules, change) };
+    const before = this.store.rules;
+    this.store = { ...this.store, rules: applyChange(before, change) };
     this.save();
+    this.revokeDropped(before, this.store.rules);
     this.verdicts.clear();
     try {
       await this.opts.onChanged?.();
     } catch {
     }
     return { ok: true, status: "applied", data: this.summary() };
+  }
+  /**
+   * Someone the lists let the agents email before this change, and no longer: any one-time
+   * approval for them ends now too ("Always allow" approves the request as well as listing them).
+   * The removal is remembered, so an ask from before it is never honoured, whether its approval
+   * is in grants.json now or arrives later (approved in the console, not yet polled; or granted
+   * again after a restart). Their next send asks again, under a new id (`approvedScope`).
+   */
+  revokeDropped(before, after) {
+    const gone = (list2, kept) => list2.filter((e) => !kept.some((k2) => k2.value === e.value && k2.mailbox === e.mailbox));
+    const dropped = [
+      ...gone(before.outbound.recipients, after.outbound.recipients),
+      ...before.outbound.repliesToSenders ? gone(before.inbound.senders, after.outbound.repliesToSenders ? after.inbound.senders : []) : []
+    ];
+    if (!dropped.length) return;
+    const at2 = this.now();
+    (this.counters.dropped ??= []).push(...dropped.map((e) => ({ value: e.value, mailbox: e.mailbox, at: at2 })));
+    this.saveCounters();
+    this.opts.revokeGrants?.((scope) => {
+      const p2 = parseRecipientScope(scope);
+      return !!p2 && listedRecipient(before, p2.recipient, p2.mailbox) && !listedRecipient(after, p2.recipient, p2.mailbox);
+    });
+  }
+  /** Whether a change took `recipient` off the lists for `mailbox` after `since`. */
+  droppedSince(mailbox, recipient, since) {
+    return (this.counters.dropped ?? []).some((d2) => d2.at > since && listed([{ value: d2.value, mailbox: d2.mailbox }], recipient, mailbox));
   }
   // ---- inbound -------------------------------------------------------------------------------
   hold(mailbox, reason, from) {
@@ -40018,13 +40055,12 @@ var EmailRulesFirewall = class {
     const rules = this.store.rules;
     const mode = effectiveMode(rules, r2.mailbox);
     if (mode === "block") return { decision: "block", reason: "sending_off" };
-    const allowed = (a2) => listed(rules.outbound.recipients, a2, r2.mailbox) || rules.outbound.repliesToSenders && listed(rules.inbound.senders, a2, r2.mailbox);
-    const unlisted = mode === "anyone" ? [] : r2.list.filter((a2) => !allowed(a2));
+    const unlisted = mode === "anyone" ? [] : r2.list.filter((a2) => !listedRecipient(rules, a2, r2.mailbox));
     if (unlisted.length) {
       if (mode === "listed") return { decision: "block", reason: "not_allowed" };
       const asks = unlisted.flatMap((a2) => {
         const scope = this.approvedScope(r2.mailbox, a2);
-        return scope ? [{ scope, summary: `Send email to ${a2} from ${r2.mailbox.replace(/^[a-z]+:/, "")}` }] : [];
+        return scope ? [{ scope, summary: `Send email to ${a2} from ${r2.mailbox.replace(/^[a-z]+:/, "")}`, recipient: a2, mailbox: r2.mailbox }] : [];
       });
       this.saveCounters();
       if (asks.length) return { decision: "ask", asks };
@@ -40049,6 +40085,10 @@ var EmailRulesFirewall = class {
     const key = hashMailbox(`${mailbox} ${recipient}`);
     const ep = eps[key] ??= { n: 0, askedAt: null, used: false };
     const now2 = this.now();
+    if (ep.askedAt !== null && this.droppedSince(mailbox, recipient, ep.askedAt)) {
+      eps[key] = { n: ep.n + 1, askedAt: now2, used: false };
+      return recipientScope(mailbox, recipient, ep.n + 1);
+    }
     if (this.opts.grantActive(permissionIdFor(recipientScope(mailbox, recipient, ep.n)))) {
       ep.grantFrom ??= now2;
       if (now2 - ep.grantFrom < EMAIL_GRANT_SECONDS * 1e3) {
@@ -42196,6 +42236,9 @@ var GrantStore = class {
   active(id, nowSec) {
     const g2 = this.grants[id];
     return !!g2 && g2.expires_at > nowSec;
+  }
+  entries() {
+    return Object.entries(this.grants);
   }
   set(id, grant) {
     this.grants[id] = grant;
@@ -55207,10 +55250,15 @@ var PermissionBridge = class {
     this.opts = opts;
     this.grants = opts.grants ?? new GrantStore(opts.grantsPath);
   }
+  /** Ids ControlClaw knows, polled for an answer. */
   submitted = /* @__PURE__ */ new Set();
+  /** `<id>|<agent>` already told to ControlClaw, so each agent is added to its request once. */
+  sentFor = /* @__PURE__ */ new Set();
   meta = /* @__PURE__ */ new Map();
   /** Email recipient ids already granted once; never polled or granted again. */
   emailGranted = /* @__PURE__ */ new Set();
+  /** Revoked email approvals the console has not been told about yet. */
+  revokedUnsent = /* @__PURE__ */ new Set();
   grants;
   async authHeaders(extra = {}) {
     return { Authorization: `Bearer ${await this.opts.getToken()}`, ...extra };
@@ -55218,6 +55266,37 @@ var PermissionBridge = class {
   async tick() {
     await this.drainPending();
     await this.pollGrants();
+    await this.sendRevoked();
+  }
+  /**
+   * Ends the email approvals whose scope matches (the email rules took that person off the
+   * lists), and tells ControlClaw, so the agent's `cc-perm status` says revoked. Returns the scopes.
+   */
+  revokeEmail(match) {
+    const out = [];
+    const now2 = Math.floor(Date.now() / 1e3);
+    for (const [pid, grant] of this.grants.entries()) {
+      if (grant.expires_at <= now2 || !grant.scope.startsWith("EMAIL ") || grant.by === "ai" || !match(grant.scope)) continue;
+      this.grants.delete(pid);
+      this.emailGranted.add(pid);
+      this.revokedUnsent.add(pid);
+      out.push(grant.scope);
+      console.log(`[perm] revoked ${pid}`);
+    }
+    return out;
+  }
+  async sendRevoked() {
+    for (const pid of this.revokedUnsent) {
+      try {
+        const res = await fetch(this.opts.permissionUrl, {
+          method: "POST",
+          headers: await this.authHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify({ permission_id: pid, resolution: "revoked" })
+        });
+        if (res.ok || res.status === 404 || res.status === 403) this.revokedUnsent.delete(pid);
+      } catch {
+      }
+    }
   }
   /** Submit any new pending permission requests to ControlClaw (idempotent). */
   async drainPending() {
@@ -55230,9 +55309,11 @@ var PermissionBridge = class {
       } catch {
         continue;
       }
-      if (!rec.permission_id || this.submitted.has(rec.permission_id)) continue;
+      const key = `${rec.permission_id}|${rec.vm_id ?? ""}`;
+      if (!rec.permission_id || this.sentFor.has(key)) continue;
+      this.sentFor.add(key);
       this.submitted.add(rec.permission_id);
-      this.meta.set(rec.permission_id, rec);
+      if (!this.meta.has(rec.permission_id)) this.meta.set(rec.permission_id, rec);
       try {
         await fetch(this.opts.permissionUrl, {
           method: "POST",
@@ -55242,14 +55323,16 @@ var PermissionBridge = class {
             scope: rec.scope,
             summary: rec.summary ?? rec.scope,
             ...rec.kind ? { kind: rec.kind } : {},
+            ...rec.kind === "email_recipient" && rec.recipient && rec.mailbox ? { recipient: rec.recipient, mailbox: rec.mailbox } : {},
             host: rec.host,
             method: rec.method,
             path: rec.path,
-            ...rec.ai_category ? { ai_reason: rec.ai_category } : {}
+            ...rec.ai_category ? { ai_reason: rec.ai_category } : {},
+            ...rec.vm_id ? { agent_vm_id: rec.vm_id } : {}
           })
         });
       } catch (err) {
-        this.submitted.delete(rec.permission_id);
+        this.sentFor.delete(key);
         console.error(`[perm] submit failed: ${err.message}`);
       }
     }
@@ -103451,8 +103534,8 @@ import { uptime } from "os";
 import { existsSync as existsSync18, readFileSync as readFileSync22 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "unknown" : "unknown",
-  builtAt: true ? "2026-10-22T13:56:11.735Z" : "unknown"
+  commit: true ? "061d8f6" : "unknown",
+  builtAt: true ? "2026-10-23T11:56:17+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -103705,6 +103788,7 @@ var logins = null;
 var loginsWeb = null;
 var agentmail = null;
 var emailRules2 = null;
+var revokeEmailGrants = null;
 var contentRules = null;
 var contentStopped = null;
 var contentPage = null;
@@ -104267,6 +104351,7 @@ async function main() {
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), hostFor: agentHostFor, onUnknown: learnAgents }),
         codeRoutes: () => channels?.codeRoutes() ?? [],
         grantActive: (id) => new GrantStore(GRANTS_PATH).active(id, Math.floor(Date.now() / 1e3)),
+        revokeGrants: (match) => revokeEmailGrants?.(match) ?? [],
         // Null when the AgentMail store did not load: the move of its sender lists then waits.
         legacySenders: () => agentmail ? agentmail.legacySenders() : null,
         onChanged: async () => {
@@ -104893,6 +104978,7 @@ async function main() {
         getToken,
         ttlSeconds: PERMISSION_TTL
       });
+      revokeEmailGrants = (match) => bridge.revokeEmail(match);
       console.log("[mitm-agent] permission bridge enabled");
       setInterval(() => void bridge.tick().catch((e) => console.error("[perm] tick:", e.message)), PERMISSION_POLL_MS);
     }

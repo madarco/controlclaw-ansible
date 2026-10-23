@@ -361,9 +361,12 @@ def grant_active(permission_id: str) -> bool:
 
 
 def record_pending(permission_id: str, record: dict[str, Any]) -> None:
-    if permission_id in _pending_seen:
+    # Once per agent: an id is per scope, so two agents may ask for the same one, and each may
+    # read only the requests raised for it.
+    seen = f"{permission_id}|{record.get('vm_id') or ''}"
+    if seen in _pending_seen:
         return
-    _pending_seen.add(permission_id)
+    _pending_seen.add(seen)
     try:
         with open(PENDING_PATH, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -1265,10 +1268,39 @@ def email_send_request(flow: http.HTTPFlow, vm_id: str | None) -> dict[str, Any]
     return payload
 
 
+def email_approval_doc(pids: list[str], recipients: list[str], summary: str) -> dict[str, Any]:
+    """What an agent is told when a send waits for the owner: who, which request, and what to do."""
+    who = ", ".join(recipients) if recipients else "a new recipient"
+    ids = ", ".join(pids)
+    wait = " and ".join(f"`cc-perm {p}`" for p in pids)
+    message = (f"Approval needed: nothing was sent. The owner has been asked to approve emailing {who} "
+               f"(request {ids}). The whole message is held, every recipient included, and it does not send itself "
+               f"once approved: send it again after approval. Wait for the answer with {wait}, or check it with "
+               f"`cc-perm status {pids[0] if pids else '<id>'}`. Tell the person you are waiting for the owner. Do not retry in a loop.")
+    return {"permission_id": pids[0] if pids else None, "permission_ids": pids, "reason": "email_recipient_needs_approval",
+            "recipients": recipients, "summary": summary, "resend": "manual", "message": message,
+            "expires_at": int(time.time()) + PERMISSION_TTL}
+
+
+def _email_answer(flow: http.HTTPFlow, status: int, doc: dict[str, Any]) -> None:
+    """
+    A refused or held send, as the agent's mail client shows it. Google's clients (gog included)
+    read only Google's own `{"error": {...}}` object and print an empty error for anything else, so
+    on googleapis.com the reason and the message also go in that shape.
+    """
+    if is_googleapis(flow.request.pretty_host):
+        doc = {**doc, "error": {"code": status, "message": doc["message"],
+                                "status": "FAILED_PRECONDITION" if status == PERMISSION_STATUS else "PERMISSION_DENIED",
+                                # gog prints the first reason: the word the skills name (email_refused, or
+                                # email_recipient_needs_approval), not the detail, which is in the message.
+                                "errors": [{"domain": "controlclaw.firewall", "reason": doc["error"] if isinstance(doc.get("error"), str) else doc["reason"],
+                                            "message": doc["message"]}]}}
+    flow.response = http.Response.make(status, json.dumps(doc), {"Content-Type": "application/json"})
+
+
 def _email_refuse(flow: http.HTTPFlow, reason: str, message: str | None = None, rule: str | None = None) -> None:
-    flow.response = http.Response.make(
-        403, json.dumps({"error": "email_refused", "reason": reason, "message": message or _EMAIL_REASONS.get(reason, "Email refused by the firewall.")}),
-        {"Content-Type": "application/json"})
+    _email_answer(flow, 403, {"error": "email_refused", "reason": reason,
+                              "message": message or _EMAIL_REASONS.get(reason, "Email refused by the firewall.")})
     flow.metadata["cc_effect"] = "block"
     flow.metadata["cc_rule"] = rule or "email"
     rec = _http_record(flow, "block")
@@ -1302,21 +1334,20 @@ async def email_outbound(flow: http.HTTPFlow, vm_id: str | None) -> bool:
         flow.metadata["cc_email_reservation"] = result["id"]
         return True
     if decision == "ask" and isinstance(result.get("asks"), list) and result["asks"]:
-        asks = [a for a in result["asks"] if isinstance(a, dict) and isinstance(a.get("scope"), str) and isinstance(a.get("summary"), str)]
-        pids = []
-        for ask in asks[:20]:
+        asks = [a for a in result["asks"] if isinstance(a, dict) and isinstance(a.get("scope"), str) and isinstance(a.get("summary"), str)][:20]
+        pids, recipients = [], []
+        for ask in asks:
             pid = permission_id_for(ask["scope"])
             pids.append(pid)
-            record_pending(pid, {"permission_id": pid, "scope": ask["scope"], "summary": ask["summary"][:300],
+            recipient = ask.get("recipient") if isinstance(ask.get("recipient"), str) else None
+            mailbox = ask.get("mailbox") if isinstance(ask.get("mailbox"), str) else None
+            if recipient:
+                recipients.append(recipient)
+            record_pending(pid, {"permission_id": pid, "vm_id": vm_id, "scope": ask["scope"], "summary": ask["summary"][:300],
                                  "kind": "email_recipient", "host": flow.request.pretty_host, "method": flow.request.method,
-                                 "path": redact_path(flow.request.path, flow.request.pretty_host)})
-        flow.response = http.Response.make(
-            PERMISSION_STATUS,
-            json.dumps({"permission_id": pids[0] if pids else None, "permission_ids": pids, "reason": "email_recipient_needs_approval",
-                        "summary": "; ".join(a["summary"] for a in asks[:20]),
-                        "message": "The owner has been asked to approve this recipient. Tell the person, and send again once it is approved.",
-                        "expires_at": int(time.time()) + PERMISSION_TTL}),
-            {"Content-Type": "application/json"})
+                                 "path": redact_path(flow.request.path, flow.request.pretty_host),
+                                 **({"recipient": recipient[:254], "mailbox": mailbox[:300]} if recipient and mailbox else {})})
+        _email_answer(flow, PERMISSION_STATUS, email_approval_doc(pids, recipients, "; ".join(a["summary"] for a in asks)))
         flow.metadata["cc_effect"] = "require_permission"
         flow.metadata["cc_rule"] = "email"
         rec = _http_record(flow, "require_permission")

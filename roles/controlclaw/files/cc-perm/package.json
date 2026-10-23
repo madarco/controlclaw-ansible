@@ -10,7 +10,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
     "build": "tsup src/index.ts --format esm --target node22 --clean",
-    "dev": "tsx src/index.ts"
+    "dev": "tsx src/index.ts",
+    "test": "tsx --test src/status.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.0",

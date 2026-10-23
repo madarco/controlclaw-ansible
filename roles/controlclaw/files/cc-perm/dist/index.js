@@ -706,6 +706,34 @@ async function importPKCS8(pkcs8, alg, options) {
   return fromPKCS8(pkcs8, alg, options);
 }
 
+// src/status.ts
+function effectiveStatus(l, now = Date.now()) {
+  if (l.status === "pending" && l.expiresAt && new Date(l.expiresAt).getTime() < now) return "expired";
+  if (l.status === "approved" && l.validUntil && new Date(l.validUntil).getTime() < now) return "expired";
+  return l.status;
+}
+var STATUS_EXIT = { approved: 0, applied: 0, denied: 2, failed: 2, expired: 3, revoked: 4, pending: 5, unknown: 6 };
+function explain(status, l) {
+  const email = l.kind === "email_recipient";
+  switch (status) {
+    case "approved":
+    case "applied":
+      if (email && l.alwaysAllowed) return "approved: send the message again now. The owner chose Always allow: this recipient stays allowed until removed from the email rules";
+      return email && l.validUntil ? `approved: send the message again now. The approval covers this recipient until ${new Date(l.validUntil).toISOString()}` : "approved: retry your request";
+    case "pending":
+      return "pending: the owner has not answered yet; wait with `cc-perm <id>` or check again later";
+    case "denied":
+    case "failed":
+      return "denied: the owner said no; do not send it, and tell whoever asked";
+    case "expired":
+      return email && l.status === "approved" ? "expired: this approval's 30 minutes are over. Send again: unless the owner has listed the recipient since, the owner is asked again" : "expired: nobody answered in time; sending again asks the owner again";
+    case "revoked":
+      return "revoked: the owner approved it, then removed this recipient from the email rules; do not send it";
+    default:
+      return "unknown: no request with this id that this agent may see; it may be another agent's, or never have been raised";
+  }
+}
+
 // src/index.ts
 var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 var TIMEOUT = parseInt(process.env.CC_PERM_TIMEOUT ?? "300", 10);
@@ -731,6 +759,23 @@ async function boxToken() {
   return new SignJWT({ vmId }).setProtectedHeader({ alg: "EdDSA" }).setIssuedAt().setExpirationTime("30s").sign(key);
 }
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function lookup(permissionId) {
+  const url = `${baseUrl()}/api/vm-agent/permission?permission_id=${encodeURIComponent(permissionId)}`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${await boxToken()}` } });
+  if (!res.ok) return null;
+  const body = await res.json();
+  return { status: body.status ?? "unknown", expiresAt: body.expiresAt ?? null, kind: body.kind ?? null, validUntil: body.validUntil ?? null, alwaysAllowed: body.alwaysAllowed === true };
+}
+async function showStatus(permissionId) {
+  const l = await lookup(permissionId);
+  if (!l) {
+    console.error("failed to read the request");
+    process.exit(1);
+  }
+  const status = effectiveStatus(l);
+  console.log(explain(status, l));
+  process.exit(STATUS_EXIT[status] ?? 6);
+}
 async function listPending() {
   const url = `${baseUrl()}/api/vm-agent/permission`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${await boxToken()}` } });
@@ -752,25 +797,32 @@ async function main() {
     await listPending();
     return;
   }
+  if (arg === "status") {
+    if (!process.argv[3]) {
+      console.error("usage: cc-perm status <permission_id>");
+      process.exit(64);
+    }
+    await showStatus(process.argv[3]);
+    return;
+  }
   const permissionId = arg;
   if (!permissionId) {
-    console.error("usage: cc-perm <permission_id>   |   cc-perm --pending");
+    console.error("usage: cc-perm <permission_id>   |   cc-perm status <permission_id>   |   cc-perm --pending");
     process.exit(64);
   }
-  const url = `${baseUrl()}/api/vm-agent/permission?permission_id=${encodeURIComponent(permissionId)}`;
   const deadline = Date.now() + TIMEOUT * 1e3;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${await boxToken()}` } });
-      if (res.ok) {
-        const { status } = await res.json();
-        if (status === "approved") {
+      const l = await lookup(permissionId);
+      if (l) {
+        const status = effectiveStatus(l);
+        if (status === "approved" || status === "applied") {
           console.log(`approved: ${permissionId} \u2014 retry your request`);
           process.exit(0);
         }
-        if (status === "denied") {
-          console.error(`denied: ${permissionId}`);
-          process.exit(2);
+        if (status === "denied" || status === "expired" || status === "revoked") {
+          console.error(`${status}: ${permissionId}`);
+          process.exit(STATUS_EXIT[status]);
         }
         process.stderr.write(".");
       }

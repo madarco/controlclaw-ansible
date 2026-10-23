@@ -94,9 +94,12 @@ When a new email wakes you, the message gives you its message ID and thread ID. 
 
 Your organization's firewall checks every email you send:
 
-- **`451` with `email_recipient_needs_approval`**: the person is new, and the owner has been asked
-  to approve them. Tell whoever asked you that you are waiting for that approval, and send again
-  later. Do not retry in a loop.
+- **`451` with `email_recipient_needs_approval`**: nothing was sent, to anyone on the message. The
+  owner has been asked to approve the new recipients; the error names them and the request ID
+  (`perm_…`). The message does not send itself once approved. Tell whoever asked that you are
+  waiting for the owner, then run `cc-perm <id>`: it waits up to five minutes for the answer and
+  exits 0 when approved, and then you send the same message again. Later, `cc-perm status <id>`
+  says whether it is approved, pending, denied, expired or revoked. Do not retry in a loop.
 - **`403` with `email_refused`**: the rules do not allow it (a recipient that is not allowed, the
   hourly or daily limit, sending turned off, forwarding). The `message` says which. Report it and
   stop; do not look for another way to send.

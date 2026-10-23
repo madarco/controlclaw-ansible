@@ -97,6 +97,6 @@ files the user has authorized and prefer `@data://` for binary content.
 Your organization's firewall checks every email this inbox sends and receives:
 
 - Reply to an email with `inboxes:messages reply` on its message ID, so the answer stays in the thread.
-- A `451` with `email_recipient_needs_approval` means the person is new and the owner has been asked to approve them. Say you are waiting for that approval and send again later. Do not retry in a loop.
+- A `451` with `email_recipient_needs_approval` means nothing was sent, to anyone on the message: the owner has been asked to approve the new recipients. The answer names them and the request ID (`perm_…`), and the message does not send itself once approved. Say you are waiting for the owner, then run `cc-perm <id>`: it waits up to five minutes and exits 0 when approved, and then you send the same message again. Later, `cc-perm status <id>` says whether it is approved, pending, denied, expired or revoked. Do not retry in a loop.
 - A `403` with `email_refused` means the rules do not allow it (recipient not allowed, the hourly or daily limit, sending turned off). The `message` says which. Report it and stop.
 - Mail from senders the owner has not allowed, or that fails DMARC, never reaches you. A message shown as `blocked` with no content was held back by the firewall.
