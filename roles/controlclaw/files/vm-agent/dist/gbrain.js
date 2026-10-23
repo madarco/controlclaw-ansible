@@ -1149,6 +1149,10 @@ var CONTROL_PLANE_ROUTES = {
     // Doing now on the Home tab (activity-now.ts): read-only; the request the agent works on, who
     // asked and its tool names, which the owner decided may reach the console (agent-stats.md).
     "GET /activity/now",
+    // A 320 px picture of the agent's screen for its card (screen-thumb.ts). Read only. The owner
+    // accepted that these pixels reach the console (docs/plans/screen-thumbnail.md); its size,
+    // quality and rate are fixed on the box, so the console cannot ask for a sharper or faster one.
+    "GET /screen/thumb",
     "GET /status",
     "POST /start",
     "POST /stop",
@@ -6469,8 +6473,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "68cc196" : "unknown",
-  builtAt: true ? "2026-10-23T20:20:39+01:00" : "unknown"
+  commit: true ? "c02b65c" : "unknown",
+  builtAt: true ? "2026-10-23T23:18:17+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

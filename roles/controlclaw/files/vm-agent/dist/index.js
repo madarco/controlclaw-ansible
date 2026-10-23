@@ -13419,6 +13419,10 @@ var CONTROL_PLANE_ROUTES = {
     // Doing now on the Home tab (activity-now.ts): read-only; the request the agent works on, who
     // asked and its tool names, which the owner decided may reach the console (agent-stats.md).
     "GET /activity/now",
+    // A 320 px picture of the agent's screen for its card (screen-thumb.ts). Read only. The owner
+    // accepted that these pixels reach the console (docs/plans/screen-thumbnail.md); its size,
+    // quality and rate are fixed on the box, so the console cannot ask for a sharper or faster one.
+    "GET /screen/thumb",
     "GET /status",
     "POST /start",
     "POST /stop",
@@ -41747,8 +41751,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "68cc196" : "unknown",
-  builtAt: true ? "2026-10-23T20:20:39+01:00" : "unknown"
+  commit: true ? "c02b65c" : "unknown",
+  builtAt: true ? "2026-10-23T23:18:17+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -63028,6 +63032,122 @@ async function handleGbrain(req, res, url3, service) {
   }
 }
 
+// src/screen-thumb.ts
+import { spawn as spawn4 } from "child_process";
+var THUMB_MIN_INTERVAL_MS = 3e4;
+var THUMB_CAPTURE_TIMEOUT_MS = 5e3;
+var THUMB_WIDTH = 320;
+var THUMB_QUALITY = 50;
+var THUMB_MAX_BYTES = 256 * 1024;
+var FAILURE_BACKOFF_MS = 3e4;
+var ThumbUnavailableError = class extends Error {
+  constructor(message2, code) {
+    super(message2);
+    this.code = code;
+  }
+};
+function captureCommands(display) {
+  return [
+    ["xwd", "-root", "-silent", "-display", display],
+    ["xwdtopnm", "-quiet"],
+    ["pamscale", "-quiet", "-width", String(THUMB_WIDTH)],
+    ["pnmtojpeg", "-quiet", `-quality=${THUMB_QUALITY}`]
+  ].map((argv) => ["-n", "10", ...argv]);
+}
+function screenCapture(display = process.env.CC_SCREEN_DISPLAY ?? ":1", timeoutMs = THUMB_CAPTURE_TIMEOUT_MS) {
+  return () => new Promise((resolve4, reject) => {
+    const env2 = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+    const children = captureCommands(display).map((args) => spawn4("nice", args, { stdio: ["pipe", "pipe", "pipe"], env: env2 }));
+    for (let i2 = 0; i2 < children.length - 1; i2++) children[i2].stdout.pipe(children[i2 + 1].stdin);
+    children[0].stdin.end();
+    const last = children[children.length - 1];
+    const chunks = [];
+    let size2 = 0;
+    let stderr = "";
+    let settled = false;
+    const codes = children.map(() => null);
+    let closed = 0;
+    const done = (err, out) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      for (const c2 of children) if (c2.exitCode === null) c2.kill("SIGKILL");
+      if (err) reject(err);
+      else resolve4(out);
+    };
+    const timer = setTimeout(() => done(new ThumbUnavailableError("The screen took too long to capture.", "failed")), timeoutMs);
+    last.stdout.on("data", (c2) => {
+      size2 += c2.length;
+      if (size2 > THUMB_MAX_BYTES) return done(new ThumbUnavailableError("The picture came out too large.", "failed"));
+      chunks.push(c2);
+    });
+    children.forEach((child, i2) => {
+      child.stdin.on("error", () => {
+      });
+      child.stdout.on("error", () => {
+      });
+      child.stderr.on("data", (c2) => {
+        if (stderr.length < 2e3) stderr += c2.toString();
+      });
+      child.on("error", (e) => done(new ThumbUnavailableError(`The screen could not be captured: ${e.message}`, "failed")));
+      child.on("close", (code) => {
+        codes[i2] = code;
+        if (++closed < children.length) return;
+        if (codes.every((c2) => c2 === 0) && size2 > 0) return done(null, Buffer.concat(chunks));
+        if (codes.includes(127)) return done(new ThumbUnavailableError("This agent has no tools to capture its screen with. Update the agent.", "unsupported"));
+        if (/open display/i.test(stderr)) return done(new ThumbUnavailableError("The agent's screen is not running.", "no-screen"));
+        done(new ThumbUnavailableError(`The screen could not be captured (exit ${codes.join(",")}).`, "failed"));
+      });
+    });
+  });
+}
+var ScreenThumbService = class {
+  constructor(capture = screenCapture(), now = Date.now) {
+    this.capture = capture;
+    this.now = now;
+  }
+  last = null;
+  failedAt = 0;
+  lastError = null;
+  running = null;
+  /** The newest picture: from memory when it is younger than 30 s, otherwise a new one. */
+  async get() {
+    const t2 = this.now();
+    if (this.last && t2 - this.last.at < THUMB_MIN_INTERVAL_MS) return this.last;
+    if (this.running) return this.running;
+    if (this.lastError && t2 - this.failedAt < FAILURE_BACKOFF_MS) throw this.lastError;
+    this.running = this.capture().then((jpeg) => {
+      this.last = { jpeg, at: t2 };
+      this.lastError = null;
+      return this.last;
+    }).catch((err) => {
+      this.failedAt = this.now();
+      this.lastError = err instanceof ThumbUnavailableError ? err : new ThumbUnavailableError("The screen could not be captured.", "failed");
+      throw this.lastError;
+    }).finally(() => {
+      this.running = null;
+    });
+    return this.running;
+  }
+};
+async function handleScreenThumb(res, thumbs) {
+  try {
+    const { jpeg, at: at2 } = await thumbs.get();
+    res.writeHead(200, {
+      "Content-Type": "image/jpeg",
+      "Content-Length": String(jpeg.length),
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "X-Captured-At": new Date(at2).toISOString()
+    });
+    res.end(jpeg);
+  } catch (err) {
+    const e = err instanceof ThumbUnavailableError ? err : new ThumbUnavailableError("The screen could not be captured.", "failed");
+    if (e.code === "failed") console.warn(`[screen-thumb] ${e.message}`);
+    sendJson(res, 503, { error: e.message, code: e.code });
+  }
+}
+
 // src/index.ts
 var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
@@ -63309,6 +63429,7 @@ var workspaceExporter = new WorkspaceExporter({
 });
 var skills = new SkillsService();
 var storage = new StorageService();
+var screenThumbs = new ScreenThumbService();
 var diskReseal = new DiskResealService();
 var files = new FilesService({
   root: process.env.FILES_ROOT ?? process.env.HOME ?? "/home/controlclaw",
@@ -63574,6 +63695,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url3.pathname === "/skills" || url3.pathname === "/skills/enabled" || url3.pathname === "/skills/remove" || url3.pathname === "/skills/restore" || url3.pathname === "/notes/remove" || url3.pathname === "/notes/restore") {
     await handleSkills(req, res, url3.pathname, skills, templateService);
+    return;
+  }
+  if (url3.pathname === "/screen/thumb" && req.method === "GET") {
+    await handleScreenThumb(res, screenThumbs);
     return;
   }
   if (url3.pathname === "/storage" || url3.pathname === "/storage/grow") {

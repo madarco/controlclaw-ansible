@@ -28,6 +28,11 @@
       # image, named here because the sandbox depends on it and nothing else in the role does.
       - apparmor
       - python3
+      # The picture on the console's agent card (vm-agent screen-thumb.ts): xwd reads the X
+      # screen, netpbm scales it to 320 px and writes the JPEG. 24 MB together, against 208 MB
+      # for ffmpeg, for the same CPU per frame.
+      - x11-apps
+      - netpbm
     state: present
     update_cache: true
     cache_valid_time: 3600
