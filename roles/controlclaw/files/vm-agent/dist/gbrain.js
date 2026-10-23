@@ -1146,6 +1146,9 @@ var CONTROL_PLANE_ROUTES = {
     "GET /health/summary",
     "POST /health/model",
     "GET /health/patches",
+    // Doing now on the Home tab (activity-now.ts): read-only; the request the agent works on, who
+    // asked and its tool names, which the owner decided may reach the console (agent-stats.md).
+    "GET /activity/now",
     "GET /status",
     "POST /start",
     "POST /stop",
@@ -6466,8 +6469,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "f70bbe4" : "unknown",
-  builtAt: true ? "2026-10-23T18:11:30+01:00" : "unknown"
+  commit: true ? "68cc196" : "unknown",
+  builtAt: true ? "2026-10-23T20:20:39+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

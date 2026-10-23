@@ -13416,6 +13416,9 @@ var CONTROL_PLANE_ROUTES = {
     "GET /health/summary",
     "POST /health/model",
     "GET /health/patches",
+    // Doing now on the Home tab (activity-now.ts): read-only; the request the agent works on, who
+    // asked and its tool names, which the owner decided may reach the console (agent-stats.md).
+    "GET /activity/now",
     "GET /status",
     "POST /start",
     "POST /stop",
@@ -35806,7 +35809,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync39, existsSync as existsSync32, writeFileSync as writeFileSync26, rmSync as rmSync13 } from "fs";
+import { readFileSync as readFileSync39, existsSync as existsSync33, writeFileSync as writeFileSync26, rmSync as rmSync13 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash6, randomBytes as randomBytes2 } from "crypto";
@@ -41197,16 +41200,16 @@ function readConversation(ref) {
 var MAIN_KEY = /^agent:[^:]+:main$/;
 function runTriggers(openclawHome, runs) {
   const out = /* @__PURE__ */ new Map();
-  const byAgent = /* @__PURE__ */ new Map();
+  const byAgent2 = /* @__PURE__ */ new Map();
   for (const r2 of runs) {
     if (!r2.sessionKey || !MAIN_KEY.test(r2.sessionKey)) continue;
     const agentId = r2.agentId || r2.sessionKey.split(":")[1];
     if (!/^[A-Za-z0-9_-]+$/.test(agentId)) continue;
-    const keys = byAgent.get(agentId) ?? /* @__PURE__ */ new Map();
+    const keys = byAgent2.get(agentId) ?? /* @__PURE__ */ new Map();
     keys.set(r2.sessionKey, (keys.get(r2.sessionKey) ?? /* @__PURE__ */ new Set()).add(r2.runId));
-    byAgent.set(agentId, keys);
+    byAgent2.set(agentId, keys);
   }
-  for (const [agentId, keys] of byAgent) {
+  for (const [agentId, keys] of byAgent2) {
     const file2 = join13(openclawHome, "agents", agentId, "agent", "openclaw-agent.sqlite");
     if (!existsSync5(file2)) continue;
     let db;
@@ -41744,8 +41747,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "f70bbe4" : "unknown",
-  builtAt: true ? "2026-10-23T18:11:30+01:00" : "unknown"
+  commit: true ? "68cc196" : "unknown",
+  builtAt: true ? "2026-10-23T20:20:39+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -42377,7 +42380,7 @@ function mapAuditEvent(ev) {
   if (typeof ev.sequence !== "number" || typeof ev.eventId !== "string" || typeof ev.occurredAt !== "number") return null;
   if (ev.kind === "tool_action" && !ev.toolCallId) return null;
   if (ev.kind === "agent_run" && !ev.runId) return null;
-  const cut = (v2, max) => v2 ? v2.slice(0, max) : void 0;
+  const cut2 = (v2, max) => v2 ? v2.slice(0, max) : void 0;
   const rec = {
     source: ev.kind,
     event_id: ev.eventId.slice(0, 64),
@@ -42386,11 +42389,11 @@ function mapAuditEvent(ev) {
     status: ev.status ?? "unknown",
     action: (ev.action ?? "").slice(0, 64)
   };
-  const toolName = cut(ev.toolName, 120);
-  const toolCallId = cut(ev.toolCallId, 200);
-  const runId = cut(ev.runId, 128);
-  const sessionKey = ev.sessionKey?.includes(":agentmail:") ? `agentmail:${createHash8("sha256").update(ev.sessionKey).digest("hex")}` : cut(ev.sessionKey, 200);
-  const agentId = cut(ev.agentId, 64);
+  const toolName = cut2(ev.toolName, 120);
+  const toolCallId = cut2(ev.toolCallId, 200);
+  const runId = cut2(ev.runId, 128);
+  const sessionKey = ev.sessionKey?.includes(":agentmail:") ? `agentmail:${createHash8("sha256").update(ev.sessionKey).digest("hex")}` : cut2(ev.sessionKey, 200);
+  const agentId = cut2(ev.agentId, 64);
   if (toolName) rec.tool_name = toolName;
   if (toolCallId) rec.tool_call_id = toolCallId;
   if (runId) rec.run_id = runId;
@@ -42465,7 +42468,7 @@ var AuditShipper = class {
       const last = batch[batch.length - 1];
       if (records.length > 0) {
         try {
-          this.opts.enrich?.(records);
+          this.opts.enrich?.(records, batch);
         } catch (err) {
           this.log(`enrich failed: ${err.message}`);
         }
@@ -42723,6 +42726,316 @@ var StallTracker = class {
   }
 };
 
+// src/activity-now.ts
+var WRAPPER_TOOL = "tool_call";
+var MAX_STEPS = 12;
+var MAX_OPEN_RUNS = 50;
+var ABANDONED_AFTER_MS = 60 * 6e4;
+var MAX_ENDED = 200;
+var NowTracker = class {
+  runs = /* @__PURE__ */ new Map();
+  ended = /* @__PURE__ */ new Set();
+  resetAt = 0;
+  open(ev, startedAt) {
+    const run3 = { runId: ev.runId, sessionKey: ev.sessionKey, agentId: ev.agentId, startedAt, lastAt: ev.occurredAt, steps: /* @__PURE__ */ new Map(), facts: {} };
+    this.runs.set(run3.runId, run3);
+    if (this.runs.size > MAX_OPEN_RUNS) this.runs.delete(this.runs.keys().next().value);
+    return run3;
+  }
+  /** Feed ledger events in sequence order. */
+  record(events) {
+    for (const ev of events) {
+      if (!ev.runId || typeof ev.occurredAt !== "number") continue;
+      if (ev.kind === "agent_run") {
+        if (ev.status === "started") {
+          if (ev.occurredAt < this.resetAt || this.ended.has(ev.runId)) continue;
+          const prev2 = this.runs.get(ev.runId);
+          if (prev2) prev2.startedAt = Math.min(prev2.startedAt, ev.occurredAt);
+          else this.open(ev, ev.occurredAt);
+        } else {
+          this.runs.delete(ev.runId);
+          this.ended.add(ev.runId);
+          if (this.ended.size > MAX_ENDED) this.ended.delete(this.ended.values().next().value);
+        }
+        continue;
+      }
+      if (ev.kind !== "tool_action" || !ev.toolCallId || !ev.toolName || ev.toolName === WRAPPER_TOOL) continue;
+      let run3 = this.runs.get(ev.runId);
+      if (!run3 && (ev.occurredAt < this.resetAt || this.ended.has(ev.runId))) continue;
+      run3 ??= this.open(ev, ev.occurredAt);
+      run3.sessionKey ??= ev.sessionKey;
+      run3.lastAt = Math.max(run3.lastAt, ev.occurredAt);
+      const prev = run3.steps.get(ev.toolCallId);
+      run3.steps.set(ev.toolCallId, { name: ev.toolName.slice(0, 80), status: ev.status ?? "unknown", startedAt: prev?.startedAt ?? ev.occurredAt });
+      if (run3.steps.size > MAX_STEPS) run3.steps.delete(run3.steps.keys().next().value);
+    }
+  }
+  /**
+   * On every new connection to the gateway: what it was running may be gone (a restart never
+   * writes the ends). A run that is still going shows again with its next tool call.
+   */
+  reset(now) {
+    this.runs.clear();
+    this.resetAt = now;
+  }
+  /**
+   * The runs going now, newest first, without OpenClaw's internal sessions (cron, sub-agents …).
+   * A run silent for `ABANDONED_AFTER_MS` is dropped, unless its session waits for an approval.
+   */
+  current(now, waiting = /* @__PURE__ */ new Set()) {
+    const out = [];
+    for (const r2 of this.runs.values()) {
+      if (now - r2.lastAt > ABANDONED_AFTER_MS && !(r2.sessionKey && waiting.has(r2.sessionKey))) {
+        this.runs.delete(r2.runId);
+        continue;
+      }
+      if (r2.sessionKey && INTERNAL_KEY.test(r2.sessionKey)) continue;
+      out.push({ runId: r2.runId, sessionKey: r2.sessionKey ?? null, agentId: r2.agentId ?? null, startedAt: r2.startedAt, steps: [...r2.steps.values()], facts: r2.facts });
+    }
+    return out.sort((a2, b2) => b2.startedAt - a2.startedAt);
+  }
+};
+var SETTLE_MS = 12e4;
+var FRESH_MESSAGE_MS = 6e4;
+var SELF_TRIGGERS = /* @__PURE__ */ new Set(["heartbeat", "cron"]);
+function activityNow(deps) {
+  const now = (deps.now ?? Date.now)();
+  const waiting = deps.approvalSessions();
+  const runs = deps.tracker.current(now, waiting);
+  const ref = (r2) => ({ runId: r2.runId, sessionKey: r2.sessionKey ?? void 0, agentId: r2.agentId ?? void 0 });
+  const settled = (r2) => now - r2.startedAt > SETTLE_MS;
+  const unknown2 = runs.filter((r2) => r2.facts.trigger === void 0);
+  if (unknown2.length) {
+    const found = deps.triggers(unknown2.map(ref));
+    for (const r2 of unknown2) if (found.has(r2.runId) || settled(r2)) r2.facts.trigger = found.get(r2.runId) ?? "";
+  }
+  const run3 = runs.find((r2) => !SELF_TRIGGERS.has(r2.facts.trigger ?? ""));
+  if (!run3) return { ok: true, now, run: null };
+  const facts = run3.facts;
+  if (!facts.askerRead) {
+    const read = deps.asker({ ...ref(run3), startedAt: run3.startedAt });
+    const asker = read.at !== void 0 && run3.startedAt - read.at > FRESH_MESSAGE_MS ? { sender: null, channel: null, text: null } : read;
+    Object.assign(facts, { sender: asker.sender, channel: asker.channel, text: asker.text ?? null }, { askerRead: asker.sender !== null || asker.channel !== null || settled(run3) });
+  }
+  if (facts.request === void 0) {
+    const request = deps.request(ref(run3));
+    if (request === "heartbeat" && !facts.trigger) {
+      facts.trigger = "heartbeat";
+      return activityNow(deps);
+    }
+    if (request === "heartbeat") facts.request = "";
+    else if (request || settled(run3)) facts.request = request ?? "";
+  }
+  const keyChannel = run3.sessionKey ? channelOfKey(run3.sessionKey) : null;
+  return {
+    ok: true,
+    now,
+    run: {
+      startedAt: run3.startedAt,
+      channel: facts.channel ?? keyChannel,
+      sender: facts.sender ?? null,
+      request: facts.request || facts.text || null,
+      steps: run3.steps,
+      waitingApproval: !!run3.sessionKey && waiting.has(run3.sessionKey)
+    }
+  };
+}
+function channelOfKey(key) {
+  if (/(^|:)meeting-/i.test(key)) return "meeting";
+  if (/:voice:call(:|$)/i.test(key)) return "call";
+  if (/(^|:)agentmail(:|$)/i.test(key)) return "email";
+  return parseSessionKey(key).channel;
+}
+async function handleActivityNow(req, res, deps) {
+  if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
+  if (!await verifyRequest(req)) return sendJson(res, 401, { error: "Unauthorized" });
+  sendJson(res, 200, activityNow(deps));
+}
+
+// src/run-titles.ts
+import { existsSync as existsSync12 } from "fs";
+import { join as join16 } from "path";
+var TITLE_MAX = 80;
+var REQUEST_MAX = 300;
+var PROMPT_READ_MAX = 4e3;
+var QUEUED_MARKER = "[Queued user message from a previous active turn";
+var LEADING_TIMESTAMP = /^\[[A-Za-z]{3} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]]*\] */;
+var CTX_MARKER = "\u27E6openclaw:ctx\u27E7";
+var DELIVERY_HINT = /^Delivery: .*`message` tool/;
+var HEARTBEAT_PROMPT = /^(Read HEARTBEAT\.md if it exists|Follow the heartbeat monitor scratch context)/;
+function isHeartbeatPrompt(rawPrompt) {
+  return HEARTBEAT_PROMPT.test(cleanPrompt(rawPrompt));
+}
+var SYSTEM_PROMPT = /^\[System\b/i;
+function cleanPrompt(raw) {
+  const lines = raw.replace(/\r\n?/g, "\n").split("\n");
+  const out = [];
+  for (let i2 = 0; i2 < lines.length; i2++) {
+    const t2 = lines[i2].trim();
+    if (t2 === `Context: ${CTX_MARKER}`) break;
+    if (t2.startsWith(QUEUED_MARKER) || DELIVERY_HINT.test(t2)) continue;
+    if (t2 === "Context:" && lines[i2 + 1]?.trim() === "<active_memory_plugin>") {
+      const close = lines.findIndex((l2, j2) => j2 > i2 && l2.trim() === "</active_memory_plugin>");
+      if (close > 0) {
+        i2 = close;
+        continue;
+      }
+    }
+    if (t2.length > CTX_MARKER.length && t2.endsWith(CTX_MARKER)) {
+      if (lines[i2 + 1]?.trim() === "```json") {
+        const close = lines.findIndex((l2, j2) => j2 > i2 + 1 && l2.trim() === "```");
+        i2 = close > 0 ? close : lines.length;
+      } else {
+        while (i2 + 1 < lines.length && lines[i2 + 1].trim() !== "") i2++;
+      }
+      continue;
+    }
+    out.push(lines[i2]);
+  }
+  return out.join("\n").trim().replace(LEADING_TIMESTAMP, "").trim();
+}
+function cut(text3, max) {
+  if (text3.length <= max) return text3;
+  const head = text3.slice(0, max - 1);
+  const space = head.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? head.slice(0, space) : head).trimEnd()}\u2026`;
+}
+function titleOf(rawPrompt) {
+  const text3 = cleanPrompt(rawPrompt);
+  if (!text3 || SYSTEM_PROMPT.test(text3) || HEARTBEAT_PROMPT.test(text3)) return null;
+  const first = text3.split("\n").find((l2) => l2.trim()).replace(/\s+/g, " ").trim();
+  if (/^\/[a-z][\w-]*$/i.test(first)) return null;
+  return cut(first, TITLE_MAX);
+}
+function requestOf(rawPrompt) {
+  const text3 = cleanPrompt(rawPrompt);
+  if (!text3 || SYSTEM_PROMPT.test(text3)) return null;
+  return cut(text3.replace(/\s+/g, " ").trim(), REQUEST_MAX);
+}
+function promptOfEvent(eventJson) {
+  try {
+    const ev = JSON.parse(eventJson);
+    if (ev.type !== "prompt.submitted") return null;
+    return typeof ev.data?.prompt === "string" ? ev.data.prompt.slice(0, PROMPT_READ_MAX) : null;
+  } catch {
+    const m2 = /"prompt"\s*:\s*"((?:[^"\\]|\\.)*\\?)/.exec(eventJson);
+    if (!m2) return null;
+    try {
+      return JSON.parse(`"${dropCutEscape(m2[1])}"`).slice(0, PROMPT_READ_MAX);
+    } catch {
+      return null;
+    }
+  }
+}
+function dropCutEscape(body2) {
+  const u2 = /\\u[0-9a-fA-F]{0,3}$/.exec(body2);
+  const end = u2 ? u2.index : body2.length;
+  let n2 = 0;
+  while (end - n2 - 1 >= 0 && body2[end - n2 - 1] === "\\") n2++;
+  if (u2) return n2 % 2 === 0 ? body2.slice(0, end) : body2;
+  return n2 % 2 === 1 ? body2.slice(0, -1) : body2;
+}
+function byAgent(runs) {
+  const out = /* @__PURE__ */ new Map();
+  for (const r2 of runs) {
+    if (!r2.sessionKey || INTERNAL_KEY.test(r2.sessionKey)) continue;
+    const agentId = r2.agentId || (r2.sessionKey.startsWith("agent:") ? r2.sessionKey.split(":")[1] : "main") || "main";
+    if (!/^[A-Za-z0-9_-]+$/.test(agentId)) continue;
+    const keys = out.get(agentId) ?? /* @__PURE__ */ new Map();
+    keys.set(r2.sessionKey, [...keys.get(r2.sessionKey) ?? [], r2.runId]);
+    out.set(agentId, keys);
+  }
+  return out;
+}
+function runPrompts(openclawHome, runs) {
+  const out = /* @__PURE__ */ new Map();
+  for (const [agentId, keys] of byAgent(runs)) {
+    const file2 = join16(openclawHome, "agents", agentId, "agent", "openclaw-agent.sqlite");
+    if (!existsSync12(file2)) continue;
+    let db;
+    try {
+      db = openDb2(file2);
+      if (!hasTables(db, ["session_windows", "trajectory_runtime_events"])) continue;
+      const sessions = db.prepare("SELECT session_id FROM session_windows WHERE session_key = ? ORDER BY updated_at DESC LIMIT 20");
+      const submitted = db.prepare(
+        `SELECT substr(event_json, 1, ${PROMPT_READ_MAX * 2}) AS ev FROM trajectory_runtime_events
+          WHERE session_id = ? AND run_id = ? AND event_json LIKE '%"prompt.submitted"%' ORDER BY seq LIMIT 1`
+      );
+      for (const [key, runIds] of keys) {
+        const ids = sessions.all(key).map((s2) => s2.session_id);
+        for (const runId of runIds) {
+          for (const sessionId of ids) {
+            const row = submitted.get(sessionId, runId);
+            if (!row) continue;
+            const prompt = promptOfEvent(row.ev);
+            if (prompt) out.set(runId, prompt);
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[audit] run prompts:", err.message);
+    } finally {
+      db?.close();
+    }
+  }
+  return out;
+}
+function runTitles(openclawHome, runs) {
+  const titles = /* @__PURE__ */ new Map();
+  const heartbeats = /* @__PURE__ */ new Set();
+  for (const [runId, prompt] of runPrompts(openclawHome, runs)) {
+    if (isHeartbeatPrompt(prompt)) heartbeats.add(runId);
+    const title = titleOf(prompt);
+    if (title) titles.set(runId, title);
+  }
+  return { titles, heartbeats };
+}
+function runAsker(openclawHome, run3) {
+  const none2 = { sender: null, channel: null };
+  const [entry] = byAgent([run3]);
+  if (!entry) return none2;
+  const [agentId, keys] = entry;
+  const file2 = join16(openclawHome, "agents", agentId, "agent", "openclaw-agent.sqlite");
+  if (!existsSync12(file2)) return none2;
+  let db;
+  try {
+    db = openDb2(file2);
+    if (!hasTables(db, ["session_windows", "transcript_events"])) return none2;
+    const [key] = keys.keys();
+    const ids = db.prepare("SELECT session_id FROM session_windows WHERE session_key = ? ORDER BY updated_at DESC LIMIT 20").all(key).map((r2) => r2.session_id);
+    const hasRun = hasTables(db, ["trajectory_runtime_events"]) ? db.prepare("SELECT 1 FROM trajectory_runtime_events WHERE session_id = ? AND run_id = ? LIMIT 1") : null;
+    const sessionId = ids.find((id) => hasRun?.get(id, run3.runId)) ?? ids[0];
+    if (!sessionId) return none2;
+    const rows = db.prepare(
+      `SELECT json_extract(event_json, '$.message.__openclaw.senderName') AS sender,
+                json_extract(event_json, '$.message.__openclaw.senderLabel') AS label,
+                json_extract(event_json, '$.message.__openclaw.transport.channel') AS channel,
+                json_extract(event_json, '$.message.timestamp') AS at,
+                substr(json_extract(event_json, '$.message'), 1, 20000) AS message
+           FROM transcript_events
+          WHERE session_id = ? AND event_json IS NOT NULL
+            AND CASE WHEN json_valid(event_json) THEN json_extract(event_json, '$.message.role') = 'user' END
+          ORDER BY seq DESC LIMIT 10`
+    ).all(sessionId);
+    const atOf = (v2) => typeof v2 === "number" ? v2 : typeof v2 === "string" ? Date.parse(v2) : NaN;
+    const row = rows.find((r2) => atOf(r2.at) <= run3.startedAt + 1e4);
+    if (!row) return none2;
+    const str8 = (v2, max) => typeof v2 === "string" && v2.trim() ? v2.trim().slice(0, max) : null;
+    let text3 = null;
+    try {
+      text3 = typeof row.message === "string" ? requestOf(messageText(JSON.parse(row.message))) : null;
+    } catch {
+    }
+    return { sender: str8(row.sender, 80) ?? str8(row.label, 80), channel: str8(row.channel, 32), text: text3, at: atOf(row.at) };
+  } catch (err) {
+    console.error("[activity] run asker:", err.message);
+    return none2;
+  } finally {
+    db?.close();
+  }
+}
+
 // src/watchdog.ts
 var TICK_MS = 3e4;
 var GATEWAY_FAILS = 4;
@@ -42948,7 +43261,7 @@ var APPROVAL_FAMILIES = {
   plugin: "plugin",
   openclaw: "system"
 };
-var TITLE_MAX = 200;
+var TITLE_MAX2 = 200;
 var LIST_METHODS = Object.keys(APPROVAL_FAMILIES).map((family) => [
   family,
   `${family}.approval.list`
@@ -42956,7 +43269,7 @@ var LIST_METHODS = Object.keys(APPROVAL_FAMILIES).map((family) => [
 var CONTROL_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f]/g;
 function sanitizeTitle(text3) {
   const flat = redact(text3).replace(CONTROL_RE, " ").replace(/\s+/g, " ").trim();
-  return flat.length > TITLE_MAX ? `${flat.slice(0, TITLE_MAX - 1)}\u2026` : flat;
+  return flat.length > TITLE_MAX2 ? `${flat.slice(0, TITLE_MAX2 - 1)}\u2026` : flat;
 }
 function str(v2) {
   return typeof v2 === "string" && v2.trim() ? v2.trim() : null;
@@ -43007,6 +43320,15 @@ var ApprovalsBridge = class {
   }
   log(msg) {
     (this.opts.log ?? console.log)(`[approvals] ${msg}`);
+  }
+  /** The session keys of the approvals still open, for Doing now (`activity-now.ts`). */
+  pendingSessions() {
+    const out = /* @__PURE__ */ new Set();
+    for (const t2 of this.tracked.values()) {
+      const key = t2.done ? void 0 : t2.payload.request?.sessionKey;
+      if (typeof key === "string" && key) out.add(key);
+    }
+    return out;
   }
   get pendingCount() {
     let n2 = 0;
@@ -43203,8 +43525,8 @@ var ApprovalsBridge = class {
 
 // src/meeting-followup.ts
 import { createHash as createHash9, randomUUID } from "crypto";
-import { existsSync as existsSync13, readFileSync as readFileSync18, renameSync as renameSync8, rmSync as rmSync3, statSync as statSync3, writeFileSync as writeFileSync11, chownSync } from "fs";
-import { join as join17 } from "path";
+import { existsSync as existsSync14, readFileSync as readFileSync18, renameSync as renameSync8, rmSync as rmSync3, statSync as statSync3, writeFileSync as writeFileSync11, chownSync } from "fs";
+import { join as join18 } from "path";
 
 // ../meetings/src/archive.ts
 var MEETING_REQUEST_MAX = 200;
@@ -43278,7 +43600,7 @@ function meetingsPage(all, page, pageSize = MEETINGS_PAGE_SIZE) {
 
 // src/meeting-notes.ts
 import {
-  existsSync as existsSync12,
+  existsSync as existsSync13,
   mkdirSync as mkdirSync8,
   readFileSync as readFileSync17,
   renameSync as renameSync7,
@@ -43286,7 +43608,7 @@ import {
   writeFileSync as writeFileSync10,
   readdirSync as readdirSync4
 } from "fs";
-import { join as join16, resolve, sep } from "path";
+import { join as join17, resolve, sep } from "path";
 import { createRequire as createRequire3 } from "module";
 var requireBuiltin3 = createRequire3(import.meta.url);
 var UI_LINE = /^(?:turn (?:on|off) (?:captions|microphone|camera)|(?:captions|microphone|camera) (?:on|off)|(?:(?:your )?(?:microphone|camera) is (?:on|off|muted)[.!]?\s*)+|you have joined the call\.(?:\s*(?:there (?:is|are) (?:one|\d+) other (?:person|people) in the call|your (?:camera|microphone) is (?:off|on|muted)|your hand is (?:lowered|raised))\.)*|(?:arrow_downward\s*)?jump to bottom|(?:you(?:'re| are) using|use) captions|caption settings|change caption language|hide captions|mic_off|videocam_off)$/i;
@@ -43336,10 +43658,10 @@ var MeetingArchive = class {
   }
   filename(id) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid meeting");
-    return join16(this.root, `${id}.json`);
+    return join17(this.root, `${id}.json`);
   }
   deleted() {
-    if (!existsSync12(this.tombstonesPath)) return {};
+    if (!existsSync13(this.tombstonesPath)) return {};
     return JSON.parse(readFileSync17(this.tombstonesPath, "utf8"));
   }
   save(record2) {
@@ -43350,9 +43672,9 @@ var MeetingArchive = class {
   }
   list() {
     const deleted = this.deleted();
-    if (!existsSync12(this.root)) return [];
+    if (!existsSync13(this.root)) return [];
     return readdirSync4(this.root).filter((n2) => /^[a-f0-9-]{36}\.json$/.test(n2)).map(
-      (n2) => JSON.parse(readFileSync17(join16(this.root, n2), "utf8"))
+      (n2) => JSON.parse(readFileSync17(join17(this.root, n2), "utf8"))
     ).filter((r2) => !deleted[r2.id]).sort((a2, b2) => b2.startedAt.localeCompare(a2.startedAt));
   }
   tombstone(record2) {
@@ -43364,7 +43686,7 @@ var MeetingArchive = class {
     atomicJson(this.tombstonesPath, deleted);
   }
   deletionPending() {
-    return existsSync12(this.tombstonesPath + ".pending");
+    return existsSync13(this.tombstonesPath + ".pending");
   }
   deletionFinished() {
     rmSync2(this.tombstonesPath + ".pending", { force: true });
@@ -43374,8 +43696,8 @@ var MeetingArchive = class {
   }
 };
 function nativeMeetingIds(stateDir) {
-  const file2 = join16(stateDir, "state", "openclaw.sqlite");
-  if (!existsSync12(file2)) return [];
+  const file2 = join17(stateDir, "state", "openclaw.sqlite");
+  if (!existsSync13(file2)) return [];
   const { DatabaseSync } = requireBuiltin3(
     "node:sqlite"
   );
@@ -43392,8 +43714,8 @@ function nativeMeetingIds(stateDir) {
 }
 function eraseNativeMeetings(stateDir, sessionIds) {
   if (!sessionIds.length) return;
-  const file2 = join16(stateDir, "state", "openclaw.sqlite");
-  if (existsSync12(file2)) {
+  const file2 = join17(stateDir, "state", "openclaw.sqlite");
+  if (existsSync13(file2)) {
     const { DatabaseSync } = requireBuiltin3(
       "node:sqlite"
     );
@@ -43427,19 +43749,19 @@ function eraseNativeMeetings(stateDir, sessionIds) {
       db.close();
     }
   }
-  const exports = join16(stateDir, "transcripts");
-  if (!existsSync12(exports)) return;
+  const exports = join17(stateDir, "transcripts");
+  if (!existsSync13(exports)) return;
   for (const date5 of readdirSync4(exports, { withFileTypes: true })) {
     if (!date5.isDirectory() || !/^\d{4}-\d{2}-\d{2}$/.test(date5.name)) continue;
-    for (const entry of readdirSync4(join16(exports, date5.name), {
+    for (const entry of readdirSync4(join17(exports, date5.name), {
       withFileTypes: true
     })) {
       if (!entry.isDirectory()) continue;
       const dir = resolve(exports, date5.name, entry.name);
       if (!dir.startsWith(resolve(exports) + sep))
         throw new Error("Invalid transcript export");
-      const metadata = join16(dir, "metadata.json");
-      if (!existsSync12(metadata)) continue;
+      const metadata = join17(dir, "metadata.json");
+      if (!existsSync13(metadata)) continue;
       const raw = JSON.parse(readFileSync17(metadata, "utf8"));
       if (raw.sessionId && sessionIds.includes(raw.sessionId))
         rmSync2(dir, { recursive: true, force: true });
@@ -43563,10 +43885,10 @@ var MeetingFollowUpService = class {
     (this.opts.log ?? console.log)(`[meeting-followup] ${msg}`);
   }
   get agentsPath() {
-    return join17(this.opts.workspace, "AGENTS.md");
+    return join18(this.opts.workspace, "AGENTS.md");
   }
   readAgents() {
-    return existsSync13(this.agentsPath) ? readFileSync18(this.agentsPath, "utf8") : "";
+    return existsSync14(this.agentsPath) ? readFileSync18(this.agentsPath, "utf8") : "";
   }
   savedHash() {
     try {
@@ -43579,13 +43901,13 @@ var MeetingFollowUpService = class {
   orders() {
     const text3 = ordersIn(this.readAgents());
     const saved = this.savedHash();
-    return { text: text3, version: hash2(text3), changedOutside: saved !== null && saved !== hash2(text3), ...existsSync13(this.agentsPath) ? {} : { waiting: true } };
+    return { text: text3, version: hash2(text3), changedOutside: saved !== null && saved !== hash2(text3), ...existsSync14(this.agentsPath) ? {} : { waiting: true } };
   }
   /** Replace the block with the owner's text. `version` is the one the page read. */
   saveOrders(raw) {
     if (Object.keys(raw).some((k2) => !["text", "version"].includes(k2))) throw new OrdersError("Invalid request");
     const text3 = cleanOrders(raw.text);
-    if (!existsSync13(this.agentsPath)) throw new OrdersError("This agent has not set up its workspace yet. Send it a first message, then save the instructions.");
+    if (!existsSync14(this.agentsPath)) throw new OrdersError("This agent has not set up its workspace yet. Send it a first message, then save the instructions.");
     const agents = this.readAgents();
     if (raw.version !== hash2(ordersIn(agents)))
       throw new OrdersError("The instructions changed since you opened this page. Reload it, then save again.");
@@ -43609,7 +43931,7 @@ var MeetingFollowUpService = class {
    * AGENTS.md until its first session, so this is tried again on every tick while the setting is on.
    */
   startOrders() {
-    if (!existsSync13(this.agentsPath)) return;
+    if (!existsSync14(this.agentsPath)) return;
     const agents = this.readAgents();
     if (!agents.includes(START)) this.write(agents, MEETING_ORDERS_EXAMPLE);
     else if (this.savedHash() === null) atomicJson(this.opts.statePath, { hash: hash2(ordersIn(agents)) });
@@ -43622,12 +43944,12 @@ var MeetingFollowUpService = class {
   }
   reportPath(id) {
     if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error("Invalid meeting");
-    return join17(this.opts.workspace, "meetings", `${id}.followup.json`);
+    return join18(this.opts.workspace, "meetings", `${id}.followup.json`);
   }
   takeReport(id) {
     const path = this.reportPath(id);
     try {
-      if (!existsSync13(path)) return null;
+      if (!existsSync14(path)) return null;
       const report = statSync3(path).size > REPORT_MAX_BYTES ? null : parseReport(readFileSync18(path, "utf8"));
       rmSync3(path, { force: true });
       return report;
@@ -43818,12 +44140,12 @@ var MeetingFollowUpService = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync15, mkdirSync as mkdirSync9, readFileSync as readFileSync19, renameSync as renameSync9, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync16, mkdirSync as mkdirSync9, readFileSync as readFileSync19, renameSync as renameSync9, writeFileSync as writeFileSync12 } from "fs";
 import { dirname as dirname7 } from "path";
 import { randomUUID as randomUUID2 } from "crypto";
 
 // src/openclaw-allow.ts
-import { existsSync as existsSync14 } from "fs";
+import { existsSync as existsSync15 } from "fs";
 import { createRequire as createRequire4 } from "module";
 var ENTRY_CAP = 200;
 var requireBuiltin4 = createRequire4(import.meta.url);
@@ -43884,7 +44206,7 @@ function labelFromMeta(metaJson) {
 }
 function readAllowList(opts) {
   if (opts.channels.length === 0) return { senders: [], error: null, canonical: false };
-  if (!existsSync14(opts.dbPath)) return { senders: [], error: null, canonical: false };
+  if (!existsSync15(opts.dbPath)) return { senders: [], error: null, canonical: false };
   let db;
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
@@ -43939,7 +44261,7 @@ function readAllowList(opts) {
 }
 function readPendingPairings(opts) {
   if (opts.channels.length === 0) return { pairings: [], error: null, canonical: false };
-  if (!existsSync14(opts.dbPath)) return { pairings: [], error: null, canonical: false };
+  if (!existsSync15(opts.dbPath)) return { pairings: [], error: null, canonical: false };
   let db;
   try {
     db = (opts.open ?? defaultOpener)(opts.dbPath);
@@ -44149,7 +44471,7 @@ function looksBusy2(message2) {
   );
 }
 function readChannelState(path) {
-  if (!path || !existsSync15(path)) return { version: 1, seededAt: null, approved: [] };
+  if (!path || !existsSync16(path)) return { version: 1, seededAt: null, approved: [] };
   try {
     const parsed = JSON.parse(readFileSync19(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
@@ -44703,7 +45025,7 @@ var ChannelsService = class {
     this.log(`[channels] installing ${pkg}`);
     try {
       const ca2 = this.opts.mitmCaPath;
-      const env2 = ca2 && existsSync15(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
+      const env2 = ca2 && existsSync16(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
       await this.exec(this.bin(), ["plugins", "install", `npm:${pkg}`], PLUGIN_INSTALL_TIMEOUT_MS, void 0, {
         maxBuffer: PLUGIN_INSTALL_MAX_BUFFER,
         env: env2
@@ -45048,7 +45370,7 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync16, mkdirSync as mkdirSync10, readFileSync as readFileSync20, renameSync as renameSync10, writeFileSync as writeFileSync13 } from "fs";
+import { existsSync as existsSync17, mkdirSync as mkdirSync10, readFileSync as readFileSync20, renameSync as renameSync10, writeFileSync as writeFileSync13 } from "fs";
 import { dirname as dirname8 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
@@ -45105,7 +45427,7 @@ function readMemory(config2) {
   return { provider: str3(search2?.provider), model: str3(search2?.model), baseUrl: str3(remote?.baseUrl), apiKey: str3(remote?.apiKey), dreaming: dreaming !== false };
 }
 function readReindexFailure(path) {
-  if (!path || !existsSync16(path)) return null;
+  if (!path || !existsSync17(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync20(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
@@ -45267,7 +45589,7 @@ var LlmService = class {
     this.reindexing = true;
     this.writeReindexFailure("the memory index rebuild did not finish");
     const ca2 = this.opts.mitmCaPath;
-    const env2 = ca2 && existsSync16(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
+    const env2 = ca2 && existsSync17(ca2) ? { NODE_EXTRA_CA_CERTS: ca2 } : void 0;
     void this.exec(this.bin(), ["memory", "index", "--force"], REINDEX_TIMEOUT_MS, void 0, { env: env2 }).then(() => {
       this.writeReindexFailure(null);
       this.log("[llm] memory index rebuilt for the new embedding provider");
@@ -45504,13 +45826,13 @@ async function handleLlm(req, res, url3, service) {
 
 // src/meetings.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync17, readFileSync as readFileSync21, statfsSync } from "fs";
+import { existsSync as existsSync18, readFileSync as readFileSync21, statfsSync } from "fs";
 import { totalmem } from "os";
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 
 // src/meeting-captions.ts
 import { appendFileSync, mkdirSync as mkdirSync11, renameSync as renameSync11, rmSync as rmSync4, writeFileSync as writeFileSync14 } from "fs";
-import { join as join18 } from "path";
+import { join as join19 } from "path";
 var BINDING = "__ccCap";
 var MAX_TEXT = 2e4;
 function mergeCaptionText(full, seen, next) {
@@ -45803,10 +46125,10 @@ var CaptionContext = class {
   }
   live = /* @__PURE__ */ new Map();
   get file() {
-    return join18(this.dir, "captions.jsonl");
+    return join19(this.dir, "captions.jsonl");
   }
   get liveFile() {
-    return join18(this.dir, "captions-live.json");
+    return join19(this.dir, "captions-live.json");
   }
   start() {
     mkdirSync11(this.dir, { recursive: true, mode: 448 });
@@ -45907,8 +46229,8 @@ function byTime(captions) {
 var MeetingService = class {
   constructor(opts) {
     this.opts = opts;
-    this.voice = opts.voiceLog ?? new MeetingVoiceLog(join19(opts.openclawStateDir, "cc-voice"));
-    this.captionContext = new CaptionContext(join19(opts.openclawStateDir, "cc-voice"));
+    this.voice = opts.voiceLog ?? new MeetingVoiceLog(join20(opts.openclawStateDir, "cc-voice"));
+    this.captionContext = new CaptionContext(join20(opts.openclawStateDir, "cc-voice"));
     try {
       this.voice.end();
       this.captionContext.end();
@@ -45916,7 +46238,7 @@ var MeetingService = class {
     }
     this.ready = opts.browser(false).then(() => opts.reserve?.(false));
     void this.ready.catch(() => void 0);
-    if (existsSync17(opts.statePath)) {
+    if (existsSync18(opts.statePath)) {
       const saved = JSON.parse(readFileSync21(opts.statePath, "utf8"));
       this.applied = saved.applied;
       this.revision = saved.revision;
@@ -46756,8 +47078,8 @@ var MeetingService = class {
   }
   /** Restore content without rolling back the firewall's accepted meeting policy. */
   sanitizeRestoredConfig(staging) {
-    const path = join19(staging, "openclaw.json");
-    if (!existsSync17(path)) return;
+    const path = join20(staging, "openclaw.json");
+    if (!existsSync18(path)) return;
     const config2 = JSON.parse(readFileSync21(path, "utf8"));
     config2.plugins ??= {};
     config2.plugins.entries ??= {};
@@ -46784,8 +47106,8 @@ var MeetingService = class {
     config2.browser ??= {};
     config2.browser.profiles ??= {};
     config2.browser.profiles["cc-meetings"] = { cdpUrl: "http://127.0.0.1:9223", attachOnly: true };
-    const livePath = join19(this.opts.openclawStateDir, "openclaw.json");
-    if (existsSync17(livePath)) {
+    const livePath = join20(this.opts.openclawStateDir, "openclaw.json");
+    if (existsSync18(livePath)) {
       const live = JSON.parse(readFileSync21(livePath, "utf8"));
       if (live.plugins?.installs?.["google-meet"]) {
         config2.plugins.installs ??= {};
@@ -47034,7 +47356,7 @@ var MeetingMic = class {
 };
 
 // src/meeting-signin.ts
-import { existsSync as existsSync18, readFileSync as readFileSync22, rmSync as rmSync5 } from "fs";
+import { existsSync as existsSync19, readFileSync as readFileSync22, rmSync as rmSync5 } from "fs";
 var LIST_ACCOUNTS = "https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard";
 var same = (a2, b2) => a2.trim().toLowerCase() === b2.trim().toLowerCase();
 function signinUrl(account) {
@@ -47128,7 +47450,7 @@ var MeetingSignin = class {
     } catch {
     }
     try {
-      if (this.saved.status === "none" && existsSync18(opts.profileDir)) this.wipe();
+      if (this.saved.status === "none" && existsSync19(opts.profileDir)) this.wipe();
     } catch (error62) {
       console.error(`[meetings] a leftover meeting profile could not be removed: ${error62 instanceof Error ? error62.message.slice(0, 200) : "unknown error"}`);
     }
@@ -47761,7 +48083,7 @@ async function handleSearch(req, res, url3, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync19, mkdirSync as mkdirSync12, readFileSync as readFileSync23, renameSync as renameSync12, unlinkSync, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync20, mkdirSync as mkdirSync12, readFileSync as readFileSync23, renameSync as renameSync12, unlinkSync, writeFileSync as writeFileSync15 } from "fs";
 import { dirname as dirname9 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw";
@@ -47914,7 +48236,7 @@ var ConnectorsService = class {
   }
 };
 function readState(path) {
-  if (!existsSync19(path)) return { gateway: null, connections: [], updatedAt: "" };
+  if (!existsSync20(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
     const parsed = JSON.parse(readFileSync23(path, "utf8"));
     return {
@@ -47949,7 +48271,7 @@ function writeCliEnv(path, relayUrl, token) {
 }
 function removeFile(path) {
   try {
-    if (existsSync19(path)) unlinkSync(path);
+    if (existsSync20(path)) unlinkSync(path);
   } catch {
   }
 }
@@ -48024,7 +48346,7 @@ async function handleConnectors(req, res, url3, service) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync20, mkdirSync as mkdirSync13, readFileSync as readFileSync24, renameSync as renameSync13, writeFileSync as writeFileSync16 } from "fs";
+import { existsSync as existsSync21, mkdirSync as mkdirSync13, readFileSync as readFileSync24, renameSync as renameSync13, writeFileSync as writeFileSync16 } from "fs";
 import { dirname as dirname10 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -48254,7 +48576,7 @@ var DriveService = class {
   }
   /** Whether this box has Drive support installed at all (an older box does not). */
   supported() {
-    return existsSync20(this.applyScript);
+    return existsSync21(this.applyScript);
   }
 };
 
@@ -48302,7 +48624,7 @@ async function handleDrive(req, res, url3, service) {
 
 // src/secrets.ts
 import {
-  existsSync as existsSync21,
+  existsSync as existsSync22,
   mkdirSync as mkdirSync14,
   readFileSync as readFileSync25,
   renameSync as renameSync14,
@@ -48385,7 +48707,7 @@ var SecretsService = class {
     this.opts = opts;
   }
   apply(input2) {
-    const current = existsSync21(this.opts.envPath) ? readFileSync25(this.opts.envPath, "utf8") : "";
+    const current = existsSync22(this.opts.envPath) ? readFileSync25(this.opts.envPath, "utf8") : "";
     const unmanaged = current.split(/\r?\n/).filter(
       (line2) => !/^[A-Z][A-Z0-9_]{0,63}=CC-SEC-[a-f0-9]{48}$/.test(line2)
     );
@@ -48673,7 +48995,7 @@ async function handleLogins(req, res, url3, browser, wake) {
 
 // src/agentmail.ts
 import {
-  existsSync as existsSync22,
+  existsSync as existsSync23,
   mkdirSync as mkdirSync15,
   readFileSync as readFileSync26,
   renameSync as renameSync15,
@@ -48747,7 +49069,7 @@ var AgentMailService = class {
       GATEWAY_READ_MS
     );
     if (!snapshot.hash) throw new Error("OpenClaw returned no config hash");
-    const current = existsSync22(this.opts.envPath) ? readFileSync26(this.opts.envPath, "utf8") : "";
+    const current = existsSync23(this.opts.envPath) ? readFileSync26(this.opts.envPath, "utf8") : "";
     const lines = current.split(/\r?\n/).filter(
       (line2) => !/^\s*(?:export\s+)?AGENTMAIL_(?:API_KEY|WEBHOOK_SECRET)\s*=/.test(
         line2
@@ -48844,7 +49166,7 @@ var AgentMailService = class {
 
 // src/meeting-schedule.ts
 import { randomUUID as randomUUID4 } from "crypto";
-import { existsSync as existsSync23, readFileSync as readFileSync27 } from "fs";
+import { existsSync as existsSync24, readFileSync as readFileSync27 } from "fs";
 
 // ../../node_modules/.pnpm/ical.js@2.2.1/node_modules/ical.js/dist/ical.js
 var Binary = class _Binary {
@@ -56346,7 +56668,7 @@ var MeetingSchedule = class {
   constructor(deps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
-    if (existsSync23(deps.statePath)) {
+    if (existsSync24(deps.statePath)) {
       try {
         const saved = JSON.parse(readFileSync27(deps.statePath, "utf8"));
         this.store = { entries: saved.entries ?? [], invites: saved.invites ?? {}, seen: saved.seen ?? [], emailCursor: saved.emailCursor, emailFailures: saved.emailFailures };
@@ -56575,13 +56897,13 @@ var MeetingSchedule = class {
 };
 
 // src/meeting-sources.ts
-import { existsSync as existsSync24, readFileSync as readFileSync28 } from "fs";
+import { existsSync as existsSync25, readFileSync as readFileSync28 } from "fs";
 var AGENTMAIL_API = "https://api.agentmail.to/v0";
 var CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 var FIRST_LOOK_BACK_MS = 14 * 24 * 36e5;
 var MAX_PAGES2 = 5;
 function envFile(path) {
-  if (!existsSync24(path)) return {};
+  if (!existsSync25(path)) return {};
   const out = {};
   for (const line2 of readFileSync28(path, "utf8").split("\n")) {
     const m2 = /^([A-Z0-9_]+)=(.*)$/.exec(line2.trim());
@@ -56714,7 +57036,7 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync25, mkdirSync as mkdirSync16, readFileSync as readFileSync29, renameSync as renameSync16, rmSync as rmSync6, writeFileSync as writeFileSync19 } from "fs";
+import { existsSync as existsSync26, mkdirSync as mkdirSync16, readFileSync as readFileSync29, renameSync as renameSync16, rmSync as rmSync6, writeFileSync as writeFileSync19 } from "fs";
 import { dirname as dirname13 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -56766,7 +57088,7 @@ var GoogleService = class {
   gogBin;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync25(this.gogBin);
+    return existsSync26(this.gogBin);
   }
   /**
    * Make the box match the desired state. One atomic write, or one removal.
@@ -56839,7 +57161,7 @@ var GoogleService = class {
       gogVersion: await this.version(),
       // The file, not the remembered state: this is the question the console is really asking, and
       // a state file that outlived its env file would answer it wrongly.
-      hasPlaceholder: existsSync25(this.opts.envPath),
+      hasPlaceholder: existsSync26(this.opts.envPath),
       connected: applied?.connected ?? false,
       services: applied?.services ?? [],
       projectId: applied?.projectId ?? null,
@@ -57056,7 +57378,7 @@ async function handleUpdate(req, res, pathname, service) {
 import { createReadStream as createReadStream2, createWriteStream } from "fs";
 import { mkdir, mkdtemp as mkdtemp2, lstat as lstat2, opendir as opendir2, readlink, rename as rename2, rm as rm2, stat as stat2, symlink, utimes, writeFile as writeFile2, chmod } from "fs/promises";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname14, join as join20 } from "path";
+import { dirname as dirname14, join as join21 } from "path";
 import { Readable as Readable2 } from "stream";
 import { pipeline } from "stream/promises";
 import { createGunzip, createGzip } from "zlib";
@@ -57094,7 +57416,7 @@ var BackupService = class {
       return this.opts.staged.root;
     }
     if (kind === "gbrain") throw new Error("an agent box does not hold a brain");
-    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join20(this.home, ARCHIVE_ROOTS[kind]);
+    const root = ARCHIVE_ROOTS[kind] === "." ? this.home : join21(this.home, ARCHIVE_ROOTS[kind]);
     assertArchivableRoot(root);
     return root;
   }
@@ -57108,25 +57430,25 @@ var BackupService = class {
     const walk = async (rel) => {
       let dir;
       try {
-        dir = await opendir2(rel === "" ? root : join20(root, rel));
+        dir = await opendir2(rel === "" ? root : join21(root, rel));
       } catch {
         return;
       }
       for await (const item of dir) {
         const childRel = rel === "" ? item.name : `${rel}/${item.name}`;
         if (shouldExclude(childRel, kind)) {
-          const bytes = item.isDirectory() ? await dirSize(join20(root, childRel)) : await fileSize(join20(root, childRel));
+          const bytes = item.isDirectory() ? await dirSize(join21(root, childRel)) : await fileSize(join21(root, childRel));
           excluded.push({ path: childRel, bytes });
           continue;
         }
         let st2;
         try {
-          st2 = await lstat2(join20(root, childRel));
+          st2 = await lstat2(join21(root, childRel));
         } catch {
           continue;
         }
         if (st2.isSymbolicLink()) {
-          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join20(root, childRel)) });
+          entries.push({ path: childRel, bytes: 0, mode: 511, kind: "link", target: await readlink(join21(root, childRel)) });
           continue;
         }
         if (st2.isDirectory()) {
@@ -57179,8 +57501,8 @@ var BackupService = class {
         backupId: input2.backupId,
         kind: input2.kind
       });
-      const dir = await mkdtemp2(join20(this.spoolDir, "cc-backup-"));
-      spool = join20(dir, "archive.bin");
+      const dir = await mkdtemp2(join21(this.spoolDir, "cc-backup-"));
+      spool = join21(dir, "archive.bin");
       await pipeline(
         Readable2.from(tarOf(plan.root, manifest, input2.kind)),
         createGzip({ level: 6 }),
@@ -57291,7 +57613,7 @@ var BackupService = class {
             manifest = parseManifest(new TextDecoder().decode(e.body));
             continue;
           }
-          const abs = join20(into, rel);
+          const abs = join21(into, rel);
           if (e.type === "dir") {
             await mkdir(abs, { recursive: true, mode: 448 });
             dirs.set(abs, { mode: e.mode, mtime: e.mtime });
@@ -57365,7 +57687,7 @@ async function* tarOf(root, manifest, kind) {
   yield manifestBody;
   yield* tarPadding(manifestBody.length);
   for (const e of manifest.entries) {
-    const abs = join20(root, e.path);
+    const abs = join21(root, e.path);
     if (e.kind === "dir") {
       yield* tarHeader({ path: `${e.path}/`, type: "dir", size: 0, mode: e.mode, mtime });
       continue;
@@ -57425,8 +57747,8 @@ async function swapDirectory(opts) {
   };
   try {
     for (const rel of opts.keep ?? []) {
-      const from = join20(opts.target, rel);
-      const to = join20(opts.staged, rel);
+      const from = join21(opts.target, rel);
+      const to = join21(opts.staged, rel);
       const exists2 = await lstat2(from).then(
         () => true,
         () => false
@@ -57476,7 +57798,7 @@ async function dirSize(path) {
     return 0;
   }
   for await (const item of dir) {
-    const child = join20(path, item.name);
+    const child = join21(path, item.name);
     if (item.isDirectory()) total += await dirSize(child);
     else if (item.isFile()) total += await fileSize(child);
   }
@@ -57592,7 +57914,7 @@ async function handleBackup(req, res, url3, service, kinds = AGENT_KINDS) {
 import { createReadStream as createReadStream3 } from "fs";
 import { chmod as chmod2, lstat as lstat3, mkdir as mkdir2, open as open2, readdir as readdir2, realpath as realpath2, rename as rename3, rm as rm3, stat as stat3, unlink } from "fs/promises";
 import { randomUUID as randomUUID5 } from "crypto";
-import { basename as basename2, dirname as dirname15, join as join21, resolve as resolve2, sep as sep2 } from "path";
+import { basename as basename2, dirname as dirname15, join as join22, resolve as resolve2, sep as sep2 } from "path";
 import { Transform } from "stream";
 import { pipeline as pipeline2 } from "stream/promises";
 var TEXT_PREVIEW_BYTES = 1024 * 1024;
@@ -57741,7 +58063,7 @@ async function realpathLenient(path) {
   for (; ; ) {
     try {
       const real = await realpath2(cursor);
-      return missing.length ? join21(real, ...missing.reverse()) : real;
+      return missing.length ? join22(real, ...missing.reverse()) : real;
     } catch {
       const parent = dirname15(cursor);
       if (parent === cursor) return resolve2(path);
@@ -57830,7 +58152,7 @@ var FilesService = class {
     const normalized = normalizeRelative(rel);
     let real;
     try {
-      real = await realpath2(normalized ? join21(root, normalized) : root);
+      real = await realpath2(normalized ? join22(root, normalized) : root);
     } catch {
       throw new FilesError(404, "not_found", "No such file or folder.");
     }
@@ -57861,7 +58183,7 @@ var FilesService = class {
     const parent = await this.resolveExisting(parentRel);
     const st2 = await stat3(parent.abs).catch(() => null);
     if (!st2?.isDirectory()) throw new FilesError(400, "not_a_directory", "The destination is not a folder.");
-    const abs = join21(parent.abs, name);
+    const abs = join22(parent.abs, name);
     await this.assertAllowed(abs);
     return { rel: normalized, abs, parent: parent.abs, name };
   }
@@ -57880,7 +58202,7 @@ var FilesService = class {
     const truncated = names.length > this.limits.listMaxEntries;
     const entries = [];
     for (const name of names.slice(0, this.limits.listMaxEntries)) {
-      const entry = await describe3(root, join21(abs, name), name);
+      const entry = await describe3(root, join22(abs, name), name);
       if (entry) entries.push(entry);
     }
     entries.sort((a2, b2) => {
@@ -58040,7 +58362,7 @@ var FilesService = class {
   async spool(req, parent, max, op) {
     const declared = Number(req.headers["content-length"] ?? "");
     if (Number.isFinite(declared) && declared > max) throw tooLargeError(op, max);
-    const tmp = join21(parent, `.cc-${op}-${randomUUID5()}.part`);
+    const tmp = join22(parent, `.cc-${op}-${randomUUID5()}.part`);
     let written = 0;
     let tooBig = false;
     const meter = new Transform({
@@ -58114,7 +58436,7 @@ async function countEntries(dir, max) {
     for (const name of names) {
       count2++;
       if (count2 > max) return null;
-      const child = join21(current, name);
+      const child = join22(current, name);
       const st2 = await lstat3(child).catch(() => null);
       if (st2?.isDirectory()) stack.push(child);
     }
@@ -58369,7 +58691,7 @@ async function readHead(path, max) {
 import { createHash as createHash10 } from "crypto";
 import { mkdirSync as mkdirSync17, mkdtempSync, readFileSync as readFileSync31, rmSync as rmSync7, writeFileSync as writeFileSync20 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { dirname as dirname16, join as join22 } from "path";
+import { dirname as dirname16, join as join23 } from "path";
 var MIN_SECONDS = 5 * 60;
 var MAX_SECONDS = 72 * 60 * 60;
 var KEYGEN_TIMEOUT_MS = 2e4;
@@ -58453,8 +58775,8 @@ var SshAccessService = class {
   }
   // ---- internals ----
   async mint(grantId) {
-    const dir = mkdtempSync(join22(this.opts.workDir ?? tmpdir3(), "cc-ssh-"));
-    const path = join22(dir, "key");
+    const dir = mkdtempSync(join23(this.opts.workDir ?? tmpdir3(), "cc-ssh-"));
+    const path = join23(dir, "key");
     try {
       await this.exec(
         "ssh-keygen",
@@ -59039,7 +59361,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile6 } from "child_process";
-import { existsSync as existsSync26, mkdirSync as mkdirSync18, readFileSync as readFileSync32, rmSync as rmSync8, writeFileSync as writeFileSync21 } from "fs";
+import { existsSync as existsSync27, mkdirSync as mkdirSync18, readFileSync as readFileSync32, rmSync as rmSync8, writeFileSync as writeFileSync21 } from "fs";
 import { dirname as dirname17 } from "path";
 import { promisify } from "util";
 var run2 = promisify(execFile6);
@@ -59080,7 +59402,7 @@ var GmailWatchService = class {
   unit;
   /** Whether this box has `gog` at all. A file check, so a box updated in place picks it up. */
   supported() {
-    return existsSync26(this.gogBin);
+    return existsSync27(this.gogBin);
   }
   /**
    * Write the watcher's configuration and (re)start it.
@@ -59175,7 +59497,7 @@ var GmailWatchService = class {
 
 // src/gmail-wake.ts
 import { randomBytes as randomBytes3 } from "crypto";
-import { existsSync as existsSync27, readFileSync as readFileSync33, renameSync as renameSync17, writeFileSync as writeFileSync22 } from "fs";
+import { existsSync as existsSync28, readFileSync as readFileSync33, renameSync as renameSync17, writeFileSync as writeFileSync22 } from "fs";
 var gmailWakeInput = external_exports.object({
   messageId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   threadId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -59213,7 +59535,7 @@ var GmailWakeService = class {
   }
   readState() {
     try {
-      if (!existsSync27(this.opts.statePath)) return null;
+      if (!existsSync28(this.opts.statePath)) return null;
       const s2 = JSON.parse(readFileSync33(this.opts.statePath, "utf8"));
       return typeof s2.token === "string" && /^[a-f0-9]{64}$/.test(s2.token) ? s2 : null;
     } catch {
@@ -59541,9 +59863,9 @@ import os from "os";
 // src/patch-check.ts
 import { execFile as execFile7 } from "child_process";
 import { createHash as createHash12 } from "crypto";
-import { existsSync as existsSync28, lstatSync, readFileSync as readFileSync34, readdirSync as readdirSync5 } from "fs";
+import { existsSync as existsSync29, lstatSync, readFileSync as readFileSync34, readdirSync as readdirSync5 } from "fs";
 import { homedir } from "os";
-import { join as join23 } from "path";
+import { join as join24 } from "path";
 var HOST = "/usr/lib/node_modules/openclaw";
 var MEETING_PATCH = "/opt/controlclaw/meeting-runtime-patch.py";
 var VOICE_DIR2 = "/opt/controlclaw/meeting-voice";
@@ -59558,9 +59880,9 @@ var readJson2 = (path) => {
   }
 };
 function findPlugin(stateDir, name) {
-  const direct = join23(stateDir, "extensions", name);
-  if (existsSync28(join23(direct, "package.json"))) return direct;
-  const projects = join23(stateDir, "npm", "projects");
+  const direct = join24(stateDir, "extensions", name);
+  if (existsSync29(join24(direct, "package.json"))) return direct;
+  const projects = join24(stateDir, "npm", "projects");
   let entries = [];
   try {
     entries = readdirSync5(projects);
@@ -59568,8 +59890,8 @@ function findPlugin(stateDir, name) {
     return null;
   }
   for (const p2 of entries) {
-    const dir = join23(projects, p2, "node_modules", "@openclaw", name);
-    if (existsSync28(join23(dir, "package.json"))) return dir;
+    const dir = join24(projects, p2, "node_modules", "@openclaw", name);
+    if (existsSync29(join24(dir, "package.json"))) return dir;
   }
   return null;
 }
@@ -59603,14 +59925,14 @@ function meetingsRuntimeItem(raw, openclaw) {
 }
 function phonePluginItem(dir, read = (p2) => readFileSync34(p2, "utf8")) {
   if (!dir) return { id: "phone_plugin", status: "not_installed", expected: PHONE_VERSION };
-  const version2 = readJson2(join23(dir, "package.json"))?.version ?? null;
+  const version2 = readJson2(join24(dir, "package.json"))?.version ?? null;
   if (version2 !== PHONE_VERSION) return { id: "phone_plugin", status: "mismatch", expected: PHONE_VERSION, actual: version2 };
   const patches = [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT, ...PHONE_REPLY_COMPAT];
   let unpatched = false;
   for (const file2 of new Set(patches.map((p2) => p2.file))) {
     let source;
     try {
-      source = read(join23(dir, "dist", ".setup", file2));
+      source = read(join24(dir, "dist", ".setup", file2));
     } catch {
       return { id: "phone_plugin", status: "missing", expected: PHONE_VERSION, actual: version2 };
     }
@@ -59624,35 +59946,35 @@ function phonePluginItem(dir, read = (p2) => readFileSync34(p2, "utf8")) {
 }
 function phoneRuntimeItem(host, openclaw) {
   try {
-    const dist = join23(host, "dist");
+    const dist = join24(host, "dist");
     const files2 = readdirSync5(dist).filter((f2) => /^gateway-work-admission-[A-Za-z0-9_-]{8}\.mjs$/.test(f2));
     if (files2.length !== 1) return { id: "phone_runtime", status: "mismatch", actual: openclaw };
-    const ok = phoneAdmissionDigest(readFileSync34(join23(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
+    const ok = phoneAdmissionDigest(readFileSync34(join24(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
     return { id: "phone_runtime", status: ok ? "ok" : "mismatch", actual: openclaw };
   } catch {
     return { id: "phone_runtime", status: "missing", actual: openclaw };
   }
 }
 function browserStealthItem(host) {
-  const link = join23(host, "node_modules", "playwright-core");
+  const link = join24(host, "node_modules", "playwright-core");
   try {
     if (lstatSync(link).isSymbolicLink()) return { id: "browser_stealth", status: "ok" };
   } catch {
     return { id: "browser_stealth", status: "missing" };
   }
-  return { id: "browser_stealth", status: "mismatch", actual: readJson2(join23(link, "package.json"))?.version ?? null };
+  return { id: "browser_stealth", status: "mismatch", actual: readJson2(join24(link, "package.json"))?.version ?? null };
 }
 function voiceAdapterItem() {
-  const manifest = readJson2(join23(VOICE_DIR2, "openclaw.plugin.json"));
-  if (!manifest || !existsSync28(join23(VOICE_DIR2, "capabilities.json"))) return { id: "voice_adapter", status: "missing" };
+  const manifest = readJson2(join24(VOICE_DIR2, "openclaw.plugin.json"));
+  if (!manifest || !existsSync29(join24(VOICE_DIR2, "capabilities.json"))) return { id: "voice_adapter", status: "missing" };
   return { id: "voice_adapter", status: JSON.stringify(manifest).includes("cc-phone-voice") ? "ok" : "mismatch" };
 }
 function emailCliItem(stateDir) {
-  const dir = join23(stateDir, "extensions", "agentmail");
-  if (!existsSync28(join23(dir, "package.json"))) return { id: "email_cli", status: "not_installed" };
-  const release = readJson2(join23(dir, "dist", "cli", "agentmail-cli-release.json"));
+  const dir = join24(stateDir, "extensions", "agentmail");
+  if (!existsSync29(join24(dir, "package.json"))) return { id: "email_cli", status: "not_installed" };
+  const release = readJson2(join24(dir, "dist", "cli", "agentmail-cli-release.json"));
   const arch = process.arch === "arm64" ? "linux-arm64" : "linux-x64";
-  return { id: "email_cli", status: release?.assets?.[arch] ? "ok" : "missing", actual: readJson2(join23(dir, "package.json"))?.version ?? null };
+  return { id: "email_cli", status: release?.assets?.[arch] ? "ok" : "missing", actual: readJson2(join24(dir, "package.json"))?.version ?? null };
 }
 function modelProviderItem(config2) {
   if (!config2) return { id: "model_provider", status: "unknown" };
@@ -59668,7 +59990,7 @@ async function patchReport(deps) {
   const openclaw = deps.openclawVersion();
   const [meeting, config2] = await Promise.all([deps.meetingCheck(deps.host, deps.stateDir).catch(() => null), deps.config().catch(() => null)]);
   const meetDir = findPlugin(deps.stateDir, "google-meet");
-  const meetVersion = meetDir ? readJson2(join23(meetDir, "package.json"))?.version ?? null : null;
+  const meetVersion = meetDir ? readJson2(join24(meetDir, "package.json"))?.version ?? null : null;
   const reviewed = meeting?.reviewed;
   const items = [
     meetingsRuntimeItem(meeting, openclaw),
@@ -59682,7 +60004,7 @@ async function patchReport(deps) {
     phoneRuntimeItem(deps.host, openclaw),
     voiceAdapterItem(),
     { id: "wake", status: localWakeInstalled() ? "ok" : "missing" },
-    { id: "meeting_guard", status: existsSync28(GUARD) ? "ok" : "missing" },
+    { id: "meeting_guard", status: existsSync29(GUARD) ? "ok" : "missing" },
     browserStealthItem(deps.host),
     emailCliItem(deps.stateDir),
     modelProviderItem(config2)
@@ -59691,7 +60013,7 @@ async function patchReport(deps) {
 }
 function defaultPatchDeps(config2) {
   return {
-    stateDir: process.env.OPENCLAW_STATE_DIR ?? join23(homedir(), ".openclaw"),
+    stateDir: process.env.OPENCLAW_STATE_DIR ?? join24(homedir(), ".openclaw"),
     host: HOST,
     openclawVersion: () => readOpenClawVersion(),
     meetingCheck: runMeetingCheck,
@@ -59772,11 +60094,12 @@ function ntpSynced() {
 async function healthSummary(deps) {
   const host = deps.controlPlaneHost();
   const mitmIp = deps.mitmPrivateIp();
-  const [disk, synced, dns, egress] = await Promise.all([
+  const [disk, synced, dns, egress, activeFor] = await Promise.all([
     diskOf(),
     ntpSynced(),
     host ? timed(() => withTimeout(lookup2(host).then(() => true), PROBE_TIMEOUT_MS)) : Promise.resolve(null),
-    mitmIp ? timed(() => deps.tcpProbe(mitmIp, Number(process.env.MITM_PROXY_PORT ?? 8080), PROBE_TIMEOUT_MS)) : Promise.resolve(null)
+    mitmIp ? timed(() => deps.tcpProbe(mitmIp, Number(process.env.MITM_PROXY_PORT ?? 8080), PROBE_TIMEOUT_MS)) : Promise.resolve(null),
+    deps.openclawActiveFor ? deps.openclawActiveFor().catch(() => null) : Promise.resolve(void 0)
   ]);
   const total = os.totalmem();
   const now = Date.now();
@@ -59796,6 +60119,8 @@ async function healthSummary(deps) {
     egress,
     rebootRequired: deps.rebootRequired(),
     ...watch ? { outbound: watch.outbound === null ? null : { ok: watch.outbound, jammed: watch.jammed } } : {},
+    uptimeS: Math.floor(os.uptime()),
+    ...activeFor !== void 0 ? { openclawSince: activeFor === null ? null : Math.round(now - activeFor) } : {},
     ...deps.stalled ? { stalled: stalled ? { kind: stalled.kind, name: stalled.name ? stalled.name.slice(0, 80) : null, minutes: Math.floor((now - stalled.startedAt) / 6e4) } : null } : {}
   };
 }
@@ -60179,9 +60504,9 @@ function startMetricSampler(opts) {
 }
 
 // src/skills.ts
-import { existsSync as existsSync30, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync11 } from "fs";
+import { existsSync as existsSync31, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync11 } from "fs";
 import { lstat as lstat4, readdir as readdir3, readFile as readFile8 } from "fs/promises";
-import { join as join26 } from "path";
+import { join as join27 } from "path";
 
 // ../templates/src/notes-directory.ts
 import { createHash as createHash14 } from "crypto";
@@ -60437,7 +60762,7 @@ function notesNameProblem(name) {
 
 // ../templates/src/notes-folder.ts
 import { lstatSync as lstatSync2, mkdirSync as mkdirSync19, readdirSync as readdirSync6, readFileSync as readFileSync36, rmSync as rmSync9, statSync as statSync4, writeFileSync as writeFileSync23 } from "fs";
-import { dirname as dirname18, join as join24 } from "path";
+import { dirname as dirname18, join as join25 } from "path";
 function notesPlace(env2 = process.env) {
   return { root: env2.CC_NOTES_DIR ?? "/var/lib/controlclaw-notes/sets", helper: env2.CC_NOTES_HELPER ? [env2.CC_NOTES_HELPER] : ["sudo", "-n", "/usr/local/sbin/cc-notes"] };
 }
@@ -60451,7 +60776,7 @@ function notesLocked(place = notesPlace(), env2 = process.env) {
     return true;
   }
 }
-var recordPath = (home, set2) => join24(home, ".controlclaw", "notes", `${set2}.json`);
+var recordPath = (home, set2) => join25(home, ".controlclaw", "notes", `${set2}.json`);
 function readNotesRecord(home, set2) {
   if (notesNameProblem(set2)) return null;
   try {
@@ -60472,7 +60797,7 @@ function installedNotes(root, set2) {
   let bytes = 0;
   const walk = (folder, prefix) => {
     for (const name of readdirSync6(folder).sort()) {
-      const path = join24(folder, name);
+      const path = join25(folder, name);
       const stat5 = lstatSync2(path);
       if (stat5.isDirectory()) {
         if (!walk(path, `${prefix}${name}/`)) return false;
@@ -60486,7 +60811,7 @@ function installedNotes(root, set2) {
     return true;
   };
   try {
-    const dir = join24(root, set2);
+    const dir = join25(root, set2);
     if (!lstatSync2(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
     return walk(dir, "") ? files2 : null;
   } catch {
@@ -60506,7 +60831,7 @@ function signature(root, set2) {
   let count2 = 0;
   const walk = (folder, prefix) => {
     for (const name of readdirSync6(folder).sort()) {
-      const path = join24(folder, name);
+      const path = join25(folder, name);
       const stat5 = lstatSync2(path, { bigint: true });
       if (stat5.isDirectory()) {
         if (!walk(path, `${prefix}${name}/`)) return false;
@@ -60516,7 +60841,7 @@ function signature(root, set2) {
     return true;
   };
   try {
-    const dir = join24(root, set2);
+    const dir = join25(root, set2);
     if (!lstatSync2(dir, { throwIfNoEntry: false })?.isDirectory()) return null;
     return walk(dir, "") ? parts.join("\n") : null;
   } catch {
@@ -60551,8 +60876,8 @@ function reportNotes(home, place = notesPlace(), read = installedNotes) {
 
 // ../templates/src/skill-folder.ts
 import { randomBytes as randomBytes4 } from "crypto";
-import { existsSync as existsSync29, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync37, realpathSync as realpathSync2, renameSync as renameSync18, rmSync as rmSync10, writeFileSync as writeFileSync24 } from "fs";
-import { join as join25, resolve as resolve3, sep as sep3 } from "path";
+import { existsSync as existsSync30, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync37, realpathSync as realpathSync2, renameSync as renameSync18, rmSync as rmSync10, writeFileSync as writeFileSync24 } from "fs";
+import { join as join26, resolve as resolve3, sep as sep3 } from "path";
 var TooBig = class extends Error {
 };
 function listFolder(dir, notes = false) {
@@ -60562,7 +60887,7 @@ function listFolder(dir, notes = false) {
   let bytes = 0;
   const walk = (folder, prefix) => {
     for (const name of readdirSync7(folder).sort()) {
-      const path = join25(folder, name);
+      const path = join26(folder, name);
       const relative = `${prefix}${name}`;
       const stat5 = lstatSync3(path);
       if (stat5.isDirectory()) walk(path, `${relative}/`);
@@ -60597,7 +60922,7 @@ function skillHash(dir) {
 }
 function readSkillRecord(dir) {
   try {
-    return parseSkillRecord(JSON.parse(readFileSync37(join25(dir, SKILL_RECORD), "utf8")));
+    return parseSkillRecord(JSON.parse(readFileSync37(join26(dir, SKILL_RECORD), "utf8")));
   } catch {
     return null;
   }
@@ -60652,9 +60977,9 @@ async function statSkillFolder(dir) {
   const walk = async (folder, prefix) => {
     for (const name of (await readdir3(folder)).sort()) {
       if (!prefix && SKILL_NOT_CONTENT.has(name)) continue;
-      const stat5 = await lstat4(join26(folder, name));
+      const stat5 = await lstat4(join27(folder, name));
       if (stat5.isDirectory()) {
-        if (!await walk(join26(folder, name), `${prefix}${name}/`)) return false;
+        if (!await walk(join27(folder, name), `${prefix}${name}/`)) return false;
       } else if (!stat5.isFile()) return false;
       else {
         found.push({ path: `${prefix}${name}`, size: stat5.size, mtimeMs: stat5.mtimeMs, executable: (stat5.mode & 73) !== 0 });
@@ -60680,7 +61005,7 @@ var SkillHashes = class {
     if (stats) {
       try {
         const files2 = [];
-        for (const f2 of stats) files2.push({ path: f2.path, content: await readFile8(join26(dir, f2.path)), executable: f2.executable });
+        for (const f2 of stats) files2.push({ path: f2.path, content: await readFile8(join27(dir, f2.path)), executable: f2.executable });
         hash3 = hashSkillFiles(files2);
       } catch {
         hash3 = null;
@@ -60726,7 +61051,7 @@ var SkillsService = class {
     return this.opts.home ?? process.env.HOME ?? "/home/controlclaw";
   }
   get managedDir() {
-    return join26(this.home, ".openclaw", "skills");
+    return join27(this.home, ".openclaw", "skills");
   }
   get notesPlace() {
     return this.opts.notes ?? notesPlace();
@@ -60747,7 +61072,7 @@ var SkillsService = class {
     return this.pending;
   }
   async managed(name) {
-    const dir = join26(this.managedDir, name);
+    const dir = join27(this.managedDir, name);
     const record2 = readSkillRecord(dir);
     return {
       currentHash: await this.hashes.of(dir),
@@ -60794,7 +61119,7 @@ var SkillsService = class {
       skills2.push({ name, where: "managed", enabled: !off.has(name), eligible: false, missing: [], ...names.has(name) ? { hidden: true } : {}, ...await this.managed(name) });
       names.add(name);
     }
-    this.hashes.keep(new Set(managedNames.map((name) => join26(this.managedDir, name))));
+    this.hashes.keep(new Set(managedNames.map((name) => join27(this.managedDir, name))));
     this.names = names;
     const order = { managed: 0, openclaw: 1, workshop: 2, workspace: 3 };
     skills2.sort((a2, b2) => order[a2.where] - order[b2.where] || (a2.name < b2.name ? -1 : a2.name > b2.name ? 1 : 0));
@@ -60803,7 +61128,7 @@ var SkillsService = class {
   /** Folders in the managed folder that hold a `SKILL.md`, by name. OpenClaw's own `.openclaw-install-backups` is not one. */
   managedNames() {
     try {
-      return readdirSync8(this.managedDir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && isReportedSkillName(entry.name) && existsSync30(join26(this.managedDir, entry.name, "SKILL.md"))).map((entry) => entry.name).sort().slice(0, MAX_MANAGED_SKILLS);
+      return readdirSync8(this.managedDir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && isReportedSkillName(entry.name) && existsSync31(join27(this.managedDir, entry.name, "SKILL.md"))).map((entry) => entry.name).sort().slice(0, MAX_MANAGED_SKILLS);
     } catch {
       return [];
     }
@@ -60837,7 +61162,7 @@ var SkillsService = class {
   async remove(name, expectedHash, evenIfChanged) {
     if (typeof name !== "string" || !SKILL_NAME.test(name) || name in {} || typeof expectedHash !== "string" || !/^[0-9a-f]{64}$/.test(expectedHash)) throw new SkillsError("name and expectedHash are required", 400);
     if (BUILTIN_SKILL_NAMES.includes(name)) throw new SkillsError("That skill comes with every agent. It can be switched off, not removed.", 409);
-    const dir = join26(this.managedDir, name);
+    const dir = join27(this.managedDir, name);
     const there = lstatSync4(dir, { throwIfNoEntry: false });
     if (!there) return { ok: true, removed: false };
     const record2 = there.isDirectory() ? readSkillRecord(dir) : null;
@@ -60923,9 +61248,9 @@ ${err.stderr ?? ""}`)) {
 
 // src/templates.ts
 import { createHash as createHash15 } from "crypto";
-import { existsSync as existsSync31, mkdirSync as mkdirSync20, readdirSync as readdirSync9, readFileSync as readFileSync38, renameSync as renameSync19, rmSync as rmSync12, statSync as statSync6, writeFileSync as writeFileSync25 } from "fs";
+import { existsSync as existsSync32, mkdirSync as mkdirSync20, readdirSync as readdirSync9, readFileSync as readFileSync38, renameSync as renameSync19, rmSync as rmSync12, statSync as statSync6, writeFileSync as writeFileSync25 } from "fs";
 import { homedir as homedir2 } from "os";
-import { dirname as dirname20, join as join27 } from "path";
+import { dirname as dirname20, join as join28 } from "path";
 
 // ../templates/src/skill-payload.ts
 var import_yaml3 = __toESM(require_dist2(), 1);
@@ -61010,12 +61335,12 @@ function skillInstallOf(raw) {
 }
 var notesOnAgent = (name) => {
   try {
-    return statSync6(join27(notesPlace().root, name)).isDirectory();
+    return statSync6(join28(notesPlace().root, name)).isDirectory();
   } catch {
     return false;
   }
 };
-var notesHelperThere = (env2 = process.env) => existsSync31(env2.CC_NOTES_HELPER ?? "/usr/local/sbin/cc-notes");
+var notesHelperThere = (env2 = process.env) => existsSync32(env2.CC_NOTES_HELPER ?? "/usr/local/sbin/cc-notes");
 var overwriteTicket = (hash3) => createHash15("sha256").update(`${hash3}\0overwrite`).digest("hex");
 var what = (kind) => kind === "notes" ? "shared notes" : "skill";
 var bundleHashOf = (raw) => {
@@ -61030,7 +61355,7 @@ var NotesError = class extends Error {
   }
 };
 var TEMPLATE_REVIEW_MS = 45 * 6e4;
-var templateReviewPath = (stateDir) => join27(stateDir, "review.json");
+var templateReviewPath = (stateDir) => join28(stateDir, "review.json");
 var STAMP = /^[0-9TZ:.-]{1,48}$/;
 function reviewFilesOf(raw) {
   if (!Array.isArray(raw)) return [];
@@ -61110,7 +61435,7 @@ var TemplateService = class {
     this.poked = true;
   }
   get unsentPath() {
-    return join27(this.opts.stateDir, "unsent.json");
+    return join28(this.opts.stateDir, "unsent.json");
   }
   keep(result) {
     this.unsent = result;
@@ -61139,7 +61464,7 @@ var TemplateService = class {
     (this.opts.log ?? ((l2) => console.log(l2)))(`[templates] ${line2}`);
   }
   get markerPath() {
-    return join27(this.opts.stateDir, "applied.json");
+    return join28(this.opts.stateDir, "applied.json");
   }
   marker() {
     try {
@@ -61152,7 +61477,7 @@ var TemplateService = class {
     }
   }
   get besidePath() {
-    return join27(this.opts.stateDir, "beside.json");
+    return join28(this.opts.stateDir, "beside.json");
   }
   /** The bundles applied beside this agent's template, oldest first. */
   beside() {
@@ -61210,12 +61535,12 @@ var TemplateService = class {
    */
   async folder(template, hash3) {
     if (!isOrgTemplate(template)) {
-      const dir2 = join27(this.opts.templatesDir, template);
-      return existsSync31(join27(dir2, "template.yaml")) ? { dir: dir2 } : { dir: null, why: "missing" };
+      const dir2 = join28(this.opts.templatesDir, template);
+      return existsSync32(join28(dir2, "template.yaml")) ? { dir: dir2 } : { dir: null, why: "missing" };
     }
     if (!hash3) return { dir: null, why: "broken" };
-    const kept = join27(this.opts.stateDir, "org", `${template}.json`);
-    const dir = join27(this.opts.stateDir, "org", template);
+    const kept = join28(this.opts.stateDir, "org", `${template}.json`);
+    const dir = join28(this.opts.stateDir, "org", template);
     const remove = (path) => {
       try {
         rmSync12(path, { recursive: true, force: true });
@@ -61236,7 +61561,7 @@ var TemplateService = class {
         return unpack(true);
       }
     };
-    if (existsSync31(kept) && await unpack()) return { dir };
+    if (existsSync32(kept) && await unpack()) return { dir };
     let text3;
     try {
       text3 = await this.call("GET", void 0, `/bundle?template=${encodeURIComponent(template)}`);
@@ -61263,7 +61588,7 @@ var TemplateService = class {
   }
   /** Runs the runner and returns what it printed for the console, whatever its exit code. */
   async runbook(command, template, dir, assignment, only, noScripts = false, beside = false) {
-    const vars = join27(this.opts.stateDir, command === "check" ? PREVIEW_VARS : beside ? BESIDE_VARS : APPLIED_VARS);
+    const vars = join28(this.opts.stateDir, command === "check" ? PREVIEW_VARS : beside ? BESIDE_VARS : APPLIED_VARS);
     this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
     const args = [this.opts.runbook, command === "check" ? "run" : command, dir, "--vars", vars, "--json", "--public"];
     if (isOrgTemplate(template)) args.push("--as", template);
@@ -61290,11 +61615,11 @@ var TemplateService = class {
    * this one replaces. Only folders that are on the box: nothing is fetched for this.
    */
   async besideFolders(template, dir) {
-    const at2 = (id) => isOrgTemplate(id) ? join27(this.opts.stateDir, "org", id) : join27(this.opts.templatesDir, id);
+    const at2 = (id) => isOrgTemplate(id) ? join28(this.opts.stateDir, "org", id) : join28(this.opts.templatesDir, id);
     const name = (await this.facts(dir))?.name ?? null;
     const marker = this.marker();
     const ids = [...marker && !marker.missing ? [marker.template] : [], ...Object.entries(this.beside()).filter(([id, b2]) => id !== template && (!name || b2.name !== name)).map(([id]) => id)];
-    return ids.filter((id) => id !== template).map(at2).filter((folder) => existsSync31(join27(folder, "template.yaml")));
+    return ids.filter((id) => id !== template).map(at2).filter((folder) => existsSync32(join28(folder, "template.yaml")));
   }
   async send() {
     if (!this.unsent) return;
@@ -61379,9 +61704,9 @@ var TemplateService = class {
   }
   /** Removes the copies of the organization's templates this agent no longer has and is not being asked about. */
   tidy(wanted) {
-    const folder = join27(this.opts.stateDir, "org");
+    const folder = join28(this.opts.stateDir, "org");
     try {
-      for (const name of readdirSync9(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync12(join27(folder, name), { recursive: true, force: true });
+      for (const name of readdirSync9(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync12(join28(folder, name), { recursive: true, force: true });
     } catch {
     }
   }
@@ -61429,7 +61754,7 @@ var TemplateService = class {
     this.write(this.markerPath, { template, at: now, ...from, vars: { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone } });
     let carried = [];
     try {
-      carried = readdirSync9(join27(dir, "bundles"));
+      carried = readdirSync9(join28(dir, "bundles"));
     } catch {
     }
     const recorded = this.beside();
@@ -61447,7 +61772,7 @@ var TemplateService = class {
    * what is read. Never by itself, and each request once.
    */
   async captureSkill(req) {
-    const done = join27(this.opts.stateDir, "skill-capture.json");
+    const done = join28(this.opts.stateDir, "skill-capture.json");
     try {
       if (JSON.parse(readFileSync38(done, "utf8")).id === req.id) return;
     } catch {
@@ -61478,7 +61803,7 @@ var TemplateService = class {
    * takes this agent's own template from its own copy, not from here.
    */
   async capture(id) {
-    const done = join27(this.opts.stateDir, "capture.json");
+    const done = join28(this.opts.stateDir, "capture.json");
     try {
       if (JSON.parse(readFileSync38(done, "utf8")).id === id) return;
     } catch {
@@ -61500,7 +61825,7 @@ var TemplateService = class {
     }
   }
   get startSkillsPath() {
-    return join27(this.opts.stateDir, "start-skills.json");
+    return join28(this.opts.stateDir, "start-skills.json");
   }
   /** What was taken, as it is kept: the id, the exact skills that were named then, and how far it got. */
   startLatch() {
@@ -61602,7 +61927,7 @@ var TemplateService = class {
         return { broken: true };
       }
     }
-    const file2 = join27(this.opts.stateDir, "skills", `${item.payload}${run3}.json`);
+    const file2 = join28(this.opts.stateDir, "skills", `${item.payload}${run3}.json`);
     try {
       mkdirSync20(dirname20(file2), { recursive: true, mode: 448 });
       writeFileSync25(file2, text3, { mode: 384 });
@@ -61629,13 +61954,13 @@ var TemplateService = class {
     }
   }
   get skillPendingPath() {
-    return join27(this.opts.stateDir, "skill-pending.json");
+    return join28(this.opts.stateDir, "skill-pending.json");
   }
   get skillTicketPath() {
-    return join27(this.opts.stateDir, "skill-ticket.json");
+    return join28(this.opts.stateDir, "skill-ticket.json");
   }
   get skillDonePath() {
-    return join27(this.opts.stateDir, "skill-done.json");
+    return join28(this.opts.stateDir, "skill-done.json");
   }
   /** The skill this agent has prepared and is waiting for a ticket for, while it is recent. */
   skillPending() {
@@ -61774,7 +62099,7 @@ var TemplateService = class {
       if (status === 413) return { broken: true };
       throw error62;
     }
-    const file2 = join27(this.opts.stateDir, "skills", `${item.payload}.check.json`);
+    const file2 = join28(this.opts.stateDir, "skills", `${item.payload}.check.json`);
     try {
       mkdirSync20(dirname20(file2), { recursive: true, mode: 448 });
       writeFileSync25(file2, text3, { mode: 384 });
@@ -61817,12 +62142,12 @@ var TemplateService = class {
   }
   /** The folder of a skill OpenClaw manages on this agent. */
   skillDir(name) {
-    return join27(this.opts.home ?? process.env.HOME ?? homedir2(), ".openclaw", "skills", name);
+    return join28(this.opts.home ?? process.env.HOME ?? homedir2(), ".openclaw", "skills", name);
   }
   /** What this agent has of a skill of that name, by its own record: one the organization installed, and whether it is still those files. */
   skillOnAgent(name) {
     const dir = this.skillDir(name);
-    const record2 = existsSync31(join27(dir, "SKILL.md")) ? readSkillRecord(dir) : null;
+    const record2 = existsSync32(join28(dir, "SKILL.md")) ? readSkillRecord(dir) : null;
     if (record2?.source !== "organization") return { replaces: false, changed: false };
     return { replaces: true, changed: skillHash(dir) !== record2.installedHash };
   }
@@ -61835,7 +62160,7 @@ var TemplateService = class {
   async restoreSkill(name, expectedHash, payload) {
     if (typeof name !== "string" || !SKILL_NAME_RE.test(name) || typeof expectedHash !== "string" || !BUNDLE_HASH.test(expectedHash) || typeof payload !== "string" || !isSkillPayloadId(payload)) throw new NotesError("Name the skill, its hash and its version.", 400);
     const dir = this.skillDir(name);
-    const record2 = existsSync31(join27(dir, "SKILL.md")) ? readSkillRecord(dir) : null;
+    const record2 = existsSync32(join28(dir, "SKILL.md")) ? readSkillRecord(dir) : null;
     if (!record2 || record2.source !== "organization") throw new NotesError("This agent has no record of being given that skill by your organization, so it is not put back from here.", 409);
     if (record2.installedHash !== expectedHash) throw new NotesError("The skill this agent was given is not that version, so it is not put back from here.", 409);
     if (this.skillPending()) {
@@ -61889,7 +62214,7 @@ var TemplateService = class {
     return { ok: true, restored: step.status === "changed" };
   }
   get handledPath() {
-    return join27(this.opts.stateDir, "request.json");
+    return join28(this.opts.stateDir, "request.json");
   }
   /** This agent has a firewall, so an apply to it needs the firewall's ticket. */
   get coded() {
@@ -61904,10 +62229,10 @@ var TemplateService = class {
     return isNew(TEMPLATE_FIRST_HOUR_MS / 36e5, { now: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))(), ...this.opts.born });
   }
   get pendingPath() {
-    return join27(this.opts.stateDir, "pending.json");
+    return join28(this.opts.stateDir, "pending.json");
   }
   get ticketPath() {
-    return join27(this.opts.stateDir, "ticket.json");
+    return join28(this.opts.stateDir, "ticket.json");
   }
   fresh(at2, ms) {
     if (typeof at2 !== "string") return false;
@@ -62071,7 +62396,7 @@ var TemplateService = class {
   async review(request, dir, assignment) {
     const path = templateReviewPath(this.opts.stateDir);
     try {
-      const vars = join27(this.opts.stateDir, PREVIEW_VARS);
+      const vars = join28(this.opts.stateDir, PREVIEW_VARS);
       this.write(vars, { note: assignment.note, name: assignment.name, timeZone: assignment.timeZone });
       const { stdout } = await this.opts.exec(this.opts.node, [this.opts.runbook, "review", dir, "--vars", vars, ...isOrgTemplate(request.template) ? ["--as", request.template] : []], VERIFY_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 });
       const files2 = reviewFilesOf(JSON.parse(stdout).files);
@@ -62136,7 +62461,7 @@ var TemplateService = class {
     if (marker.vars) return marker.vars;
     let kept = null;
     try {
-      kept = varsOf(JSON.parse(readFileSync38(join27(this.opts.stateDir, APPLIED_VARS), "utf8")));
+      kept = varsOf(JSON.parse(readFileSync38(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
     } catch {
     }
     const vars = kept ?? { note: "", name: assignment.name, timeZone: "UTC" };
@@ -62145,17 +62470,17 @@ var TemplateService = class {
   }
   /** Checks the applied template again and tells the console how many steps still hold. Never throws. */
   get runbookState() {
-    return this.opts.runbookStateDir ?? process.env.CC_RUNBOOK_STATE ?? join27(process.env.HOME ?? homedir2(), ".controlclaw", "runbook");
+    return this.opts.runbookStateDir ?? process.env.CC_RUNBOOK_STATE ?? join28(process.env.HOME ?? homedir2(), ".controlclaw", "runbook");
   }
   dropRepair(template) {
-    const dir = join27(this.runbookState, "repair", template);
+    const dir = join28(this.runbookState, "repair", template);
     try {
       rmSync12(`${dir}.json`, { force: true });
       rmSync12(dir, { recursive: true, force: true });
     } catch {
       this.log(`${template}: the repair folder could not be removed; it is put out of use`);
       try {
-        rmSync12(join27(dir, "template.yaml"), { force: true });
+        rmSync12(join28(dir, "template.yaml"), { force: true });
       } catch {
         this.log(`${template}: the repair folder is still in use. Remove ${dir} by hand`);
       }
@@ -62176,12 +62501,12 @@ var TemplateService = class {
       if (!dir || !facts) return null;
       let failedSteps = [];
       try {
-        const state = JSON.parse(readFileSync38(join27(this.runbookState, `${marker.template}.json`), "utf8"));
+        const state = JSON.parse(readFileSync38(join28(this.runbookState, `${marker.template}.json`), "utf8"));
         const failed = (state.steps ?? []).filter((s2) => s2.status === "failed" && typeof s2.id === "string" && facts.steps.some((f2) => f2.id === s2.id));
         failedSteps = [...failed.filter((s2) => s2.optional !== true), ...failed.filter((s2) => s2.optional === true)].map((s2) => s2.id);
       } catch {
       }
-      return { template: marker.template, name: facts.name, hash: facts.hash, org: isOrgTemplate(marker.template), failedSteps, dir, repairDir: join27(this.runbookState, "repair", marker.template), vars: existsSync31(join27(this.opts.stateDir, APPLIED_VARS)) ? join27(this.opts.stateDir, APPLIED_VARS) : null };
+      return { template: marker.template, name: facts.name, hash: facts.hash, org: isOrgTemplate(marker.template), failedSteps, dir, repairDir: join28(this.runbookState, "repair", marker.template), vars: existsSync32(join28(this.opts.stateDir, APPLIED_VARS)) ? join28(this.opts.stateDir, APPLIED_VARS) : null };
     } catch {
       return null;
     }
@@ -62206,7 +62531,7 @@ var TemplateService = class {
     let vars = marker.vars ?? null;
     if (!vars) {
       try {
-        vars = varsOf(JSON.parse(readFileSync38(join27(this.opts.stateDir, APPLIED_VARS), "utf8")));
+        vars = varsOf(JSON.parse(readFileSync38(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
       } catch {
         vars = null;
       }
@@ -62243,7 +62568,7 @@ var TemplateService = class {
    * session writes its template. The firewall puts the folder in its first message.
    */
   captureSessionFacts() {
-    return { base: join27(process.env.HOME ?? homedir2(), ".controlclaw", "capture") };
+    return { base: join28(process.env.HOME ?? homedir2(), ".controlclaw", "capture") };
   }
   /**
    * After a capture session: the template the session wrote in its own folder, checked by the
@@ -62302,7 +62627,7 @@ var TemplateService = class {
       const args = [this.opts.runbook, "probe", dir, verb, ...arg === void 0 ? [] : [arg]];
       if (isOrgTemplate(marker.template)) args.push("--as", marker.template);
       if (marker.vars) {
-        const vars = join27(this.opts.stateDir, PROBE_VARS);
+        const vars = join28(this.opts.stateDir, PROBE_VARS);
         this.write(vars, marker.vars);
         args.push("--vars", vars);
       }
@@ -62720,9 +63045,9 @@ var CONNECTOR_RELAY_PORT = parseInt(process.env.CONNECTOR_RELAY_PORT ?? "3111", 
 var APPROVAL_POLL_MS = parseInt(process.env.APPROVAL_POLL_MS ?? "3000", 10);
 var MEETING_REQUEST_POLL_MS = 1e4;
 var SSH_LOGIN_POLL_MS = parseInt(process.env.SSH_LOGIN_POLL_MS ?? "60000", 10);
-var POOL_UNCLAIMED = existsSync32("/etc/controlclaw/pool-unclaimed");
+var POOL_UNCLAIMED = existsSync33("/etc/controlclaw/pool-unclaimed");
 var poolHealthy = false;
-if (POOL_UNCLAIMED && !existsSync32(`${KEYS_DIR2}/saas_public_key.pem`)) {
+if (POOL_UNCLAIMED && !existsSync33(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
   writeFileSync26(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
@@ -62753,10 +63078,10 @@ console.log(`Loaded ${loadRedactionSecrets(KEYS_DIR2)} secret(s) for log redacti
 async function bootstrap(client, readSsh) {
   ensureVmKeypair(KEYS_DIR2);
   if (POOL_UNCLAIMED) {
-    for (let i2 = 0; i2 < 300 && !existsSync32(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
+    for (let i2 = 0; i2 < 300 && !existsSync33(`${KEYS_DIR2}/mitm_ca_fingerprint`); i2++) {
       await new Promise((resolve4) => setTimeout(resolve4, 1e3));
     }
-    if (!existsSync32(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
+    if (!existsSync33(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`) || !trustMitmCaInProcess()) return;
     const egress = await enableTransparentEgress(KEYS_DIR2);
     if (!egress) return;
     const hostname4 = readKeyFile(KEYS_DIR2, "vm_hostname");
@@ -62826,19 +63151,41 @@ function startGatewayBridge() {
     cursorPath: `${STATE_DIR}/audit.cursor`,
     activityUrl: `${base}/api/vm-agent/activity`,
     getToken,
-    onEvents: (events) => stalls.record(events),
+    onEvents: (events) => {
+      stalls.record(events);
+      nowRuns.record(events);
+    },
     // A heartbeat runs in the main session like a direct message; only OpenClaw's own record of
     // the run says which it was, and the console's timeline leaves heartbeats out.
-    enrich: (records) => {
-      const runs = records.flatMap((r2) => r2.source === "agent_run" && r2.run_id ? [{ runId: r2.run_id, sessionKey: r2.session_key, agentId: r2.agent_id }] : []);
+    enrich: (records, events) => {
+      const rawKey2 = new Map(events.flatMap((e) => e.kind === "agent_run" && e.runId && e.sessionKey ? [[e.runId, e.sessionKey]] : []));
+      const runs = records.flatMap((r2) => r2.source === "agent_run" && r2.run_id ? [{ runId: r2.run_id, sessionKey: rawKey2.get(r2.run_id) ?? r2.session_key, agentId: r2.agent_id }] : []);
       if (!runs.length) return;
       const triggers = runTriggers(OPENCLAW_HOME, runs);
       for (const r2 of records) if (r2.run_id && r2.source === "agent_run" && triggers.has(r2.run_id)) r2.trigger = triggers.get(r2.run_id);
+      const asked4 = runs.filter((r2) => !["heartbeat", "cron"].includes(triggers.get(r2.runId) ?? ""));
+      const { titles, heartbeats } = asked4.length ? runTitles(OPENCLAW_HOME, asked4) : { titles: /* @__PURE__ */ new Map(), heartbeats: /* @__PURE__ */ new Set() };
+      for (const r2 of records) {
+        if (r2.source !== "agent_run" || !r2.run_id) continue;
+        if (titles.has(r2.run_id)) r2.title = titles.get(r2.run_id);
+        if (!r2.trigger && heartbeats.has(r2.run_id)) r2.trigger = "heartbeat";
+      }
+      for (const r2 of records) {
+        if (r2.source !== "agent_run" || !r2.run_id || r2.title || r2.status !== "started" || r2.trigger && r2.trigger !== "user") continue;
+        const asker = runAsker(OPENCLAW_HOME, { runId: r2.run_id, sessionKey: rawKey2.get(r2.run_id) ?? r2.session_key, agentId: r2.agent_id, startedAt: r2.occurred_at });
+        const fresh = asker.at !== void 0 && r2.occurred_at - asker.at <= FRESH_MESSAGE_MS2;
+        const title = fresh && asker.text ? titleOf(asker.text) : null;
+        if (title) r2.title = title;
+      }
     }
   });
-  client.onConnected(() => stalls.reset(Date.now()));
+  client.onConnected(() => {
+    stalls.reset(Date.now());
+    nowRuns.reset(Date.now());
+  });
   const approvals = new ApprovalsBridge({ client, permissionUrl: `${base}/api/vm-agent/permission`, getToken });
   approvalsOpen = () => approvals.pendingCount;
+  approvalSessions = () => approvals.pendingSessions();
   approvals.start();
   const activation = new ConfigActivation({ gateway: client, restartService: () => runAction("restart"), restartDeferred: restartStillDeferred });
   client.onConfigWrite((phase) => phase === "start" ? activation.writeStarted() : activation.writeEnded());
@@ -62878,7 +63225,10 @@ var gmailWake = null;
 var gateway = null;
 var templateService = null;
 var stalls = new StallTracker();
+var nowRuns = new NowTracker();
+var FRESH_MESSAGE_MS2 = 6e4;
 var approvalsOpen = () => 0;
+var approvalSessions = () => /* @__PURE__ */ new Set();
 var watchdog = null;
 setShellNav(() => ({
   meetings: meetings?.metadata().enabled ?? false,
@@ -62888,6 +63238,17 @@ setShellNav(() => ({
 var devices = new DevicesService({ client: () => gateway });
 var brainMcp = new BrainMcpService(() => gateway);
 var update = new UpdateService({ statePath: `${STATE_DIR}/update.json` });
+var activityNowDeps = {
+  tracker: nowRuns,
+  triggers: (runs) => runTriggers(OPENCLAW_HOME, runs),
+  request: (run3) => {
+    const prompt = runPrompts(OPENCLAW_HOME, [run3]).get(run3.runId);
+    if (prompt && isHeartbeatPrompt(prompt)) return "heartbeat";
+    return prompt ? requestOf(prompt) : null;
+  },
+  asker: (run3) => runAsker(OPENCLAW_HOME, run3),
+  approvalSessions: () => approvalSessions()
+};
 var healthDeps = {
   openclawState: () => currentOpenClawState(gateway),
   gatewayConnected: () => gateway ? gateway.connected : null,
@@ -62901,11 +63262,13 @@ var healthDeps = {
   },
   mitmPrivateIp: () => readKeyFile(KEYS_DIR2, "mitm_box_private_ip"),
   tcpProbe: probe,
-  rebootRequired: () => existsSync32("/var/run/reboot-required"),
+  rebootRequired: () => existsSync33("/var/run/reboot-required"),
   gateway: () => gateway,
   watchdog: () => watchdog?.status() ?? null,
   // CPU use for the agent page's meters: one read of /proc/stat every 10 s, from boot.
   cpu: startCpuSampler(),
+  // Uptime in the Machine section: since when OpenClaw has been running.
+  openclawActiveFor: openClawActiveFor,
   stalled: (now, minMs) => {
     if (approvalsOpen() > 0) stalls.waiting(now);
     return stalls.oldest(now, minMs);
@@ -62941,7 +63304,7 @@ var MEETINGS_DIR = `${OPENCLAW_HOME}/workspace/meetings`;
 var workspaceExporter = new WorkspaceExporter({
   openclawHome: OPENCLAW_HOME,
   agentName: () => agentNameOf(readKeyFile(KEYS_DIR2, "vm_hostname")),
-  meetings: () => existsSync32(MEETINGS_DIR) ? new MeetingArchive(MEETINGS_DIR, `${STATE_DIR}/meeting-deletions.json`).list() : [],
+  meetings: () => existsSync33(MEETINGS_DIR) ? new MeetingArchive(MEETINGS_DIR, `${STATE_DIR}/meeting-deletions.json`).list() : [],
   calls: () => phoneCalls.calls().map((c2) => callDetail(c2, phoneCallLog))
 });
 var skills = new SkillsService();
@@ -63100,6 +63463,10 @@ var server = createServer2(async (req, res) => {
   }
   if (url3.pathname.startsWith("/google/")) {
     await handleGoogle(req, res, url3, google);
+    return;
+  }
+  if (url3.pathname === "/activity/now") {
+    await handleActivityNow(req, res, activityNowDeps);
     return;
   }
   if (url3.pathname.startsWith("/health/")) {
@@ -63301,7 +63668,7 @@ server.listen(PORT, BIND, () => {
     }
     throw new Error("Meeting browser did not become ready");
   };
-  if (client && existsSync32("/etc/systemd/user/cc-meeting-signin.service")) meetingSignin = new MeetingSignin({
+  if (client && existsSync33("/etc/systemd/user/cc-meeting-signin.service")) meetingSignin = new MeetingSignin({
     statePath: `${STATE_DIR}/meeting-signin.json`,
     profileDir: `${STATE_DIR}/meeting-profile`,
     account: () => google?.account() ?? null,
@@ -63447,7 +63814,7 @@ server.listen(PORT, BIND, () => {
       stateDir: `${STATE_DIR}/templates`,
       // The firewall's key, held since this agent joined its organization: with it the firewall can
       // hand over a ticket, so an apply needs one.
-      firewall: () => existsSync32(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`)
+      firewall: () => existsSync33(`${KEYS_DIR2}/mitm_pinned_pubkey.pem`)
     });
     const apply = () => {
       if (templates.asks && client?.connected) void templates.tick();
