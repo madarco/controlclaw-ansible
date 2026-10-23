@@ -917,6 +917,7 @@ var ICONS = {
   browser: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   doctor: '<path d="M11 2v2"/><path d="M5 2v2"/><path d="M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1"/><path d="M8 15a6 6 0 0 0 12 0v-3"/><circle cx="20" cy="10" r="2"/>',
   logins: '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
+  content: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="m14.5 7.5-5 5"/><path d="m9.5 7.5 5 5"/>',
   back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   mark: '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>'
@@ -1535,6 +1536,94 @@ function waitForMitmProxy(mitmIp) {
 import { createHash } from "crypto";
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
 import { dirname as dirname2 } from "path";
+
+// src/gbrain-stats.ts
+import { stat, statfs } from "fs/promises";
+var BASE_PAGE_TYPES = [
+  "person",
+  "company",
+  "deal",
+  "yc",
+  "civic",
+  "project",
+  "concept",
+  "source",
+  "media",
+  "writing",
+  "analysis",
+  "guide",
+  "hardware",
+  "architecture",
+  "meeting",
+  "note",
+  "email",
+  "slack",
+  "calendar-event",
+  "conversation",
+  "atom",
+  "event",
+  "diary",
+  "code",
+  "image",
+  "synthesis",
+  "extract_receipt"
+];
+var BASE = new Set(BASE_PAGE_TYPES);
+var STATS_EVERY_MS = 15 * 6e4;
+function count(v2) {
+  const n2 = typeof v2 === "string" && /^\d+$/.test(v2) ? Number(v2) : v2;
+  return typeof n2 === "number" && Number.isFinite(n2) && n2 >= 0 ? Math.round(n2) : null;
+}
+function typeCounts(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [k2, v2] of Object.entries(raw)) {
+    const n2 = count(v2);
+    if (n2 === null || n2 === 0) continue;
+    const name = BASE.has(k2) ? k2 : "other";
+    out[name] = (out[name] ?? 0) + n2;
+  }
+  return out;
+}
+function mapBrainStats(body, now = Date.now(), disk = null) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const b2 = body;
+  const pages = count(b2.page_count);
+  if (pages === null) return null;
+  return {
+    source: "brain_stats",
+    ts: Math.floor(now / 1e3),
+    page_count: pages,
+    chunk_count: count(b2.chunk_count) ?? 0,
+    embedded_count: count(b2.embedded_count),
+    link_count: count(b2.link_count),
+    tag_count: count(b2.tag_count),
+    timeline_entry_count: count(b2.timeline_entry_count),
+    pages_by_type: typeCounts(b2.pages_by_type),
+    disk_used_bytes: disk ? count(disk.usedBytes) : null,
+    disk_free_bytes: disk ? count(disk.freeBytes) : null
+  };
+}
+async function brainDisk(paths) {
+  const seen = /* @__PURE__ */ new Set();
+  let fullest = null;
+  for (const path of paths) {
+    try {
+      const { dev } = await stat(path);
+      if (seen.has(dev)) continue;
+      seen.add(dev);
+      const s2 = await statfs(path);
+      const used = (s2.blocks - s2.bfree) * s2.bsize;
+      const free = s2.bavail * s2.bsize;
+      if (used + free <= 0) continue;
+      if (!fullest || used / (used + free) > fullest.usedBytes / (fullest.usedBytes + fullest.freeBytes)) fullest = { usedBytes: used, freeBytes: free };
+    } catch {
+    }
+  }
+  return fullest;
+}
+
+// src/gbrain-activity.ts
 var AGENT_RE = /^cc-([A-Za-z0-9_-]{1,64})$/;
 var QUEUE_MAX = 2e3;
 var BATCH = 200;
@@ -1612,6 +1701,9 @@ var BrainActivity = class {
     const cycle = () => void this.checkCycle().catch((e) => this.log(`nightly report: ${e.message}`));
     setInterval(cycle, 6e4).unref();
     cycle();
+    const stats = () => void this.readStats().catch((e) => this.log(`counts: ${e.message}`));
+    setInterval(stats, STATS_EVERY_MS).unref();
+    setTimeout(stats, 6e4).unref();
   }
   stop() {
     this.stopped = true;
@@ -1631,6 +1723,27 @@ var BrainActivity = class {
     const m2 = /gbrain_admin=([^;,\s]+)/.exec(setCookie);
     if (!m2) throw new Error(`GBrain set no admin cookie (HTTP ${res.status})`);
     return m2[1];
+  }
+  /**
+   * The brain's counts, queued for the next flush. A read that fails is skipped until the next
+   * tick; a refused cookie is replaced once, as the feed does.
+   */
+  async readStats() {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!this.cookie) this.cookie = await this.adminCookie();
+      const res = await this.fetchImpl(`${this.opts.gbrainUrl}/admin/api/full-stats`, { headers: { cookie: `gbrain_admin=${this.cookie}` }, redirect: "manual" });
+      if (res.status === 401 || res.status === 403 || res.status >= 300 && res.status < 400) {
+        this.cookie = null;
+        continue;
+      }
+      if (!res.ok) throw new Error(`GBrain's stats answered HTTP ${res.status}`);
+      const disk = this.opts.disk ? await this.opts.disk().catch(() => null) : null;
+      const r2 = mapBrainStats(await res.json(), Date.now(), disk);
+      if (!r2) throw new Error("GBrain's stats had no page count");
+      this.enqueue(r2);
+      return;
+    }
+    throw new Error("GBrain refused the admin cookie for its stats");
   }
   async followLoop() {
     let backoff = 5e3;
@@ -1712,7 +1825,7 @@ var BrainActivity = class {
 
 // src/backup.ts
 import { createReadStream, createWriteStream } from "fs";
-import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat, symlink, utimes, writeFile, chmod } from "fs/promises";
+import { mkdir, mkdtemp, lstat, opendir, readlink, rename, rm, stat as stat2, symlink, utimes, writeFile, chmod } from "fs/promises";
 import { tmpdir } from "os";
 import { dirname as dirname3, join } from "path";
 import { Readable } from "stream";
@@ -5639,7 +5752,7 @@ var BackupService = class {
         (src) => seal(src, enc),
         createWriteStream(spool, { mode: 384 })
       );
-      const cipherBytes = (await stat(spool)).size;
+      const cipherBytes = (await stat2(spool)).size;
       this.log(`[backup] ${label}: ${bytesLine(plan.plainBytes)} of content \u2192 ${bytesLine(cipherBytes)} sealed`);
       await this.put(input.uploadUrl, spool, cipherBytes);
       return {
@@ -5828,7 +5941,7 @@ async function* tarOf(root, manifest, kind) {
     }
     let st2;
     try {
-      st2 = await stat(abs);
+      st2 = await stat2(abs);
     } catch {
       st2 = null;
     }
@@ -5914,7 +6027,7 @@ async function swapDirectory(opts) {
   }
 }
 async function fileSize(path) {
-  return stat(path).then(
+  return stat2(path).then(
     (s2) => s2.isFile() ? s2.size : 0,
     () => 0
   );
@@ -6351,8 +6464,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "676d932" : "unknown",
-  builtAt: true ? "2026-10-16T14:03:58+01:00" : "unknown"
+  commit: true ? "d80831a" : "unknown",
+  builtAt: true ? "2026-10-23T17:29:05+01:00" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -8743,7 +8856,10 @@ server.listen(PORT, BIND, () => {
       activityUrl: `${base}/api/vm-agent/activity`,
       getToken: makeBoxTokenSigner(KEYS_DIR2),
       reportPath: "/var/lib/gbrain-report/last-cycle.json",
-      cursorPath: `${STATE_DIR}/brain-cycle.cursor`
+      cursorPath: `${STATE_DIR}/brain-cycle.cursor`,
+      // GBrain's database (/var/lib/postgresql) and pages (/var/lib/gbrain) are on the encrypted
+      // container, the volume the state directory is on. The system disk is the health check's.
+      disk: () => brainDisk([STATE_DIR])
     }).start();
   } else {
     console.warn("[brain-activity] no control plane URL in KEYS_DIR; Activity is not shipped");
