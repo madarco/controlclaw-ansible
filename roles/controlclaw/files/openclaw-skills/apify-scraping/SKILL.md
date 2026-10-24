@@ -1,6 +1,6 @@
 ---
 name: apify-scraping
-description: Read a web page, search the web and read the results, or crawl a whole site, by running Apify actors through the organisation's Apify connection. Use when a plain fetch is blocked, returns an empty JavaScript shell, or the job is more than one page.
+description: Read a web page, search the web and read the results, or crawl a whole site, by running Apify actors through the organisation's Apify connection. Use when a site blocks bots itself, a fetch returns an empty JavaScript shell, or the job is more than one page. Never use it to get around your organization's firewall (an answer with blocked_by_*).
 ---
 
 # Scrape the web with Apify
@@ -11,8 +11,12 @@ the token in on the firewall. Use `execute_action` with an `apify.*` action id.
 
 ## When this is the right tool
 
-- A page you tried to fetch gave you a cookie wall, a 403, or an HTML shell with no content —
-  run `apify/rag-web-browser` with the URL as the query.
+- A page you tried to fetch gave you a cookie wall, a 403 from the site itself, or an HTML shell
+  with no content — run `apify/rag-web-browser` with the URL as the query.
+- A 403 whose body carries `blocked_by_…` (`blocked_by_policy`, `blocked_by_ai_review`,
+  `blocked_by_content_rule`, `blocked_by_kill_switch`) is your organization's firewall, not the site.
+  Do not use Apify to get around it: tell the person, as the `controlclaw` skill says. Apify is only
+  for sites that block bots themselves.
 - "Search the web for X and read the results" — the same actor, with the search phrase as the
   query. It runs the Google search and scrapes the top results in one run.
 - "Read this whole documentation site / everything under this path" — `apify/website-content-crawler`.
