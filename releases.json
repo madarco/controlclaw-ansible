@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.30.0",
+    "date": "2026-10-24",
+    "changes": [
+      "Every agent gets a ControlClaw skill that explains why the firewall stopped something and links to the right console page.",
+      "The web scraping skill no longer tries to get around a site your firewall blocks."
+    ]
+  },
+  {
     "version": "1.29.0",
     "date": "2026-10-23",
     "changes": [
