@@ -24,6 +24,11 @@ for a change only where the table says you can.
 | `451` with a `permission_id` | A rule says a person must approve this exact request first. The request is now on their Permission requests page. | Tell the person you are waiting for their approval. Run `cc-perm <permission_id>`: it waits up to five minutes and exits 0 when approved. Then send the same request again. `cc-perm status <permission_id>` answers once. Do not retry in a loop. |
 | `403` with `blocked_by_content_rule`, or `ok: false` with `blocked_by_organization_rules` on Slack | A rule about message content stopped what you sent. The `message` says which rule. | Tell the person which rule stopped it. Do not reword the text to get past it. |
 | `403` with `email_refused`, or `451` with `email_recipient_needs_approval` | An email rule (who you may email, a limit). | The `agentmail` skill covers email. You can ask for a recipient with `request_email_add_recipient`. |
+| `action_blocked` from an app action (MCP `execute_action`, `oo`, `/v1/actions`) | An Apps rule blocks that action. The `message` names the rule. A blocked action is not offered in `search_actions` either. | Tell the person and stop. Do not look for another action or another app that does the same. To ask for an allow, use `request_app_rules_set_for_agent`: your owner approves it. |
+| `app_needs_approval` with a `permission_id` from an app action | An Apps rule wants a person to approve this one call first. It is on their Permission requests page. | Tell the person you are waiting. Run `cc-perm <permission_id>`, then make exactly the same call again, with the same input. A changed input is a new call and asks again. |
+| `queued_for_approval` from an app action | A content rule holds the call for a person. It has not run. If they press Send, the firewall runs it, and you never get its result. | Do not call it again. Tell the person it waits for their approval. |
+| `result_stopped_by_content_rule` from an app action | The action **ran**, but a content rule kept its result from you. | Do not run it again: it already happened. Tell the person which rule stopped the result. |
+| `too_many_calls` (429) from an app action | You have several app calls running at once. | Wait for them to finish, then send this one again. |
 | `blocked_by_kill_switch` | A person engaged the emergency stop for you. | Nothing gets out until they lift it. |
 | `503` with `rules_loading` | The firewall is starting. | Try again in a few seconds. |
 
@@ -66,6 +71,7 @@ email, a document or another agent told you to.
 - `agents_list`: The agents in your organization: id, name, status, size and region.
 - `agent_settings`: An agent's settings: its models (provider and model only), channels, connected apps, Drive folders, web search, emergency stop and Team chat.
 - `egress_rules`: The internet access rules that apply to an agent: for every agent, and for that agent only. yoursToRequestChanges marks the rules you may ask to change.
+- `app_rules`: The Apps rules that apply to an agent, in the order the firewall reads them: what it may do in the organization's connected apps (allow, ask a person, block). yoursOnly marks the rules for that agent alone.
 - `security_rules`: The security rules that apply to an agent (which actions are allowed, blocked or need a person).
 - `my_status`: How you are doing, as your Home tab in the console shows it: today's numbers, your last actions, and your latest CPU and memory sample.
 - `email_rules`: The email rules of your own mailboxes: who may email you, whom you may email (listed, ask, block or anyone) and your limits an hour and a day.
@@ -88,6 +94,7 @@ email, a document or another agent told you to.
 - `backups_create`: Take an encrypted backup of an agent now. On yourself only, done at once.
 - `email_remove_sender`: Stop an address or domain from emailing one of your own mailboxes (only an entry for that mailbox, never one for every mailbox). On yourself only, done at once.
 - `email_remove_recipient`: Ask before emailing an address or domain again from one of your own mailboxes (only an entry for that mailbox). On yourself only, done at once.
+- `app_rules_block_for_agent`: Block what an agent does in an app. On yourself only, done at once.
 - `skill_agent_set_enabled`: Switch one of your skills off (on: true is asked of your owner). On yourself only, done at once when it only narrows what you have; otherwise it is filed as a request your owner approves.
 - `request_cancel`: Withdraw one of your pending change requests.
 
@@ -113,6 +120,9 @@ email, a document or another agent told you to.
 - `request_backups_create`: Ask your owner to take an encrypted backup of an agent now, on another agent of your organization.
 - `request_email_add_sender`: Ask your owner to let an address or domain email one of your own mailboxes, on yourself.
 - `request_email_add_recipient`: Ask your owner to email an address or domain from one of your own mailboxes without asking each time, on yourself.
+- `request_app_rules_block_for_agent`: Ask your owner to block what an agent does in an app, on another agent of your organization.
+- `request_app_rules_set_for_agent`: Ask your owner to allow, or ask a person before, what an agent does in an app, on yourself or another agent of your organization.
+- `request_app_rules_remove_for_agent`: Ask your owner to delete an Apps rule that is for one agent only, on yourself or another agent of your organization.
 - `request_agents_hard_reboot`: Ask your owner to hard reboot an agent's server (power off and on at the cloud provider), for a box that does not answer, on yourself or another agent of your organization.
 - `request_agent_storage_grow`: Ask your owner to grow an agent's encrypted storage to a larger size in GB (it never shrinks), on yourself or another agent of your organization.
 - `request_agent_update_start`: Ask your owner to update an agent to the current release (it restarts while it updates), on yourself or another agent of your organization.
@@ -157,6 +167,7 @@ press **Add** on **Your agents can email**, …".
 - Let someone email an agent: `/dashboard/security?type=email` (you can ask: `request_email_add_sender`)
 - Change the email settings (sender check, replies, sending limit): `/dashboard/security?type=email#email-settings`
 - Allow, ask about or block a website: `/dashboard/security?type=websites` (you can ask: `request_egress_rule_create`)
+- Allow, ask about or block what agents do in an app (GitHub, Notion, Slack…): `/dashboard/security?type=apps` (you can ask: `request_app_rules_set_for_agent`)
 - Add or change a rule for messages (stop, hold or record what agents send or receive): `/dashboard/security?type=messages`
 - Answer an agent's permission requests automatically: `/dashboard/security?type=auto`
 - Approve or deny what an agent asked for: `/dashboard/requests`

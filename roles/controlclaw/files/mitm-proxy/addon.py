@@ -4935,9 +4935,9 @@ CONTENT_RULES_URL = os.environ.get("MITM_CONTENT_RULES_URL", "http://127.0.0.1:8
 CONTENT_OWN_PATH = os.path.join(os.path.dirname(CONTENT_RULES_PATH), "content-own.json")
 CONTENT_AUDIT_PATH = os.environ.get("MITM_CONTENT_AUDIT_FILE", os.path.join(os.path.dirname(LOG_PATH), "content-rules.jsonl") if LOG_PATH else "")
 CONTENT_TEXT_MAX = 65536
-# Email and web bodies are longer than any chat message; more than this is stopped, never cut.
+# Email, web and app call bodies are longer than any chat message; more than this is stopped, never cut.
 CONTENT_TEXT_MAX_LONG = 524288
-CONTENT_LONG_CHANNELS = ("email", "web")
+CONTENT_LONG_CHANNELS = ("email", "web", "apps")
 CONTENT_HOLD_BODY_MAX = 262144
 # The text the engine read, handed over with a hold: the approver's preview is built from it, not from one field.
 CONTENT_HOLD_TEXT_MAX = 8192
@@ -4959,7 +4959,7 @@ CORE_SECRETS_RULE = {
     # Not the web: a browser signing in posts tokens on purpose (an OpenID `form_post` carries an
     # `id_token`), and so does an OAuth refresh (docs/plans/firewall-content-rules.md §5.1). Voice: a
     # key the main agent answers with would be read aloud in the meeting (§5.2).
-    "id": "core-leaking-secrets", "name": "Leaking secrets", "direction": "out", "channels": ["telegram", "slack", "email", "teamchat", "voice"],
+    "id": "core-leaking-secrets", "name": "Leaking secrets", "direction": "out", "channels": ["telegram", "slack", "email", "teamchat", "voice", "apps"],
     "patterns": [], "detectors": ["secrets"], "action": "block",
     "reason": "it looks like it contains a password, key or token",
 }

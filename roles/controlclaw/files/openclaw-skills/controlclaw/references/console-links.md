@@ -44,6 +44,16 @@ You can ask: `request_email_add_sender`.
 
 You can ask: `request_egress_rule_create`.
 
+### Allow, ask about or block what agents do in an app (GitHub, Notion, Slack…)
+
+`/dashboard/security?type=apps`
+
+1. Press **New app rule**.
+2. Pick the app, what it matches (some actions, or what they do), which agents, and Allow, Ask or Block.
+3. Save. A rule that lets more through needs the confirmation code your firewall sends.
+
+You can ask: `request_app_rules_set_for_agent`.
+
 ### Add or change a rule for messages (stop, hold or record what agents send or receive)
 
 `/dashboard/security?type=messages`
