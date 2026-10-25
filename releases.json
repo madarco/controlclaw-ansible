@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.31.1",
+    "date": "2026-10-25",
+    "changes": [
+      "Agents see the tools of the apps you give them again.",
+      "When an agent has only one connection to an app, the firewall picks it for the agent."
+    ]
+  },
+  {
     "version": "1.31.0",
     "date": "2026-10-25",
     "changes": [
