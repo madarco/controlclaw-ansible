@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.31.0",
+    "date": "2026-10-25",
+    "changes": [
+      "The firewall now checks every app call an agent makes (GitHub, Notion, Slack and the rest) before it runs, with Apps rules to allow, ask or block each action.",
+      "App calls are checked by your content rules, and each one shows in Activity with the app and the action."
+    ]
+  },
+  {
     "version": "1.30.0",
     "date": "2026-10-24",
     "changes": [
