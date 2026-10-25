@@ -34866,6 +34866,14 @@ function parseMcp(body) {
   }
   return { kind: "pass" };
 }
+function withConnectionName(body, via, connectionName) {
+  const doc = obj(body && body.length ? JSON.parse(body.toString("utf8")) : {}) ?? {};
+  if (via === "mcp") {
+    const params = obj(doc.params) ?? {};
+    doc.params = { ...params, arguments: { ...obj(params.arguments) ?? {}, connectionName } };
+  } else doc.connectionName = connectionName;
+  return Buffer.from(JSON.stringify(doc), "utf8");
+}
 function canonicalJson(value, depth = 0) {
   if (depth > 64) throw new GateParseError("nested too deep");
   if (Array.isArray(value)) return `[${value.map((v2) => canonicalJson(v2, depth + 1)).join(",")}]`;
@@ -35207,6 +35215,16 @@ function createConnectorGate(opts) {
       sendRefusal(ctx, r2, mcpIsError);
       return line;
     };
+    let connectionName = route.connectionName;
+    if (connectionName === null) {
+      const own2 = agent.connections.filter((c2) => c2.service === service);
+      if (own2.length === 1) {
+        connectionName = own2[0].alias;
+        ctx.body = withConnectionName(ctx.body, via, connectionName);
+      } else if (own2.length > 1) {
+        return stop(connectionRequired(opts.appName?.(service) ?? service, own2, route), "blocked", "gate", "no connection named");
+      }
+    }
     const rules = rulesNow();
     if (rules === "unknown") return stop({ status: 503, code: "rules_loading", message: "The firewall is loading its rules. Try again in a few seconds." }, "blocked", "gate", "rules loading");
     let decision;
@@ -35273,7 +35291,7 @@ function createConnectorGate(opts) {
         const ai2 = rule.by ? { ai: rule.by } : {};
         if (rule.action === "hold") {
           const label2 = conn.label ?? conn.alias;
-          const held = { url: ctx.req.url ?? "/", headers: forwardHeaders(ctx.req.headers, ctx.token, opts.target), body: ctx.body ?? Buffer.alloc(0), token: ctx.token, vmId: agent.vmId, via, call: appCall, connectionName: route.connectionName, line: null, approved: !!approval };
+          const held = { url: ctx.req.url ?? "/", headers: forwardHeaders(ctx.req.headers, ctx.token, opts.target), body: ctx.body ?? Buffer.alloc(0), token: ctx.token, vmId: agent.vmId, via, call: appCall, connectionName, line: null, approved: !!approval };
           const holdId = await content.holdApp({
             vmId: agent.vmId,
             what: `an app action (${target})`,
@@ -35615,6 +35633,18 @@ function forwardHeaders(headers, token2, target, keepLength = false) {
   out.host = `${target.host}:${target.port}`;
   if (token2) out.authorization = `Bearer ${token2}`;
   return out;
+}
+function connectionRequired(app, own2, route) {
+  const names = own2.map((c2) => `"${c2.alias}"${c2.label ? ` (${c2.label})` : ""}`).join(", ");
+  const where = route.kind === "action" && route.via === "mcp" ? "Put connectionName in execute_action's arguments next to actionId, not inside input." : "Put connectionName in the request body next to input, not inside input.";
+  const input2 = route.kind === "action" ? route.input : route.body;
+  const misplaced = input2 && typeof input2 === "object" && ("connectionName" in input2 || "alias" in input2) ? " Your call had it inside input, where it is not read." : "";
+  return {
+    status: 400,
+    code: "connection_required",
+    message: `You have ${own2.length} ${app} connections, so the call must name one with connectionName: ${names}. ${where}${misplaced} The call was not made.`,
+    data: { connections: own2.map((c2) => ({ connectionName: c2.alias, label: c2.label })) }
+  };
 }
 
 // src/controlplane-mcp-gate.ts
@@ -105089,8 +105119,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync24 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0451ca3" : "unknown",
-  builtAt: true ? "2026-10-25T20:26:48Z" : "unknown"
+  commit: true ? "164bb7e" : "unknown",
+  builtAt: true ? "2026-10-25T22:34:55Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

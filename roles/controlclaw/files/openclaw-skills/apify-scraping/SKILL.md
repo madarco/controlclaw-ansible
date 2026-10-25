@@ -32,11 +32,11 @@ list_connections  {"service": "apify"}
 No row means the organisation has not connected Apify, or has not given it to this agent: say so
 and stop, rather than looking for a token.
 
-Keep the `connectionName` from that row and **pass it on every `execute_action` below**. This is
-not optional: without it the runtime picks a default connection, that default is not the one this
-agent was granted, and the call comes back
-`connection_not_allowed: The selected connection is not granted to this runtime token.` More than
-one row means more than one Apify account is connected, so say which one you used.
+Keep the `connectionName` from that row and **pass it on every `execute_action` below**, as an
+argument next to `actionId`, never inside `input` (the runtime does not read it there). With only
+one Apify connection the firewall names it for you if you forget; with more than one, a call that
+names none comes back `connection_required` with your connection names. More than one row means
+more than one Apify account is connected, so say which one you used.
 
 ## Search and read: apify/rag-web-browser
 

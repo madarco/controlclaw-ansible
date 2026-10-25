@@ -27643,7 +27643,7 @@ function date4(params) {
 
 // ../templates/src/skill-names.ts
 var SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-var BUILTIN_SKILL_NAMES = ["agentmail", "apify-scraping", "google-account"];
+var BUILTIN_SKILL_NAMES = ["agentmail", "apify-scraping", "controlclaw", "google-account"];
 var carriedSkillFolder = (name) => `files/skills/${name}`;
 var carriedNotesFolder = (set2) => `files/notes/${set2}`;
 var SKILL_SOURCES = ["controlclaw", "organization", "template"];
