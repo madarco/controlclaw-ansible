@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.34.0",
+    "date": "2026-10-26",
+    "changes": [
+      "The Firewall page shows which Security rules are at work: how often each one matched and what it did, with links to edit them.",
+      "Every rule on Security rules shows how many times it matched in the last 7 days."
+    ]
+  },
+  {
     "version": "1.33.1",
     "date": "2026-10-26",
     "changes": [
