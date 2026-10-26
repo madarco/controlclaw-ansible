@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.33.0",
+    "date": "2026-10-26",
+    "changes": [
+      "Apps rules are now Integrations rules and also cover every MCP server your agents use, tool by tool.",
+      "An Integrations rule can carry a sentence, which the firewall's AI checks against each call.",
+      "Without the AI accepted, MCP tools that do not say what they do count as destructive, so the default rule asks before each call; accept the AI on the Integrations tab to change that."
+    ]
+  },
+  {
     "version": "1.32.0",
     "date": "2026-10-26",
     "changes": [
