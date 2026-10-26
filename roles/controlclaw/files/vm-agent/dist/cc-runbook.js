@@ -7906,6 +7906,30 @@ function makeSettingsClient(url2, doFetch = fetch, wait = (ms) => new Promise((r
     },
     async finish(runId) {
       await call(FINISH_TOOL, { runId });
+    },
+    managedMcpUrl(name) {
+      return url2 ? url2.replace(/\/mcp$/, `/servers/${name}/mcp`) : null;
+    },
+    async giveMcpServer(name) {
+      if (!url2) throw new StepFailure("this agent has no firewall, so it cannot be given the organization's MCP servers");
+      let response;
+      try {
+        response = await doFetch(url2.replace(/\/mcp$/, "/servers/give"), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name }),
+          signal: AbortSignal.timeout(CALL_MS)
+        });
+      } catch (error62) {
+        throw new StepFailure("the firewall did not answer, so the MCP server could not be given", { cause: error62 });
+      }
+      let answer = {};
+      try {
+        answer = await response.json();
+      } catch {
+      }
+      if (response.status === 429) throw new StepFailure("too many calls to the firewall. Wait a minute and run it again");
+      if (!response.ok || answer.ok !== true) throw new StepFailure(typeof answer.message === "string" ? answer.message.slice(0, 300) : `the firewall did not give the MCP server ${name} (status ${response.status})`);
     }
   };
 }
@@ -27749,8 +27773,13 @@ var mcpSpec = external_exports.strictObject({
   tools: external_exports.strictObject({ include: toolNames.optional(), exclude: toolNames.optional() }).optional(),
   /** Seconds one request may take. */
   timeout: external_exports.number().int().min(1).max(600).optional(),
+  /**
+   * The organization's own server of this name, from Integrations (docs/plans/mcp-servers.md): the
+   * firewall gives it and signs in for it, so the step carries nothing but the name.
+   */
+  managed: external_exports.literal(true).optional(),
   enabled: external_exports.boolean().default(true)
-}).refine((s) => s.url === void 0 !== (s.command === void 0), "needs a url or a command, and not both").refine((s) => s.url !== void 0 || s.transport === void 0 && s.headers === void 0, "transport and headers are only for a server with a url").refine((s) => s.command !== void 0 || s.args === void 0 && s.env === void 0, "args and env are only for a server with a command");
+}).refine((s) => !s.managed || /^[a-z0-9][a-z0-9-]{0,39}$/.test(s.name), { message: "must be the name of one of the organization's MCP servers: lower-case letters, digits and dashes", path: ["name"] }).refine((s) => !s.managed || s.url === void 0 && s.command === void 0 && s.transport === void 0 && s.headers === void 0 && s.args === void 0 && s.env === void 0 && s.tools === void 0 && s.timeout === void 0 && s.enabled, "managed: true takes only the server's name: the organization's server is set up on Integrations").refine((s) => s.managed === true || s.url === void 0 !== (s.command === void 0), "needs a url or a command, and not both").refine((s) => s.url !== void 0 || s.transport === void 0 && s.headers === void 0, "transport and headers are only for a server with a url").refine((s) => s.command !== void 0 || s.args === void 0 && s.env === void 0, "args and env are only for a server with a command");
 function httpsUrl(value) {
   try {
     const url2 = new URL(value);
@@ -28920,10 +28949,16 @@ function mcpDefinition(spec, box = {}) {
   };
 }
 var otherShape = (spec, current) => spec.url ? "command" in current : "url" in current;
+function isManagedEntry(current, gate) {
+  return gate !== null && current?.url === gate && current.transport === "streamable-http";
+}
 var openclawMcp = {
   async diff(step, ctx) {
     const { name, enabled } = step.spec;
     const current = (await mcpServers(ctx))[name];
+    if (step.spec.managed) {
+      return isManagedEntry(current, ctx.settings.managedMcpUrl(name)) ? { holds: true, message: `MCP server ${name} is the organization's, through the firewall` } : { holds: false, message: `the organization's MCP server ${name} would be given to this agent by the firewall` };
+    }
     const what = step.spec.url ? `at ${step.spec.url}` : `run with ${step.spec.command}`;
     if (!current) return { holds: false, message: `no MCP server called ${name}; it would be added, ${what}` };
     const found = otherShape(step.spec, current) ? [`it is ${"url" in current ? "an address" : "a command"}, wanted ${step.spec.url ? "an address" : "a command"}`] : differences(mcpDefinition(step.spec, ctx), current);
@@ -28932,6 +28967,7 @@ var openclawMcp = {
   },
   async apply(step, ctx) {
     const { name, enabled } = step.spec;
+    if (step.spec.managed) return ctx.settings.giveMcpServer(name);
     const unfinished = mcpPlaceholders(step.spec);
     if (unfinished.length) throw new StepFailure(`the MCP server ${name} still has ${MCP_PLACEHOLDER} in its ${unfinished.join(" and its ")}: write what belongs there in the template`);
     const current = (await mcpServers(ctx))[name];
@@ -30631,7 +30667,8 @@ async function probeCommand(folder, verb, arg, options, out, err) {
 function facts(folder, bundlesRoot, out, err) {
   try {
     const template = loadTemplate(folder, { bundlesRoot });
-    out(JSON.stringify({ name: template.name, hash: bundleHash(readBundleFolder(folder)), steps: template.steps.map((s) => ({ id: s.id, kind: s.kind })) }));
+    const mcp = template.steps.flatMap((s) => s.kind === "openclaw.mcp" && s.spec.managed ? [s.spec.name] : []);
+    out(JSON.stringify({ name: template.name, hash: bundleHash(readBundleFolder(folder)), steps: template.steps.map((s) => ({ id: s.id, kind: s.kind })), ...mcp.length ? { mcp: [...new Set(mcp)] } : {} }));
     return 0;
   } catch (error62) {
     if (!(error62 instanceof TemplateError)) throw error62;

@@ -1174,6 +1174,7 @@ var CONTROL_PLANE_ROUTES = {
     // The meeting instructions, for the console's editor: read only. The firewall writes them.
     "GET /meetings/instructions",
     "GET /connectors/status",
+    "GET /mcp-servers/status",
     // The skills report: names, versions and hashes, no content. The one write switches a skill
     // that is already on this agent on or off (`skills.entries`); it cannot add or change a skill,
     // and what the agent can reach stays with the firewall (docs/plans/skills-directory.md, Trust).
@@ -1222,7 +1223,7 @@ async function verifyRequest(req) {
   if (!payload || payload.purpose !== void 0) return null;
   return payload;
 }
-var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket", "template-check", "template-repair", "template-capture", "disk"]);
+var ALWAYS_BOUND = /* @__PURE__ */ new Set(["apply-read", "apply-ticket", "template-check", "template-repair", "template-capture", "disk", "mcp-servers"]);
 async function verifyMitmRequest(req, purpose = "channels", opts = {}) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -6473,8 +6474,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "164bb7e" : "unknown",
-  builtAt: true ? "2026-10-25T22:34:55Z" : "unknown"
+  commit: true ? "3dd1c0a" : "unknown",
+  builtAt: true ? "2026-10-26T01:40:53Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
