@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.35.0",
+    "date": "2026-10-26",
+    "changes": [
+      "The Overview and each agent's Doctor tab list what is wrong, such as a refused model key, used-up AI credit or a disconnected channel, with a button to fix it.",
+      "Owners and admins get at most one email a day when something new goes wrong; it can be turned off in Settings."
+    ]
+  },
+  {
     "version": "1.34.0",
     "date": "2026-10-26",
     "changes": [
