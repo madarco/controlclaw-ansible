@@ -6454,6 +6454,10 @@ var GATEWAY_START_LIMIT_MS = 15 * 6e4;
 var APPLY_RECORD_TTL_MS = 10 * 6e4;
 var SERVICE_ACTION_MS = 3e4;
 
+// src/config-activation.ts
+var RESTART_COOLDOWN_MS = 10 * 6e4;
+var RESTART_WINDOW_MS = 30 * 6e4;
+
 // src/console-mcp.ts
 var configured = false;
 function consoleMcpConfigured() {
@@ -6474,8 +6478,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "bf95da3" : "unknown",
-  builtAt: true ? "2026-10-26T04:05:06Z" : "unknown"
+  commit: true ? "2bcba02" : "unknown",
+  builtAt: true ? "2026-10-26T09:44:50Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

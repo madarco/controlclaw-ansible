@@ -34815,6 +34815,205 @@ function execFailureLine(err) {
 
 // src/gateway.ts
 import { isDeepStrictEqual } from "util";
+
+// src/budgets.ts
+var GATEWAY_READ_MS = 1e4;
+var GATEWAY_START_LIMIT_MS = 15 * 6e4;
+var CONFIG_PATCH_MS = 2e4;
+var CONFIG_PATCH_RESTART_MS = 45e3;
+var APPLY_INLINE_WAIT_MS = 25e3;
+var CHANNEL_WRITE_BUDGET_MS = 55e3;
+var APPROVE_QUEUE_WAIT_MS = 1e4;
+var LLM_APPLY_BUDGET_MS = 8e4;
+var APPLY_RECORD_TTL_MS = 10 * 6e4;
+var CHANNELS_STATUS_MS = 8e3;
+var SERVICE_ACTION_MS = 3e4;
+var TAILSCALE_STATUS_MS = 2e4;
+var GOOGLE_VERSION_MS = 1e4;
+function patchRestartsGateway(patch) {
+  return Object.hasOwn(patch, "channels") || Object.hasOwn(patch, "plugins") || Object.hasOwn(patch, "models") || Object.hasOwn(patch, "memory");
+}
+var DEVICES_LIST_MS = GATEWAY_READ_MS;
+var DEVICES_LIST_CLI_MS = 8e3;
+var DEVICES_LIST_TOTAL_MS = 18e3;
+var DEVICES_ACTION_MS = CONFIG_PATCH_MS;
+var DEVICES_ACTION_CLI_MS = 45e3;
+
+// src/config-activation.ts
+var ACTIVATION_SETTLE_MS = 5e3;
+var ACTIVATION_GRACE_MS = 4e4;
+var ACTIVATION_POLL_MS = 2e3;
+var ACTIVATION_DOWN_MS = 12e4;
+var RESTART_COOLDOWN_MS = 10 * 6e4;
+var MAX_FORCED_RESTARTS = 3;
+var RESTART_WINDOW_MS = 30 * 6e4;
+function configActive(snapshot) {
+  const s2 = snapshot ?? {};
+  const saved = typeof s2.configRevisionHash === "string" && s2.configRevisionHash ? s2.configRevisionHash : null;
+  const applied = typeof s2.appliedConfigHash === "string" && s2.appliedConfigHash ? s2.appliedConfigHash : null;
+  if (!saved || !applied) return null;
+  return saved === applied;
+}
+var ConfigActivation = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.log = opts.log ?? ((line2) => console.log(line2));
+    this.now = opts.now ?? Date.now;
+    this.settleMs = opts.settleMs ?? ACTIVATION_SETTLE_MS;
+    this.graceMs = opts.graceMs ?? ACTIVATION_GRACE_MS;
+    this.pollMs = opts.pollMs ?? ACTIVATION_POLL_MS;
+    this.downMs = opts.downMs ?? ACTIVATION_DOWN_MS;
+    this.cooldownMs = opts.cooldownMs ?? RESTART_COOLDOWN_MS;
+  }
+  log;
+  now;
+  settleMs;
+  graceMs;
+  pollMs;
+  downMs;
+  cooldownMs;
+  inFlight = 0;
+  lastChangeAt = 0;
+  /** Bumped on every change and reconnect, so a check can tell whether one landed while it was finishing. */
+  changes = 0;
+  /** Bumped on writes only. */
+  writes = 0;
+  /** `writes` when the last forced restart was run. */
+  writesAtRestart = -1;
+  timer = null;
+  running = null;
+  lastRestartAt = -Infinity;
+  forcedRestarts = [];
+  waiters = [];
+  /** A `config.patch` (or `.apply` / `.set`) was sent. No verdict while one is in flight. */
+  writeStarted() {
+    this.inFlight++;
+    this.changed();
+  }
+  writeEnded() {
+    this.inFlight = Math.max(0, this.inFlight - 1);
+    this.changed();
+  }
+  /** The config changed some other way: the gateway's `config.changed`, which covers the CLI. */
+  changed() {
+    this.writes++;
+    this.poke();
+  }
+  /**
+   * The socket to the gateway came back. Worth a look (a vm-agent restarted mid-window would
+   * otherwise forget), but it is not a write: after a forced restart, a gateway that comes back
+   * still behind with nothing written since is the loop the cooldown is there to stop.
+   */
+  reconnected() {
+    this.poke();
+  }
+  poke() {
+    this.lastChangeAt = this.now();
+    this.changes++;
+    if (!this.running) this.schedule();
+  }
+  /** Resolves with the outcome of the next check to finish. For tests and logs. */
+  nextVerdict() {
+    return new Promise((resolve4) => this.waiters.push(resolve4));
+  }
+  stop() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+  schedule() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.start();
+    }, this.settleMs);
+  }
+  start() {
+    const seen = this.changes;
+    this.running = this.check().catch((err) => {
+      this.log(`[config] activation check failed: ${err.message}`);
+      return "unknown";
+    }).then((outcome) => {
+      this.running = null;
+      if (this.changes !== seen) this.schedule();
+      for (const resolve4 of this.waiters.splice(0)) resolve4(outcome);
+      return outcome;
+    });
+  }
+  async check() {
+    const gw = this.opts.gateway;
+    let behindSince = null;
+    let downSince = null;
+    let changesAtBehind = this.changes;
+    for (; ; ) {
+      const now = this.now();
+      if (this.inFlight > 0 || now - this.lastChangeAt < this.settleMs) {
+        behindSince = null;
+        await this.sleep();
+        continue;
+      }
+      if (!gw.connected) {
+        behindSince = null;
+        downSince ??= now;
+        if (now - downSince >= this.downMs) return "down";
+        await this.sleep();
+        continue;
+      }
+      downSince = null;
+      let active;
+      try {
+        active = configActive(await gw.call("config.get", {}, GATEWAY_READ_MS));
+      } catch {
+        await this.sleep();
+        continue;
+      }
+      if (active === null) return "unknown";
+      if (active) {
+        this.lastRestartAt = -Infinity;
+        if (behindSince !== null) this.log(`[config] OpenClaw applied the saved settings after ${Math.round((this.now() - behindSince) / 1e3)} s`);
+        return "active";
+      }
+      if (behindSince === null || this.changes !== changesAtBehind) {
+        behindSince = this.now();
+        changesAtBehind = this.changes;
+      }
+      if (this.now() - behindSince < this.graceMs) {
+        await this.sleep();
+        continue;
+      }
+      if (this.opts.restartDeferred?.()) {
+        this.log("[config] OpenClaw is holding its restart back for work in flight; waiting for it");
+        behindSince = this.now();
+        await this.sleep();
+        continue;
+      }
+      if (this.now() - this.lastRestartAt < this.cooldownMs && this.writes === this.writesAtRestart) {
+        this.log("[config] OpenClaw is still not running its saved settings, and it was restarted for that a moment ago; leaving it");
+        return "stuck";
+      }
+      this.forcedRestarts = this.forcedRestarts.filter((at2) => this.now() - at2 < RESTART_WINDOW_MS);
+      if (this.forcedRestarts.length >= MAX_FORCED_RESTARTS) {
+        this.log(`[config] OpenClaw is still not running its saved settings after ${MAX_FORCED_RESTARTS} restarts from here; leaving it`);
+        return "stuck";
+      }
+      if (!gw.connected) continue;
+      this.log(`[config] OpenClaw has run behind its saved settings for ${Math.round((this.now() - behindSince) / 1e3)} s (its own restart was dropped); restarting it`);
+      this.lastRestartAt = this.now();
+      this.forcedRestarts.push(this.lastRestartAt);
+      this.writesAtRestart = this.writes;
+      const r2 = this.opts.restartService();
+      if (!r2.ok) {
+        this.log(`[config] restart failed: ${r2.error ?? "unknown"}`);
+        return "stuck";
+      }
+      return "restarted";
+    }
+  }
+  sleep() {
+    return new Promise((resolve4) => setTimeout(resolve4, this.pollMs));
+  }
+};
+
+// src/gateway.ts
 var GATEWAY_SCOPES = ["operator.read", "operator.approvals", "operator.admin"];
 var PROTOCOL = 4;
 var CONNECT_TIMEOUT_MS = 1e4;
@@ -34822,47 +35021,199 @@ var DEFAULT_CALL_TIMEOUT_MS = 1e4;
 var DEFAULT_MIN_BACKOFF_MS = 1e3;
 var RESTART_BEGIN_WAIT_MS = 15e3;
 var RESTART_BACK_WAIT_MS = 9e4;
+var SUPERSEDED_ACTIVE_WAIT_MS = 12e4;
+var SUPERSEDED_POLL_MS = 1e3;
+var CLI_SETTLE_MS = 15e3;
+var MIN_QUEUE_WAIT_MS = 5e3;
 function isPersistedPendingRestart(message2) {
   return /persisted and (updated the active Gateway, but a recovery restart is required|was accepted for restart)/i.test(message2);
+}
+function isPersistedSuperseded(message2) {
+  return /persisted but was not applied to the active Gateway \(superseded\)/i.test(message2);
+}
+function isStaleBaseHash(message2) {
+  return /config changed since last load/i.test(message2);
 }
 function isRestartWindow(message2) {
   return /unavailable during gateway restart|gateway not connected|gateway disconnected|ECONNREFUSED/i.test(message2);
 }
 var DEFAULT_MAX_BACKOFF_MS = 2e3;
 var CONFIG_WRITE_METHODS = /* @__PURE__ */ new Set(["config.patch", "config.apply", "config.set"]);
-async function patchConfig(gw, patch, opts) {
+var writeQueues = /* @__PURE__ */ new WeakMap();
+function patchConfig(gw, patch, opts) {
+  const deadline = opts.budgetMs === void 0 ? null : Date.now() + opts.budgetMs;
+  const maxQueueWaitMs = opts.budgetMs === void 0 ? void 0 : Math.max(MIN_QUEUE_WAIT_MS, opts.budgetMs - opts.timeoutMs);
+  return withConfigWrite(gw, () => sendPatch(gw, patch, opts, deadline), { maxQueueWaitMs, log: opts.log }).then((afterwards) => afterwards?.());
+}
+function withConfigWrite(gw, write, opts = {}) {
+  if (!gw) return write();
+  const tail = writeQueues.get(gw) ?? Promise.resolve();
+  const run3 = queueTurn(tail, opts).then(write);
+  writeQueues.set(
+    gw,
+    Promise.all([tail, run3.catch(() => void 0)]).then(() => void 0)
+  );
+  return run3;
+}
+function queueTurn(tail, opts) {
+  if (opts.maxQueueWaitMs === void 0) return tail.then(() => void 0);
+  return new Promise((resolve4) => {
+    const timer = setTimeout(() => {
+      (opts.log ?? ((l2) => console.log(`[gateway] ${l2}`)))("config writes ahead of this one are still running; going in beside them to stay within the caller's time");
+      resolve4();
+    }, opts.maxQueueWaitMs);
+    timer.unref?.();
+    void tail.then(() => {
+      clearTimeout(timer);
+      resolve4();
+    });
+  });
+}
+function withConfigFileWrite(gw, write, opts = {}) {
+  if (!gw) return write();
+  let answer;
+  const answered = new Promise((resolve4) => answer = resolve4);
+  void withConfigWrite(
+    gw,
+    async () => {
+      let accepted = null;
+      const changed = new Promise((resolve4) => accepted = resolve4);
+      const off = gw.on?.("config.changed", () => accepted?.());
+      try {
+        let value2;
+        try {
+          value2 = await write();
+        } catch (error62) {
+          answer({ ok: false, error: error62 });
+          return;
+        }
+        answer({ ok: true, value: value2 });
+        if (!gw.connected) return;
+        const settleMs = opts.settleMs ?? CLI_SETTLE_MS;
+        if (off) await Promise.race([changed, sleep(settleMs)]);
+        else await awaitActive(gw, void 0, settleMs);
+      } finally {
+        off?.();
+      }
+    },
+    { maxQueueWaitMs: opts.maxQueueWaitMs, log: opts.log }
+  );
+  return answered.then((r2) => {
+    if (!r2.ok) throw r2.error;
+    return r2.value;
+  });
+}
+function sleep(ms) {
+  return new Promise((resolve4) => {
+    const timer = setTimeout(resolve4, ms);
+    timer.unref?.();
+  });
+}
+async function sendPatch(gw, patch, opts, deadline) {
   const raw = JSON.stringify(patch);
   const log = opts.log ?? ((l2) => console.log(`[gateway] ${l2}`));
-  for (let attempt = 0; ; attempt++) {
-    let baseHash;
-    let current;
-    if (attempt === 0 && opts.baseHash) {
-      baseHash = opts.baseHash;
-      current = opts.snapshot ? snapshotConfigs(opts.snapshot) : (await readSnapshot(gw, opts.readTimeoutMs)).configs;
-    } else {
-      const snapshot = await readSnapshot(gw, opts.readTimeoutMs);
-      baseHash = snapshot.hash;
-      current = snapshot.configs;
+  let basis = opts.baseHash && opts.snapshot ? { hash: opts.baseHash, configs: snapshotConfigs(opts.snapshot) } : null;
+  let restartRetried = false;
+  let staleRetried = false;
+  let sent = false;
+  const ridesOutRestart = async (err) => {
+    if (restartRetried || !isRestartWindow(err.message ?? "")) return false;
+    restartRetried = true;
+    log("config write landed while the gateway was restarting; sending it again once it is back");
+    if (!await whenBack(gw, RESTART_BACK_WAIT_MS)) throw err;
+    return true;
+  };
+  for (; ; ) {
+    if (!basis) {
+      try {
+        const read = await readSnapshot(gw, opts.readTimeoutMs);
+        basis = opts.baseHash && !sent ? { hash: opts.baseHash, configs: read.configs } : read;
+      } catch (err) {
+        if (await ridesOutRestart(err)) continue;
+        throw err;
+      }
     }
+    const current = basis.configs;
     const replacePaths = [.../* @__PURE__ */ new Set([...opts.replacePaths ?? [], ...current.flatMap((c2) => arrayReplacePaths(c2, patch))])];
     try {
-      await gw.call("config.patch", { raw, baseHash, ...replacePaths.length ? { replacePaths } : {} }, opts.timeoutMs);
-      return;
+      sent = true;
+      await gw.call("config.patch", { raw, baseHash: basis.hash, ...replacePaths.length ? { replacePaths } : {} }, opts.timeoutMs);
+      return null;
     } catch (err) {
       const message2 = err.message ?? "";
       if (isPersistedPendingRestart(message2)) {
         log("config write saved; waiting for the gateway restart it is queued behind");
-        if (!await awaitRestart(gw)) throw new Error("The config was saved but the agent did not come back after restarting.", { cause: err });
-        return;
+        return async () => {
+          const left = remaining(deadline);
+          if (await awaitRestart(gw, left)) return;
+          if (left !== void 0) return savedNotActive(log);
+          throw new Error("The config was saved but the agent did not come back after restarting.", { cause: err });
+        };
       }
-      if (attempt === 0 && isRestartWindow(message2)) {
-        log("config write landed while the gateway was restarting; sending it again once it is back");
-        if (!await whenBack(gw, RESTART_BACK_WAIT_MS)) throw err;
+      if (isPersistedSuperseded(message2)) {
+        log("config write saved, but a newer write took over its apply; waiting for the gateway to run the saved config");
+        return async () => {
+          const left = remaining(deadline);
+          const waitMs = Math.min(opts.activeWaitMs ?? SUPERSEDED_ACTIVE_WAIT_MS, left ?? Infinity);
+          if (await awaitActive(gw, opts.readTimeoutMs, waitMs)) return log("the saved config is active");
+          if (left !== void 0) return savedNotActive(log);
+          throw new Error("The config was saved but the agent has not applied it yet.", { cause: err });
+        };
+      }
+      if (await ridesOutRestart(err)) {
+        const next = await rebased(gw, patch, opts, err);
+        if (next === "landed") {
+          log("the gateway had saved this write before it went away");
+          return null;
+        }
+        basis = next;
+        continue;
+      }
+      if (!staleRetried && isStaleBaseHash(message2)) {
+        staleRetried = true;
+        const next = await rebased(gw, patch, opts, err);
+        if (next === "landed") return null;
+        basis = next;
+        log("the config changed under this write, not where it writes; sending it again against the new file");
         continue;
       }
       throw err;
     }
   }
+}
+function remaining(deadline) {
+  return deadline === null ? void 0 : Math.max(0, deadline - Date.now());
+}
+function savedNotActive(log) {
+  log("config write saved but not active yet, and the caller's time is up; the agent applies it on its own");
+}
+async function rebased(gw, patch, opts, err) {
+  const fresh = await readSnapshot(gw, opts.readTimeoutMs);
+  if (!opts.baseHash) return fresh;
+  if (opts.snapshot && patchedPartsUnchanged(opts.snapshot, fresh.snapshot, patch)) return fresh;
+  if (patchHolds(fresh.snapshot, patch)) return "landed";
+  throw err;
+}
+function patchHolds(snapshot, patch) {
+  return holds(snapshot.parsed, patch) || holds(snapshot.config, patch);
+}
+function holds(config2, patch) {
+  if (!isPlainRecord(config2)) return false;
+  return Object.entries(patch).every(([key, value2]) => {
+    if (value2 === null) return config2[key] === void 0;
+    if (isPlainRecord(value2)) return holds(config2[key], value2);
+    return isDeepStrictEqual(config2[key], value2);
+  });
+}
+function patchedPartsUnchanged(before, after, patch) {
+  return touchedEqual(before.config, after.config, patch) && touchedEqual(before.parsed, after.parsed, patch);
+}
+function touchedEqual(a2, b2, patch) {
+  const ra2 = isPlainRecord(a2) ? a2 : {};
+  const rb = isPlainRecord(b2) ? b2 : {};
+  return Object.entries(patch).every(
+    ([key, value2]) => isPlainRecord(value2) && isPlainRecord(ra2[key]) && isPlainRecord(rb[key]) ? touchedEqual(ra2[key], rb[key], value2) : isDeepStrictEqual(ra2[key], rb[key])
+  );
 }
 function snapshotConfigs(snapshot) {
   return [snapshot.config, snapshot.parsed].filter((c2) => isPlainRecord(c2));
@@ -34870,7 +35221,7 @@ function snapshotConfigs(snapshot) {
 async function readSnapshot(gw, timeoutMs = DEFAULT_CALL_TIMEOUT_MS) {
   const snapshot = await gw.call("config.get", {}, timeoutMs);
   if (typeof snapshot.hash !== "string" || !snapshot.hash) throw new Error("OpenClaw returned no config hash");
-  return { hash: snapshot.hash, configs: snapshotConfigs(snapshot) };
+  return { hash: snapshot.hash, configs: snapshotConfigs(snapshot), snapshot };
 }
 function isPlainRecord(v2) {
   return !!v2 && typeof v2 === "object" && !Array.isArray(v2);
@@ -34924,10 +35275,26 @@ async function whenBack(gw, timeoutMs) {
   while (!gw.connected && Date.now() < deadline) await new Promise((r2) => setTimeout(r2, 250));
   return gw.connected;
 }
-async function awaitRestart(gw) {
+async function awaitActive(gw, readTimeoutMs = DEFAULT_CALL_TIMEOUT_MS, waitMs = SUPERSEDED_ACTIVE_WAIT_MS) {
+  const deadline = Date.now() + waitMs;
+  for (; ; ) {
+    if (gw.connected) {
+      try {
+        if (configActive(await gw.call("config.get", {}, readTimeoutMs)) !== false) return true;
+      } catch {
+      }
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    if (!gw.connected) await whenBack(gw, left);
+    else await new Promise((r2) => setTimeout(r2, Math.min(SUPERSEDED_POLL_MS, left)));
+  }
+}
+async function awaitRestart(gw, waitMs) {
+  const deadline = Date.now() + (waitMs ?? RESTART_BEGIN_WAIT_MS + RESTART_BACK_WAIT_MS);
   if (gw.connected && gw.onDisconnected) {
     await new Promise((resolve4) => {
-      const timer = setTimeout(done, RESTART_BEGIN_WAIT_MS);
+      const timer = setTimeout(done, Math.min(RESTART_BEGIN_WAIT_MS, waitMs ?? Infinity));
       const off = gw.onDisconnected(done);
       function done() {
         clearTimeout(timer);
@@ -34936,7 +35303,7 @@ async function awaitRestart(gw) {
       }
     });
   }
-  return whenBack(gw, RESTART_BACK_WAIT_MS);
+  return whenBack(gw, Math.min(RESTART_BACK_WAIT_MS, Math.max(0, deadline - Date.now())));
 }
 var GatewayClient = class {
   constructor(opts) {
@@ -35154,200 +35521,6 @@ var GatewayClient = class {
   }
 };
 
-// src/budgets.ts
-var GATEWAY_READ_MS = 1e4;
-var GATEWAY_START_LIMIT_MS = 15 * 6e4;
-var CONFIG_PATCH_MS = 2e4;
-var CONFIG_PATCH_RESTART_MS = 45e3;
-var APPLY_INLINE_WAIT_MS = 25e3;
-var APPLY_RECORD_TTL_MS = 10 * 6e4;
-var CHANNELS_STATUS_MS = 8e3;
-var SERVICE_ACTION_MS = 3e4;
-var TAILSCALE_STATUS_MS = 2e4;
-var GOOGLE_VERSION_MS = 1e4;
-function patchRestartsGateway(patch) {
-  return Object.hasOwn(patch, "channels") || Object.hasOwn(patch, "plugins") || Object.hasOwn(patch, "models") || Object.hasOwn(patch, "memory");
-}
-var DEVICES_LIST_MS = GATEWAY_READ_MS;
-var DEVICES_LIST_CLI_MS = 8e3;
-var DEVICES_LIST_TOTAL_MS = 18e3;
-var DEVICES_ACTION_MS = CONFIG_PATCH_MS;
-var DEVICES_ACTION_CLI_MS = 45e3;
-
-// src/config-activation.ts
-var ACTIVATION_SETTLE_MS = 5e3;
-var ACTIVATION_GRACE_MS = 4e4;
-var ACTIVATION_POLL_MS = 2e3;
-var ACTIVATION_DOWN_MS = 12e4;
-var RESTART_COOLDOWN_MS = 10 * 6e4;
-var MAX_FORCED_RESTARTS = 3;
-var RESTART_WINDOW_MS = 30 * 6e4;
-function configActive(snapshot) {
-  const s2 = snapshot ?? {};
-  const saved = typeof s2.configRevisionHash === "string" && s2.configRevisionHash ? s2.configRevisionHash : null;
-  const applied = typeof s2.appliedConfigHash === "string" && s2.appliedConfigHash ? s2.appliedConfigHash : null;
-  if (!saved || !applied) return null;
-  return saved === applied;
-}
-var ConfigActivation = class {
-  constructor(opts) {
-    this.opts = opts;
-    this.log = opts.log ?? ((line2) => console.log(line2));
-    this.now = opts.now ?? Date.now;
-    this.settleMs = opts.settleMs ?? ACTIVATION_SETTLE_MS;
-    this.graceMs = opts.graceMs ?? ACTIVATION_GRACE_MS;
-    this.pollMs = opts.pollMs ?? ACTIVATION_POLL_MS;
-    this.downMs = opts.downMs ?? ACTIVATION_DOWN_MS;
-    this.cooldownMs = opts.cooldownMs ?? RESTART_COOLDOWN_MS;
-  }
-  log;
-  now;
-  settleMs;
-  graceMs;
-  pollMs;
-  downMs;
-  cooldownMs;
-  inFlight = 0;
-  lastChangeAt = 0;
-  /** Bumped on every change and reconnect, so a check can tell whether one landed while it was finishing. */
-  changes = 0;
-  /** Bumped on writes only. */
-  writes = 0;
-  /** `writes` when the last forced restart was run. */
-  writesAtRestart = -1;
-  timer = null;
-  running = null;
-  lastRestartAt = -Infinity;
-  forcedRestarts = [];
-  waiters = [];
-  /** A `config.patch` (or `.apply` / `.set`) was sent. No verdict while one is in flight. */
-  writeStarted() {
-    this.inFlight++;
-    this.changed();
-  }
-  writeEnded() {
-    this.inFlight = Math.max(0, this.inFlight - 1);
-    this.changed();
-  }
-  /** The config changed some other way: the gateway's `config.changed`, which covers the CLI. */
-  changed() {
-    this.writes++;
-    this.poke();
-  }
-  /**
-   * The socket to the gateway came back. Worth a look (a vm-agent restarted mid-window would
-   * otherwise forget), but it is not a write: after a forced restart, a gateway that comes back
-   * still behind with nothing written since is the loop the cooldown is there to stop.
-   */
-  reconnected() {
-    this.poke();
-  }
-  poke() {
-    this.lastChangeAt = this.now();
-    this.changes++;
-    if (!this.running) this.schedule();
-  }
-  /** Resolves with the outcome of the next check to finish. For tests and logs. */
-  nextVerdict() {
-    return new Promise((resolve4) => this.waiters.push(resolve4));
-  }
-  stop() {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
-  }
-  schedule() {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      this.start();
-    }, this.settleMs);
-  }
-  start() {
-    const seen = this.changes;
-    this.running = this.check().catch((err) => {
-      this.log(`[config] activation check failed: ${err.message}`);
-      return "unknown";
-    }).then((outcome) => {
-      this.running = null;
-      if (this.changes !== seen) this.schedule();
-      for (const resolve4 of this.waiters.splice(0)) resolve4(outcome);
-      return outcome;
-    });
-  }
-  async check() {
-    const gw = this.opts.gateway;
-    let behindSince = null;
-    let downSince = null;
-    let changesAtBehind = this.changes;
-    for (; ; ) {
-      const now = this.now();
-      if (this.inFlight > 0 || now - this.lastChangeAt < this.settleMs) {
-        behindSince = null;
-        await this.sleep();
-        continue;
-      }
-      if (!gw.connected) {
-        behindSince = null;
-        downSince ??= now;
-        if (now - downSince >= this.downMs) return "down";
-        await this.sleep();
-        continue;
-      }
-      downSince = null;
-      let active;
-      try {
-        active = configActive(await gw.call("config.get", {}, GATEWAY_READ_MS));
-      } catch {
-        await this.sleep();
-        continue;
-      }
-      if (active === null) return "unknown";
-      if (active) {
-        this.lastRestartAt = -Infinity;
-        if (behindSince !== null) this.log(`[config] OpenClaw applied the saved settings after ${Math.round((this.now() - behindSince) / 1e3)} s`);
-        return "active";
-      }
-      if (behindSince === null || this.changes !== changesAtBehind) {
-        behindSince = this.now();
-        changesAtBehind = this.changes;
-      }
-      if (this.now() - behindSince < this.graceMs) {
-        await this.sleep();
-        continue;
-      }
-      if (this.opts.restartDeferred?.()) {
-        this.log("[config] OpenClaw is holding its restart back for work in flight; waiting for it");
-        behindSince = this.now();
-        await this.sleep();
-        continue;
-      }
-      if (this.now() - this.lastRestartAt < this.cooldownMs && this.writes === this.writesAtRestart) {
-        this.log("[config] OpenClaw is still not running its saved settings, and it was restarted for that a moment ago; leaving it");
-        return "stuck";
-      }
-      this.forcedRestarts = this.forcedRestarts.filter((at2) => this.now() - at2 < RESTART_WINDOW_MS);
-      if (this.forcedRestarts.length >= MAX_FORCED_RESTARTS) {
-        this.log(`[config] OpenClaw is still not running its saved settings after ${MAX_FORCED_RESTARTS} restarts from here; leaving it`);
-        return "stuck";
-      }
-      if (!gw.connected) continue;
-      this.log(`[config] OpenClaw has run behind its saved settings for ${Math.round((this.now() - behindSince) / 1e3)} s (its own restart was dropped); restarting it`);
-      this.lastRestartAt = this.now();
-      this.forcedRestarts.push(this.lastRestartAt);
-      this.writesAtRestart = this.writes;
-      const r2 = this.opts.restartService();
-      if (!r2.ok) {
-        this.log(`[config] restart failed: ${r2.error ?? "unknown"}`);
-        return "stuck";
-      }
-      return "restarted";
-    }
-  }
-  sleep() {
-    return new Promise((resolve4) => setTimeout(resolve4, this.pollMs));
-  }
-};
-
 // src/settle.ts
 var UPDATE_WINDOW_MS = 15 * 6e4;
 var MAX_WAIT_MS = 45 * 6e4;
@@ -35372,11 +35545,11 @@ function inUpdateWindow(status, now) {
 }
 async function waitUntilSettled(opts, maxWaitMs = MAX_WAIT_MS) {
   const now = opts.now ?? Date.now;
-  const sleep6 = opts.sleep ?? defaultSleep;
+  const sleep7 = opts.sleep ?? defaultSleep;
   const end = now() + maxWaitMs;
   while (updateRunning(opts.update()) && now() < end) {
     if (opts.superseded?.()) throw new SupersededError();
-    await sleep6(Math.min(POLL_MS, Math.max(1, end - now())));
+    await sleep7(Math.min(POLL_MS, Math.max(1, end - now())));
   }
   if (updateRunning(opts.update())) return false;
   await opts.gatewayReady?.(Math.min(GATEWAY_MS, Math.max(1e3, end - now()))).catch(() => false);
@@ -35384,7 +35557,7 @@ async function waitUntilSettled(opts, maxWaitMs = MAX_WAIT_MS) {
 }
 async function applyAfterUpdate(apply, opts) {
   const now = opts.now ?? Date.now;
-  const sleep6 = opts.sleep ?? defaultSleep;
+  const sleep7 = opts.sleep ?? defaultSleep;
   if (updateRunning(opts.update())) await waitUntilSettled(opts);
   for (let attempt = 1; ; attempt++) {
     if (opts.superseded?.()) throw new SupersededError();
@@ -35394,7 +35567,7 @@ async function applyAfterUpdate(apply, opts) {
       if (attempt > RETRY_ATTEMPTS || !opts.transient(error62) || opts.superseded?.() || !inUpdateWindow(opts.update(), now())) throw error62;
       opts.onRetry?.(attempt);
       await waitUntilSettled(opts);
-      await sleep6(RETRY_DELAY_MS);
+      await sleep7(RETRY_DELAY_MS);
     }
   }
 }
@@ -41752,8 +41925,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "bf95da3" : "unknown",
-  builtAt: true ? "2026-10-26T04:05:06Z" : "unknown"
+  commit: true ? "2bcba02" : "unknown",
+  builtAt: true ? "2026-10-26T09:44:50Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -41866,7 +42039,7 @@ function boxSoftware(opts = {}) {
 // src/ready.ts
 var KEYS_DIR = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 var readKeyFile2 = (name) => readKeyFile(KEYS_DIR, name);
-var sleep = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 function sshReading(readSsh) {
   const status = readSsh?.();
   return status ? { ...status, at: (/* @__PURE__ */ new Date()).toISOString() } : void 0;
@@ -41900,7 +42073,7 @@ async function reportReady(readSsh, extra = {}) {
     } catch (err) {
       console.warn(`[ready] attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
     }
-    await sleep(Math.min(2e3 * attempt, 15e3));
+    await sleep2(Math.min(2e3 * attempt, 15e3));
   }
   console.error(`[ready] gave up reporting ready after ${maxAttempts} attempts`);
 }
@@ -41929,14 +42102,14 @@ function ownCertificateServes(hostname3, opts = {}) {
   });
 }
 async function waitForOwnCertificate(probe2, opts) {
-  const sleep6 = opts.sleep ?? ((ms) => new Promise((r2) => setTimeout(r2, ms)));
+  const sleep7 = opts.sleep ?? ((ms) => new Promise((r2) => setTimeout(r2, ms)));
   const now = opts.now ?? Date.now;
   const deadline = now() + opts.timeoutMs;
   let delay = opts.minDelayMs ?? 2e3;
   for (; ; ) {
     if (await probe2()) return true;
     if (now() + delay > deadline) return false;
-    await sleep6(delay);
+    await sleep7(delay);
     delay = Math.min(delay * 2, opts.maxDelayMs ?? 5e3);
   }
 }
@@ -41999,7 +42172,7 @@ function derivePublicKey(privatePem) {
   const pub = crypto3.createPublicKey(privatePem);
   return pub.export({ type: "spki", format: "pem" }).toString();
 }
-var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var sleep3 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 async function registerPublicKey(keysDir2) {
   const vmId = readFile5(`${keysDir2}/vm_id`);
   const token = readFile5(`${keysDir2}/bootstrap_token`);
@@ -42032,7 +42205,7 @@ async function registerPublicKey(keysDir2) {
     } catch (err) {
       console.warn(`[keys] register attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
     }
-    await sleep2(Math.min(2e3 * attempt, 15e3));
+    await sleep3(Math.min(2e3 * attempt, 15e3));
   }
   console.error(`[keys] gave up registering after ${maxAttempts} attempts`);
 }
@@ -42070,7 +42243,7 @@ function trustMitmCaInProcess(path = SYSTEM_MITM_CA_PATH) {
   setDefaultCACertificates([...getCACertificates("bundled"), pem]);
   return true;
 }
-var sleep3 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var sleep4 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
   const mitmIp = readFile6(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
@@ -42128,7 +42301,7 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
       console.warn(`[mitm-ca] attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
       last = err.message;
     }
-    if (attempt < maxAttempts) await sleep3(Math.min(1e3 * attempt, 1e4));
+    if (attempt < maxAttempts) await sleep4(Math.min(1e3 * attempt, 1e4));
   }
   console.error("[mitm-ca] gave up waiting for a trusted mitm CA");
   return { trusted: false, installed: false, message: last };
@@ -42150,7 +42323,7 @@ function readFile7(path) {
     return null;
   }
 }
-var sleep4 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var sleep5 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 function probe(host, port, timeoutMs = 3e3) {
   return new Promise((resolve4) => {
     const sock = net.connect({ host, port });
@@ -42188,7 +42361,7 @@ function waitForMitmProxy(mitmIp) {
       if (attempt % 10 === 0 || attempt <= 3) {
         console.log(`[egress] attempt ${attempt}/${maxAttempts}: mitm proxy ${mitmIp}:${MITM_PROXY_PORT} not reachable yet`);
       }
-      await sleep4(Math.min(1e3 * attempt, 1e4));
+      await sleep5(Math.min(1e3 * attempt, 1e4));
     }
     return false;
   })();
@@ -44569,8 +44742,6 @@ var ChannelsService = class {
   setup = /* @__PURE__ */ new Map();
   /** Single-flight per channel, so a repeated apply or a `channels.push` fan-out installs once. */
   installing = /* @__PURE__ */ new Map();
-  /** Serialises our own config writes; the installer writes the same file from underneath us. */
-  patchChain = Promise.resolve();
   /** How the last write per channel ended, for a firewall that stopped listening. See `ChannelApplyRecord`. */
   applies = /* @__PURE__ */ new Map();
   waLogin = {
@@ -44887,7 +45058,7 @@ var ChannelsService = class {
     const type = input2.type;
     this.noteApply(type, { id, state: "pending", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
     const replacePaths = type === "clickclack" ? ["channels.clickclack.allowFrom"] : void 0;
-    const write = this.patchConfig(patch, replacePaths).then(
+    const write = this.patchConfig(patch, replacePaths, this.opts.writeBudgetMs ?? CHANNEL_WRITE_BUDGET_MS).then(
       () => {
         this.noteApply(type, { id, state: "applied", what: block ? "apply" : "remove", error: null, at: new Date(this.now()).toISOString() });
         this.log(`[channels] ${what2}`);
@@ -44932,8 +45103,9 @@ var ChannelsService = class {
    * anybody's answer.
    *
    * A `pending` record is reported as pending however long it has been there. It is tempting to
-   * call an old one failed, and wrong: `patchConfig` serialises writes, so a patch queued behind a
-   * restarting one has not started yet and its stamp says nothing about its progress. Guessing
+   * call an old one failed, and wrong: `patchConfig` runs the agent's config writes one at a time, so
+   * a patch queued behind others may not have started yet, and its stamp says nothing about its
+   * progress. Guessing
    * there is the same mistake one level down — and there is no need, because the firewall's
    * confirm has a deadline of its own and settles as `unconfirmed`, which is honest.
    *
@@ -44958,28 +45130,18 @@ var ChannelsService = class {
     this.applies.set(type, record2);
   }
   /**
-   * One config write at a time, with a single retry when OpenClaw says the file moved under us —
-   * `openclaw plugins install` edits the same file, and so does the WhatsApp login when it lands.
+   * `patchConfig` runs one config write at a time for the whole agent, and sends a write once more
+   * when OpenClaw says the file moved under it: `openclaw plugins install` edits the same file, and
+   * so does the WhatsApp login when it lands.
    */
-  patchConfig(patch, replacePaths) {
-    const run3 = this.patchChain.then(
-      () => this.patchOnce(patch, replacePaths),
-      () => this.patchOnce(patch, replacePaths)
-    );
-    this.patchChain = run3.catch(() => void 0);
-    return run3;
-  }
-  async patchOnce(patch, replacePaths) {
-    try {
-      await this.writeConfig(patch, replacePaths);
-    } catch (err) {
-      if (!/config changed since last load/i.test(err.message ?? "")) throw err;
-      await this.writeConfig(patch, replacePaths);
-    }
-  }
-  async writeConfig(patch, replacePaths) {
+  async patchConfig(patch, replacePaths, budgetMs) {
     const budget = patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS;
-    await patchConfig(this.gateway(), patch, { timeoutMs: budget, readTimeoutMs: GATEWAY_READ_MS, ...replacePaths ? { replacePaths } : {} });
+    await patchConfig(this.gateway(), patch, {
+      timeoutMs: budget,
+      readTimeoutMs: GATEWAY_READ_MS,
+      ...replacePaths ? { replacePaths } : {},
+      ...budgetMs !== void 0 ? { budgetMs } : {}
+    });
   }
   /** The live config, for deciding whether a channel's plugin is already there. */
   async config() {
@@ -45170,7 +45332,9 @@ var ChannelsService = class {
     const bin = this.opts.openclawBin ?? "/usr/bin/openclaw";
     let approvedId = null;
     try {
-      const { stdout } = await this.exec(bin, ["pairing", "approve", input2.type, input2.code], APPROVE_TIMEOUT_MS);
+      const { stdout } = await withConfigFileWrite(this.opts.client, () => this.exec(bin, ["pairing", "approve", input2.type, input2.code], APPROVE_TIMEOUT_MS), {
+        maxQueueWaitMs: APPROVE_QUEUE_WAIT_MS
+      });
       approvedId = /sender\s+(\S+?)\.?\s*$/m.exec(stdout.replace(/\x1b\[[0-9;]*m/g, ""))?.[1] ?? null;
     } catch (err) {
       const e = err;
@@ -45477,26 +45641,30 @@ var LlmService = class {
    * a provider block's model list) are named to OpenClaw by `patchConfig`, which refuses them
    * otherwise; `replacePaths` adds lists that must be replaced even where OpenClaw would merge.
    */
-  async patchConfig(patch, base, replacePaths) {
+  async patchConfig(patch, base, replacePaths, budgetMs) {
     const snapshot = base ?? await this.config();
     await patchConfig(this.gateway(), patch, {
       baseHash: snapshot.hash,
       snapshot: snapshot.raw,
       timeoutMs: patchRestartsGateway(patch) ? CONFIG_PATCH_RESTART_MS : CONFIG_PATCH_MS,
       readTimeoutMs: GATEWAY_READ_MS,
-      ...replacePaths ? { replacePaths } : {}
+      ...replacePaths ? { replacePaths } : {},
+      ...budgetMs !== void 0 ? { budgetMs } : {}
     });
   }
   /** Make OpenClaw match the desired state. Applies what it can and reports each failure by name. */
   async apply(input2) {
     this.gateway();
+    const deadline = Date.now() + LLM_APPLY_BUDGET_MS;
+    const left = () => Math.max(0, deadline - Date.now());
+    const cliQueueWait = () => ({ maxQueueWaitMs: Math.max(MIN_QUEUE_WAIT_MS, left() - CLI_TIMEOUT_MS2) });
     const applied = [];
     const failed = [];
     const providerPatch = {};
     for (const r2 of input2.remove) {
       try {
         if (r2.providerBlock || !r2.profileId.includes(":")) providerPatch[r2.provider] = null;
-        if (r2.profileId.includes(":")) await this.exec(this.bin(), ["models", "auth", "logout", r2.profileId, "--yes"], CLI_TIMEOUT_MS2);
+        if (r2.profileId.includes(":")) await withConfigFileWrite(this.opts.client, () => this.exec(this.bin(), ["models", "auth", "logout", r2.profileId, "--yes"], CLI_TIMEOUT_MS2), cliQueueWait());
         applied.push(`remove:${r2.provider}`);
       } catch (err) {
         const line2 = execFailureLine(err);
@@ -45509,7 +45677,7 @@ var LlmService = class {
         try {
           await this.patchConfig({ models: { providers: { [c2.provider]: { baseUrl: c2.providerBlock.baseUrl, api: c2.providerBlock.api, models: c2.providerBlock.models } } } }, void 0, [
             `models.providers.${c2.provider}.models`
-          ]);
+          ], left());
         } catch (err) {
           failed.push({ what: c2.provider, error: err.message });
           continue;
@@ -45518,8 +45686,8 @@ var LlmService = class {
       try {
         const sub = c2.kind === "api_key" ? "paste-api-key" : "paste-token";
         const args = ["models", "auth", sub, "--provider", c2.provider, "--profile-id", c2.profileId, ...c2.kind !== "api_key" ? ["--expires-in", "365d"] : []];
-        await this.exec(this.bin(), args, CLI_TIMEOUT_MS2, `${c2.value}
-`);
+        await withConfigFileWrite(this.opts.client, () => this.exec(this.bin(), args, CLI_TIMEOUT_MS2, `${c2.value}
+`), cliQueueWait());
         applied.push(c2.provider);
       } catch (err) {
         failed.push({ what: c2.provider, error: execFailureLine(err) });
@@ -45541,7 +45709,7 @@ var LlmService = class {
     }
     let reindex = false;
     try {
-      await this.patchConfig(patch, snapshot);
+      await this.patchConfig(patch, snapshot, void 0, left());
       applied.push("model");
       if (memory) {
         applied.push("memory");
@@ -48282,7 +48450,9 @@ var ConnectorsService = class {
    * `ChannelsService.patchConfig` does the same and for the same reason: `openclaw plugins
    * install` (a Slack or WhatsApp add-on, minutes long) and the WhatsApp login edit the same
    * file, and losing the race used to fail the whole apply and have the firewall record a push
-   * failure. The two services still hold no lock between them, so the retry is what covers it.
+   * failure. `patchConfig` queues the agent's own writes (T-180) but not the installer, and it
+   * only re-sends a patch whose parts are unchanged; this retry builds the entry again from the new
+   * file instead.
    */
   patchMcp(entry) {
     const run3 = this.patchChain.then(
@@ -59281,7 +59451,7 @@ var UP_TIMEOUT_MS = 12e4;
 var CLI_TIMEOUT_MS4 = TAILSCALE_STATUS_MS;
 var JOIN_SETTLE_TRIES = 10;
 var JOIN_SETTLE_DELAY_MS = 1500;
-var sleep5 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var sleep6 = (ms) => new Promise((r2) => setTimeout(r2, ms));
 var TAILSCALE_UNSUPPORTED_MESSAGE = "This agent was built before Tailscale support. Update the agent (or rebuild it) to use Tailscale.";
 var TailscaleUnsupportedError = class extends Error {
   unsupported = true;
@@ -59339,7 +59509,7 @@ var TailscaleService = class {
     }
     let status = await this.status();
     for (let i2 = 1; i2 < JOIN_SETTLE_TRIES && status.state !== "joined" && status.state !== "off"; i2++) {
-      await sleep5(JOIN_SETTLE_DELAY_MS);
+      await sleep6(JOIN_SETTLE_DELAY_MS);
       status = await this.status();
     }
     if (status.state !== "joined") {
@@ -61514,7 +61684,7 @@ var SkillsService = class {
   async configWrite(args) {
     for (let attempt = 1; ; attempt++) {
       try {
-        await this.exec(this.bin, args, WRITE_MS);
+        await withConfigFileWrite(this.opts.gateway?.(), () => this.exec(this.bin, args, WRITE_MS));
         return;
       } catch (err) {
         if (attempt < WRITE_TRIES && CONFIG_CHANGED_MEANWHILE.test(`${err.stdout ?? ""}
@@ -61529,7 +61699,7 @@ ${err.stderr ?? ""}`)) {
   async write(name, enabled) {
     for (let attempt = 1; ; attempt++) {
       try {
-        await this.exec(this.bin, ["config", "set", `skills.entries.${name}.enabled`, String(enabled), "--strict-json"], WRITE_MS);
+        await withConfigFileWrite(this.opts.gateway?.(), () => this.exec(this.bin, ["config", "set", `skills.entries.${name}.enabled`, String(enabled), "--strict-json"], WRITE_MS));
         break;
       } catch (err) {
         const line2 = execFailureLine(err);
@@ -63724,7 +63894,7 @@ var workspaceExporter = new WorkspaceExporter({
   meetings: () => existsSync34(MEETINGS_DIR) ? new MeetingArchive(MEETINGS_DIR, `${STATE_DIR}/meeting-deletions.json`).list() : [],
   calls: () => phoneCalls.calls().map((c2) => callDetail(c2, phoneCallLog))
 });
-var skills = new SkillsService();
+var skills = new SkillsService({ gateway: () => gateway });
 var storage = new StorageService();
 var screenThumbs = new ScreenThumbService();
 var diskReseal = new DiskResealService();
