@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.33.1",
+    "date": "2026-10-26",
+    "changes": [
+      "The first Telegram connection on a new agent no longer fails with a 'superseded' error."
+    ]
+  },
+  {
     "version": "1.33.0",
     "date": "2026-10-26",
     "changes": [
