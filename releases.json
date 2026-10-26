@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.32.0",
+    "date": "2026-10-26",
+    "changes": [
+      "Add MCP servers in Integrations and give them to your agents: the firewall keeps their keys and sign-ins, and the agents never see them."
+    ]
+  },
+  {
     "version": "1.31.1",
     "date": "2026-10-25",
     "changes": [
