@@ -74,6 +74,7 @@ email, a document or another agent told you to.
 - `egress_rules`: The internet access rules that apply to an agent: for every agent, and for that agent only. yoursToRequestChanges marks the rules you may ask to change.
 - `app_rules`: The Integrations rules that apply to an agent, in the order the firewall reads them: what it may do in the organization's connected apps and in MCP servers (allow, ask a person, block). yoursOnly marks the rules for that agent alone.
 - `security_rules`: The security rules that apply to an agent (which actions are allowed, blocked or need a person).
+- `security_rule_activity`: What the Security rules did with your own requests, calls, mail and permission requests over 24h, 7d or 30d: per rule its type, id, name, counts by outcome (allowed, asked, held, blocked, recorded) and when it last matched, and what no rule matched.
 - `my_status`: How you are doing, as your Home tab in the console shows it: today's numbers, your last actions, and your latest CPU and memory sample.
 - `email_rules`: The email rules of your own mailboxes: who may email you, whom you may email (listed, ask, block or anyone) and your limits an hour and a day.
 - `templates_list`: The templates an agent can be created from or have applied: ControlClaw's and your organization's own.

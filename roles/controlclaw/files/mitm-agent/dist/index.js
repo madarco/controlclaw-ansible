@@ -30959,7 +30959,7 @@ function makeRedactor(values) {
 }
 
 // src/index.ts
-import { appendFileSync as appendFileSync8, readFileSync as readFileSync27, writeFileSync as writeFileSync20, existsSync as existsSync22, readdirSync as readdirSync6, statSync as statSync6 } from "fs";
+import { appendFileSync as appendFileSync9, readFileSync as readFileSync27, writeFileSync as writeFileSync20, existsSync as existsSync22, readdirSync as readdirSync6, statSync as statSync6 } from "fs";
 
 // ../secret-store/dist/index.js
 import { randomBytes as randomBytes5, createCipheriv as createCipheriv2, createDecipheriv as createDecipheriv2 } from "crypto";
@@ -34287,15 +34287,17 @@ var tryInput = external_exports.object({
   draft: contentRule.optional()
 });
 var ACTIVITY_ACTIONS = /* @__PURE__ */ new Set(["block", "hold", "log", "released", "dropped"]);
-function contentRuleActivity(line) {
+function contentRuleActivity(line, nameOf) {
   if (!line || typeof line !== "object") return null;
   const r2 = line;
   if (typeof r2.id !== "string" || typeof r2.ts !== "number" || typeof r2.rule !== "string" || typeof r2.channel !== "string" || typeof r2.action !== "string" || !ACTIVITY_ACTIONS.has(r2.action)) return null;
+  const name26 = nameOf?.(r2.rule) ?? null;
   return {
     source: "content_rule",
     id: r2.id,
     ts: r2.ts,
     rule: r2.rule.slice(0, 64),
+    ...name26 ? { name: name26.slice(0, 80) } : {},
     channel: r2.channel,
     direction: r2.direction === "in" ? "in" : "out",
     action: r2.action,
@@ -34430,6 +34432,11 @@ var ContentRulesFirewall = class _ContentRulesFirewall {
   }
   rules() {
     return this.store.rules;
+  }
+  /** A rule's name now, Leaking secrets included; null for one that is gone. */
+  nameOf(id) {
+    if (id === CORE_SECRETS_RULE.id) return CORE_SECRETS_RULE.name ?? null;
+    return this.store.rules.find((r2) => r2.id === id)?.name ?? null;
   }
   /** The rules the engine reads: Leaking secrets, then the enabled ones. Throws while they are unknown. */
   engineRules() {
@@ -35441,12 +35448,14 @@ function createConnectorGate(opts) {
       input: route.kind === "action" ? route.input : { endpoint: route.endpoint, query: route.query, body: route.body }
     };
     let approval = null;
+    let ruleId3 = null;
+    const ruleRef = (by2) => by2 === "app_rule" && ruleId3 ? { rule_id: ruleId3 } : {};
     const stop = (r2, decision2, by2, rule, mcpIsError = true, also = {}) => {
       if (approval) {
         asks.release(approval.pid);
         delete ctx.approvalPid;
       }
-      const line = record2({ ...base, ...also.follows ? { follows: also.follows } : {}, decision: decision2, by: by2, rule, run_id: null, ok: null, http_status: r2.status, error_code: r2.code }, also.id);
+      const line = record2({ ...base, ...also.follows ? { follows: also.follows } : {}, decision: decision2, by: by2, ...ruleRef(by2), rule, run_id: null, ok: null, http_status: r2.status, error_code: r2.code }, also.id);
       sendRefusal(ctx, r2, mcpIsError);
       return line;
     };
@@ -35471,6 +35480,7 @@ function createConnectorGate(opts) {
     }
     const by = decision.rule ? "app_rule" : "default";
     const ruleName = decision.rule?.name ?? null;
+    ruleId3 = decision.rule?.id ?? null;
     if (decision.then === "block") {
       return stop({ status: 403, code: "action_blocked", message: `Blocked by your organization's app rules (rule: ${ruleName}). Do not try again. If this call is needed, ask a person to change the rule.` }, "blocked", by, ruleName);
     }
@@ -35570,7 +35580,7 @@ function createConnectorGate(opts) {
         const runs = answer.docs.map((d2) => runOf(d2, via));
         const run = runs.find((r2) => r2.runId) ?? runs[0] ?? { runId: null, ok: null, errorCode: null };
         if (!reading || !answer.docs.length) {
-          record2({ ...base, ...ran, decision: "allowed", by, rule: ruleName, run_id: run.runId, ok: run.ok, http_status: answer.status, error_code: run.errorCode });
+          record2({ ...base, ...ran, decision: "allowed", by, ...ruleRef(by), rule: ruleName, run_id: run.runId, ok: run.ok, http_status: answer.status, error_code: run.errorCode });
           return answer;
         }
         const stopped = async (doc) => {
@@ -35606,11 +35616,11 @@ function createConnectorGate(opts) {
             if (via === "http" && s2.status) status = s2.status;
           }
         }
-        record2({ ...base, ...ran, decision: stopRule ? "blocked" : "allowed", by: stopRule ? "content_rule" : by, rule: stopRule ?? ruleName, run_id: run.runId, ok: run.ok, http_status: status, error_code: stopRule ? "result_stopped_by_content_rule" : run.errorCode });
+        record2({ ...base, ...ran, decision: stopRule ? "blocked" : "allowed", by: stopRule ? "content_rule" : by, ...stopRule ? {} : ruleRef(by), rule: stopRule ?? ruleName, run_id: run.runId, ok: run.ok, http_status: status, error_code: stopRule ? "result_stopped_by_content_rule" : run.errorCode });
         return { ...answer, docs: out, status };
       },
       {
-        streamed: () => record2({ ...base, ...ran, decision: "allowed", by, rule: ruleName, run_id: null, ok: null, http_status: 200, error_code: null }),
+        streamed: () => record2({ ...base, ...ran, decision: "allowed", by, ...ruleRef(by), rule: ruleName, run_id: null, ok: null, http_status: 200, error_code: null }),
         unreadable: () => record2({ ...base, decision: "blocked", by: "gate", rule: "result unreadable", run_id: null, ok: null, http_status: 502, error_code: "result_unreadable" })
       }
     );
@@ -42140,7 +42150,7 @@ var AgentMailFirewall = class {
 
 // src/email-rules.ts
 import { createHash as createHash15, randomBytes as randomBytes16 } from "crypto";
-import { existsSync as existsSync9, readFileSync as readFileSync9, renameSync as renameSync7, writeFileSync as writeFileSync9 } from "fs";
+import { appendFileSync as appendFileSync7, existsSync as existsSync9, readFileSync as readFileSync9, renameSync as renameSync7, writeFileSync as writeFileSync9 } from "fs";
 import { basename, dirname as dirname5, join } from "path";
 import { createServer as createServer7 } from "http";
 
@@ -42547,6 +42557,15 @@ var inboundInput = external_exports.object({
 });
 var REJECTED = ["spam", "blocked", "unauthenticated"];
 var FULL_KEYS = ["authentication_results", "headers", "text", "html", "extracted_text", "extracted_html"];
+function gmailMessageKey(headers) {
+  const h2 = (name26) => headers.find((x2) => x2.name.toLowerCase() === name26)?.value ?? "";
+  const id = h2("message-id");
+  if (id) return id;
+  const [from, date5, subject] = [h2("from"), h2("date"), h2("subject")];
+  return from || date5 || subject ? `${from}
+${date5}
+${subject}` : null;
+}
 var EmailRulesFirewall = class {
   constructor(opts) {
     this.opts = opts;
@@ -42747,9 +42766,18 @@ var EmailRulesFirewall = class {
     return (this.counters.dropped ?? []).some((d2) => d2.at > since && listed([{ value: d2.value, mailbox: d2.mailbox }], recipient, mailbox));
   }
   // ---- inbound -------------------------------------------------------------------------------
-  hold(mailbox, reason, from) {
+  hold(mailbox, reason, from, messageId) {
     this.counters.held.push({ at: this.now(), mailbox, reason, domain: from ? domainOf(from) : null });
     this.saveCounters();
+    if (this.opts.logPath) {
+      const id = messageId ? createHash15("sha256").update(`${mailbox}|${messageId}`).digest("hex").slice(0, 24) : randomBytes16(12).toString("hex");
+      const rec = { source: "email_held", id, ts: this.now() / 1e3, direction: "in", provider: mailbox.startsWith("gmail:") ? "gmail" : "agentmail", reason: reason.slice(0, 64) };
+      try {
+        appendFileSync7(this.opts.logPath, `${JSON.stringify(rec)}
+`);
+      } catch {
+      }
+    }
   }
   /** Whether one received AgentMail message (full, with its authentication fields) may reach the agent. */
   agentmailInbound(inboxId, msg) {
@@ -42763,7 +42791,7 @@ var EmailRulesFirewall = class {
     else out = { action: "keep" };
     const id = typeof msg.message_id === "string" ? msg.message_id : null;
     if (id) {
-      if (out.action === "hide" && !this.verdicts.has(id)) this.hold(mailbox, out.reason, v2.from);
+      if (out.action === "hide" && !this.verdicts.has(id)) this.hold(mailbox, out.reason, v2.from, id);
       this.verdicts.set(id, { deliver: out.action === "keep", reason: out.reason, at: this.now() });
       if (this.verdicts.size > 5e3) this.verdicts.delete(this.verdicts.keys().next().value);
     }
@@ -42800,12 +42828,13 @@ var EmailRulesFirewall = class {
     if (!account) return { deliver: false, reason: "no_account" };
     const mailbox = `gmail:${account}`;
     const v2 = gmailVerdict(msg, this.store.rules.inbound.requireAuth);
+    const messageId = gmailMessageKey(msg.headers);
     if (!v2.ok) {
-      this.hold(mailbox, v2.reason, v2.from);
+      this.hold(mailbox, v2.reason, v2.from, messageId);
       return { deliver: false, reason: v2.reason, from: v2.from };
     }
     if (!listed(this.store.rules.inbound.senders, v2.from, mailbox)) {
-      this.hold(mailbox, "not_allowed", v2.from);
+      this.hold(mailbox, "not_allowed", v2.from, messageId);
       return { deliver: false, reason: "not_allowed", from: v2.from };
     }
     return { deliver: true, from: v2.from };
@@ -53142,8 +53171,8 @@ function createMcpCalls(opts) {
   const now2 = opts.now ?? Date.now;
   const asks = createCallAsks({ asks: opts.asks, statePath: opts.askStatePath, label: "mcp", log, now: now2, grantWaitMs: opts.grantWaitMs, permissionId: permissionIdFor });
   const record2 = (base, r2, id) => {
-    const { startedAt, ...rest } = base;
-    const line = { source: "connector_call", id: id ?? randomBytes30(12).toString("hex"), ts: now2() / 1e3, duration_ms: Math.max(0, Math.round(now2() - startedAt)), connection_id: null, run_id: null, ...rest, ...r2 };
+    const { startedAt, rule_id, ...rest } = base;
+    const line = { source: "connector_call", id: id ?? randomBytes30(12).toString("hex"), ts: now2() / 1e3, duration_ms: Math.max(0, Math.round(now2() - startedAt)), connection_id: null, run_id: null, ...rest, ...r2, ...r2.by === "app_rule" && rule_id ? { rule_id } : {} };
     if (opts.logPath) appendCallLine(opts.logPath, line);
     return line.id;
   };
@@ -53202,6 +53231,7 @@ function createMcpCalls(opts) {
     }
     const by = decision.rule ? "app_rule" : "default";
     const ruleName = decision.rule?.name ?? null;
+    if (decision.rule?.id) base.rule_id = decision.rule.id;
     if (decision.then === "block") {
       record2(base, { decision: "blocked", by, rule: ruleName, ok: null, http_status: 200, error_code: "action_blocked" });
       return refusal(id, "action_blocked", `Blocked by your organization's integration rules (rule: ${ruleName}). Do not try again. If this call is needed, ask a person to change the rule.`);
@@ -54950,7 +54980,7 @@ function makeTeamChatHelper(opts) {
 }
 
 // src/teamchat-gate.ts
-import { appendFileSync as appendFileSync7 } from "fs";
+import { appendFileSync as appendFileSync8 } from "fs";
 import { createServer as createServer11, request as httpRequest2 } from "http";
 import { randomBytes as randomBytes34 } from "crypto";
 var GATE_MAX_BODY3 = 70 * 1024 * 1024;
@@ -55032,7 +55062,7 @@ function createTeamChatGate(opts) {
       rule: fields.refused ? `team chat: ${fields.refused}` : "team chat"
     };
     try {
-      appendFileSync7(opts.logPath, `${JSON.stringify(rec)}
+      appendFileSync8(opts.logPath, `${JSON.stringify(rec)}
 `);
     } catch {
     }
@@ -59055,7 +59085,12 @@ function sanitizeAgentMailActivity(raw) {
       "status",
       "duration_ms",
       "bytes_in",
-      "bytes_out"
+      "bytes_out",
+      // The email rules' fixed words (`sent`, `not_allowed`, …), for the per-rule counts
+      // (docs/plans/rule-metrics.md). Never an address.
+      "email",
+      "email_reason",
+      "rule_id"
     ].flatMap((k2) => r2[k2] === void 0 ? [] : [[k2, r2[k2]]])
   );
   return {
@@ -59070,7 +59105,8 @@ function sanitizeAgentMailActivity(raw) {
       "OPTIONS"
     ].includes(String(r2.method)) ? r2.method : null,
     path,
-    rule: "agentmail",
+    // A send the email rules refused or asked about keeps their label; the rest is AgentMail's.
+    rule: r2.rule === "email" ? "email" : "agentmail",
     ...r2.error ? { error: "AgentMail request failed" } : {}
   };
 }
@@ -107199,8 +107235,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync24 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "bf95da3" : "unknown",
-  builtAt: true ? "2026-10-26T04:05:06Z" : "unknown"
+  commit: true ? "b3e9e22" : "unknown",
+  builtAt: true ? "2026-10-26T11:35:51Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -108029,6 +108065,7 @@ async function main() {
       emailRules2 = new EmailRulesFirewall({
         storePath: "/opt/controlclaw/state/email-rules.enc",
         countersPath: "/opt/controlclaw/state/email-counters.json",
+        logPath: TRAFFIC_LOG_PATH || void 0,
         boxKey,
         ids,
         agent: makeAgentClient({ sign: makeAgentTokenSigner(KEYS_DIR2, BOX_ID), hostFor: agentHostFor, onUnknown: learnAgents }),
@@ -108313,7 +108350,7 @@ async function main() {
         catalog: () => catalog,
         content: () => contentRules ?? (contentRulesWillRun() ? "unknown" : null),
         asks: PENDING_PATH ? {
-          ask: (rec) => appendFileSync8(PENDING_PATH, `${JSON.stringify(rec)}
+          ask: (rec) => appendFileSync9(PENDING_PATH, `${JSON.stringify(rec)}
 `, { mode: 416 }),
           granted: (id) => !!sharedGrants?.active(id, Math.floor(Date.now() / 1e3)),
           consume: (id) => sharedGrants?.delete(id)
@@ -108737,7 +108774,7 @@ async function main() {
       setInterval(() => void shipper.tick().catch((e) => console.error("[activity] tick:", e.message)), ACTIVITY_POLL_MS);
     }
     if (ACTIVITY_URL && getToken) {
-      const ruleShipper = new ActivityShipper({ logPath: CONTENT_AUDIT_PATH, cursorPath: `${CONTENT_AUDIT_PATH}.cursor`, activityUrl: ACTIVITY_URL, getToken, transform: contentRuleActivity });
+      const ruleShipper = new ActivityShipper({ logPath: CONTENT_AUDIT_PATH, cursorPath: `${CONTENT_AUDIT_PATH}.cursor`, activityUrl: ACTIVITY_URL, getToken, transform: (line) => contentRuleActivity(line, (id) => contentRules?.nameOf(id) ?? null) });
       setInterval(() => void ruleShipper.tick().catch((e) => console.error("[activity] content rules tick:", e.message)), ACTIVITY_POLL_MS);
     }
     if (ACTIVITY_URL && getToken) {
@@ -109094,7 +109131,7 @@ async function main() {
         content: () => contentRules ?? (contentRulesWillRun() ? "unknown" : null),
         asks: PENDING_PATH ? {
           // The permission bridge files it with ControlClaw and writes the grant on approval.
-          ask: (rec) => appendFileSync8(PENDING_PATH, `${JSON.stringify(rec)}
+          ask: (rec) => appendFileSync9(PENDING_PATH, `${JSON.stringify(rec)}
 `, { mode: 416 }),
           granted: (id) => grants.active(id, Math.floor(Date.now() / 1e3)),
           consume: (id) => grants.delete(id)

@@ -1333,6 +1333,9 @@ async def email_outbound(flow: http.HTTPFlow, vm_id: str | None) -> bool:
     decision = result.get("decision")
     if decision == "allow" and isinstance(result.get("id"), str) and re.fullmatch(r"[a-f0-9]{48}", result["id"]):
         flow.metadata["cc_email_reservation"] = result["id"]
+        # A send the email rules let through: its record says so, for the console's counts
+        # (docs/plans/rule-metrics.md). Whether the mail service took it is the record's status.
+        flow.metadata["cc_email_sent"] = True
         return True
     if decision == "ask" and isinstance(result.get("asks"), list) and result["asks"]:
         asks = [a for a in result["asks"] if isinstance(a, dict) and isinstance(a.get("scope"), str) and isinstance(a.get("summary"), str)][:20]
@@ -3129,6 +3132,11 @@ def _remember(record: dict[str, Any]) -> None:
 
 def _log(record: dict[str, Any]) -> None:
     """Append one traffic record (JSONL). Rotates the file by size first, see LOG_MAX_BYTES."""
+    if "effect" in record:
+        # Always there, null when no Websites rule decided: it tells the console this firewall sends
+        # rule ids, so it never falls back to matching a rule by the record's label
+        # (docs/plans/rule-metrics.md).
+        record.setdefault("rule_id", None)
     _remember(record)
     line = json.dumps(record, ensure_ascii=False)
     log.info(f"[mitm] {line}")
@@ -3187,6 +3195,11 @@ def _http_record(flow: http.HTTPFlow, effect: str) -> dict[str, Any]:
         "path": redact_path(flow.request.path, flow.request.pretty_host), "effect": effect,
         "rule": flow.metadata.get("cc_rule"),
     })
+    ref = flow.metadata.get("cc_rule_ref")
+    if ref is not None and ref[1] == rec["rule"]:
+        rec["rule_id"] = ref[0]
+    if flow.metadata.get("cc_email_sent"):
+        rec["email"] = "sent"
     if flow.request.pretty_host.lower() == "api.twilio.com":
         try:
             destination = flow.request.urlencoded_form.get("To", "")
@@ -3402,6 +3415,7 @@ def _exit_record(ctx, rule: dict[str, Any] | None, host: str, port: int | None,
         "ts": time.time(), "tenant": TENANT, "vm_id": vm_id,
         "host": host, "port": port, "effect": "residential",
         "rule": (rule or {}).get("name"), "exit": "residential", "error": error[:200],
+        **({"rule_id": str(rule["id"])[:64]} if rule and rule.get("id") else {}),
         **({"exit_country": country} if country else {}),
     }
 
@@ -3446,7 +3460,7 @@ def _residential_stack(ctx, host: str, port: int, rule: dict[str, Any], vm_id: s
         stack = _upstream_proxy.HttpUpstreamProxy.make(ctx, True)
     relay = _proxy_layers.TCPLayer(ctx)  # ignore=False: a real TCPFlow, so we get bytes and hooks
     relay.flow.metadata["cc_exit"] = {
-        "rule": rule.get("name") or rule.get("match_domain"),
+        "rule": rule.get("name") or rule.get("match_domain"), "rule_id": str(rule["id"])[:64] if rule.get("id") else None,
         "host": host, "port": int(port), "vm_id": vm_id, "country": country,
         "session": session, "in": 0, "out": 0, "billed_in": 0, "billed_out": 0, "seq": 0,
     }
@@ -3858,6 +3872,7 @@ def _residential_record(flow, meta: dict[str, Any], interim: bool = False) -> di
         "ts": time.time(), "tenant": TENANT, "vm_id": meta.get("vm_id"),
         "host": meta.get("host") or "", "port": meta.get("port"),
         "effect": "residential", "rule": meta.get("rule"), "exit": "residential",
+        **({"rule_id": meta["rule_id"]} if meta.get("rule_id") else {}),
         "bytes_in": moved_in, "bytes_out": moved_out,
         # On every record, not only on a refusal: "which country did this come out in" is a
         # question about the flows that WORKED, and the console cannot answer it from a rule
@@ -4633,6 +4648,12 @@ async def request(flow: http.HTTPFlow) -> None:
     effect = (rule or {}).get("effect", "allow")
     flow.metadata["cc_effect"] = effect
     flow.metadata["cc_rule"] = (rule or {}).get("name") or (rule or {}).get("match_domain")
+    if rule is not None and rule.get("id"):
+        # The website rule that decided, by id, for the console's per-rule counts
+        # (docs/plans/rule-metrics.md). Kept with the label it set: a later step that puts its own
+        # label on the flow (a content rule, an MCP refusal, the phone) decided instead, and the
+        # record then carries no `rule_id`.
+        flow.metadata["cc_rule_ref"] = (str(rule["id"])[:64], flow.metadata["cc_rule"])
 
     if rule is not None and rule.get("exit") == "residential" and effect in RESIDENTIAL_EFFECTS:
         # Plaintext HTTP to a residential destination. A TLS flow never gets here (next_layer
