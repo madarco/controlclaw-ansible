@@ -107235,8 +107235,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync24 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "b3e9e22" : "unknown",
-  builtAt: true ? "2026-10-26T11:35:51Z" : "unknown"
+  commit: true ? "8181502" : "unknown",
+  builtAt: true ? "2026-10-26T12:04:56Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

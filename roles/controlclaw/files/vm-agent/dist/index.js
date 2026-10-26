@@ -35987,7 +35987,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync40, existsSync as existsSync34, writeFileSync as writeFileSync27, rmSync as rmSync14 } from "fs";
+import { readFileSync as readFileSync41, existsSync as existsSync34, writeFileSync as writeFileSync28, rmSync as rmSync14 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash6, randomBytes as randomBytes2 } from "crypto";
@@ -41925,8 +41925,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "b3e9e22" : "unknown",
-  builtAt: true ? "2026-10-26T11:35:51Z" : "unknown"
+  commit: true ? "8181502" : "unknown",
+  builtAt: true ? "2026-10-26T12:04:56Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -42406,7 +42406,8 @@ function handleHealth(res) {
 }
 
 // src/routes/openclaw.ts
-import { execSync as execSync2 } from "child_process";
+import { execFile as execFile5, execSync as execSync2 } from "child_process";
+import { promisify } from "util";
 
 // src/openclaw-state.ts
 var CRASH_WINDOW_MS = 12e4;
@@ -42435,13 +42436,16 @@ function runIsActive() {
     return "unknown";
   }
 }
+function restartLines(journal2) {
+  return journal2.split("\n").filter((l2) => l2.includes("Scheduled restart job")).length;
+}
 function recentAutoRestarts() {
   try {
     const out = execSync2(
       `sudo -n journalctl -u ${SERVICE2} --since "-${Math.round(CRASH_WINDOW_MS / 1e3)}s" --no-pager -o cat`,
       { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }
     );
-    return out.split("\n").filter((l2) => l2.includes("Scheduled restart job")).length;
+    return restartLines(out);
   } catch {
     return 0;
   }
@@ -42519,6 +42523,28 @@ function runState(unit, connected) {
 }
 function currentOpenClawState(gateway2) {
   return runState(runIsActive(), gateway2 ? gateway2.connected : null);
+}
+var execFileAsync = promisify(execFile5);
+async function currentOpenClawStateAsync(gateway2) {
+  const connected = gateway2 ? gateway2.connected : null;
+  let unit;
+  try {
+    unit = (await execFileAsync("systemctl", ["is-active", SERVICE2], { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS })).stdout.trim();
+  } catch (err) {
+    unit = String(err.stdout ?? "").trim() || "unknown";
+  }
+  if (unit === "active" && connected !== false) return openClawState(unit, 0, connected);
+  let restarts = 0;
+  try {
+    const { stdout } = await execFileAsync("sudo", ["-n", "journalctl", "-u", SERVICE2, "--since", `-${Math.round(CRASH_WINDOW_MS / 1e3)}s`, "--no-pager", "-o", "cat"], {
+      encoding: "utf-8",
+      timeout: EXEC_TIMEOUT_MS
+    });
+    restarts = restartLines(stdout);
+  } catch {
+    restarts = 0;
+  }
+  return openClawState(unit, restarts, connected);
 }
 function handleStatus(res, drive2, gateway2) {
   const status = runIsActive();
@@ -45006,6 +45032,20 @@ var ChannelsService = class {
       } catch (err) {
         this.log(`[channels] unreadable ${type}-pairing.json: ${err.message}`);
       }
+    }
+    return out;
+  }
+  /**
+   * The people's channels as OpenClaw reports them, and nothing else: no pairings, no setup or
+   * apply records. One gateway call, for the minute sample (metrics.ts). Null while the gateway is down.
+   */
+  async channelStates() {
+    if (!this.opts.client?.connected) return null;
+    const payload = await this.gateway().call("channels.status", { probe: false }, CHANNELS_STATUS_MS);
+    const out = {};
+    for (const type of CHANNEL_TYPES) {
+      const entry = channelStatusFrom(type, payload);
+      if (entry) out[type] = entry;
     }
     return out;
   }
@@ -59365,7 +59405,7 @@ async function handleSsh(req, res, pathname, service) {
 
 // src/ssh-logins.ts
 import { createHash as createHash11 } from "crypto";
-import { execFile as execFile5 } from "child_process";
+import { execFile as execFile6 } from "child_process";
 var POLL_TIMEOUT_MS = 15e3;
 var MAX_PER_TICK = 50;
 var MAX_BUFFERED = 500;
@@ -59378,7 +59418,7 @@ function parseSshdLine(line2) {
 }
 function journal(cursorPath) {
   return new Promise((resolve4) => {
-    execFile5(
+    execFile6(
       "journalctl",
       ["-u", "ssh", "-u", "sshd", "--no-pager", "-q", "-o", "short-iso", `--cursor-file=${cursorPath}`],
       { timeout: POLL_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
@@ -59852,11 +59892,11 @@ async function handleDevices(req, res, url3, service) {
 import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
-import { execFile as execFile6 } from "child_process";
+import { execFile as execFile7 } from "child_process";
 import { existsSync as existsSync28, mkdirSync as mkdirSync19, readFileSync as readFileSync33, rmSync as rmSync9, writeFileSync as writeFileSync22 } from "fs";
 import { dirname as dirname18 } from "path";
-import { promisify } from "util";
-var run2 = promisify(execFile6);
+import { promisify as promisify2 } from "util";
+var run2 = promisify2(execFile7);
 var UNIT = "cc-gmail-watch.service";
 function envSafe(value2) {
   return !/[\r\n=]/.test(value2);
@@ -60348,12 +60388,12 @@ async function handleApplyTicket(req, res, templates) {
 
 // src/routes/health-summary.ts
 import { stat as stat4, statfs } from "fs/promises";
-import { execFile as execFile8 } from "child_process";
+import { execFile as execFile9 } from "child_process";
 import { lookup as lookup2 } from "dns/promises";
 import os from "os";
 
 // src/patch-check.ts
-import { execFile as execFile7 } from "child_process";
+import { execFile as execFile8 } from "child_process";
 import { createHash as createHash12 } from "crypto";
 import { existsSync as existsSync30, lstatSync, readFileSync as readFileSync35, readdirSync as readdirSync5 } from "fs";
 import { homedir } from "os";
@@ -60396,7 +60436,7 @@ function runMeetingCheck(host, stateDir) {
   }
   if (!source.includes("def check(")) return Promise.resolve(null);
   return new Promise((resolve4) => {
-    execFile7("/usr/bin/python3", [MEETING_PATCH, "--check", host, stateDir], { timeout: CHECK_TIMEOUT_MS }, (err, stdout) => {
+    execFile8("/usr/bin/python3", [MEETING_PATCH, "--check", host, stateDir], { timeout: CHECK_TIMEOUT_MS }, (err, stdout) => {
       if (err) return resolve4({ error: true });
       try {
         resolve4(JSON.parse(stdout));
@@ -60576,7 +60616,7 @@ function memoryUsedPct(total = os.totalmem()) {
 }
 function ntpSynced() {
   return new Promise((resolve4) => {
-    execFile8("timedatectl", ["show", "-p", "NTPSynchronized", "--value"], { timeout: PROBE_TIMEOUT_MS }, (err, stdout) => {
+    execFile9("timedatectl", ["show", "-p", "NTPSynchronized", "--value"], { timeout: PROBE_TIMEOUT_MS }, (err, stdout) => {
       if (err) return resolve4(null);
       const v2 = stdout.trim();
       resolve4(v2 === "yes" ? true : v2 === "no" ? false : null);
@@ -60880,14 +60920,55 @@ function startCpuSampler() {
 
 // src/metrics.ts
 import os2 from "os";
+import { readFileSync as readFileSync37, writeFileSync as writeFileSync24 } from "fs";
 var METRIC_SAMPLE_MS = 6e4;
 var METRIC_QUEUE_MAX = 24 * 60;
 var BATCH = 500;
+var ChannelsSeen = class {
+  constructor(path) {
+    this.path = path;
+    this.seen = /* @__PURE__ */ new Set();
+    if (!path) return;
+    try {
+      const v2 = JSON.parse(readFileSync37(path, "utf8"));
+      if (Array.isArray(v2)) this.seen = new Set(v2.filter((x2) => typeof x2 === "string"));
+    } catch {
+    }
+  }
+  seen;
+  /** Updates from one reading and says, per type, whether it has been seen. */
+  note(channels2) {
+    const before = [...this.seen].sort().join(",");
+    const listed = new Set(channels2.map((c2) => c2.type));
+    for (const type of [...this.seen]) if (!listed.has(type)) this.seen.delete(type);
+    for (const c2 of channels2) {
+      if (!c2.configured) this.seen.delete(c2.type);
+      else if (c2.connected) this.seen.add(c2.type);
+    }
+    const after = [...this.seen].sort().join(",");
+    if (this.path && before !== after) {
+      try {
+        writeFileSync24(this.path, JSON.stringify([...this.seen]));
+      } catch {
+      }
+    }
+    return new Map(channels2.map((c2) => [c2.type, this.seen.has(c2.type)]));
+  }
+};
+function channelReason(lastError) {
+  if (!lastError || !lastError.trim()) return null;
+  const e = lastError.toLowerCase();
+  if (/logged ?out|log ?out|unlinked|session (?:closed|ended|replaced)/.test(e)) return "logged_out";
+  if (/\b401\b|\b403\b|unauthori[sz]ed|invalid_auth|not_authed|token_revoked|account_inactive|invalid token|token.*(?:revoked|invalid|expired)|forbidden/.test(e)) return "auth";
+  if (/enotfound|econn|etimedout|eai_again|network|socket|fetch failed|timed? ?out/.test(e)) return "network";
+  return "other";
+}
 var MetricSampler = class {
   constructor(opts) {
     this.opts = opts;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.maxQueue = opts.maxQueue ?? METRIC_QUEUE_MAX;
+    this.channelsSeen = new ChannelsSeen(opts.channelsSeenPath);
     const read = opts.read?.procStat;
     this.cpu = createCpuSampler(read, opts.monotonic);
   }
@@ -60896,6 +60977,7 @@ var MetricSampler = class {
   fetchImpl;
   maxQueue;
   inFlight = false;
+  channelsSeen;
   /** The first CPU reading, so the first sample a minute later has a use to report. */
   prime() {
     this.cpu.sample();
@@ -60924,6 +61006,32 @@ var MetricSampler = class {
         return null;
       }
     };
+    let channels2;
+    if (r2.channels) {
+      try {
+        const read = await r2.channels();
+        if (read) {
+          const now = Object.entries(read).map(([type, c2]) => ({ type, configured: c2.configured === true, running: c2.running === true, connected: c2.connected === true, lastError: c2.lastError }));
+          const seen = this.channelsSeen.note(now);
+          channels2 = now.map((c2) => ({
+            type: c2.type,
+            configured: c2.configured,
+            running: c2.running,
+            connected: c2.connected,
+            reason: channelReason(c2.lastError),
+            seen: seen.get(c2.type) === true
+          }));
+        }
+      } catch {
+        channels2 = void 0;
+      }
+    }
+    let openclaw;
+    try {
+      openclaw = await r2.openclawState?.();
+    } catch {
+      openclaw = void 0;
+    }
     const rec = {
       source: "metric",
       ts: (this.opts.now ?? Date.now)(),
@@ -60931,7 +61039,9 @@ var MetricSampler = class {
       mem_pct: safe(r2.memPct ?? memoryUsedPct),
       disk_pct: disk?.usedPct ?? null,
       disk_volume: disk?.volume ?? null,
-      load1: safe(r2.load1 ?? (() => Math.round(os2.loadavg()[0] * 100) / 100))
+      load1: safe(r2.load1 ?? (() => Math.round(os2.loadavg()[0] * 100) / 100)),
+      ...openclaw ? { openclaw } : {},
+      ...channels2 ? { channels: channels2 } : {}
     };
     this.queue.push(rec);
     if (this.queue.length > this.maxQueue) this.queue.splice(0, this.queue.length - this.maxQueue);
@@ -61258,7 +61368,7 @@ function notesNameProblem(name) {
 }
 
 // ../templates/src/notes-folder.ts
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync20, readdirSync as readdirSync6, readFileSync as readFileSync37, rmSync as rmSync10, statSync as statSync5, writeFileSync as writeFileSync24 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync20, readdirSync as readdirSync6, readFileSync as readFileSync38, rmSync as rmSync10, statSync as statSync5, writeFileSync as writeFileSync25 } from "fs";
 import { dirname as dirname19, join as join25 } from "path";
 function notesPlace(env2 = process.env) {
   return { root: env2.CC_NOTES_DIR ?? "/var/lib/controlclaw-notes/sets", helper: env2.CC_NOTES_HELPER ? [env2.CC_NOTES_HELPER] : ["sudo", "-n", "/usr/local/sbin/cc-notes"] };
@@ -61277,7 +61387,7 @@ var recordPath = (home, set2) => join25(home, ".controlclaw", "notes", `${set2}.
 function readNotesRecord(home, set2) {
   if (notesNameProblem(set2)) return null;
   try {
-    const r2 = JSON.parse(readFileSync37(recordPath(home, set2), "utf8"));
+    const r2 = JSON.parse(readFileSync38(recordPath(home, set2), "utf8"));
     if (!r2 || r2.source !== "organization" && r2.source !== "template" || typeof r2.id !== "string" || typeof r2.hash !== "string" || !/^[0-9a-f]{64}$/.test(r2.hash)) return null;
     return { source: r2.source, id: r2.id, version: typeof r2.version === "string" ? r2.version : null, payload: typeof r2.payload === "string" ? r2.payload : null, hash: r2.hash, always: typeof r2.always === "string" ? r2.always : null, installedAt: typeof r2.installedAt === "string" ? r2.installedAt : "" };
   } catch {
@@ -61302,7 +61412,7 @@ function installedNotes(root, set2) {
       else {
         bytes += stat5.size;
         if (files2.length >= NOTES_LIMITS.files || stat5.size > NOTES_LIMITS.fileBytes || bytes > NOTES_LIMITS.totalBytes) return false;
-        files2.push({ path: `${prefix}${name}`, content: readFileSync37(path), executable: false });
+        files2.push({ path: `${prefix}${name}`, content: readFileSync38(path), executable: false });
       }
     }
     return true;
@@ -61373,7 +61483,7 @@ function reportNotes(home, place = notesPlace(), read = installedNotes) {
 
 // ../templates/src/skill-folder.ts
 import { randomBytes as randomBytes4 } from "crypto";
-import { existsSync as existsSync31, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync38, realpathSync as realpathSync2, renameSync as renameSync19, rmSync as rmSync11, writeFileSync as writeFileSync25 } from "fs";
+import { existsSync as existsSync31, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync39, realpathSync as realpathSync2, renameSync as renameSync19, rmSync as rmSync11, writeFileSync as writeFileSync26 } from "fs";
 import { join as join26, resolve as resolve3, sep as sep3 } from "path";
 var TooBig = class extends Error {
 };
@@ -61392,7 +61502,7 @@ function listFolder(dir, notes = false) {
       else {
         bytes += stat5.size;
         if (files2.length >= limits.files + 8 || stat5.size > limits.fileBytes || bytes > limits.totalBytes + 65536) throw new TooBig();
-        files2.push({ path: relative, content: readFileSync38(path), executable: (stat5.mode & 73) !== 0 });
+        files2.push({ path: relative, content: readFileSync39(path), executable: (stat5.mode & 73) !== 0 });
       }
     }
   };
@@ -61419,7 +61529,7 @@ function skillHash(dir) {
 }
 function readSkillRecord(dir) {
   try {
-    return parseSkillRecord(JSON.parse(readFileSync38(join26(dir, SKILL_RECORD), "utf8")));
+    return parseSkillRecord(JSON.parse(readFileSync39(join26(dir, SKILL_RECORD), "utf8")));
   } catch {
     return null;
   }
@@ -61745,7 +61855,7 @@ ${err.stderr ?? ""}`)) {
 
 // src/templates.ts
 import { createHash as createHash15 } from "crypto";
-import { existsSync as existsSync33, mkdirSync as mkdirSync21, readdirSync as readdirSync9, readFileSync as readFileSync39, renameSync as renameSync20, rmSync as rmSync13, statSync as statSync7, writeFileSync as writeFileSync26 } from "fs";
+import { existsSync as existsSync33, mkdirSync as mkdirSync21, readdirSync as readdirSync9, readFileSync as readFileSync40, renameSync as renameSync20, rmSync as rmSync13, statSync as statSync7, writeFileSync as writeFileSync27 } from "fs";
 import { homedir as homedir2 } from "os";
 import { dirname as dirname21, join as join28 } from "path";
 
@@ -61865,7 +61975,7 @@ function reviewFilesOf(raw) {
 }
 function readTemplateReview(stateDir, now = /* @__PURE__ */ new Date()) {
   try {
-    const raw = JSON.parse(readFileSync39(templateReviewPath(stateDir), "utf8"));
+    const raw = JSON.parse(readFileSync40(templateReviewPath(stateDir), "utf8"));
     if (typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template) || typeof raw.at !== "string") return null;
     const age = now.getTime() - new Date(raw.at).getTime();
     if (!(age >= 0 && age < TEMPLATE_REVIEW_MS)) return null;
@@ -61900,7 +62010,7 @@ var TemplateService = class {
   constructor(opts) {
     this.opts = opts;
     try {
-      const kept = JSON.parse(readFileSync39(this.unsentPath, "utf8"));
+      const kept = JSON.parse(readFileSync40(this.unsentPath, "utf8"));
       if (kept && typeof kept === "object") this.unsent = kept;
     } catch {
     }
@@ -61966,7 +62076,7 @@ var TemplateService = class {
   }
   marker() {
     try {
-      const raw = JSON.parse(readFileSync39(this.markerPath, "utf8"));
+      const raw = JSON.parse(readFileSync40(this.markerPath, "utf8"));
       if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
       const vars = varsOf(raw.vars);
       return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {}, ...vars ? { vars } : {} };
@@ -61980,7 +62090,7 @@ var TemplateService = class {
   /** The bundles applied beside this agent's template, oldest first. */
   beside() {
     try {
-      const raw = JSON.parse(readFileSync39(this.besidePath, "utf8"));
+      const raw = JSON.parse(readFileSync40(this.besidePath, "utf8"));
       const kept = {};
       for (const [id, b2] of Object.entries(raw ?? {})) {
         const vars = varsOf(b2?.vars);
@@ -61995,7 +62105,7 @@ var TemplateService = class {
   write(path, value2) {
     mkdirSync21(dirname21(path), { recursive: true, mode: 448 });
     const tmp = `${path}.tmp`;
-    writeFileSync26(tmp, JSON.stringify(value2), { mode: 384 });
+    writeFileSync27(tmp, JSON.stringify(value2), { mode: 384 });
     renameSync20(tmp, path);
   }
   async call(method, body2, path = "", maxBytes = BUNDLE_MAX_BYTES) {
@@ -62069,7 +62179,7 @@ var TemplateService = class {
     }
     try {
       mkdirSync21(dirname21(kept), { recursive: true, mode: 448 });
-      writeFileSync26(`${kept}.tmp`, text3, { mode: 384 });
+      writeFileSync27(`${kept}.tmp`, text3, { mode: 384 });
       renameSync20(`${kept}.tmp`, kept);
     } catch (error62) {
       this.log(`${template}: its files could not be kept on this agent (${error62.code ?? "error"})`);
@@ -62272,7 +62382,7 @@ var TemplateService = class {
   async captureSkill(req) {
     const done = join28(this.opts.stateDir, "skill-capture.json");
     try {
-      if (JSON.parse(readFileSync39(done, "utf8")).id === req.id) return;
+      if (JSON.parse(readFileSync40(done, "utf8")).id === req.id) return;
     } catch {
     }
     this.log(`reading the skill ${req.name} of this agent's own, to be saved in the organization's skills`);
@@ -62303,7 +62413,7 @@ var TemplateService = class {
   async capture(id) {
     const done = join28(this.opts.stateDir, "capture.json");
     try {
-      if (JSON.parse(readFileSync39(done, "utf8")).id === id) return;
+      if (JSON.parse(readFileSync40(done, "utf8")).id === id) return;
     } catch {
     }
     this.log("reading this agent's setup for Save as template");
@@ -62330,7 +62440,7 @@ var TemplateService = class {
     const closed = { id: "", at: "", items: [], tries: 0, done: true };
     let text3;
     try {
-      text3 = readFileSync39(this.startSkillsPath, "utf8");
+      text3 = readFileSync40(this.startSkillsPath, "utf8");
     } catch (error62) {
       return error62.code === "ENOENT" ? null : closed;
     }
@@ -62428,7 +62538,7 @@ var TemplateService = class {
     const file2 = join28(this.opts.stateDir, "skills", `${item.payload}${run3}.json`);
     try {
       mkdirSync21(dirname21(file2), { recursive: true, mode: 448 });
-      writeFileSync26(file2, text3, { mode: 384 });
+      writeFileSync27(file2, text3, { mode: 384 });
       let stdout = "";
       try {
         const named = confirmedName !== null ? ["--name", confirmedName] : [];
@@ -62463,7 +62573,7 @@ var TemplateService = class {
   /** The skill this agent has prepared and is waiting for a ticket for, while it is recent. */
   skillPending() {
     try {
-      const raw = JSON.parse(readFileSync39(this.skillPendingPath, "utf8"));
+      const raw = JSON.parse(readFileSync40(this.skillPendingPath, "utf8"));
       const r2 = raw;
       if (r2.kind !== "skill" && r2.kind !== "notes" || typeof r2.ref !== "string" || !REQUEST_ID.test(r2.ref) || !this.fresh(r2.at, TEMPLATE_REVIEW_MS)) return null;
       if (typeof r2.name !== "string" || !SKILL_NAME_RE.test(r2.name) || typeof r2.hash !== "string" || !BUNDLE_HASH.test(r2.hash) || typeof r2.files !== "number") return null;
@@ -62509,7 +62619,7 @@ var TemplateService = class {
     }
     let done = null;
     try {
-      done = JSON.parse(readFileSync39(this.skillDonePath, "utf8")).id ?? null;
+      done = JSON.parse(readFileSync40(this.skillDonePath, "utf8")).id ?? null;
     } catch {
     }
     if (done === req.id) return;
@@ -62521,7 +62631,7 @@ var TemplateService = class {
     const report = (body2) => this.call("POST", { kind: "skills", requestId: req.id, ...body2 });
     let kept = null;
     try {
-      kept = JSON.parse(readFileSync39(this.skillPendingPath, "utf8"));
+      kept = JSON.parse(readFileSync40(this.skillPendingPath, "utf8"));
     } catch {
     }
     if (!kept || kept.ref !== req.id) {
@@ -62562,7 +62672,7 @@ var TemplateService = class {
       }
       let ticket = null;
       try {
-        ticket = JSON.parse(readFileSync39(this.skillTicketPath, "utf8"));
+        ticket = JSON.parse(readFileSync40(this.skillTicketPath, "utf8"));
       } catch {
       }
       if (!ticket) return;
@@ -62600,7 +62710,7 @@ var TemplateService = class {
     const file2 = join28(this.opts.stateDir, "skills", `${item.payload}.check.json`);
     try {
       mkdirSync21(dirname21(file2), { recursive: true, mode: 448 });
-      writeFileSync26(file2, text3, { mode: 384 });
+      writeFileSync27(file2, text3, { mode: 384 });
       let stdout = "";
       try {
         stdout = (await this.opts.exec(this.opts.node, [this.opts.runbook, notes ? "notes" : "skill", file2, "--hash", item.hash, "--as", item.payload, "--check", "--json", "--public"], SKILL_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
@@ -62761,7 +62871,7 @@ var TemplateService = class {
       return facts;
     }
     try {
-      const raw = JSON.parse(readFileSync39(this.pendingPath, "utf8"));
+      const raw = JSON.parse(readFileSync40(this.pendingPath, "utf8"));
       if (raw.kind !== "template" || raw.ref !== ref || !this.fresh(raw.at, TEMPLATE_REVIEW_MS)) return null;
       if (typeof raw.template !== "string" || typeof raw.name !== "string" || typeof raw.hash !== "string" || typeof raw.steps !== "number" || typeof raw.change !== "number" || typeof raw.scripts !== "number") return null;
       const vars = varsOf(raw.vars);
@@ -62788,7 +62898,7 @@ var TemplateService = class {
     if (!pending || pending.payload !== payload) return false;
     let vars = null;
     try {
-      vars = varsOf(JSON.parse(readFileSync39(this.pendingPath, "utf8")).vars);
+      vars = varsOf(JSON.parse(readFileSync40(this.pendingPath, "utf8")).vars);
     } catch {
     }
     if (!vars) return false;
@@ -62805,7 +62915,7 @@ var TemplateService = class {
   async ticketed(request, dir) {
     let ticket = null;
     try {
-      ticket = JSON.parse(readFileSync39(this.ticketPath, "utf8"));
+      ticket = JSON.parse(readFileSync40(this.ticketPath, "utf8"));
     } catch {
     }
     rmSync13(this.ticketPath, { force: true });
@@ -62824,7 +62934,7 @@ var TemplateService = class {
   async asked(request, assignment) {
     let handled = null;
     try {
-      handled = JSON.parse(readFileSync39(this.handledPath, "utf8")).id ?? null;
+      handled = JSON.parse(readFileSync40(this.handledPath, "utf8")).id ?? null;
     } catch {
     }
     if (handled === request.id || this.marker()?.request === request.id || Object.values(this.beside()).some((b2) => b2.request === request.id)) return;
@@ -62917,7 +63027,7 @@ var TemplateService = class {
     if (wanted === void 0) return;
     const path = templateReviewPath(this.opts.stateDir);
     try {
-      if (JSON.parse(readFileSync39(path, "utf8")).template !== wanted) rmSync13(path, { force: true });
+      if (JSON.parse(readFileSync40(path, "utf8")).template !== wanted) rmSync13(path, { force: true });
     } catch {
       rmSync13(path, { force: true });
     }
@@ -62961,7 +63071,7 @@ var TemplateService = class {
     if (marker.vars) return marker.vars;
     let kept = null;
     try {
-      kept = varsOf(JSON.parse(readFileSync39(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
+      kept = varsOf(JSON.parse(readFileSync40(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
     } catch {
     }
     const vars = kept ?? { note: "", name: assignment.name, timeZone: "UTC" };
@@ -63001,7 +63111,7 @@ var TemplateService = class {
       if (!dir || !facts) return null;
       let failedSteps = [];
       try {
-        const state = JSON.parse(readFileSync39(join28(this.runbookState, `${marker.template}.json`), "utf8"));
+        const state = JSON.parse(readFileSync40(join28(this.runbookState, `${marker.template}.json`), "utf8"));
         const failed = (state.steps ?? []).filter((s2) => s2.status === "failed" && typeof s2.id === "string" && facts.steps.some((f2) => f2.id === s2.id));
         failedSteps = [...failed.filter((s2) => s2.optional !== true), ...failed.filter((s2) => s2.optional === true)].map((s2) => s2.id);
       } catch {
@@ -63031,7 +63141,7 @@ var TemplateService = class {
     let vars = marker.vars ?? null;
     if (!vars) {
       try {
-        vars = varsOf(JSON.parse(readFileSync39(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
+        vars = varsOf(JSON.parse(readFileSync40(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
       } catch {
         vars = null;
       }
@@ -63636,10 +63746,10 @@ var poolHealthy = false;
 if (POOL_UNCLAIMED && !existsSync34(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
-  writeFileSync27(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+  writeFileSync28(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync40(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync41(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -63647,7 +63757,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync40(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync41(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
   setOwnHostnames(() => [readKeyFile(KEYS_DIR2, "vm_hostname"), readKeyFile(KEYS_DIR2, "access_hostname")]);
   setBoundTokensLatch(`${process.env.STATE_DIR ?? "/opt/controlclaw/state"}/firewall-tokens-bound`);
 } catch {
@@ -63717,7 +63827,17 @@ function startMetrics() {
   if (POOL_UNCLAIMED || process.env.CC_SERVICE === "gbrain") return;
   const base = saasBaseUrl(KEYS_DIR2);
   if (!base) return;
-  startMetricSampler({ activityUrl: `${base}/api/vm-agent/activity`, getToken: makeBoxTokenSigner(KEYS_DIR2) });
+  startMetricSampler({
+    activityUrl: `${base}/api/vm-agent/activity`,
+    getToken: makeBoxTokenSigner(KEYS_DIR2),
+    channelsSeenPath: `${STATE_DIR}/channels-seen.json`,
+    // OpenClaw's state and the chat channels ride along for the console's problems list. The
+    // channels are read only while the gateway answers; a down gateway is the state's to say.
+    read: {
+      openclawState: () => currentOpenClawStateAsync(gateway),
+      channels: async () => channels ? channels.channelStates() : null
+    }
+  });
 }
 function startGatewayBridge() {
   const token = readKeyFile(KEYS_DIR2, "openclaw_gateway_token");
@@ -64231,15 +64351,15 @@ server.listen(PORT, BIND, () => {
   }) : null;
   if (meetingFollowUp) setInterval(() => void meetingFollowUp.tick().catch(() => void 0), MEETING_REQUEST_POLL_MS).unref();
   const reserveMeetingBrowser = (reserved) => {
-    if (reserved) writeFileSync27(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
+    if (reserved) writeFileSync28(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
     else rmSync14(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
   };
   const meetingBrowser = async (start, voice = false, signedIn = false) => {
     const marker = `${STATE_DIR}/meeting-browser-voice`;
-    if (start && voice) writeFileSync27(marker, "bidi", { mode: 384 });
+    if (start && voice) writeFileSync28(marker, "bidi", { mode: 384 });
     else rmSync14(marker, { force: true });
     const signed = `${STATE_DIR}/meeting-browser-signed`;
-    if (start && signedIn) writeFileSync27(signed, "signed", { mode: 384 });
+    if (start && signedIn) writeFileSync28(signed, "signed", { mode: 384 });
     else rmSync14(signed, { force: true });
     meetingMic?.close();
     meetingMic = null;
@@ -64270,7 +64390,7 @@ server.listen(PORT, BIND, () => {
     account: () => google?.account() ?? null,
     connected: () => google?.connected() ?? false,
     window: async (start, url3) => {
-      if (start && url3) writeFileSync27(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
+      if (start && url3) writeFileSync28(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
       else rmSync14(`${STATE_DIR}/meeting-signin-url`, { force: true });
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-signin.service"], 15e3);
     },
@@ -64315,7 +64435,7 @@ server.listen(PORT, BIND, () => {
       let inboxId = agentmail?.status()?.inboxId;
       if (!inboxId) {
         try {
-          inboxId = JSON.parse(readFileSync40(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
+          inboxId = JSON.parse(readFileSync41(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
         } catch {
         }
       }

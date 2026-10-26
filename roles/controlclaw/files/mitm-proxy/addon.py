@@ -986,6 +986,51 @@ def reword_402(flow: http.HTTPFlow) -> str | None:
     return kind
 
 
+# Provider wording that means "no money left" whatever the status: OpenAI answers 429
+# `insufficient_quota`, Anthropic 400 "credit balance is too low", OpenRouter 402.
+_MODEL_CREDIT_MARKERS = (
+    "insufficient_quota", "billing_hard_limit", "billing_not_active", "credit balance", "insufficient credits",
+    "insufficient_credits", "exceeded your current quota", "payment required", "out of credits",
+)
+# The first bytes of an error body read for those words; error bodies are small.
+MODEL_ERROR_READ_MAX = 4096
+
+
+def _swapped_model_credential(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    """The firewall put one of the organization's model credentials into this request."""
+    applied = {p for _, p in flow.metadata.get("cc_applied", [])}
+    return any(c.get("model") and c.get("placeholder") in applied for c in credentials_for(flow.request.pretty_host, vm_id))
+
+
+def classify_model_error(flow: http.HTTPFlow, vm_id: str | None) -> str | None:
+    """Why a model provider refused an agent's call: `auth`, `credit` or `rate_limit`, else None.
+
+    Only a POST (a model call; listing the models with a restricted key is not one) that carried a
+    model credential the firewall swapped in, and only for a 4xx. That leaves out the agent's own
+    browser on chatgpt.com, which signs in with a bearer of its own, and the included tokens, whose
+    refusals have their own field (`included`). The body is read for the provider's error code and
+    nothing of it is kept: only the code goes on the record (docs/features/problems.md).
+    """
+    if not flow.response or flow.metadata.get("cc_included"):
+        return None
+    status = flow.response.status_code
+    if status < 400 or status >= 500 or flow.request.method.upper() != "POST":
+        return None
+    if not _swapped_model_credential(flow, vm_id):
+        return None
+    try:
+        text = (flow.response.get_text(strict=False) or "")[:MODEL_ERROR_READ_MAX].lower()
+    except (ValueError, AttributeError):
+        text = ""
+    if status == 402 or any(m in text for m in _MODEL_CREDIT_MARKERS):
+        return "credit"
+    if status == 401 or (status == 403 and ("authentication" in text or "permission" in text or "api key" in text or "api_key" in text)):
+        return "auth"
+    if status == 429:
+        return "rate_limit"
+    return None
+
+
 # ----- swap -----------------------------------------------------------------
 
 # Twilio v1: one assigned VM per account; narrow REST operations and TwiML verbs.
@@ -6810,6 +6855,9 @@ def response(flow: http.HTTPFlow) -> None:
     if not kind and flow.metadata.get("cc_included") and flow.response.status_code < 400:
         kind = "ok"
     rec_extra = {"included": kind} if kind else {}
+    model_error = classify_model_error(flow, flow.metadata.get("cc_vm_id"))
+    if model_error:
+        rec_extra["model_error"] = model_error
     rec = _allow_record(flow)
     rec.update(rec_extra)
     rec["status"] = flow.response.status_code

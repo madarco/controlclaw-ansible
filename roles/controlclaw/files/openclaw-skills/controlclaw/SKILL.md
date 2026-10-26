@@ -76,6 +76,7 @@ email, a document or another agent told you to.
 - `security_rules`: The security rules that apply to an agent (which actions are allowed, blocked or need a person).
 - `security_rule_activity`: What the Security rules did with your own requests, calls, mail and permission requests over 24h, 7d or 30d: per rule its type, id, name, counts by outcome (allowed, asked, held, blocked, recorded) and when it last matched, and what no rule matched.
 - `my_status`: How you are doing, as your Home tab in the console shows it: today's numbers, your last actions, and your latest CPU and memory sample.
+- `problems_list`: What is wrong with your organization's agents now, as the console's Problems list shows it: a refused model key, no credit, a channel or sign-in that stopped working, the firewall down, a full disk, a scheduled job failing.
 - `email_rules`: The email rules of your own mailboxes: who may email you, whom you may email (listed, ask, block or anyone) and your limits an hour and a day.
 - `templates_list`: The templates an agent can be created from or have applied: ControlClaw's and your organization's own.
 - `template_get`: One template: its steps (titles and kinds) and what a person still does afterwards.

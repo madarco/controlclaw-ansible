@@ -6377,7 +6377,8 @@ function doctorStatus(path = DOCTOR_KEY_FILE) {
 }
 
 // src/routes/openclaw.ts
-import { execSync } from "child_process";
+import { execFile as execFile3, execSync } from "child_process";
+import { promisify } from "util";
 
 // src/software.ts
 import { uptime } from "os";
@@ -6478,8 +6479,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "b3e9e22" : "unknown",
-  builtAt: true ? "2026-10-26T11:35:51Z" : "unknown"
+  commit: true ? "8181502" : "unknown",
+  builtAt: true ? "2026-10-26T12:04:56Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6616,13 +6617,16 @@ function runIsActive() {
     return "unknown";
   }
 }
+function restartLines(journal) {
+  return journal.split("\n").filter((l2) => l2.includes("Scheduled restart job")).length;
+}
 function recentAutoRestarts() {
   try {
     const out = execSync(
       `sudo -n journalctl -u ${SERVICE} --since "-${Math.round(CRASH_WINDOW_MS / 1e3)}s" --no-pager -o cat`,
       { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }
     );
-    return out.split("\n").filter((l2) => l2.includes("Scheduled restart job")).length;
+    return restartLines(out);
   } catch {
     return 0;
   }
@@ -6683,6 +6687,7 @@ function handleRestart(res) {
 function runState(unit, connected) {
   return openClawState(unit, unit === "active" && connected !== false ? 0 : recentAutoRestarts(), connected);
 }
+var execFileAsync = promisify(execFile3);
 function handleStatus(res, drive, gateway) {
   const status = runIsActive();
   const summary = runStatusSummary();
@@ -6793,7 +6798,7 @@ async function reportReady(readSsh, extra = {}) {
 }
 
 // src/routes/logs.ts
-import { execFile as execFile3, spawn as spawn2 } from "child_process";
+import { execFile as execFile4, spawn as spawn2 } from "child_process";
 import { closeSync as closeSync2, fstatSync as fstatSync2, openSync as openSync2, readSync as readSync2, readdirSync, statSync } from "fs";
 import { join as join5 } from "path";
 
@@ -6873,7 +6878,7 @@ function env() {
 }
 function run(cmd, args, timeout, maxBuffer = 4 * 1024 * 1024) {
   return new Promise((resolve) => {
-    execFile3(cmd, args, { timeout, maxBuffer, env: env(), encoding: "utf-8" }, (err, stdout, stderr) => {
+    execFile4(cmd, args, { timeout, maxBuffer, env: env(), encoding: "utf-8" }, (err, stdout, stderr) => {
       resolve({
         stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
         error: err ? String(stderr ?? "").trim().split("\n")[0] || err.message : null
@@ -7280,7 +7285,7 @@ function getServiceStatus(service) {
 
 // src/routes/access.ts
 import { createHash as createHash4, randomBytes } from "crypto";
-import { execFile as execFile4 } from "child_process";
+import { execFile as execFile5 } from "child_process";
 import { readFileSync as readFileSync14 } from "fs";
 import { join as join8 } from "path";
 
@@ -8124,7 +8129,7 @@ function parseDashboardOutput(stdout, hostname, err) {
 }
 function runDashboard(hostname, timeoutMs) {
   return new Promise((resolve) => {
-    execFile4(
+    execFile5(
       openclawBin(),
       ["dashboard", "--json", "--no-open"],
       { timeout: timeoutMs, env: { ...process.env, HOME: process.env.HOME ?? "/home/controlclaw" } },
