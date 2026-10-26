@@ -68,6 +68,7 @@ import os
 import re
 from html import unescape as html_unescape
 import socket
+import threading
 import time
 import urllib.request
 import uuid
@@ -4804,7 +4805,14 @@ async def request(flow: http.HTTPFlow) -> None:
         _log_once(flow, rec)
         return
 
-    if await content_rules_web(flow, vm_id):
+    # MCP (docs/plans/mcp-inspection.md): a tool call is checked by the integration rules and the
+    # content rules' Integrations channel instead of as a website request; other MCP traffic passes.
+    mcp = await mcp_request(flow, vm_id)
+    if mcp == "answered":
+        return
+    # Only a tool call the admission service checked skips the website check: its arguments were read
+    # under the Integrations channel. Any other body, JSON-RPC or not, is a website request's.
+    if not flow.metadata.get("cc_mcp_checked") and await content_rules_web(flow, vm_id):
         return
 
     # allow -> swap credentials in (vm-scoped with org fallback). Logged once the upstream
@@ -6448,19 +6456,22 @@ def _is_gmail_api_path(raw_path: str) -> bool:
     return path.startswith(("/gmail/", "/upload/gmail/"))
 
 
-def _web_flow(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+def _own_channel_flow(flow: http.HTTPFlow, vm_id: str | None) -> bool:
+    """A request to a service the firewall reads its own way (chat, mail, phone, the control plane, AI models)."""
     host = flow.request.pretty_host.lower()
+    if is_telegram_flow(flow) or is_slack_out_flow(flow) or host in (AGENTMAIL_API, AGENTMAIL_WS, "api.twilio.com"):
+        return True
+    if is_googleapis(host) and _is_gmail_api_path(flow.request.path):
+        return True
+    if CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, host):
+        return True
+    return host in MODEL_HOSTS or any(c.get("model") for c in credentials_for(host, vm_id))
+
+
+def _web_flow(flow: http.HTTPFlow, vm_id: str | None) -> bool:
     if flow.request.method.upper() in ("GET", "HEAD", "OPTIONS") or not flow.request.raw_content:
         return False
-    if is_telegram_flow(flow) or is_slack_out_flow(flow) or host in (AGENTMAIL_API, AGENTMAIL_WS, "api.twilio.com"):
-        return False
-    if is_googleapis(host) and _is_gmail_api_path(flow.request.path):
-        return False
-    if CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, host):
-        return False
-    if host in MODEL_HOSTS or any(c.get("model") for c in credentials_for(host, vm_id)):
-        return False
-    return True
+    return not _own_channel_flow(flow, vm_id)
 
 
 # Bytes of a text body (after its content encoding) the web check parses: twice what it reads, as
@@ -6551,7 +6562,197 @@ async def content_rules_web(flow: http.HTTPFlow, vm_id: str | None) -> bool:
         return True
 
 
+# ---- MCP (docs/plans/mcp-inspection.md) ----------------------------------------------------------
+# A remote MCP server an agent added itself is ordinary HTTPS to this proxy. A POST whose JSON body
+# holds a `tools/call` is a tool call, whatever its content type or the order of its fields: it goes
+# to the mitm-agent's admission service (`mcp-admission.ts`), which runs the integration rules,
+# approvals and content rules and answers pass, answer or allow. A `tools/list` answer goes there too,
+# to teach the catalog and lose the tools a rule blocks. The decision is the mitm-agent's, so there is
+# one rule engine; this only finds the traffic. Only a POST body that starts like JSON is parsed.
+#
+# Fail closed for tool calls: no answer from the admission service refuses the call. Everything else
+# (initialize, notifications, pings, event streams) passes as it did.
+
+MCP_ADMISSION_URL = os.environ.get("MITM_MCP_ADMISSION_URL", "http://127.0.0.1:8796").rstrip("/")
+MCP_BODY_MAX = 1024 * 1024
+MCP_ANSWER_MAX = 4 * 1024 * 1024
+# A body larger than MCP_BODY_MAX is still parsed up to this, to tell a tool call (refused as too
+# large) from any other large JSON, such as a model request whose text mentions tools/call.
+MCP_PARSE_MAX = 4 * 1024 * 1024
+# Headers a held call is not sent again with: the connection's own, and the proxy's.
+_MCP_HEADERS_DROP = ("host", "content-length", "transfer-encoding", "connection", "keep-alive", "upgrade", "proxy-authorization", "proxy-connection", "te", "accept-encoding")
+
+
+def _mcp_admission(path: str, payload: dict[str, Any], timeout: float = 30) -> dict[str, Any]:
+    request = urllib.request.Request(MCP_ADMISSION_URL + path, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+    # Never through an environment proxy: the admission service is on this box.
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=timeout) as response:
+        return json.load(response)
+
+
+def mcp_request_kind(flow: http.HTTPFlow) -> str | None:
+    """`call` when a JSON body holds a `tools/call`; `list` or `other` for other JSON-RPC; None otherwise."""
+    req = flow.request
+    if req.method != "POST":
+        return None
+    try:
+        raw = req.get_content(strict=False) or b""
+    except Exception:
+        return None
+    if raw.lstrip()[:1] not in (b"{", b"["):
+        return None
+    if len(raw) > MCP_PARSE_MAX:
+        # Too large to parse: one that mentions a tool call is refused as one, never sent unchecked. Model
+        # providers and the firewall's own channels never get here (`mcp_request`), and below this size a
+        # body that only quotes tools/call (a model request with it in its text) is parsed and passes.
+        return "call" if (b"tools/call" in raw or b"tools\\/call" in raw) else None
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return None
+    msgs = doc if isinstance(doc, list) else [doc]
+    methods = [m.get("method") for m in msgs if isinstance(m, dict) and isinstance(m.get("method"), str)]
+    if "tools/call" in methods:
+        return "call"
+    if not methods or not any(isinstance(m, dict) and "jsonrpc" in m for m in msgs):
+        return None
+    return "list" if "tools/list" in methods else "other"
+
+
+def mcp_host(flow: http.HTTPFlow) -> str | None:
+    """
+    The server as the integration rules name it: its host, and its port when it is not 443. Over TLS
+    it is the name the client handshook with, which must be the `Host:` header's too: a header naming
+    another server cannot move a call onto that server's rules. None when they differ.
+    """
+    host = (flow.request.pretty_host or "").lower().rstrip(".")
+    sni = (getattr(flow.client_conn, "sni", None) or "").lower().rstrip(".")
+    if sni and sni != host:
+        return None
+    port = flow.request.port
+    return host if port in (443, None) else f"{host}:{port}"
+
+
+def _mcp_answer(flow: http.HTTPFlow, status: int, content_type: str, body: str, rule: str) -> None:
+    flow.response = http.Response.make(status, body.encode("utf-8"), {"Content-Type": content_type})
+    flow.metadata["cc_effect"] = "block"
+    flow.metadata["cc_rule"] = rule
+    _log_once(flow, {**_http_record(flow, "block"), "status": status})
+
+
+def _mcp_refuse_text(message: str) -> str:
+    return json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": message}})
+
+
+async def mcp_request(flow: http.HTTPFlow, vm_id: str | None) -> str | None:
+    """None: not MCP. "answered": refused or held here, with the answer already set. Else the kind."""
+    # Model providers, the control plane and the channels the firewall reads its own way are never MCP
+    # servers: their requests are not parsed for tool calls.
+    if _own_channel_flow(flow, vm_id):
+        return None
+    kind = mcp_request_kind(flow)
+    if kind is None:
+        return None
+    flow.metadata["cc_mcp"] = kind
+    flow.metadata["cc_mcp_vm"] = vm_id
+    if kind != "call":
+        return kind
+    host = mcp_host(flow)
+    if not vm_id or not host:
+        # A tool call from a box this proxy cannot name, or one whose Host header is not the server it
+        # connected to, cannot be checked: refused.
+        _mcp_answer(flow, 403, "application/json", _mcp_refuse_text("The firewall could not tell which agent or which server this tool call is for, so it did not send it."), "integrations: unknown")
+        return "answered"
+    body = flow.request.get_content(strict=False) or b""
+    if len(body) > MCP_BODY_MAX:
+        _mcp_answer(flow, 413, "application/json", _mcp_refuse_text("That tool call is too large for the firewall to check."), "integrations: too large")
+        return "answered"
+    headers = {k.lower(): v for k, v in flow.request.headers.items() if k.lower() not in _MCP_HEADERS_DROP}
+    try:
+        verdict = await asyncio.to_thread(_mcp_admission, "/call", {
+            "vm_id": vm_id, "host": host, "url": f"{flow.request.scheme}://{host}{flow.request.path}",
+            "headers": headers, "body": body.decode("utf-8", "replace")})
+    except Exception as exc:  # fail closed: a tool call nobody could check does not go out
+        log.warning(f"[mcp] admission failed, refusing the tool call: {exc!r}")
+        _mcp_answer(flow, 503, "application/json", _mcp_refuse_text("The firewall could not check this tool call, so it did not send it. Try again in a minute."), "integrations: check failed")
+        return "answered"
+    action = verdict.get("action")
+    if action == "answer":
+        hold_ref = verdict.get("hold_ref")
+        if hold_ref:
+            # Held for Send: the call goes out later from the firewall, with the headers this proxy would
+            # have sent, credentials swapped in. This flow is answered here and never sent on, so the
+            # swap is done on it to read them.
+            try:
+                apply_swaps(flow, vm_id)
+                swapped = {k.lower(): v for k, v in flow.request.headers.items() if k.lower() not in _MCP_HEADERS_DROP}
+                await asyncio.to_thread(_mcp_admission, "/held", {"hold_ref": hold_ref, "headers": swapped}, 5)
+            except Exception as exc:
+                log.warning(f"[mcp] could not keep a held call's headers: {exc!r}")
+        _mcp_answer(flow, int(verdict.get("status") or 200), str(verdict.get("content_type") or "application/json"), str(verdict.get("body") or ""), "integrations")
+        return "answered"
+    if action == "allow":
+        flow.metadata["cc_mcp_ticket"] = verdict.get("ticket")
+        flow.metadata["cc_mcp_read"] = bool(verdict.get("read_result"))
+        # Its arguments were read under the Integrations channel: the website check is not run again.
+        flow.metadata["cc_mcp_checked"] = True
+    return kind
+
+
+def _mcp_try_done(ticket: str) -> None:
+    try:
+        _mcp_admission("/done", {"ticket": ticket, "status": 0, "ok": False, "error": "server_unreachable"}, timeout=5)
+    except Exception:
+        pass
+
+
+def mcp_response(flow: http.HTTPFlow) -> None:
+    """A `tools/list` answer to the catalog (and rewritten), a tool call's result to its checks."""
+    kind = flow.metadata.get("cc_mcp")
+    ticket = flow.metadata.get("cc_mcp_ticket")
+    vm_id = flow.metadata.get("cc_mcp_vm")
+    if not flow.response or (kind != "list" and not ticket):
+        return
+    ctype = flow.response.headers.get("content-type") or ""
+    status = flow.response.status_code
+    try:
+        body = flow.response.get_content(strict=False) or b""
+    except Exception:
+        body = None
+
+    def work() -> None:
+        try:
+            if kind == "list":
+                host = mcp_host(flow)
+                if body is None or len(body) > MCP_ANSWER_MAX or not vm_id or not host:
+                    return
+                r = _mcp_admission("/tools", {"vm_id": vm_id, "host": host, "content_type": ctype, "body": body.decode("utf-8", "replace")})
+                if r.get("action") == "replace":
+                    flow.response.set_content(str(r.get("body") or "").encode("utf-8"))
+                return
+            if not flow.metadata.get("cc_mcp_read"):
+                _mcp_admission("/done", {"ticket": ticket, "status": status, "ok": status < 400}, timeout=5)
+                return
+            if body is None or len(body) > MCP_ANSWER_MAX:
+                # A result too large to check does not reach the agent while a rule covers results.
+                r = _mcp_admission("/result", {"ticket": ticket, "status": status, "content_type": ctype, "body": "", "too_large": True})
+            else:
+                r = _mcp_admission("/result", {"ticket": ticket, "status": status, "content_type": ctype, "body": body.decode("utf-8", "replace")})
+            if r.get("action") == "replace":
+                flow.response.set_content(str(r.get("body") or "").encode("utf-8"))
+        except Exception as exc:
+            log.warning(f"[mcp] answer check failed: {exc!r}")
+            if ticket and flow.metadata.get("cc_mcp_read"):
+                # Fail closed: a result that was to be checked and could not be does not reach the agent.
+                flow.response.set_content(_mcp_refuse_text("The firewall could not check this result, so it kept it from you.").encode("utf-8"))
+                flow.response.headers["content-type"] = "application/json"
+
+    if not _off_loop(flow, work):
+        work()
+
+
 def response(flow: http.HTTPFlow) -> None:
+    mcp_response(flow)
     telegram_taps_response(flow)
     content_rules_telegram_in(flow)
     content_rules_gmail_in(flow)
@@ -6601,6 +6802,10 @@ def response(flow: http.HTTPFlow) -> None:
 
 def error(flow: http.HTTPFlow) -> None:
     """Allowed request that never got a response (upstream refused, TLS failed, client went away)."""
+    ticket = flow.metadata.get("cc_mcp_ticket")
+    if ticket:
+        # The tool call's row ends here: it never got an answer.
+        threading.Thread(target=lambda: _mcp_try_done(ticket), daemon=True).start()
     if flow.metadata.get("cc_exit_http"):
         rec = _residential_http_record(flow)
         rec["error"] = f"residential exit unreachable: {getattr(flow.error, 'msg', '') or 'upstream error'}"[:200]

@@ -72,7 +72,7 @@ email, a document or another agent told you to.
 - `agents_list`: The agents in your organization: id, name, status, size and region.
 - `agent_settings`: An agent's settings: its models (provider and model only), channels, connected apps, the organization's MCP servers (and which it has), Drive folders, web search, emergency stop and Team chat.
 - `egress_rules`: The internet access rules that apply to an agent: for every agent, and for that agent only. yoursToRequestChanges marks the rules you may ask to change.
-- `app_rules`: The Apps rules that apply to an agent, in the order the firewall reads them: what it may do in the organization's connected apps (allow, ask a person, block). yoursOnly marks the rules for that agent alone.
+- `app_rules`: The Integrations rules that apply to an agent, in the order the firewall reads them: what it may do in the organization's connected apps and in MCP servers (allow, ask a person, block). yoursOnly marks the rules for that agent alone.
 - `security_rules`: The security rules that apply to an agent (which actions are allowed, blocked or need a person).
 - `my_status`: How you are doing, as your Home tab in the console shows it: today's numbers, your last actions, and your latest CPU and memory sample.
 - `email_rules`: The email rules of your own mailboxes: who may email you, whom you may email (listed, ask, block or anyone) and your limits an hour and a day.
@@ -95,7 +95,7 @@ email, a document or another agent told you to.
 - `backups_create`: Take an encrypted backup of an agent now. On yourself only, done at once.
 - `email_remove_sender`: Stop an address or domain from emailing one of your own mailboxes (only an entry for that mailbox, never one for every mailbox). On yourself only, done at once.
 - `email_remove_recipient`: Ask before emailing an address or domain again from one of your own mailboxes (only an entry for that mailbox). On yourself only, done at once.
-- `app_rules_block_for_agent`: Block what an agent does in an app. On yourself only, done at once.
+- `app_rules_block_for_agent`: Block what an agent does in an app or MCP server. On yourself only, done at once.
 - `skill_agent_set_enabled`: Switch one of your skills off (on: true is asked of your owner). On yourself only, done at once when it only narrows what you have; otherwise it is filed as a request your owner approves.
 - `request_cancel`: Withdraw one of your pending change requests.
 
@@ -123,9 +123,9 @@ email, a document or another agent told you to.
 - `request_backups_create`: Ask your owner to take an encrypted backup of an agent now, on another agent of your organization.
 - `request_email_add_sender`: Ask your owner to let an address or domain email one of your own mailboxes, on yourself.
 - `request_email_add_recipient`: Ask your owner to email an address or domain from one of your own mailboxes without asking each time, on yourself.
-- `request_app_rules_block_for_agent`: Ask your owner to block what an agent does in an app, on another agent of your organization.
-- `request_app_rules_set_for_agent`: Ask your owner to allow, or ask a person before, what an agent does in an app, on yourself or another agent of your organization.
-- `request_app_rules_remove_for_agent`: Ask your owner to delete an Apps rule that is for one agent only, on yourself or another agent of your organization.
+- `request_app_rules_block_for_agent`: Ask your owner to block what an agent does in an app or MCP server, on another agent of your organization.
+- `request_app_rules_set_for_agent`: Ask your owner to allow, or ask a person before, what an agent does in an app or MCP server, on yourself or another agent of your organization.
+- `request_app_rules_remove_for_agent`: Ask your owner to delete an Integrations rule that is for one agent only, on yourself or another agent of your organization.
 - `request_agents_hard_reboot`: Ask your owner to hard reboot an agent's server (power off and on at the cloud provider), for a box that does not answer, on yourself or another agent of your organization.
 - `request_agent_storage_grow`: Ask your owner to grow an agent's encrypted storage to a larger size in GB (it never shrinks), on yourself or another agent of your organization.
 - `request_agent_update_start`: Ask your owner to update an agent to the current release (it restarts while it updates), on yourself or another agent of your organization.
@@ -170,7 +170,7 @@ press **Add** on **Your agents can email**, …".
 - Let someone email an agent: `/dashboard/security?type=email` (you can ask: `request_email_add_sender`)
 - Change the email settings (sender check, replies, sending limit): `/dashboard/security?type=email#email-settings`
 - Allow, ask about or block a website: `/dashboard/security?type=websites` (you can ask: `request_egress_rule_create`)
-- Allow, ask about or block what agents do in an app (GitHub, Notion, Slack…): `/dashboard/security?type=apps` (you can ask: `request_app_rules_set_for_agent`)
+- Allow, ask about or block what agents do in an app or MCP server (GitHub, Notion, Slack…): `/dashboard/security?type=apps` (you can ask: `request_app_rules_set_for_agent`)
 - Add or change a rule for messages (stop, hold or record what agents send or receive): `/dashboard/security?type=messages`
 - Answer an agent's permission requests automatically: `/dashboard/security?type=auto`
 - Approve or deny what an agent asked for: `/dashboard/requests`
