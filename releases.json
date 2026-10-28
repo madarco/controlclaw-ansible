@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.35.1",
+    "date": "2026-10-28",
+    "changes": [
+      "New agents build again: the meeting step now accepts OpenClaw 2026.9.35.",
+      "Meetings no longer end a few seconds after joining when Google opens the meeting at a /meet/ address.",
+      "The firewall checks that each connection goes only to the site it names, and puts in a saved key only for that site."
+    ]
+  },
+  {
     "version": "1.35.0",
     "date": "2026-10-26",
     "changes": [
