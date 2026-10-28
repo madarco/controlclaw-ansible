@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.36.2",
+    "date": "2026-10-28",
+    "changes": [
+      "Team chat messages and calls to an organization's MCP servers are always checked by the content and Integrations rules, however they are written.",
+      "A website login's PIN can only go into the field that holds its stand-in.",
+      "A new OpenClaw release is installed only after the agent has checked it; a failed install is rolled back."
+    ]
+  },
+  {
     "version": "1.36.1",
     "date": "2026-10-28",
     "changes": [
