@@ -387,11 +387,17 @@
       Environment=MITM_DEV_ALLOW_PLAINTEXT_STORE=0
       Environment=MITM_DEV_INSECURE_UPSTREAM=0
       Environment=MITM_DEV_ALLOW_DIRECT_EGRESS=0
-      # The control plane is passed through by the addon's tls_clienthello hook, matched by SNI and
-      # sent to this name only (never to the address the box asked for). It reads this.
+      # The control plane: inspected (for a box the firewall has seen trust its CA, see cp-inspect in
+      # the mitm-agent), and allowed for every box, also under the emergency stop, only for its own
+      # paths (/api/vm-agent/, /api/internal/ready-pool/) on this exact host. Nothing in them is
+      # changed; see CONTROL_PLANE_HOST in addon.py.
       Environment=MITM_CONTROL_PLANE_HOST={{ controlclaw_url | urlsplit('hostname') }}
-      # The backup object store: passed through uninspected, same mechanism (defaults/main.yml).
+      # The backup bucket (virtual-hosted name, defaults/main.yml): inspected, only presigned URLs for
+      # keys under this organisation's id, which the proxy reads from org.json (written by the
+      # mitm-agent from ORG_ID, so a ready-pool claim updates it; MITM_TENANT is log attribution only).
+      # Bodies streamed. See BACKUP_HOST in addon.py.
       Environment=MITM_BACKUP_HOST={{ controlclaw_backup_host }}
+      Environment=MITM_BACKUP_BUCKET={{ controlclaw_backup_bucket }}
       # The package hosts an agent box may reach while it runs a confirmed update, and only then
       # (agent_update_hosts in defaults/main.yml). Inspected and logged like any other request.
       Environment=MITM_UPDATE_HOSTS={{ agent_update_hosts | join(',') }}

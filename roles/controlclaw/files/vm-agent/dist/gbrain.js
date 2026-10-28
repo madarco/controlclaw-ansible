@@ -1419,6 +1419,34 @@ function trustMitmCaInProcess(path = SYSTEM_MITM_CA_PATH) {
   return true;
 }
 var sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+var FIREWALL_GATE_PORT = 3940;
+async function firewallCa(mitmIp, fetchImpl = fetch, installed) {
+  try {
+    const query = installed ? `?installed=${encodeURIComponent(installed)}` : "";
+    const res = await fetchImpl(`http://${mitmIp}:${FIREWALL_GATE_PORT}/ca${query}`, { signal: AbortSignal.timeout(5e3) });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return typeof body.caCert === "string" && typeof body.caSig === "string" ? { caCert: body.caCert, caSig: body.caSig } : null;
+  } catch {
+    return null;
+  }
+}
+var announcing = null;
+function announceToFirewall(keysDir2, fetchImpl = fetch, waitMs = 3e4, attempts = Infinity) {
+  announcing ??= (async () => {
+    for (let i2 = 0; i2 < attempts; i2++) {
+      const mitmIp = readFile2(`${keysDir2}/mitm_box_private_ip`);
+      const installed = readFile2(`${keysDir2}/mitm_ca_fingerprint`);
+      if (!mitmIp || !installed) return false;
+      if (await firewallCa(mitmIp, fetchImpl, installed)) return true;
+      if (i2 < attempts - 1) await sleep2(Math.min(waitMs * 2 ** Math.floor(i2 / 10), 10 * waitMs));
+    }
+    return false;
+  })().finally(() => {
+    announcing = null;
+  });
+  return announcing;
+}
 async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
   const mitmIp = readFile2(`${keysDir2}/mitm_box_private_ip`);
   if (!mitmIp) {
@@ -1438,11 +1466,15 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
   let last = "The firewall has not published a certificate yet.";
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const token = await signBoxToken(vmId, privateKey);
-      const res = await fetch(configUrl, { headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) {
-        const cfg = await res.json();
-        const mitm = cfg.mitm;
+      const direct = existsSync3(pinPath) ? await firewallCa(mitmIp) : null;
+      let mitm = direct;
+      let res = null;
+      if (!direct) {
+        const token = await signBoxToken(vmId, privateKey);
+        res = await fetch(configUrl, { headers: { Authorization: `Bearer ${token}` } });
+        if (res.ok) mitm = (await res.json()).mitm;
+      }
+      if (direct || res?.ok) {
         if (mitm?.caCert && mitm.caSig) {
           let pin = existsSync3(pinPath) ? readFile2(pinPath) : null;
           if (!pin && mitm.pubKey) {
@@ -1458,10 +1490,14 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
             last = "The certificate on offer is not signed by this box's pinned firewall key, so it was refused.";
           } else {
             const fpr = sha256Hex(mitm.caCert);
-            if (readFile2(fprPath) === fpr) return { trusted: true, installed: false, message: "Already up to date." };
+            if (readFile2(fprPath) === fpr) {
+              void announceToFirewall(keysDir2);
+              return { trusted: true, installed: false, message: "Already up to date." };
+            }
             installCa(caSrcPath, mitm.caCert);
             trustMitmCaInProcess();
             writeFileSync3(fprPath, fpr, { mode: 420 });
+            void announceToFirewall(keysDir2);
             console.log(`[mitm-ca] installed mitm CA (sha256=${fpr.slice(0, 16)}\u2026)`);
             return { trusted: true, installed: true, message: `Installed the firewall's certificate (sha256=${fpr.slice(0, 16)}\u2026).` };
           }
@@ -1469,8 +1505,8 @@ async function ensureMitmCaInstalled(keysDir2, maxAttempts = 90) {
           console.log(`[mitm-ca] attempt ${attempt}/${maxAttempts}: mitm CA not published yet`);
         }
       } else {
-        console.warn(`[mitm-ca] attempt ${attempt}/${maxAttempts}: config HTTP ${res.status}`);
-        last = `The control plane answered HTTP ${res.status}.`;
+        console.warn(`[mitm-ca] attempt ${attempt}/${maxAttempts}: config HTTP ${res?.status}`);
+        last = `The control plane answered HTTP ${res?.status}.`;
       }
     } catch (err) {
       console.warn(`[mitm-ca] attempt ${attempt}/${maxAttempts} failed: ${err.message}`);
@@ -6479,8 +6515,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e8ef7d5" : "unknown",
-  builtAt: true ? "2026-10-28T12:30:13Z" : "unknown"
+  commit: true ? "3b57471" : "unknown",
+  builtAt: true ? "2026-10-28T16:33:00Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -8856,6 +8892,7 @@ server.listen(PORT, BIND, () => {
   console.log(`ControlClaw brain agent listening on ${BIND}:${PORT}`);
   void (async () => {
     ensureVmKeypair(KEYS_DIR2);
+    trustMitmCaInProcess();
     await registerPublicKey(KEYS_DIR2);
     if (!(await ensureMitmCaInstalled(KEYS_DIR2)).trusted) {
       console.error("[bootstrap] mitm CA not installed \u2014 skipping ready report (box stays initializing)");

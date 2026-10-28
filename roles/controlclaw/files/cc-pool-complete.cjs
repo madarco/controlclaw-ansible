@@ -5,6 +5,17 @@ const tls = require('node:tls');
 const { execFileSync } = require('node:child_process');
 const vars = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const api = vars.ready_api_url.replace('/api/vm-agent/ready', '/api/internal/ready-pool/complete');
+// The firewall inspects this box's traffic to the control plane (controlclaw docs/ops/t-sni-passthrough.md,
+// 2026-10-28), so this process has to trust the firewall's CA. cc-install-ca puts it on the box only after
+// the vm-agent verified it, and Node reads neither the OS store nor NODE_EXTRA_CA_CERTS after start: load
+// it here, before each call, so a CA installed after this process started is used too. No CA (the
+// firewall itself, a box with no firewall) leaves the default store as it is.
+function trustFirewallCa() {
+  try {
+    const pem = fs.readFileSync('/usr/local/share/ca-certificates/controlclaw-mitm.crt', 'utf8');
+    tls.setDefaultCACertificates([...tls.getCACertificates('bundled'), pem]);
+  } catch { /* no firewall CA on this box */ }
+}
 const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function certificate() {
@@ -26,6 +37,7 @@ function certificate() {
         const unsigned = `${encode({ alg: 'EdDSA', typ: 'JWT' })}.${encode({ vmId: vars.vm_id, iat: now, exp: now + 60 })}`;
         const key = fs.readFileSync('/opt/controlclaw/keys/vm_private_key.pem');
         const token = `${unsigned}.${crypto.sign(null, Buffer.from(unsigned), key).toString('base64url')}`;
+        trustFirewallCa();
         const response = await fetch(api, { method: 'POST', signal: AbortSignal.timeout(5000),
           headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
           body: JSON.stringify({ bindings, certificate: true }) });

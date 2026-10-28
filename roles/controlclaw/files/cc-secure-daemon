@@ -25,6 +25,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
+const tls = require("node:tls");
 const { execFileSync, execFile, spawnSync } = require("node:child_process");
 
 const CC_SECURE = "/usr/local/bin/cc-secure";
@@ -511,6 +512,18 @@ function pendingOpens() {
   return { opens, next: cursor + take.length };
 }
 
+// The firewall inspects this box's traffic to the control plane (controlclaw docs/ops/t-sni-passthrough.md,
+// 2026-10-28), so this process has to trust the firewall's CA. cc-install-ca puts it on the box only after
+// the vm-agent verified it, and Node reads neither the OS store nor NODE_EXTRA_CA_CERTS after start: load
+// it here, before each call, so a CA installed after this process started is used too. No CA (the
+// firewall itself, a box with no firewall) leaves the default store as it is.
+function trustFirewallCa() {
+  try {
+    const pem = fs.readFileSync("/usr/local/share/ca-certificates/controlclaw-mitm.crt", "utf8");
+    tls.setDefaultCACertificates([...tls.getCACertificates("bundled"), pem]);
+  } catch { /* no firewall CA on this box */ }
+}
+
 async function report(ident, status) {
   const env = diskEnv();
   if (!env.CONTROLCLAW_URL || !env.VM_ID) return null;
@@ -547,6 +560,7 @@ async function report(ident, status) {
     const vmKey = crypto.createPrivateKey(fs.readFileSync(`${SECURE}/keys/vm_private_key.pem`));
     payload.vm_signature = crypto.sign(null, Buffer.from(signed, "utf8"), vmKey).toString("base64");
   } catch { /* locked, or a box whose key lives elsewhere: the identity must already be pinned */ }
+  trustFirewallCa();
   try {
     const res = await fetch(`${env.CONTROLCLAW_URL}/api/vm-agent/disk`, {
       method: "POST",

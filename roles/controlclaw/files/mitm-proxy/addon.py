@@ -45,6 +45,10 @@ Implements the security-critical core of the two-box architecture
      (two Host headers, an HTTP/2 host header other than :authority). Credentials are only swapped
      into https requests. mitmproxy's own `ignore_hosts` is cleared at
      start: it matches the SNI and the Host header and then connects to the dialled address.
+  9. The control plane and the backup store are inspected, not passed through (2026-10-28): the
+     control plane is allowed for requests to its own host only, unchanged and streamed; the backup
+     bucket only for this organisation's presigned archives, streamed (see CONTROL_PLANE_HOST and
+     BACKUP_HOST).
 
 This addon requires `connection_strategy=lazy` (the firewall's systemd unit sets it). With
 mitmproxy's default, `eager`, the destination is connected BEFORE any layer decision is made,
@@ -167,25 +171,34 @@ LOG_PATH = os.environ.get("MITM_LOG_FILE", "")  # append JSONL here if set
 # mitm-agent shipper is down; the shipper follows the rename by inode.
 LOG_MAX_BYTES = int(os.environ.get("MITM_LOG_MAX_BYTES", str(8 * 1024 * 1024)))
 TENANT = os.environ.get("MITM_TENANT", "unknown")
-# The ControlClaw control-plane host (e.g. controlclaw.com). Traffic to it is PASSED THROUGH
-# without interception (real public TLS), so the JWT control channel never depends on this proxy's
-# CA and the proxy can't MITM its own control plane. Matched by TLS SNI — robust even when the
-# client reaches us via a transparent redirect (redsocks CONNECT-to-IP), where the CONNECT
-# authority is an IP, not the hostname. See docs/security-design.md.
+# The ControlClaw control-plane host (e.g. controlclaw.com). Allowed for every box whatever the
+# organisation's rules say, also under the emergency stop: the vm-agent's channel and the disk
+# reports ride it. It is INSPECTED like any other site (owner decision 2026-10-28): the firewall is in
+# the boxes' own enclave and may see this traffic, and passing it through by SNI let a box reach any
+# Vercel project by the inner `Host:` (docs/ops/t-sni-passthrough.md). So the request must be for
+# this exact host (`_one_destination` refuses any other `Host:` over this SNI), and it is logged like
+# other requests. Nothing is changed: no rule, no content rule, no credential swap, no AI review,
+# and the response is streamed through as it arrives (`responseheaders`). Only the box's own paths
+# (CONTROL_PLANE_PREFIXES) get the allowance. A box the firewall has not yet seen run the release
+# that trusts its CA here is passed through as before (`cp_inspected`).
 CONTROL_PLANE_HOST = os.environ.get("MITM_CONTROL_PLANE_HOST", "").strip().lower()
-# The backup object store's endpoint (e.g. s3.eu-west-1.amazonaws.com). Passed through uninspected,
-# the same way and for much the same reason as the control plane: an agent box uploads its own
-# already-encrypted archive there with a presigned URL, so there is nothing here to inspect (the body
-# is ciphertext), nothing to credential-swap (the signature is in the URL), and multi-gigabyte bodies
-# through mitmproxy's logging would be pure cost. Scoped to this one host, and a built-in of the same
-# shape as CONTROL_PLANE_HOST rather than a `tunnel` rule — so an organisation cannot widen it and a
-# compromised control plane cannot point it elsewhere without an Ansible change.
+# The backup object store, as the bucket's virtual-hosted name (`<bucket>.s3.<region>.amazonaws.com`,
+# the role's default). Allowed for every box that is not stopped, and inspected too: S3 picks the
+# bucket by the `Host:` or the path, so a passthrough reached any bucket. Only this bucket, either
+# as its own host or path-style on the regional endpoint (`s3.<region>.amazonaws.com/<bucket>/...`),
+# only this organisation's archives (`<org id>/...`, the control plane's objectKeyFor), and only
+# presigned GET/PUT/HEAD requests (SigV4 query, no other parameter), over https on 443. Bodies
+# are streamed both ways, never held or logged: an archive is up to 5 GB. A store that is not on AWS
+# names its bucket in MITM_BACKUP_BUCKET (path-style on MITM_BACKUP_HOST).
 # See apps/saas/docs/features/backups.md.
 BACKUP_HOST = os.environ.get("MITM_BACKUP_HOST", "").strip().lower()
-
-# The built-in uninspected destinations. A connection whose SNI matches one of these is passed
-# through without TLS termination; anything else needs a rule.
-PASSTHROUGH_HOSTS = tuple(h for h in (CONTROL_PLANE_HOST, BACKUP_HOST) if h)
+_backup_vhost = re.fullmatch(r"([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\.(s3[.-](?:[a-z0-9-]+\.)?amazonaws\.com)", BACKUP_HOST)
+BACKUP_BUCKET = os.environ.get("MITM_BACKUP_BUCKET", "").strip() or (_backup_vhost.group(1) if _backup_vhost else "")
+# Where the bucket may also be named in the path: the regional endpoint, or the configured host
+# itself when that is a path-style store.
+BACKUP_PATH_HOST = _backup_vhost.group(2) if _backup_vhost else (BACKUP_HOST if BACKUP_BUCKET else "")
+CONTROL_PLANE_RULE = "control_plane"
+BACKUP_RULE = "backup_store"
 
 # Tailscale, for the agent boxes their owner has put on their own tailnet
 # (apps/saas/docs/features/tailscale.md). `tailscaled` reaches the coordination server
@@ -286,8 +299,10 @@ NON_ROUTABLE_REFUSAL = "refused by the firewall:"
 # swap is decided by one name, so the connection may only go to that name (see `request` and
 # `tls_clienthello`).
 DESTINATION_RULE = "destination_mismatch"
-# The one port the built-in passthroughs (the control plane, the backup store, Tailscale) are used
-# on. A connection to any other port with one of their names is intercepted like any other.
+# The one port the built-ins are used on: the passthroughs (Tailscale; the control plane and the
+# backup store for a box that does not trust this firewall's CA for them yet, see `cp_inspected`), and
+# the inspected control plane and backup store. Any other port with one of their names is judged like
+# any other site.
 PASSTHROUGH_PORT = 443
 PERMISSION_STATUS = 451
 
@@ -355,6 +370,15 @@ class _DictCache:
 
 _grants = _DictCache(GRANTS_PATH)
 _exit = _DictCache(EXIT_PATH, missing_is_empty=True)
+# This firewall's organisation, written by the mitm-agent from its ORG_ID (which a ready-pool claim
+# sets), next to the rules. Read per request: MITM_TENANT is log attribution and a claim leaves it.
+ORG_PATH = os.environ.get("MITM_ORG_PATH", os.path.join(os.path.dirname(RULES_PATH), "org.json"))
+_org = _DictCache(ORG_PATH, missing_is_empty=True)
+
+
+def firewall_org_id() -> str:
+    org = _org.get().get("org_id")
+    return org if isinstance(org, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", org) else ""
 # permission_ids already recorded as pending this process — avoid duplicate prompts.
 _pending_seen: set[str] = set()
 
@@ -419,6 +443,21 @@ def vm_id_for_ip(ip: str) -> str | None:
         if ent.get("private_ip") == ip:
             return ent.get("vm_id")
     return None
+
+
+def cp_inspected(vm_id: str | None) -> bool:
+    """True when the firewall has seen THIS box run the release that trusts its CA for the control
+    plane (`cp_inspect` in the identity map, set by the mitm-agent, never by the control plane, and
+    never taken back). Until then the box's traffic to the control plane and the backup store is
+    passed through as before, so an organisation that updates its firewall before its agents does
+    not cut those agents off (their disk reports, an old vm-agent's CA refresh). A source that is not
+    in the map is inspected."""
+    if not vm_id:
+        return True
+    for ent in _identities.get():
+        if ent.get("vm_id") == vm_id:
+            return ent.get("cp_inspect") is True
+    return True
 
 
 def tailscale_allowed(vm_id: str | None) -> bool:
@@ -3701,16 +3740,17 @@ class _DeniedTCP(_EnforcementLayer):
 
 
 def tls_clienthello(data) -> None:
-    """Pass a connection through untouched (no TLS interception), matched by SNI: a built-in host
-    (the control plane, so the JWT channel is never MITM'd, and the backup object store, whose bodies
-    are already encrypted end to end), Tailscale for a box whose owner joined it to their tailnet,
-    OR an opt-in `tunnel` rule (uninspected egress).
+    """Pass a connection through untouched (no TLS interception), matched by SNI: Tailscale for a box
+    whose owner joined it to their tailnet, OR an opt-in `tunnel` rule (uninspected egress). The
+    control plane and the backup store were passed through here for every box until 2026-10-28; now
+    only for a box the firewall has not yet seen trust its CA for them (`cp_inspected`), during the
+    roll-out. Every other box's traffic to them is inspected (CONTROL_PLANE_HOST, BACKUP_HOST).
 
     Keys off the TLS ClientHello SNI rather than the CONNECT authority, so it works for the explicit
     proxy (CONNECT-by-host) AND transparent redsocks (CONNECT-by-IP). The SNI is only a name the
     client wrote, so the connection is then sent to that name and nowhere else (`_pass_through`):
     before 2026-10-28 it went to whatever address the box asked for, which made a forged SNI an
-    uninspected tunnel to any IP. The built-in hosts pass on port 443 only.
+    uninspected tunnel to any IP. Tailscale passes on port 443 only.
 
     Defensive: a raised exception here would stall the handshake, so a match error never takes down
     an interceptable connection.
@@ -3730,15 +3770,18 @@ def tls_clienthello(data) -> None:
             # flow out of THIS box's IP — the one outcome a residential rule must never produce.
             log.error(f"[mitm] residential rule reached tls_clienthello for {sni}; refusing to pass through")
             return
-        # Under an emergency stop the ONLY destination that still passes through is the control
-        # plane: the vm-agent's own channel rides it, and so does the relay an owner uses to unlock
-        # a box's disk. Everything else — the backup store, Tailscale, every `tunnel` rule the
-        # organisation wrote — is intercepted and refused in `request`, because a passed-through
+        # Under an emergency stop nothing passes through but, for a box that does not trust this
+        # firewall's CA for it yet, the control plane (see `cp_inspected`): Tailscale and every
+        # `tunnel` rule are intercepted and refused in `request`, because a passed-through
         # connection is one this proxy never sees again. (`tunnel_match` is None for a stopped box.)
+        inspected = cp_inspected(vm_id)
+        legacy = () if inspected else tuple(h for h in (CONTROL_PLANE_HOST,) if h)
         if kill_switched(vm_id):
-            built_in: tuple[str, ...] = (CONTROL_PLANE_HOST,) if CONTROL_PLANE_HOST else ()
+            built_in = legacy
         else:
-            built_in = PASSTHROUGH_HOSTS + (TAILSCALE_HOSTS if tailscale_allowed(vm_id) else ())
+            if not inspected and BACKUP_HOST:
+                legacy += (BACKUP_HOST,)
+            built_in = legacy + (TAILSCALE_HOSTS if tailscale_allowed(vm_id) else ())
         if (
             (port == PASSTHROUGH_PORT and any(host_matches(h, sni) for h in built_in))
             or tunnel_match(sni, port, vm_id)
@@ -4731,6 +4774,114 @@ def websocket_end(flow):
         _log(rec)
 
 
+# What a box calls on the control plane: the vm-agent's channel, the disk reports and cc-perm
+# (`/api/vm-agent/…`), and a ready-pool box's claim (`/api/internal/ready-pool/…`). Anything else on
+# that host (the console's pages and API) is an ordinary site under the organisation's rules.
+CONTROL_PLANE_PREFIXES = ("/api/vm-agent/", "/api/internal/ready-pool/")
+
+
+def is_control_plane(flow: http.HTTPFlow, host: str) -> bool:
+    """A box's own request to the control plane: its host (written any way that reaches it), over
+    https on 443, under one of CONTROL_PLANE_PREFIXES. Another port, plain http, or any other path on
+    that name gets no allowance and is judged like any site (and refused under the emergency stop)."""
+    if not (CONTROL_PLANE_HOST and _wire_name(host) == CONTROL_PLANE_HOST
+            and flow.request.scheme == "https" and flow.request.port == PASSTHROUGH_PORT):
+        return False
+    path = flow.request.path.split("?", 1)[0]
+    if re.search(r"(^|/)\.{1,2}(/|$)|%2e|%2f|\\|//", path, re.IGNORECASE):
+        return False  # nothing that a server could read as another path
+    return path.startswith(CONTROL_PLANE_PREFIXES)
+
+
+def is_backup_request(flow: http.HTTPFlow, host: str) -> bool:
+    """A request for the backup bucket: its own host, or its name first in the path on the regional
+    endpoint. Other buckets on that endpoint are ordinary sites, judged by the organisation's rules."""
+    if flow.request.scheme != "https" or flow.request.port != PASSTHROUGH_PORT:
+        return False  # another port or plain http is no backup request; the rules decide
+    name = _wire_name(host)
+    if BACKUP_HOST and name == BACKUP_HOST:
+        return True
+    if not (BACKUP_PATH_HOST and BACKUP_BUCKET and name == BACKUP_PATH_HOST):
+        return False
+    first = flow.request.path.split("?", 1)[0].lstrip("/").split("/", 1)[0]
+    return first == BACKUP_BUCKET
+
+
+_PRESIGNED = {"X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Date", "X-Amz-Expires", "X-Amz-SignedHeaders", "X-Amz-Signature"}
+
+
+def backup_refusal(flow: http.HTTPFlow, host: str, vm_id: str | None) -> str | None:
+    """Why a request for the backup bucket is not one a box makes, or None. A box only uploads and
+    downloads archives with the URLs the control plane presigned for it."""
+    if kill_switched(vm_id):
+        return "this agent is stopped; backups wait until it is released"
+    method = flow.request.method.upper()
+    if method not in ("GET", "PUT", "HEAD"):
+        return f"{method[:10]} is not a backup upload or download"
+    path = flow.request.path.split("?", 1)[0]
+    # Path-style (the regional endpoint, or a store that is not AWS on BACKUP_HOST itself): drop the
+    # "/<bucket>" in front of the key. Virtual-hosted, the path is the key.
+    if BACKUP_PATH_HOST and _wire_name(host) == BACKUP_PATH_HOST and path.split("/", 2)[1:2] == [BACKUP_BUCKET]:
+        path = path[len(BACKUP_BUCKET) + 1:]
+    # An object key, nothing that could be read as another one: no dot segments, no encoded
+    # separators.
+    if not path.startswith("/") or len(path) < 2 or re.search(r"(^|/)\.{1,2}(/|$)|%2e|%2f|\\", path, re.IGNORECASE):
+        return "not a backup archive"
+    # Keys are `<org id>/<backup id>/<kind>.cc` (the control plane's objectKeyFor). Another
+    # organisation's presigned URL is a valid one for this bucket too, so the first segment must be
+    # this firewall's organisation, as the mitm-agent last wrote it.
+    org = firewall_org_id()
+    if not org or path.split("/", 2)[1] != org:
+        return "not an archive of this organisation"
+    keys = list(flow.request.query.keys())
+    if set(keys) != _PRESIGNED or len(keys) != len(_PRESIGNED) or flow.request.headers.get("authorization"):
+        return "not a presigned backup URL"
+    if flow.request.query.get("X-Amz-Algorithm") != "AWS4-HMAC-SHA256":
+        return "not a presigned backup URL"
+    return None
+
+
+def _count_into(flow: http.HTTPFlow, key: str):
+    """A stream callable that passes each chunk through untouched and counts its bytes."""
+    def chunk(data: bytes) -> bytes:
+        flow.metadata[key] = flow.metadata.get(key, 0) + len(data)
+        return data
+    return chunk
+
+
+def requestheaders(flow: http.HTTPFlow) -> None:
+    """The backup bucket, decided before any body moves: an upload is streamed straight through (up
+    to 5 GB, never held), so `request` would only run once it had all gone. A refusal is recorded and
+    the connection closed, so a refused upload is not read either."""
+    try:
+        host = flow.request.pretty_host
+        if not is_backup_request(flow, host):
+            return
+        vm_id = flow_vm_id(flow)
+        flow.metadata["cc_vm_id"] = vm_id
+        why = _one_destination(flow, host) or backup_refusal(flow, host, vm_id)
+    except Exception as exc:  # noqa: BLE001 — a failed check refuses
+        why = f"could not check the request ({type(exc).__name__})"
+    if why:
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = BACKUP_RULE
+        rec = _http_record(flow, "block")
+        rec["error"] = why[:200]
+        _log_once(flow, rec)
+        log.warning(f"[mitm] refused backup request to {flow.request.pretty_host}: {why}")
+        flow.kill()
+        return
+    flow.metadata.update({"cc_effect": "allow", "cc_rule": BACKUP_RULE, "cc_builtin": True})
+    flow.request.stream = _count_into(flow, "cc_bytes_out")
+
+
+def responseheaders(flow: http.HTTPFlow) -> None:
+    """The control plane's and the backup store's answers go back as they arrive: a long poll or a
+    multi-GB download is never held here, and neither is read."""
+    if flow.metadata.get("cc_builtin"):
+        flow.response.stream = _count_into(flow, "cc_bytes_in")
+
+
 def _authority_host(value: str) -> str:
     """The host of a `Host:` value or an authority, without its port (IPv6 brackets kept off)."""
     value = value.strip()
@@ -4780,6 +4931,8 @@ def _one_destination(flow: http.HTTPFlow, host: str) -> str | None:
 
 
 async def request(flow: http.HTTPFlow) -> None:
+    if flow.metadata.get("cc_builtin"):
+        return  # the backup bucket, decided in `requestheaders`
     host = flow.request.pretty_host
     method = flow.request.method
     path = flow.request.path
@@ -4808,14 +4961,18 @@ async def request(flow: http.HTTPFlow) -> None:
         log.warning(f"[mitm] refused {host}: {mismatch}")
         return
 
+    # The control plane: allowed for every box, stopped or not, once the request is for exactly
+    # this host (above). Nothing below applies to it: no rule, no window, no content rule, no swap.
+    if is_control_plane(flow, host):
+        flow.metadata.update({"cc_effect": "allow", "cc_rule": CONTROL_PLANE_RULE, "cc_builtin": True})
+        return
+
     # The emergency stop, before anything that could let a request past
     # (`apps/saas/docs/features/kill-switch.md`). It sits above the update window on purpose: a box
     # that was mid-update when somebody pressed Stop must not keep its allowance to fetch packages.
-    # The control plane is the single exception, for the vm-agent's own channel and the disk-unlock
-    # relay — and it is matched by name here as well as by SNI in `tls_clienthello`, so a `Host:`
-    # header cannot borrow it for somewhere else.
-    # Read once, here, because three of the checks below compare it with the `Host:` header: the
-    # code window, the emergency stop's control-plane exception and the update window.
+    # The control plane, the single exception, has already been let through above.
+    # Read once, here, because two of the checks below compare it with the `Host:` header: the code
+    # window and the update window.
     sni = (getattr(flow.client_conn, "sni", None) or "").lower()
 
     # The code window, checked before the refusal below and nowhere else: over TLS the name the
@@ -4828,7 +4985,7 @@ async def request(flow: http.HTTPFlow) -> None:
         flow.metadata["cc_rule"] = CODE_RULE
         return
 
-    if kill_switched(vm_id) and not (CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, host)):
+    if kill_switched(vm_id):
         flow.metadata["cc_effect"] = "block"
         flow.metadata["cc_rule"] = KILL_RULE
         flow.response = http.Response.make(
@@ -7371,6 +7528,16 @@ def mcp_response(flow: http.HTTPFlow) -> None:
 
 
 def response(flow: http.HTTPFlow) -> None:
+    if flow.metadata.get("cc_builtin"):
+        rec = _allow_record(flow)
+        rec["status"] = flow.response.status_code
+        rec["bytes_out"] = flow.metadata.get("cc_bytes_out", rec.get("bytes_out", 0))
+        rec["bytes_in"] = flow.metadata.get("cc_bytes_in", len(flow.response.raw_content or b""))
+        start, end = flow.request.timestamp_start, flow.response.timestamp_end
+        if start and end:
+            rec["duration_ms"] = int((end - start) * 1000)
+        _log_once(flow, rec)
+        return
     mcp_response(flow)
     telegram_taps_response(flow)
     content_rules_telegram_in(flow)
