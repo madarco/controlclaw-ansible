@@ -33558,36 +33558,105 @@ function bodyText(body, contentType) {
   }
   if (ctype.includes("application/x-www-form-urlencoded")) return [...new URLSearchParams(text4).values()].join("\n");
   if (ctype.includes("json") || /^\s*[[{]/.test(text4)) {
+    let doc;
     try {
-      const out = [];
-      strings(JSON.parse(text4), out, 0);
-      return out.join("\n");
+      doc = parseJson(text4);
     } catch {
+      doc = void 0;
+    }
+    if (doc !== void 0) {
+      const out = [];
+      try {
+        strings(doc, out, 0);
+      } catch (err) {
+        if (!(err instanceof TooDeep)) throw err;
+        return unescapeJsonLoose(text4);
+      }
+      return out.join("\n");
     }
   }
   if (ctype && !textual) return null;
   return text4;
+}
+function parseJson(text4) {
+  return JSON.parse(text4, (_key, value, context) => typeof value === "number" ? new JsonNumber(context?.source ?? String(value)) : value);
+}
+var JsonNumber = class {
+  constructor(raw) {
+    this.raw = raw;
+  }
+};
+var TooDeep = class extends Error {
+};
+function unescapeJsonLoose(text4) {
+  const escapes = { b: "\b", f: "\f", n: "\n", r: "\r", t: "	" };
+  return text4.replace(/\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g, (_m, hex4, c2) => hex4 ? String.fromCharCode(parseInt(hex4, 16)) : escapes[c2] ?? c2);
+}
+function partHeaders(head) {
+  const out = /* @__PURE__ */ new Map();
+  let last = null;
+  for (const line of head ? head.split("\r\n") : []) {
+    if (last && /^[ \t]/.test(line)) {
+      out.set(last, `${out.get(last)} ${line.trim()}`);
+      continue;
+    }
+    const m2 = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*(.*)$/.exec(line);
+    if (!m2) throw new Error("a multipart part header the firewall cannot read");
+    const name26 = m2[1].toLowerCase();
+    if (out.has(name26)) throw new Error("a multipart part with a header twice");
+    out.set(name26, m2[2].trim());
+    last = name26;
+  }
+  return out;
+}
+function headerParams(value) {
+  const out = /* @__PURE__ */ new Map();
+  const re2 = /;\s*([^=;\s]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;]*)/g;
+  for (let m2 = re2.exec(value); m2; m2 = re2.exec(value)) {
+    const v2 = m2[2].trim();
+    out.set(m2[1].toLowerCase(), v2.startsWith('"') ? v2.slice(1, -1).replace(/\\(.)/g, "$1") : v2);
+  }
+  return out;
 }
 function multipartText(body, ctype) {
   const boundary = /boundary="?([^";]{1,200})"?/i.exec(ctype)?.[1];
   if (!boundary) throw new Error("a multipart body without a boundary");
   const out = [];
   const raw = body.toString("latin1");
-  for (const part of raw.split(`--${boundary}`).slice(1)) {
+  const parts = raw.split(`--${boundary}`).slice(1);
+  if (!parts.length) throw new Error("a multipart body without its boundary");
+  for (const part of parts) {
     if (part.startsWith("--")) break;
     const end = part.indexOf("\r\n\r\n");
-    if (end < 0) continue;
-    const head = part.slice(0, end).toLowerCase();
-    if (/filename\*?=/.test(head)) continue;
-    const partType = /content-type:\s*([^\r\n]+)/.exec(head)?.[1] ?? "text/plain";
-    const text4 = bodyText(Buffer.from(part.slice(end + 4).replace(/\r\n$/, ""), "latin1"), partType);
+    if (end < 0) throw new Error("a multipart part without a blank line after its headers");
+    const headers = partHeaders(part.slice(0, end).replace(/^\r\n/, ""));
+    const disposition = headerParams(headers.get("content-disposition") ?? "");
+    if (disposition.has("filename") || disposition.has("filename*")) continue;
+    const encoding = headers.get("content-transfer-encoding")?.trim().toLowerCase();
+    if (encoding && !["7bit", "8bit", "binary"].includes(encoding)) throw new Error("a multipart part in an encoding the firewall cannot read");
+    const partType = headers.get("content-type") ?? "text/plain";
+    const charset = headerParams(partType).get("charset")?.toLowerCase() ?? "";
+    const bytes = Buffer.from(part.slice(end + 4).replace(/\r\n$/, ""), "latin1");
+    const wide = charset === "utf-16" || charset === "utf-16le" ? bytes : charset === "utf-16be" ? Buffer.from(bytes).swap16() : null;
+    const text4 = wide ? wide.toString("utf16le") : bodyText(bytes, partType);
     if (text4) out.push(text4);
   }
   return out.join("\n");
 }
 function strings(value, out, depth) {
-  if (depth > 40) throw new Error("nested too deep");
-  if (typeof value === "string") out.push(value);
+  if (depth > 40) throw new TooDeep("nested too deep");
+  if (typeof value === "string") {
+    if (/^\s*[[{]/.test(value)) {
+      let inner;
+      try {
+        inner = parseJson(value);
+      } catch {
+        inner = void 0;
+      }
+      if (inner !== void 0) strings(inner, out, depth + 1);
+    }
+    out.push(value);
+  } else if (value instanceof JsonNumber) out.push(value.raw);
   else if (Array.isArray(value)) for (const v2 of value) strings(v2, out, depth + 1);
   else if (value && typeof value === "object") for (const v2 of Object.values(value)) strings(v2, out, depth + 1);
 }
@@ -33595,6 +33664,7 @@ function strings(value, out, depth) {
 // src/content-rules.ts
 import { createHash as createHash7, randomBytes as randomBytes7, randomInt as randomInt3 } from "crypto";
 import { createServer as createServer4 } from "http";
+import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from "zlib";
 import { appendFileSync as appendFileSync2, chmodSync, existsSync as existsSync7, mkdirSync as mkdirSync5, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
 import { dirname as dirname4 } from "path";
 
@@ -34139,6 +34209,25 @@ function startJudgeServer(judge2, port, host2 = "127.0.0.1") {
 }
 
 // src/content-rules.ts
+var DECODED_MAX = 16 * 1024 * 1024;
+function inflated(body) {
+  try {
+    return inflateSync(body, { maxOutputLength: DECODED_MAX });
+  } catch {
+    return inflateRawSync(body, { maxOutputLength: DECODED_MAX });
+  }
+}
+function decodeBody(body, contentEncoding) {
+  let out = body;
+  for (const coding of contentEncoding.split(",").map((c2) => c2.trim().toLowerCase()).filter(Boolean).reverse()) {
+    if (coding === "identity") continue;
+    if (coding === "gzip" || coding === "x-gzip") out = gunzipSync(out, { maxOutputLength: DECODED_MAX });
+    else if (coding === "deflate") out = inflated(out);
+    else if (coding === "br") out = brotliDecompressSync(out, { maxOutputLength: DECODED_MAX });
+    else throw new Error("a body in an encoding the firewall cannot read");
+  }
+  return out;
+}
 var ContentRulesUnknown = class extends Error {
   constructor() {
     super("the content rules are not known");
@@ -34520,10 +34609,10 @@ var ContentRulesFirewall = class _ContentRulesFirewall {
    * its sender gets. A stopped one gets a 200, so the sender does not send it again; while the
    * rules are unknown, a 503, so it does.
    */
-  async screenWebhook(vmId3, body, contentType) {
+  async screenWebhook(vmId3, body, contentType, contentEncoding = "") {
     try {
       if (!this.applies("in", "webhook")) return null;
-      const text4 = bodyText(body, contentType);
+      const text4 = bodyText(decodeBody(body, contentEncoding), contentType);
       if (!text4) return null;
       const rule = await this.check("in", "webhook", text4, vmId3);
       if (!rule) return null;
@@ -35018,7 +35107,7 @@ function mediaType(header2) {
   const v2 = Array.isArray(header2) ? header2.join(",") : header2 ?? "";
   return v2.split(";")[0].trim().toLowerCase();
 }
-function parseJson(body) {
+function parseJson2(body) {
   const text4 = body.toString("utf8");
   if (!Buffer.from(text4, "utf8").equals(body)) throw new GateParseError("the body is not UTF-8");
   try {
@@ -35065,7 +35154,7 @@ function parseRoute(method, url2, headers, body) {
     if (m2 === "GET") return { kind: "guide", via: "http", actionId, connectionName: connectionNameOf(null, headers["x-oo-connector-alias"], query) };
     if (m2 === "POST") {
       if (!ACTION_ID.test(actionId)) throw new GateParseError("the action id is not valid");
-      const doc = body && body.length ? parseJson(body) : {};
+      const doc = body && body.length ? parseJson2(body) : {};
       const b2 = obj(doc);
       if (!b2) throw new GateParseError("the body is not an object");
       return { kind: "action", via: "http", actionId, input: b2.input ?? {}, connectionName: connectionNameOf(b2, headers["x-oo-connector-alias"], query) };
@@ -35076,7 +35165,7 @@ function parseRoute(method, url2, headers, body) {
   if (proxy && m2 === "POST") {
     const service = proxy[1];
     if (!SERVICE.test(service)) throw new GateParseError("the service is not valid");
-    const b2 = obj(parseJson(body ?? Buffer.alloc(0)));
+    const b2 = obj(parseJson2(body ?? Buffer.alloc(0)));
     if (!b2) throw new GateParseError("the body is not an object");
     const endpoint = typeof b2.endpoint === "string" ? b2.endpoint : null;
     const verb = typeof b2.method === "string" ? b2.method.toUpperCase() : null;
@@ -35086,7 +35175,7 @@ function parseRoute(method, url2, headers, body) {
   return { kind: "pass" };
 }
 function parseMcp(body) {
-  const doc = parseJson(body);
+  const doc = parseJson2(body);
   if (Array.isArray(doc)) {
     if (doc.some((m2) => obj(m2)?.method === "tools/call")) throw new GateParseError("send one tool call per request");
     return { kind: "pass" };
@@ -35216,8 +35305,11 @@ var CALLS_PER_AGENT = 8;
 var CALLS_IN_ALL = 64;
 var CALL_LOG_MAX_BYTES = 8 * 1024 * 1024;
 var DROP = /* @__PURE__ */ new Set(["host", "accept-encoding", "content-length", "transfer-encoding", "connection", "cookie", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "proxy-authorization"]);
+function unresolvedPath(path) {
+  return /%2e/i.test(path) || path.includes("\\") || path.split("/").some((segment) => segment === "." || segment === "..");
+}
 function gateAllows(path) {
-  return ALLOWED.some((re2) => re2.test(path));
+  return !unresolvedPath(path) && ALLOWED.some((re2) => re2.test(path));
 }
 function bearer(req) {
   const header2 = req.headers.authorization;
@@ -39060,9 +39152,9 @@ function queryProblem(query) {
       return "The part after ? is not valid percent-encoding";
     }
     if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name26)) return `The firewall does not match a query name like "${name26.slice(0, 20)}": use letters, digits, _ . and - only`;
-    const fold2 = name26.toLowerCase().replace(/\./g, "_");
-    if (seen.has(fold2)) return `The query names "${name26}" twice`;
-    seen.add(fold2);
+    const fold3 = name26.toLowerCase().replace(/\./g, "_");
+    if (seen.has(fold3)) return `The query names "${name26}" twice`;
+    seen.add(fold3);
   }
   return null;
 }
@@ -40204,7 +40296,7 @@ var IngressRoutes = class {
           reg,
           body.byteLength
         );
-      const stopped = reg.responseMode ? null : await this.opts.screen?.(reg, body, headerValue(req, "content-type"));
+      const stopped = reg.responseMode ? null : await this.opts.screen?.(reg, body, headerValue(req, "content-type"), headerValue(req, "content-encoding"));
       if (stopped) return refuse(stopped.status, "refused", stopped.reason, reg, body.byteLength);
       return await this.forward(reg, req, res, body, deliveryId, started);
     } finally {
@@ -53130,15 +53222,82 @@ var McpCatalog = class {
 import { randomBytes as randomBytes30 } from "crypto";
 var MCP_CALL_MAX_BODY = 1024 * 1024;
 var MCP_RESULT_MAX = 2 * 1024 * 1024;
-function rpcMessages(body) {
-  let doc;
-  try {
-    doc = JSON.parse(body.toString("utf8"));
-  } catch {
-    return null;
+var CALL_NEEDLES = ["tools/call", "tools\\/call", "tools\\u002fcall", "tools\\u002Fcall"].flatMap((n2) => {
+  const le16 = Buffer.from(n2, "utf16le");
+  const le32 = Buffer.alloc(n2.length * 4);
+  for (let i2 = 0; i2 < n2.length; i2++) le32.writeUInt32LE(n2.charCodeAt(i2), i2 * 4);
+  return [Buffer.from(n2, "utf8"), le16, Buffer.from(le16).swap16(), le32, Buffer.from(le32).swap32()];
+});
+function mentionsToolCall(body) {
+  return CALL_NEEDLES.some((n2) => body.includes(n2));
+}
+function utf32(body, be2) {
+  if (body.length % 4 !== 0) return null;
+  let out = "";
+  for (let i2 = 0; i2 < body.length; i2 += 4) {
+    const cp = be2 ? body.readUInt32BE(i2) : body.readUInt32LE(i2);
+    if (cp > 1114111) return null;
+    out += String.fromCodePoint(cp);
   }
+  return out;
+}
+function otherDecodings(body) {
+  const out = [];
+  const b2 = (i2) => body[i2] ?? -1;
+  if (b2(0) === 239 && b2(1) === 187 && b2(2) === 191) out.push(body.subarray(3).toString("utf8"));
+  const push = (t2) => void (t2 !== null && out.push(t2.replace(/^\ufeff/, "")));
+  if (b2(0) === 0 && b2(1) === 0) push(utf32(body, true));
+  else if (b2(1) === 0 && b2(2) === 0) push(utf32(body, false));
+  if (body.length % 2 === 0) {
+    if (b2(0) === 255 && b2(1) === 254) push(body.subarray(2).toString("utf16le"));
+    else if (b2(0) === 254 && b2(1) === 255) push(Buffer.from(body.subarray(2)).swap16().toString("utf16le"));
+    else if (b2(1) === 0) push(body.toString("utf16le"));
+    else if (b2(0) === 0) push(Buffer.from(body).swap16().toString("utf16le"));
+  }
+  out.push(body.toString("utf8"));
+  return out;
+}
+var RPC_KEYS = /* @__PURE__ */ new Set(["jsonrpc", "method", "params", "name", "arguments", "id"]);
+var fold2 = (k2) => k2.toLowerCase().replace(/ſ/g, "s");
+function oddKeys(messages) {
+  const odd = (d2) => !!d2 && typeof d2 === "object" && !Array.isArray(d2) && Object.keys(d2).some((k2) => !RPC_KEYS.has(k2) && RPC_KEYS.has(fold2(k2)));
+  const call = (m2) => Object.entries(m2).some(([k2, v2]) => fold2(k2) === "method" && v2 === "tools/call");
+  return messages.some((m2) => call(m2) && (odd(m2) || Object.entries(m2).some(([k2, v2]) => fold2(k2) === "params" && odd(v2))));
+}
+var asMessages = (doc) => {
   const list3 = Array.isArray(doc) ? doc : [doc];
-  return list3.filter((m2) => !!m2 && typeof m2 === "object" && !Array.isArray(m2));
+  return { messages: list3.filter((m2) => !!m2 && typeof m2 === "object" && !Array.isArray(m2)), batch: Array.isArray(doc) };
+};
+function rpcMessages(body) {
+  let plain = null;
+  try {
+    plain = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
+  } catch {
+    plain = null;
+  }
+  const read = (kind, doc) => {
+    const got = asMessages(doc);
+    return oddKeys(got.messages) ? { kind: "unreadable", ...got, odd: true } : { kind, ...got };
+  };
+  if (plain !== null && !plain.startsWith("\uFEFF")) {
+    try {
+      return read("messages", JSON.parse(plain));
+    } catch {
+    }
+  }
+  for (const text4 of otherDecodings(body)) {
+    try {
+      return read("unreadable", JSON.parse(text4));
+    } catch {
+    }
+  }
+  const head = Buffer.from(body.subarray(0, 8).filter((c2) => c2 !== 0 && c2 !== 239 && c2 !== 187 && c2 !== 191 && c2 !== 255 && c2 !== 254)).toString("latin1").trimStart();
+  return /^[[{]/.test(head) || mentionsToolCall(body) ? { kind: "unreadable", messages: [], batch: false } : { kind: "none" };
+}
+function sameRpcId(a2, b2) {
+  if (a2 === b2) return true;
+  const x2 = Number(a2);
+  return !Number.isNaN(x2) && x2 === Number(b2);
 }
 var json5 = (doc) => Buffer.from(JSON.stringify(doc), "utf8");
 function answerMessages(body, contentType) {
@@ -53186,20 +53345,22 @@ function createMcpCalls(opts) {
     const startedAt = now2();
     const service = `mcp:${req.host}`;
     const server = req.managed ?? req.host;
-    const messages = rpcMessages(req.body);
-    if (!messages) return { kind: "pass" };
-    const calls = messages.filter((m2) => m2.method === "tools/call");
-    if (!calls.length) return { kind: "pass" };
-    const whole = (() => {
-      try {
-        const d2 = JSON.parse(req.body.toString("utf8"));
-        return Array.isArray(d2) ? d2.length : 1;
-      } catch {
-        return 1;
-      }
-    })();
+    const read = rpcMessages(req.body);
     const logService = req.managed ? `mcp:${req.managed}` : service;
     const base0 = { vm_id: req.vmId, route: req.route, service: logService, action_id: null, operation: null, method: "POST", path: "tools/call", startedAt };
+    const UNREADABLE = "Your organization's firewall could not read this tool call, so it did not send it. Send it as plain UTF-8 JSON, with the tool's name as a string.";
+    const unreadable2 = (messages2, batch) => {
+      record2(base0, { decision: "blocked", by: "gate", rule: "unreadable tool call", ok: null, http_status: 200, error_code: "unreadable_tool_call" });
+      const ids2 = messages2.filter((m2) => m2.id !== void 0).map((m2) => m2.id);
+      const one = (id2) => toolAnswer(id2, { ok: false, error: { code: "unreadable_tool_call", message: UNREADABLE } }, true);
+      return answer(200, batch ? (ids2.length ? ids2 : [void 0]).map(one) : one(ids2[0]));
+    };
+    if (read.kind === "none") return { kind: "pass" };
+    const calls = read.messages.filter((m2) => m2.method === "tools/call");
+    if (read.kind === "unreadable") return calls.length || read.odd || !read.messages.length ? unreadable2(read.messages, read.batch) : { kind: "pass" };
+    const messages = read.messages;
+    if (!calls.length) return { kind: "pass" };
+    const whole = read.batch ? messages.length : 1;
     if (whole > 1) {
       record2(base0, { decision: "blocked", by: "gate", rule: "batched tool call", ok: null, http_status: 200, error_code: "batch_refused" });
       return answer(200, messages.filter((m2) => m2.id !== void 0).map((m2) => toolAnswer(m2.id, { ok: false, error: { code: "batch_refused", message: "Your organization's firewall checks each tool call on its own. Send tool calls one at a time, not in a batch." } }, true)));
@@ -53208,7 +53369,7 @@ function createMcpCalls(opts) {
     const id = call.id;
     const tool2 = typeof call.params?.name === "string" ? call.params.name.slice(0, 128) : "";
     const args = call.params?.arguments ?? {};
-    if (!tool2) return { kind: "pass" };
+    if (!tool2) return unreadable2([call], false);
     const operation = opts.catalog()?.kindOf(req.host, tool2) ?? null;
     const base = { ...base0, action_id: tool2, operation };
     if (opts.locked?.(req.vmId)) {
@@ -53348,11 +53509,11 @@ function createMcpCalls(opts) {
           let stopped = null;
           for (const m2 of parsed.messages) {
             const msg = m2;
-            if (msg.id !== id || msg.result === void 0) {
+            if (!msg || typeof msg !== "object" || !sameRpcId(msg.id, id) || msg.result === void 0 && msg.error === void 0) {
               out.push(m2);
               continue;
             }
-            const text4 = bodyText(json5(msg.result), "application/json") ?? "";
+            const text4 = bodyText(json5({ result: msg.result, error: msg.error }), "application/json") ?? "";
             let rule = null;
             try {
               rule = text4 ? await reading.check("in", "apps", text4, req.vmId) : null;
@@ -53367,7 +53528,8 @@ function createMcpCalls(opts) {
             const line = reading.record(rule.id, "apps", "in", "block", req.vmId, rule.by ? { ai: rule.by } : {});
             reading.stoppedHere(rule, "apps", "in", req.vmId, text4, line ?? void 0);
             stopped = rule.name ?? rule.id;
-            out.push(withToolPayload(m2, { ok: false, error: { code: "result_stopped_by_content_rule", message: `The tool ran, but your organization's rules kept its result from you: ${rule.reason}. Do not run it again.` } }, true));
+            const { error: _dropped, ...answered } = m2;
+            out.push(withToolPayload(answered, { ok: false, error: { code: "result_stopped_by_content_rule", message: `The tool ran, but your organization's rules kept its result from you: ${rule.reason}. Do not run it again.` } }, true));
           }
           if (stopped) {
             end({ decision: "blocked", by: "content_rule", rule: stopped, ok: null, http_status: status, error_code: "result_stopped_by_content_rule" });
@@ -107235,8 +107397,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync24 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "e8ef7d5" : "unknown",
-  builtAt: true ? "2026-10-28T12:30:13Z" : "unknown"
+  commit: true ? "86bcacf" : "unknown",
+  builtAt: true ? "2026-10-28T14:21:34Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -109182,7 +109344,7 @@ function startIngress() {
     logPath: TRAFFIC_LOG_PATH || void 0,
     // A module that should run and is not up (starting, or would not start) is not "no rules":
     // deliveries wait (503), as the proxy's checks do.
-    screen: (reg, body, contentType) => contentRules ? contentRules.screenWebhook(reg.target.vmId, body, contentType) : contentRulesWillRun() ? { status: 503, reason: "content rules not loaded" } : null,
+    screen: (reg, body, contentType, contentEncoding) => contentRules ? contentRules.screenWebhook(reg.target.vmId, body, contentType, contentEncoding) : contentRulesWillRun() ? { status: 503, reason: "content rules not loaded" } : null,
     deliver: async (reg, delivery) => {
       if (gmailPush && webhooks?.isGmail(reg.id)) {
         gmailPush.onPush({ vmId: reg.target.vmId, hostname: reg.target.hostname }, delivery.bodyB64);

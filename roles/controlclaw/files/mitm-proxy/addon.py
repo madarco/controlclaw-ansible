@@ -5645,6 +5645,10 @@ class _DuplicateKey(ValueError):
     pass
 
 
+class _TooDeep(ValueError):
+    pass
+
+
 def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     keys = [k for k, _ in pairs]
     if len(keys) != len(set(keys)):
@@ -5653,53 +5657,188 @@ def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return dict(pairs)
 
 
+class _JsonInt(int):
+    """A JSON number as written: Telegram and Slack take a number where a text goes and send its digits."""
+    raw: str
+
+    def __new__(cls, literal: str) -> "_JsonInt":
+        number = super().__new__(cls, literal)
+        number.raw = literal
+        return number
+
+
+class _JsonFloat(float):
+    raw: str
+
+    def __new__(cls, literal: str) -> "_JsonFloat":
+        number = super().__new__(cls, literal)
+        number.raw = literal
+        return number
+
+
+def _json_loads(text: str | bytes) -> Any:
+    """JSON with no repeated key, its numbers kept as written."""
+    return json.loads(text, object_pairs_hook=_no_duplicates, parse_int=_JsonInt, parse_float=_JsonFloat)
+
+
+# A parameter of a Content-Type or Content-Disposition header: a token, `=`, a token or a quoted string.
+_HEADER_PARAM_RE = re.compile(r';[ \t]*([!#$%&\'*+.^_`|~0-9A-Za-z-]+)[ \t]*=[ \t]*("(?:[^"\\\r\n]|\\.)*"|[!#$%&\'*+.^_`|~0-9A-Za-z-]+)[ \t]*')
+_HEADER_EMPTY_PARAM_RE = re.compile(r";[ \t]*")
+
+
+def _header_params(value: str) -> tuple[str, dict[str, str]]:
+    """
+    A header's first word, lower case, and its parameters (names lower case, quotes taken off).
+    Raises on anything else, a repeated parameter included: a header read one way here and another
+    way by the service is not checked.
+    """
+    head, _, rest = value.partition(";")
+    rest = ";" + rest if _ else ""
+    params: dict[str, str] = {}
+    pos = 0
+    while pos < len(rest.rstrip(" \t")):
+        m = _HEADER_PARAM_RE.match(rest, pos)
+        if m is None and (empty := _HEADER_EMPTY_PARAM_RE.match(rest, pos)) and (empty.end() >= len(rest.rstrip(" \t")) or rest[empty.end()] == ";"):
+            pos = empty.end()  # an empty parameter (`application/json;`)
+            continue
+        if not m or m.group(1).lower() in params:
+            raise ValueError("a header the firewall cannot read")
+        v = m.group(2)
+        params[m.group(1).lower()] = re.sub(r"\\(.)", r"\1", v[1:-1]) if v.startswith('"') else v
+        pos = m.end()
+    return head.strip(" \t").lower(), params
+
+
+def _charset_ok(params: dict[str, str]) -> bool:
+    # Telegram and Slack read UTF-8 whatever the header says; a body that says otherwise is not checked.
+    return params.get("charset", "utf-8").lower() in ("utf-8", "utf8")
+
+
+_MP_HEADER_RE = re.compile(rb"([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*(.*?)[ \t]*")
+_MP_LOOSE_FILENAME_RE = re.compile(r';[ \t]*filename=(?!")', re.IGNORECASE)
+
+
+def _multipart_fields(boundary: str | None, body: bytes) -> list[tuple[str, bytes]]:
+    """
+    The named parts of a `multipart/form-data` body, read strictly: every delimiter on its own CRLF
+    line, nothing before the first or after the last, each part a block of headers, a blank line and
+    its value, with one `Content-Disposition: form-data` naming it. Anything else raises: mitmproxy's
+    own reader skips such parts, and an empty form would pass unchecked. The values as sent.
+    """
+    if not boundary or len(boundary) > 70 or not boundary.isascii():
+        raise ValueError("a multipart body with no usable boundary")
+    delimiter = b"\r\n--" + boundary.encode()
+    pieces = (b"\r\n" + body).split(delimiter)
+    if pieces[0] != b"" or len(pieces) < 2 or pieces[-1] not in (b"--", b"--\r\n"):
+        raise ValueError("a multipart body that does not start and end on its boundary")
+    fields: list[tuple[str, bytes]] = []
+    for piece in pieces[1:-1]:
+        if not piece.startswith(b"\r\n"):
+            raise ValueError("a multipart delimiter not on a line of its own")
+        head, sep, value = piece[2:].partition(b"\r\n\r\n")
+        if not sep or not head:
+            raise ValueError("a multipart part without headers")
+        headers: dict[str, str] = {}
+        for line in head.split(b"\r\n"):
+            m = _MP_HEADER_RE.fullmatch(line)
+            name = m.group(1).decode().lower() if m else None
+            if name is None or name in headers:
+                raise ValueError("a multipart part header the firewall cannot read")
+            headers[name] = m.group(2).decode("utf-8")
+        disposition = headers.get("content-disposition", "")
+        # grammY writes a file's name unquoted, spaces and all (`filename=my photo.jpg`): it runs to
+        # the end of the line, and must not hold a second name.
+        loose = _MP_LOOSE_FILENAME_RE.search(disposition)
+        if loose:
+            if re.search(r"[;\s]name\*?[ \t]*=", disposition[loose.end():], re.IGNORECASE):
+                raise ValueError("a multipart part named twice")
+            disposition = disposition[:loose.start()] + ';filename=""'
+        kind, params = _header_params(disposition)
+        if kind != "form-data" or not params.get("name") or "name*" in params:
+            raise ValueError("a multipart part without a name")
+        if headers.get("content-transfer-encoding", "binary").lower() not in ("binary", "8bit", "7bit"):
+            raise ValueError("a multipart part in an encoding the firewall cannot read")
+        if "filename" not in params and "content-type" in headers and not _charset_ok(_header_params(headers["content-type"])[1]):
+            raise ValueError("a multipart part in a charset the firewall cannot read")
+        fields.append((params["name"], value))
+    return fields
+
+
+def _out_body(flow: http.HTTPFlow) -> tuple[str, dict[str, str], str]:
+    """
+    An outgoing chat call's body as Telegram and Slack read it: its media type, the type's
+    parameters, and the body as UTF-8 text. A compressed body, or one in another charset, raises:
+    what the check would read is not what the service reads.
+    """
+    encodings = [e.strip().lower() for v in flow.request.headers.get_all("content-encoding") for e in v.split(",")]
+    transfer = [e.strip().lower() for v in flow.request.headers.get_all("transfer-encoding") for e in v.split(",")]
+    if any(e not in ("", "identity") for e in encodings) or any(e not in ("", "chunked") for e in transfer):
+        raise ValueError("a compressed body")
+    media, params = _header_params(flow.request.headers.get("content-type") or "")
+    if not _charset_ok(params):
+        raise ValueError("a body in a charset the firewall cannot read")
+    return media, params, (flow.request.raw_content or b"").decode("utf-8", errors="replace")
+
+
 def _tg_out_fields(flow: http.HTTPFlow) -> tuple[list[tuple[str, Any]], bool]:
     """
     Every field of an outgoing Telegram call, query string included, every value of a repeated
     key; and whether the call is a JSON body with no fields in the query (only that can be held and
     sent again as it was).
     """
+    from urllib.parse import parse_qsl
     fields: list[tuple[str, Any]] = list(flow.request.query.items(multi=True))
-    ctype = (flow.request.headers.get("content-type") or "").lower()
+    media, params, raw = _out_body(flow)
     is_json = False
-    if "multipart/form-data" in ctype:
-        fields += [(k.decode(errors="replace"), v.decode(errors="replace")) for k, v in flow.request.multipart_form.items(multi=True)]
-    elif "application/x-www-form-urlencoded" in ctype:
-        fields += list(flow.request.urlencoded_form.items(multi=True))
-    else:
-        raw = flow.request.get_text(strict=False) or ""
-        if raw.strip():
-            doc = json.loads(raw, object_pairs_hook=_no_duplicates)
-            if not isinstance(doc, dict):
-                raise ValueError("not a JSON object")
-            fields += list(doc.items())
-            is_json = not flow.request.query
+    if media == "multipart/form-data":
+        fields += [(k, v.decode("utf-8", errors="replace")) for k, v in _multipart_fields(params.get("boundary"), flow.request.raw_content or b"")]
+    elif media == "application/x-www-form-urlencoded":
+        fields += parse_qsl(raw, keep_blank_values=True, encoding="utf-8", errors="replace")
+    elif raw.strip():
+        doc = _json_loads(raw)
+        if not isinstance(doc, dict):
+            raise ValueError("not a JSON object")
+        fields += list(doc.items())
+        is_json = not flow.request.query
     return fields, is_json
 
 
-def _tg_texts(value: Any, under_text_key: bool, out: list[str], depth: int = 0, keys: set[str] = _TG_TEXT_KEYS) -> None:
-    """The strings under any of `keys`, at any depth (`under_text_key=True` takes every string)."""
+def _tg_texts(value: Any, under_text_key: bool, out: list[str], depth: int = 0, keys: set[str] = _TG_TEXT_KEYS,
+              skip: frozenset[str] = frozenset()) -> None:
+    """
+    The strings under any of `keys`, at any depth (`under_text_key=True` takes every string), and
+    the numbers there as written. A string that is JSON is read inside too, and kept as it is when
+    it is under a text key: Telegram shows it as written. `skip`: keys not read at all.
+    """
     if depth > 20:
-        raise ValueError("nested too deep")
+        raise _TooDeep("nested too deep")
     if isinstance(value, str):
         stripped = value.lstrip()
         if stripped[:1] in ("[", "{"):
             # Form and multipart calls carry objects as JSON in a string (media, options, results).
             try:
-                _tg_texts(json.loads(value, object_pairs_hook=_no_duplicates), under_text_key, out, depth + 1, keys)
-                return
+                parsed = _json_loads(value)
             except _DuplicateKey:
                 raise
             except ValueError:
-                pass
+                # JSON to Telegram's parser but not to Python's (a control character in a string, a
+                # 5000-digit number): every word in it is read, its escapes undone, whatever its keys.
+                out.append(_json_unescape_loose(value))
+            else:
+                # Outside the `try`: too deep inside is refused, as at the top.
+                _tg_texts(parsed, under_text_key, out, depth + 1, keys, skip)
         if under_text_key:
             out.append(value)
+    elif isinstance(value, (_JsonInt, _JsonFloat)) or (isinstance(value, (int, float)) and not isinstance(value, bool)):
+        if under_text_key:
+            out.append(getattr(value, "raw", None) or str(value))
     elif isinstance(value, dict):
         for k, v in value.items():
-            _tg_texts(v, under_text_key or k in keys, out, depth + 1, keys)
+            if k not in skip:
+                _tg_texts(v, under_text_key or k in keys, out, depth + 1, keys, skip)
     elif isinstance(value, list):
         for v in value:
-            _tg_texts(v, under_text_key, out, depth + 1, keys)
+            _tg_texts(v, under_text_key, out, depth + 1, keys, skip)
 
 
 def _tg_text(fields: list[tuple[str, Any]], keys: set[str] = _TG_TEXT_KEYS) -> str:
@@ -5707,6 +5846,48 @@ def _tg_text(fields: list[tuple[str, Any]], keys: set[str] = _TG_TEXT_KEYS) -> s
     for key, value in fields:
         _tg_texts(value, key in keys, out, 0, keys)
     return "\n".join(out)
+
+
+_MARKUP_TAG_RE = re.compile(r"</?[A-Za-z][^<>]*>")
+# MarkdownV2 lets any character from 1 to 126 be escaped.
+_MARKDOWN_ESCAPE_RE = re.compile(r"\\([\x01-\x7e])")
+_MARKDOWN_MARKS_RE = re.compile(r"[*_~`|\[\]]")
+# A Markdown link (`[label](url)`) and a Slack one (`<url|label>`, `<url>`): the chat shows the label.
+_MARKDOWN_LINK_RE = re.compile(r"\[((?:\\.|[^\]\\])*)\]\((?:\\.|[^)\\])*\)")
+_SLACK_LINK_RE = re.compile(r"<([^<>|]*)\|([^<>]*)>")
+
+
+def _rendered(text: str) -> list[str]:
+    """
+    The text, and the text as the chat shows it when the message is formatted: links as their
+    labels (`[cust](http://a.b)omer`, Slack's `<https://x|cust>omer`), then HTML tags out and
+    entities decoded (`pass<b></b>word`, `customer&#32;list`), or Markdown escapes and marks out
+    (`cust\\_omer`, `cust*om*er`). Only the ways that differ, so a plain message is read once.
+    """
+    variants = [text]
+    linked = _SLACK_LINK_RE.sub(r"\2", text) if "|" in text else text
+    if "<" in text or "&" in text:
+        variants.append(html_unescape(_MARKUP_TAG_RE.sub("", linked)))
+    if "\\" in text or _MARKDOWN_MARKS_RE.search(text):
+        # Links first, on the text as written: an escaped `\\)` belongs to the URL.
+        labelled = _MARKDOWN_ESCAPE_RE.sub(r"\1", _MARKDOWN_LINK_RE.sub(r"\1", linked))
+        variants.append(_MARKDOWN_MARKS_RE.sub("", labelled))
+    return list(dict.fromkeys(variants))
+
+
+def _content_evaluate_shown(rules: list[dict[str, Any]], direction: str, channel: str, text: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """
+    `content_evaluate` on the text and on each way the chat can show it (`_rendered`), each on its
+    own, so the length limit is the message's and not the sum: every hit, and the winner among them.
+    What a hold or a stopped record shows is the text as sent.
+    """
+    winner, hits = None, []
+    for variant in _rendered(text):
+        rule, found = content_evaluate(rules, direction, channel, variant)
+        hits += [h for h in found if h not in hits]
+        if rule is not None and (winner is None or CONTENT_ACTIONS.index(rule["action"]) > CONTENT_ACTIONS.index(winner["action"])):
+            winner = rule
+    return winner, hits
 
 
 def _tg_refuse(flow: http.HTTPFlow, rule: dict[str, Any] | None, detail: str, reason: str | None = None) -> None:
@@ -5737,6 +5918,12 @@ async def content_rules_telegram_out(flow: http.HTTPFlow, vm_id: str | None) -> 
         return False
     try:
         fields, is_json = _tg_out_fields(flow)
+        if match.group(2).lower() == "setwebhook" and any(k == "url" and str(v).strip() for k, v in fields):
+            # A webhook takes the agent's messages off `getUpdates`, where the incoming rules and the
+            # approval buttons are read. Deleting one (an empty url) is allowed.
+            _tg_refuse(flow, None, "", reason="a Telegram webhook would skip the firewall's checks")
+            _content_audit(flow, "error", "telegram", "out", "block", detail="webhook")
+            return True
         text = _tg_text(fields)
         if not text:
             return False
@@ -5752,25 +5939,28 @@ async def content_rules_telegram_out(flow: http.HTTPFlow, vm_id: str | None) -> 
         if rule["action"] == "hold":
             if is_json and match.group(2) in _TG_HOLDABLE and chat_id is not None and len(flow.request.raw_content or b"") <= CONTENT_HOLD_BODY_MAX:
                 key = uuid.uuid4().hex
+                message = None
                 try:
                     _content_unstop(flow, rule["id"])
                     answer = await asyncio.to_thread(_content_post, "/hold", timeout=CONTENT_HOLD_WAIT, payload={
-                        "key": key, "botId": match.group(1), "method": match.group(2), "body": flow.request.get_text(strict=False),
+                        "key": key, "botId": match.group(1), "method": match.group(2), "body": _out_body(flow)[2],
                         "chatId": str(chat_id), "vmId": vm_id, "rule": _rule_brief(rule),
                         "text": text[:CONTENT_HOLD_TEXT_MAX],
                     })
+                    if answer.get("ok") is True and isinstance(answer.get("holdId"), str):
+                        # The agent is told it went (decided 2026-10-15): the people who get codes decide.
+                        first_text = next((v for k, v in fields if k == "text" and isinstance(v, str)), None)
+                        message = {"message_id": int(answer.get("messageId") or 0) or 1, "date": int(time.time()),
+                                   "chat": {"id": chat_id}, **({"text": first_text} if first_text is not None else {})}
                 except Exception:
-                    # Gave up waiting: the agent is told it was stopped, so a hold must not survive.
+                    # Gave up waiting, or an answer that cannot be told to the agent (a message id
+                    # that is not a number): the agent is told it was stopped, so a hold must not survive.
                     try:
                         await asyncio.to_thread(_content_post, "/cancel", {"key": key})
                     except Exception as exc:
                         log.warning(f"[content-rules] hold cancel not handed over: {exc!r}")
                     raise
-                if answer.get("ok") is True and isinstance(answer.get("holdId"), str):
-                    # The agent is told it went (decided 2026-10-15): the people who get codes decide.
-                    first_text = next((v for k, v in fields if k == "text" and isinstance(v, str)), None)
-                    message = {"message_id": int(answer.get("messageId") or 0) or 1, "date": int(time.time()),
-                               "chat": {"id": chat_id}, **({"text": first_text} if first_text is not None else {})}
+                if message is not None:
                     flow.response = http.Response.make(200, json.dumps({"ok": True, "result": message}), {"Content-Type": "application/json"})
                     flow.metadata["cc_effect"] = "hold"
                     flow.metadata["cc_rule"] = f"content: {rule['id']}"
@@ -5821,17 +6011,67 @@ def content_rules_telegram_poll(flow: http.HTTPFlow) -> bool:
     return True
 
 
-_TG_MESSAGE_KEYS = ("message", "edited_message", "channel_post", "edited_channel_post", "business_message")
+# Who sent a message and where, never its words: a name is not checked, or every message from a
+# person whose name holds a blocked word would be stopped.
+_TG_IN_SKIP = frozenset({"from", "chat", "sender_chat", "sender_business_bot", "via_bot", "forward_from", "forward_from_chat",
+                         "forward_origin", "origin", "user", "new_chat_members", "left_chat_member", "users", "chats",
+                         "old_chat_member", "new_chat_member", "actor_chat", "entities", "caption_entities"})
+# Words a person writes that come in on an update: the outgoing fields, an inline query, a join request's bio.
+_TG_IN_KEYS = _TG_TEXT_KEYS | {"query", "bio"}
 
 
-def _tg_update_text(update: dict[str, Any]) -> tuple[str, Any, Any] | None:
-    """The text of one incoming update, its chat and its sender; None when it carries no text."""
-    for key in _TG_MESSAGE_KEYS:
-        msg = update.get(key)
-        if isinstance(msg, dict):
-            text = "\n".join(str(msg[k]) for k in ("text", "caption") if isinstance(msg.get(k), str))
-            return text, (msg.get("chat") or {}).get("id"), (msg.get("from") or {}).get("id")
-    return None
+# Where the agent's own message can sit on an update: checked when it went out, not read again
+# coming in (a rule on messages coming in would otherwise stop a reply to it, or a tap under it).
+_TG_IN_OWN_KEYS = frozenset({"reply_to_message", "pinned_message", "external_reply", "message"})
+
+
+def _tg_own(msg: Any, bot_id: str) -> bool:
+    """Whether a message on an update is the agent's own: its sender, or the sender it is quoted from, is the bot."""
+    if not isinstance(msg, dict):
+        return False
+    origin = msg.get("origin") if isinstance(msg.get("origin"), dict) else {}
+    senders = [msg.get("from"), origin.get("sender_user")]
+    return any(isinstance(s, dict) and str(s.get("id")) == bot_id for s in senders)
+
+
+def _tg_in_texts(value: Any, under_text_key: bool, out: list[str], bot_id: str, depth: int = 0) -> None:
+    """
+    The texts on an incoming update. Telegram's own JSON: a string is shown as written and never
+    parsed, so nothing a person types can make the walk fail.
+    """
+    if depth > 40:
+        raise _TooDeep("nested too deep")
+    if isinstance(value, str):
+        if under_text_key:
+            out.append(value)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if k in _TG_IN_SKIP or (depth > 0 and k in _TG_IN_OWN_KEYS and _tg_own(v, bot_id)):
+                continue
+            if k == "quote" and _tg_own(value.get("reply_to_message"), bot_id):
+                continue  # a quote of the agent's own message
+            _tg_in_texts(v, under_text_key or k in _TG_IN_KEYS, out, bot_id, depth + 1)
+    elif isinstance(value, list):
+        for v in value:
+            _tg_in_texts(v, under_text_key, out, bot_id, depth + 1)
+
+
+def _tg_update_text(update: dict[str, Any], bot_id: str) -> tuple[str, Any, Any] | None:
+    """
+    The text of one incoming update, its chat and its sender; None when it carries nothing. Every
+    text in it is read, wherever it sits: the message, the one it replies to or quotes
+    (`reply_to_message`, `quote`, `external_reply`), a pinned one, a poll, an inline query, every
+    kind of update Telegram has or adds. Not the agent's own messages (`_TG_IN_OWN_KEYS`).
+    """
+    body = next((v for k, v in update.items() if k != "update_id" and isinstance(v, dict)), None)
+    if body is None:
+        return None
+    out: list[str] = []
+    _tg_in_texts({k: v for k, v in update.items() if k != "update_id"}, False, out, bot_id)
+    # A button tap's chat is on the message it was tapped under.
+    chat = body.get("chat") if isinstance(body.get("chat"), dict) else (body.get("message") or {}).get("chat") if isinstance(body.get("message"), dict) else None
+    sender = body.get("from") if isinstance(body.get("from"), dict) else None
+    return "\n".join(out), (chat or {}).get("id"), (sender or {}).get("id")
 
 
 def content_rules_telegram_in(flow: http.HTTPFlow) -> None:
@@ -5871,7 +6111,7 @@ def _tg_in_filter(flow: http.HTTPFlow, match: "re.Match[str]", doc: dict[str, An
     kept, notices = [], []
     try:
         rules = content_rules()
-        texts = [(_tg_update_text(u) if isinstance(u, dict) else None) for u in updates]
+        texts = [(_tg_update_text(u, match.group(1)) if isinstance(u, dict) else None) for u in updates]
 
         def judged(found):
             try:
@@ -5915,7 +6155,7 @@ def _tg_in_filter(flow: http.HTTPFlow, match: "re.Match[str]", doc: dict[str, An
         _content_audit(flow, "error", "telegram", "in", "block")
         notices = []
         try:
-            kept = [u for u in updates if not (isinstance(u, dict) and (_tg_update_text(u) or ("",))[0])]
+            kept = [u for u in updates if not (isinstance(u, dict) and (_tg_update_text(u, match.group(1)) or ("",))[0])]
         except Exception:
             # Not even that could be worked out: only the offset goes through.
             kept = []
@@ -5964,13 +6204,13 @@ async def _content_out_evaluate(rules: list[dict[str, Any]], channel: str, text:
     is asked, off the event loop, for the message with the firewall's own text taken out (a code it
     had the agent send, which quotes the rule and its policy), and the rest is checked.
     """
-    rule, hits = content_evaluate(rules, "out", channel, text)
+    rule, hits = _content_evaluate_shown(rules, "out", channel, text)
     policies = content_policy_applies(rules, "out", channel)
     if ((rule is not None and rule["action"] != "log") or policies) and _content_own_marker_fresh():
         rest = await asyncio.to_thread(_content_own_ask, text)
         if rest is not None:
             text = rest
-            rule, hits = content_evaluate(rules, "out", channel, text)
+            rule, hits = _content_evaluate_shown(rules, "out", channel, text)
     if policies:
         rule, hits = await asyncio.to_thread(content_judge, rules, "out", channel, text, (rule, hits), vm_id)
     return rule, hits, text
@@ -5988,12 +6228,14 @@ def _content_acted(flow: http.HTTPFlow | None, rule: dict[str, Any] | None, hits
     return rule
 
 
-def _content_acting(flow: http.HTTPFlow | None, rules: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None) -> dict[str, Any] | None:
+def _content_acting(flow: http.HTTPFlow | None, rules: list[dict[str, Any]], direction: str, channel: str, text: str, once: str | None = None,
+                    found: tuple[dict[str, Any] | None, list[dict[str, Any]]] | None = None) -> dict[str, Any] | None:
     """
     The engine and the policies on one text: every log-only hit recorded, and the rule that acts
-    (block or hold), or None. Blocking when a policy covers it: off the event loop only.
+    (block or hold), or None. Blocking when a policy covers it: off the event loop only. `found`:
+    the engine's answer, when the caller read the text its own way.
     """
-    rule, hits = content_judge(rules, direction, channel, text, vm_id=flow.metadata.get("cc_vm_id") if flow is not None else None)
+    rule, hits = content_judge(rules, direction, channel, text, found, vm_id=flow.metadata.get("cc_vm_id") if flow is not None else None)
     return _content_acted(flow, rule, hits, direction, channel, text, once)
 
 
@@ -6098,7 +6340,7 @@ async def content_rules_slack_out(flow: http.HTTPFlow, vm_id: str | None) -> boo
             detail = " (it could not be held for approval)"
             if method in _SLACK_HOLDABLE and channel and not flow.request.query and len(flow.request.raw_content or b"") <= CONTENT_HOLD_BODY_MAX:
                 answer = await _content_hold(flow, {
-                    "channel": "slack", "method": method, "body": flow.request.get_text(strict=False),
+                    "channel": "slack", "method": method, "body": _out_body(flow)[2],
                     "contentType": "json" if is_json else "form", "chatId": channel, "auth": auth, "vmId": vm_id,
                     "rule": _rule_brief(rule), "text": text[:CONTENT_HOLD_TEXT_MAX]})
                 if answer:
@@ -6179,7 +6421,8 @@ def _slack_socket_check(flow, message, loop: asyncio.AbstractEventLoop | None) -
         if not text:
             return
         try:
-            rule = _content_acting(flow, content_rules(), "in", "slack", text)
+            rules = content_rules()
+            rule = _content_acting(flow, rules, "in", "slack", text, found=_content_evaluate_shown(rules, "in", "slack", text))
         except ContentTooLong:
             rule = {"id": "error", "reason": "it is too long to check", "action": "block"}
         if rule is None:
@@ -6393,10 +6636,19 @@ def content_rules_voice(flow, voice: dict[str, Any], message, event: Any, loop: 
 # the email rules kept (`agentmail_filter`), and Gmail's `messages.get` and `threads.get`.
 
 _TAG_RE = re.compile(r"<[^<>]{0,4000}>")
+# Tags that do not break a word where they sit, and comments.
+_INLINE_TAG_RE = re.compile(r"<(?:!--|/?(?:a|abbr|b|bdi|bdo|code|em|font|i|kbd|mark|q|s|samp|small|span|strike|strong|sub|sup|u|var|wbr)\b)", re.IGNORECASE)
 
 
 def _html_text(html: str) -> str:
-    return html_unescape(_TAG_RE.sub(" ", html))
+    """
+    The words of an HTML body: tags as spaces (`<p>customer</p><p>list</p>`), and again, when it has
+    inline tags, with those taken out, as a mail client shows them (`pass<b></b>word`).
+    """
+    spaced = html_unescape(_TAG_RE.sub(" ", html))
+    if not _INLINE_TAG_RE.search(html):
+        return spaced
+    return spaced + "\n" + html_unescape(_TAG_RE.sub(lambda m: "" if _INLINE_TAG_RE.match(m.group(0)) else " ", html))
 
 
 def _mime_text(message: bytes) -> str:
@@ -6754,16 +7006,13 @@ WEB_BODY_READ_MAX = 2 * CONTENT_TEXT_MAX_LONG
 
 def _web_text(flow: http.HTTPFlow) -> str | None:
     """The words in a request body: string values of JSON, form values, text parts, plain text. None when it is not text."""
-    ctype = (flow.request.headers.get("content-type") or "").lower()
-    if "multipart/form-data" in ctype:
-        out = []
-        for _k, v in flow.request.multipart_form.items(multi=True):
-            try:
-                out.append(v.decode("utf-8"))
-            except UnicodeDecodeError:
-                continue  # a file (`multipart_form` does not say which part had a filename)
-        return "\n".join(out)
-    textual = ctype.startswith("text/") or any(t in ctype for t in ("json", "xml", "javascript", "graphql", "x-www-form-urlencoded"))
+    from urllib.parse import parse_qsl
+    ctype = flow.request.headers.get("content-type") or ""
+    try:
+        media, params = _header_params(ctype)
+    except ValueError:
+        media, params = ctype.split(";", 1)[0].strip().lower(), {}
+    textual = media.startswith("text/") or any(t in media for t in ("json", "xml", "javascript", "graphql", "x-www-form-urlencoded"))
     # The size before any parsing: more text than a check reads is stopped without reading it.
     # A body that says nothing of its type is read as text, as below.
     if (textual or not ctype) and len(flow.request.raw_content or b"") > WEB_BODY_READ_MAX:
@@ -6771,25 +7020,42 @@ def _web_text(flow: http.HTTPFlow) -> str | None:
     raw = flow.request.get_content()
     if raw is None:
         raise ValueError("an encoding the firewall cannot read")
+    if media == "multipart/form-data":
+        # Read strictly (a body mitmproxy's own reader half reads is refused); a part that is not
+        # UTF-8 is a file, not read.
+        out = []
+        for _k, v in _multipart_fields(params.get("boundary"), raw):
+            try:
+                out.append(v.decode("utf-8"))
+            except UnicodeDecodeError:
+                continue
+        return "\n".join(out)
     if len(raw) > WEB_BODY_READ_MAX:
         if textual or not ctype:
             raise ContentTooLong(len(raw))
         return None  # a file, not read
-    if "application/x-www-form-urlencoded" in ctype:
-        return "\n".join(v for _k, v in flow.request.urlencoded_form.items(multi=True))
+    if media == "application/x-www-form-urlencoded":
+        return "\n".join(v for _k, v in parse_qsl(raw.decode("utf-8", errors="replace"), keep_blank_values=True, encoding="utf-8", errors="replace"))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         if not textual:
             return None  # binary
         text = raw.decode("utf-8", errors="replace")  # another charset: its ASCII words still read
-    if "json" in ctype or text.lstrip()[:1] in ("{", "["):
+    if "json" in media or text.lstrip()[:1] in ("{", "["):
         try:
-            out = []
-            _tg_texts(json.loads(text), True, out, 0, set())
-            return "\n".join(out)
+            doc = json.loads(text, parse_int=_JsonInt, parse_float=_JsonFloat)
         except (ValueError, RecursionError):
-            pass
+            doc = None
+        if doc is not None:
+            out = []
+            try:
+                _tg_texts(doc, True, out, 0, set())
+            except (ValueError, RecursionError):
+                # Deeper than the walk goes, or a repeated key in JSON in a string: every string in
+                # it, escapes undone, rather than none.
+                return _json_unescape_loose(text)
+            return "\n".join(out)
     if ctype and not textual:
         return None
     return text
@@ -6850,8 +7116,9 @@ MCP_ADMISSION_URL = os.environ.get("MITM_MCP_ADMISSION_URL", "http://127.0.0.1:8
 MCP_BODY_MAX = 1024 * 1024
 MCP_ANSWER_MAX = 4 * 1024 * 1024
 # A body larger than MCP_BODY_MAX is still parsed up to this, to tell a tool call (refused as too
-# large) from any other large JSON, such as a model request whose text mentions tools/call.
-MCP_PARSE_MAX = 4 * 1024 * 1024
+# large) from any other large JSON, such as a JSON upload to an API. JSON larger still is refused as
+# a tool call, since only a parse can tell (an escaped `tools\u002fcall` has no bytes to find).
+MCP_PARSE_MAX = 32 * 1024 * 1024
 # Headers a held call is not sent again with: the connection's own, and the proxy's.
 _MCP_HEADERS_DROP = ("host", "content-length", "transfer-encoding", "connection", "keep-alive", "upgrade", "proxy-authorization", "proxy-connection", "te", "accept-encoding")
 
@@ -6863,6 +7130,54 @@ def _mcp_admission(path: str, payload: dict[str, Any], timeout: float = 30) -> d
         return json.load(response)
 
 
+# `tools/call` as a body can carry it in bytes: plain, with JSON's escaped slash, in UTF-16 or UTF-32.
+_MCP_CALL_NEEDLES = tuple({n.encode(enc) for n in ("tools/call", "tools\\/call", "tools\\u002fcall", "tools\\u002Fcall")
+                           for enc in ("utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")})
+_BOMS = (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff")
+
+
+# The keys a server reads a call by. Go's encoding/json (mcp-go, GitHub's MCP server) takes any
+# case, and folds `ſ` to `s` and the Kelvin sign to `k`: `"Method": "tools/call"` is a call there.
+_MCP_KEYS = ("jsonrpc", "method", "params", "name", "arguments", "id")
+
+
+def _mcp_odd_keys(msgs: list[Any]) -> bool:
+    """
+    Whether a tool call (its method `tools/call` under a key of any case) has one of those keys, in
+    it or in its params, written in another case. Other JSON (`{"Name": ...}` to an API) is not one.
+    """
+    def odd(d: Any) -> bool:
+        return isinstance(d, dict) and any(isinstance(k, str) and k not in _MCP_KEYS and k.casefold() in _MCP_KEYS for k in d)
+
+    def call(m: Any) -> bool:
+        return isinstance(m, dict) and any(isinstance(k, str) and k.casefold() == "method" and v == "tools/call" for k, v in m.items())
+    return any(call(m) and (odd(m) or any(isinstance(k, str) and k.casefold() == "params" and odd(v) for k, v in m.items())) for m in msgs)
+
+
+def _mcp_mentions_call(raw: bytes) -> bool:
+    return any(n in raw for n in _MCP_CALL_NEEDLES)
+
+
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _mcp_plain(raw: bytes) -> Any:
+    """
+    The body as plain UTF-8 JSON, the one reading every server shares; raises on anything else: a
+    BOM, a bad byte, or `NaN`/`Infinity`, which Python's parser takes and JavaScript's does not.
+    """
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("a BOM")
+    return json.loads(raw.decode("utf-8"), parse_constant=_no_constant)
+
+
+def _looks_wide_json(raw: bytes) -> bool:
+    """JSON in UTF-16 or UTF-32: zero bytes round a `{` or `[` at the start."""
+    head = raw[:8]
+    return b"\x00" in head and head.replace(b"\x00", b"").lstrip()[:1] in (b"{", b"[")
+
+
 def mcp_request_kind(flow: http.HTTPFlow) -> str | None:
     """`call` when a JSON body holds a `tools/call`; `list` or `other` for other JSON-RPC; None otherwise."""
     req = flow.request
@@ -6872,20 +7187,46 @@ def mcp_request_kind(flow: http.HTTPFlow) -> str | None:
         raw = req.get_content(strict=False) or b""
     except Exception:
         return None
-    if raw.lstrip()[:1] not in (b"{", b"["):
+    # JSON, or JSON in UTF-16/32 (a zero byte next to the first character) or behind a BOM: servers
+    # read all of them (Python's `json.loads(bytes)` does), so all are looked at.
+    head = raw.lstrip()[:1]
+    if head not in (b"{", b"[") and not raw.startswith(_BOMS) and not _looks_wide_json(raw):
         return None
     if len(raw) > MCP_PARSE_MAX:
-        # Too large to parse: one that mentions a tool call is refused as one, never sent unchecked. Model
-        # providers and the firewall's own channels never get here (`mcp_request`), and below this size a
-        # body that only quotes tools/call (a model request with it in its text) is parsed and passes.
-        return "call" if (b"tools/call" in raw or b"tools\\/call" in raw) else None
-    try:
-        doc = json.loads(raw)
-    except ValueError:
-        return None
+        # Too large to parse: JSON this large is refused as a tool call, never sent unchecked (a byte
+        # search for tools/call misses `tools\u002fcall` and the like). Model providers and the
+        # firewall's own channels never get here (`mcp_request`), and below this size a body that only
+        # quotes tools/call (a model request with it in its text) is parsed and passes.
+        # The byte search cannot see an escaped `tools/call`: anything that starts like JSON counts.
+        return "call"
+    doc = None
+    # As a server could read it: plain UTF-8, then bytes (BOM and UTF-16/32 detected), then UTF-8
+    # with bad bytes replaced (the TypeScript SDK's way). Only the first is `cc_mcp_plain`: a tool
+    # call read any other way is refused (`mcp_request`).
+    for i, attempt in enumerate((lambda: _mcp_plain(raw), lambda: json.loads(raw), lambda: json.loads(raw.decode("utf-8", "replace").lstrip("\ufeff")))):
+        try:
+            doc = attempt()
+            flow.metadata["cc_mcp_plain"] = i == 0
+            break
+        except (ValueError, RecursionError):
+            continue
+    else:
+        # Not JSON to us; a server may still run it. A body that names a tool call is one (refused).
+        flow.metadata["cc_mcp_plain"] = False
+        return "call" if _mcp_mentions_call(raw) else None
     msgs = doc if isinstance(doc, list) else [doc]
+    if _mcp_odd_keys(msgs):
+        # Read one way here and another by a server that matches keys in any case: refused as a call.
+        flow.metadata["cc_mcp_plain"] = False
+        first = next((m for m in msgs if isinstance(m, dict) and isinstance(m.get("id"), (str, int)) and not isinstance(m.get("id"), bool)), None)
+        if first is not None:
+            flow.metadata["cc_mcp_id"] = first["id"]
+        return "call"
     methods = [m.get("method") for m in msgs if isinstance(m, dict) and isinstance(m.get("method"), str)]
     if "tools/call" in methods:
+        first = next(m for m in msgs if isinstance(m, dict) and m.get("method") == "tools/call")
+        if isinstance(first.get("id"), (str, int)) and not isinstance(first.get("id"), bool):
+            flow.metadata["cc_mcp_id"] = first["id"]
         return "call"
     if not methods or not any(isinstance(m, dict) and "jsonrpc" in m for m in msgs):
         return None
@@ -6913,8 +7254,9 @@ def _mcp_answer(flow: http.HTTPFlow, status: int, content_type: str, body: str, 
     _log_once(flow, {**_http_record(flow, "block"), "status": status})
 
 
-def _mcp_refuse_text(message: str) -> str:
-    return json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": message}})
+def _mcp_refuse_text(message: str, rpc_id: str | int | None = None) -> str:
+    # The call's own id when it is known, so the client pairs the refusal with the call it waits on.
+    return json.dumps({"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32001, "message": message}})
 
 
 async def mcp_request(flow: http.HTTPFlow, vm_id: str | None) -> str | None:
@@ -6934,11 +7276,15 @@ async def mcp_request(flow: http.HTTPFlow, vm_id: str | None) -> str | None:
     if not vm_id or not host:
         # A tool call from a box this proxy cannot name, or one whose Host header is not the server it
         # connected to, cannot be checked: refused.
-        _mcp_answer(flow, 403, "application/json", _mcp_refuse_text("The firewall could not tell which agent or which server this tool call is for, so it did not send it."), "integrations: unknown")
+        _mcp_answer(flow, 403, "application/json", _mcp_refuse_text("The firewall could not tell which agent or which server this tool call is for, so it did not send it.", flow.metadata.get("cc_mcp_id")), "integrations: unknown")
         return "answered"
     body = flow.request.get_content(strict=False) or b""
     if len(body) > MCP_BODY_MAX:
-        _mcp_answer(flow, 413, "application/json", _mcp_refuse_text("That tool call is too large for the firewall to check."), "integrations: too large")
+        _mcp_answer(flow, 413, "application/json", _mcp_refuse_text("That tool call is too large for the firewall to check.", flow.metadata.get("cc_mcp_id")), "integrations: too large")
+        return "answered"
+    if not flow.metadata.get("cc_mcp_plain"):
+        # A BOM, UTF-16/32, a bad byte, NaN, or not JSON to us: the check would read it one way and the server another.
+        _mcp_answer(flow, 400, "application/json", _mcp_refuse_text("The firewall could not read this tool call, so it did not send it. Send it as plain UTF-8 JSON.", flow.metadata.get("cc_mcp_id")), "integrations: unreadable")
         return "answered"
     headers = {k.lower(): v for k, v in flow.request.headers.items() if k.lower() not in _MCP_HEADERS_DROP}
     try:
@@ -6947,7 +7293,7 @@ async def mcp_request(flow: http.HTTPFlow, vm_id: str | None) -> str | None:
             "headers": headers, "body": body.decode("utf-8", "replace")})
     except Exception as exc:  # fail closed: a tool call nobody could check does not go out
         log.warning(f"[mcp] admission failed, refusing the tool call: {exc!r}")
-        _mcp_answer(flow, 503, "application/json", _mcp_refuse_text("The firewall could not check this tool call, so it did not send it. Try again in a minute."), "integrations: check failed")
+        _mcp_answer(flow, 503, "application/json", _mcp_refuse_text("The firewall could not check this tool call, so it did not send it. Try again in a minute.", flow.metadata.get("cc_mcp_id")), "integrations: check failed")
         return "answered"
     action = verdict.get("action")
     if action == "answer":
