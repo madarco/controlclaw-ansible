@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.36.0",
+    "date": "2026-10-28",
+    "changes": [
+      "The firewall now checks the agents' traffic to ControlClaw and to backups, so these connections can no longer be used to reach other sites."
+    ]
+  },
+  {
     "version": "1.35.2",
     "date": "2026-10-28",
     "changes": [
