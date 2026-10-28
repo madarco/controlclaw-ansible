@@ -62,9 +62,12 @@ def host_builds(spec_path):
 # release).
 HOST_UPGRADES = {'dist/plugin-sdk/meeting-runtime.js': {'c9145d080a442405cc11ed732a6f7da4bdf118cc4411bb5997b58f760db343f4': 12, 'caff1415a0fa0764e5834b683158e6b9fcf86ea2a89278259e16493c043f6884': 2, 'a4da6ec6f353f2766aecf3d5d2c4494d7d4be32ffa7676503612b643faac9e35': 4, 'dacb0c7cbb0d0f7cf27a9386adc685dbbac5a9e27e2501924b0d691fb4d808e0': 7, '12a914a7d4a779ea480af639d9a8499f1214df9b531145bf4071d49573d80aa8': 8, 'b41b947235ef532fd5728032fd97537646fe1e193ad9fb39a4dbb896577743c8': 11}, 'dist/agent-run-control-shared-Cc6QkFgv.mjs': {'4bd6c44e984a0600b8f4a295792e58e9b703e5bfeb437ae0548983a19b65bde3': 2, '5adf06109a581e38a2529e7a5f876e57918174241eb1d5b927e193e1bc79f1d2': 5}, 'dist/realtime-session-harness-C-e8-thM.mjs': {'42e25ae4f88ff0172a28f530790c20ad585b5a2b834ff98e138df52f5caf5dc1': 7}}
 
-def patch(host, plugin):
+def patch(host, plugin, write=True):
+    """Patch every file, or with plugin None and write False, only try the host's (--try-host)."""
     changes = []
     for spec in PATCHES:
+        if plugin is None and spec['kind'] != 'host':
+            continue
         path = Path(host if spec['kind'] == 'host' else plugin) / spec['path']
         if spec['kind'] == 'host' and not path.exists():
             pattern = re.sub(r'-[A-Za-z0-9_-]{8}(?=\.mjs$)', '-????????', path.name)
@@ -117,6 +120,8 @@ def patch(host, plugin):
             source = source.replace(old, new)
         assert hashlib.sha256(source.encode()).hexdigest() == spec['after']
         changes.append((path, source))
+    if not write:
+        return
     # Check every file before modifying any.
     for path, source in changes:
         path.write_text(source)
@@ -175,9 +180,45 @@ def check(host, plugin):
         files.append({'path': spec['path'], 'status': status})
     return {'reviewed': REVIEWED, 'plugin': 'found' if plugin is not None else 'missing', 'files': files}
 
+# What meeting-install-check.mjs imports from the installed OpenClaw after npm: one module per prefix
+# in dist, whose final export list names the function. Checked the same way, without running it.
+INSTALL_CHECK_EXPORTS = (
+    ('installed-plugin-index-record-reader', 'loadInstalledPluginIndexInstallRecords'),
+    ('official-external-install-records', 'isTrustedOfficialPluginInstallRecord'),
+)
+
+def install_check_exports(host):
+    for prefix, name in INSTALL_CHECK_EXPORTS:
+        files = [f for f in (Path(host) / 'dist').glob(prefix + '-*.mjs') if re.fullmatch(re.escape(prefix) + r'-[A-Za-z0-9_-]+\.mjs', f.name)]
+        if len(files) != 1:
+            raise RuntimeError('Expected one runtime module: ' + prefix)
+        exports = re.search(r'export \{([^}]+)\};?\s*$', files[0].read_text())
+        names = [part.strip().split(' as ')[0].strip() for part in exports.group(1).split(',')] if exports else []
+        if name not in names:
+            raise RuntimeError('Missing runtime export: ' + name)
+
 if __name__ == '__main__':
     if sys.argv[1] == '--check':
         print(json.dumps(check(sys.argv[2], find_plugin(sys.argv[3]))))
+        sys.exit(0)
+    # An OpenClaw build not installed yet (cc-openclaw-patch, before it installs one): run every
+    # host replacement on it, in memory, and write nothing. Exit 0 when the patch would apply, 1 with
+    # the reason when it would refuse, so a build this file does not know is never installed.
+    # The folders --try-host reads, so cc-openclaw-patch unpacks those and nothing else: each host
+    # file's own, and dist, where host_imports looks modules up by name.
+    if sys.argv[1] == '--host-dirs':
+        print(json.dumps(sorted({str(Path(spec['path']).parent) for spec in PATCHES if spec['kind'] == 'host'} | {'dist'})))
+        sys.exit(0)
+    # A refusal is a JSON line with ok false. Anything else that goes wrong here is a traceback, which
+    # cc-openclaw-patch does not take for a refusal.
+    if sys.argv[1] == '--try-host':
+        try:
+            patch(sys.argv[2], None, write=False)
+            install_check_exports(sys.argv[2])
+        except (RuntimeError, AssertionError, FileNotFoundError) as error:
+            print(json.dumps({'ok': False, 'reason': str(error) or type(error).__name__}))
+            sys.exit(1)
+        print(json.dumps({'ok': True}))
         sys.exit(0)
     plugin = find_plugin(sys.argv[2])
     if plugin is None:

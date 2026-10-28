@@ -1,29 +1,69 @@
 #!/usr/bin/python3
-"""Resolve one stable OpenClaw month and verify its archive before installation."""
+"""Resolve one stable OpenClaw month and verify its archive before installation.
+
+  cc-openclaw-patch <pin> <pin sha512> <installed> <auto true|false> <destination> [<meet patch> [<state file>]]
+
+With auto on, the newest patch of the pinned month is chosen, but only one whose Meet code the box's
+own meeting-runtime-patch.py knows: each candidate is downloaded, checked against the registry's
+SHA-512, unpacked to a temporary folder and tried with `--try-host` before anything is installed.
+A candidate it refuses is skipped and the next older one is tried, down to the pin, which is the
+reviewed build. Never lower than what is installed: when nothing newer is known, the installed
+version stays. Before this (controlclaw docs/ops/t-openclaw-autopatch.md) a patch published minutes
+earlier was installed, the Meet step then refused it, and the run stopped with the gateway down.
+
+The state file says which newer patch is waiting for review, for the agent's health check, and
+remembers refusals. It is root's, in a root-owned folder: the resolver runs as root and trusts it,
+and the agent's own /opt/controlclaw/state is writable by the agent.
+"""
 import base64
 import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tarfile
 import tempfile
+import time
 import urllib.request
+
+REGISTRY = 'https://registry.npmjs.org/openclaw'
 
 
 def version_key(version):
-    return tuple(map(int, version.split('.'))) if re.fullmatch(r'[0-9]{4}\.[0-9]+\.[0-9]+', version) else None
+    return tuple(map(int, version.split('.'))) if isinstance(version, str) and re.fullmatch(r'[0-9]{4}\.[0-9]+\.[0-9]+', version) else None
 
 
-def pick_version(versions, pinned):
+def month_versions(versions, pinned):
+    """The stable versions of the pinned month, at or above the pin, newest first."""
     floor = version_key(pinned)
     if not floor:
         raise ValueError('The OpenClaw pin must be a stable version')
-    return max((v for v in versions if version_key(v) and version_key(v)[:2] == floor[:2] and version_key(v) >= floor), key=version_key, default=pinned)
+    month = [v for v in versions if version_key(v) and version_key(v)[:2] == floor[:2] and version_key(v) >= floor]
+    return sorted(month, key=version_key, reverse=True)
+
+
+def keeps(installed, pinned):
+    """The installed version is at or above the pin, in any month: never replaced by a lower one. A
+    newer OpenClaw stamps the config with its version, and an older one then refuses to start."""
+    have, floor = version_key(installed), version_key(pinned)
+    return bool(have and floor and have >= floor)
+
+
+def sha512_hex(integrity):
+    algorithm, encoded = integrity.split('-', 1)
+    if algorithm != 'sha512':
+        raise ValueError('Expected SHA-512 integrity')
+    digest = base64.b64decode(encoded, validate=True).hex()
+    if len(digest) != 128:
+        raise ValueError('Invalid SHA-512 integrity')
+    return digest
 
 
 def download(version, digest, destination):
     # Never trust a registry-supplied URL to send root to another host.
-    url = 'https://registry.npmjs.org/openclaw/-/openclaw-' + version + '.tgz'
+    url = REGISTRY + '/-/openclaw-' + version + '.tgz'
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(destination))
     try:
         checksum = hashlib.sha512()
@@ -40,31 +80,217 @@ def download(version, digest, destination):
             os.unlink(tmp)
 
 
-def main():
-    pinned, pinned_digest, installed, auto, destination = sys.argv[1:]
-    version, digest = pinned, pinned_digest
-    fallback = False
+def meet_knows(archive, checker):
+    """(True, '') when the Meet patch would apply to this archive's OpenClaw, (False, why) when it refuses.
+
+    Raises when the check itself could not run (a full disk, a timeout, a crash of the checker):
+    that is not a refusal, and is not remembered as one."""
+    run = lambda *args: subprocess.run([sys.executable, '-I', checker, *args], capture_output=True, text=True, timeout=300)
+    # Only the folders the check reads (a third of the 410 MB package), as the checker names them.
+    listed = run('--host-dirs')
+    if listed.returncode != 0:
+        raise RuntimeError('The Meet patch could not name the files it checks')
+    dirs = set(json.loads(listed.stdout))
+    work = tempfile.mkdtemp(prefix='cc-openclaw-check-')
     try:
-        if auto == 'true':
-            req = urllib.request.Request('https://registry.npmjs.org/openclaw', headers={'Accept': 'application/vnd.npm.install-v1+json'})
-            with urllib.request.urlopen(req, timeout=30) as response:
-                versions = json.load(response)['versions']
-            version = pick_version(versions, pinned)
-            integrity = versions[version]['dist']['integrity']
-            algorithm, encoded = integrity.split('-', 1)
-            if algorithm != 'sha512':
-                raise ValueError('Expected SHA-512 integrity')
-            digest = base64.b64decode(encoded, validate=True).hex()
-            if len(digest) != 128:
-                raise ValueError('Invalid SHA-512 integrity')
-        if version != installed:
-            download(version, digest, destination)
+        # One pass over the stream: listing first would decompress the 114 MB archive twice.
+        with tarfile.open(archive, 'r|gz') as tar:
+            for member in tar:
+                if member.isfile() and member.name.startswith('package/') and os.path.dirname(member.name[len('package/'):]) in dirs:
+                    tar.extract(member, work, filter='data')
+        result = run('--try-host', os.path.join(work, 'package'))
+        if result.returncode == 0:
+            return True, ''
+        try:
+            verdict = json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            verdict = None
+        if not isinstance(verdict, dict) or verdict.get('ok') is not False:
+            raise RuntimeError('The Meet patch check failed: ' + ((result.stderr.strip().splitlines() or ['no output'])[-1])[:200])
+        return False, str(verdict.get('reason', '')).replace(work + '/', '')[:300]
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def write_state(path, state):
+    """Written whole and renamed, from a file only this process created (mkstemp: O_EXCL, no link followed)."""
+    if not path:
+        return
+    tmp = None
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.openclaw-patch-')
+        with os.fdopen(fd, 'w') as out:
+            os.fchmod(out.fileno(), 0o644)
+            json.dump(state, out)
+            out.write('\n')
+        os.replace(tmp, path)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def read_state(path):
+    try:
+        with open(path) as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
     except Exception:
+        return {}
+
+
+def file_sha256(path):
+    with open(path, 'rb') as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+class NoOlderInstall(Exception):
+    """Only an OpenClaw older than the floor could be installed: refused, the run fails."""
+
+
+def floor_of(installed, floor):
+    """The lowest version this box may get: the installed one, or the one its files or its config say
+    it ran (an older OpenClaw refuses a config a newer one stamped). Empty when there is none."""
+    known = [v for v in (installed, floor) if version_key(v)]
+    return max(known, key=version_key) if known else ''
+
+
+def resolve(pinned, pinned_digest, installed, auto, destination, checker=None, refused=(), fetch=None, get=download, knows=meet_knows, floor=''):
+    """What to install, and what was skipped.
+
+    `installed` is the version that runs (empty when OpenClaw is missing or its build is gone);
+    `floor` is the version the box last ran, from its files and its config, so a broken install is
+    put back at that version or newer, never older.
+    `refused` holds the (version, digest, Meet patch sha256) a run already refused: the same archive
+    with the same Meet patch is not downloaded (114 MB) again every night to be refused again.
+    `fetch`, `get` and `knows` are the network and the Meet check, for tests.
+    """
+    skipped = []
+    checker_sha = file_sha256(checker) if checker else None
+    lowest = floor_of(installed, floor)
+    above_pin = bool(lowest) and version_key(lowest) > version_key(pinned)
+    # The installed OpenClaw stays only when it is not older than what the box last ran: one below its
+    # config's stamp refuses to start (a crash loop), and is lifted to that version or newer.
+    current = keeps(installed, pinned) and installed == lowest
+    versions = None
+
+    def reinstall_floor():
+        # The box's own version again, when nothing newer is known: the registry gives its digest.
+        nonlocal versions
+        versions = versions if versions is not None else (fetch or fetch_versions)()
+        if lowest not in versions:
+            raise NoOlderInstall('OpenClaw ' + lowest + ' is not in the registry; not installing an older one')
+        get(lowest, sha512_hex(versions[lowest]['dist']['integrity']), destination)
+        return lowest
+
+    if not auto:
+        # openclaw_auto_patch off: the pin, unless something newer is installed or was.
+        if current:
+            return installed, skipped
+        if above_pin:
+            return reinstall_floor(), skipped
+        get(pinned, pinned_digest, destination)
+        return pinned, skipped
+    versions = (fetch or fetch_versions)()
+    candidates = month_versions(versions, pinned)
+    if current:
+        candidates = [v for v in candidates if version_key(v) > version_key(installed)]
+    elif above_pin:
+        candidates = [v for v in candidates if version_key(v) > version_key(lowest)]
+    for version in candidates:
+        if version == pinned:
+            break
+        try:
+            digest = sha512_hex(versions[version]['dist']['integrity'])
+        except Exception as error:
+            # One odd registry entry skips that patch, not the run.
+            skipped.append({'version': version, 'reason': ('unreadable integrity: ' + str(error))[:300], 'transient': True})
+            continue
+        if checker is None:
+            get(version, digest, destination)
+            return version, skipped
+        seen = next((r for r in refused if isinstance(r, dict) and (r.get('version'), r.get('digest'), r.get('checker')) == (version, digest, checker_sha)), None)
+        if seen:
+            skipped.append({'version': version, 'reason': str(seen.get('reason') or 'refused before'), 'digest': digest, 'checker': checker_sha})
+            continue
+        get(version, digest, destination)
+        try:
+            ok, reason = knows(destination, checker)
+        except Exception as error:
+            # The check did not run on this one (a crash, a timeout): skipped, not remembered as
+            # refused, and the next older one is tried. Never left where the install reads it.
+            os.unlink(destination)
+            skipped.append({'version': version, 'reason': ('the Meet check failed: ' + str(error))[:300], 'transient': True})
+            continue
+        except BaseException:
+            os.unlink(destination)
+            raise
+        if ok:
+            return version, skipped
+        os.unlink(destination)
+        skipped.append({'version': version, 'reason': reason, 'digest': digest, 'checker': checker_sha})
+    if current:
+        return installed, skipped
+    if above_pin:
+        return reinstall_floor(), skipped
+    get(pinned, pinned_digest, destination)
+    return pinned, skipped
+
+
+def fetch_versions():
+    req = urllib.request.Request(REGISTRY, headers={'Accept': 'application/vnd.npm.install-v1+json'})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)['versions']
+
+
+def main():
+    pinned, pinned_digest, installed, auto, destination = sys.argv[1:6]
+    checker = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else None
+    state_path = sys.argv[7] if len(sys.argv) > 7 else None
+    floor = sys.argv[8] if len(sys.argv) > 8 else ''
+    fallback = False
+    skipped = []
+    previous = read_state(state_path) if state_path else {}
+    refused = previous.get('refused') if isinstance(previous.get('refused'), list) else []
+    # Only what this Meet patch refused: a newer role may know a patch an older one skipped.
+    checker_sha = file_sha256(checker) if checker and os.path.exists(checker) else None
+    refused = [r for r in refused if isinstance(r, dict) and r.get('checker') == checker_sha and isinstance(r.get('version'), str)]
+    try:
+        version, skipped = resolve(pinned, pinned_digest, installed, auto == 'true', destination, checker, refused, floor=floor)
+    except Exception as error:
+        # The registry did not answer, or answered something unexpected. Keep what is installed; install
+        # the pin only on a box that never ran a newer OpenClaw. Anything else would be older than the
+        # config's stamp, and that OpenClaw refuses to start: fail the run instead (the rescue starts
+        # whatever is there, and the next Update tries again).
+        lowest = floor_of(installed, floor)
+        if keeps(installed, pinned) and installed == lowest:
+            version = installed
+        elif lowest and version_key(lowest) > version_key(pinned):
+            print('cc-openclaw-patch: OpenClaw is not installed correctly and ' + lowest + ' could not be fetched (' + str(error)[:200] + '); not installing an older one', file=sys.stderr)
+            sys.exit(1)
+        else:
+            version = pinned
         fallback = True
-        version = pinned
-        if installed != pinned:
+        if version != installed:
             download(pinned, pinned_digest, destination)
-    print(json.dumps({'version': version, 'changed': version != installed, 'fallback': fallback}))
+        # Nothing was learned this run: what the last one found still holds.
+        skipped = refused
+    # Only a real refusal is "waiting for review" and remembered. A check that crashed, or an entry the
+    # registry got wrong, is in the run's output and is tried again next run: a release would not fix it.
+    remembered = [entry for entry in skipped if not entry.get('transient')]
+    waiting = remembered[0] if remembered else None
+    write_state(state_path, {
+        'checkedAt': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'chosen': version,
+        'waiting': waiting['version'] if waiting else None,
+        'reason': waiting['reason'] if waiting else None,
+        'refused': remembered,
+        'fallback': fallback,
+    })
+    print(json.dumps({'version': version, 'changed': version != installed, 'fallback': fallback, 'skipped': [{'version': s['version'], 'reason': s['reason']} for s in skipped]}))
 
 
 if __name__ == '__main__':

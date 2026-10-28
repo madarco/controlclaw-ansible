@@ -101,9 +101,51 @@
 # re-resolves and re-verifies 300+ packages. That made it the most expensive task on a box booted
 # from the base image, which is precisely the one thing the image was supposed to make free.
 # Compare versions first: one registry query (~1s) against the installed binary.
-- name: Check the installed OpenClaw version
+# A run killed while npm installed (no rescue ran) leaves the old OpenClaw kept aside and the new one
+# without its build. The kept one goes back first: it is the version that ran.
+- name: Put back the kept OpenClaw when the installed one has no build
+  ansible.builtin.shell:
+    cmd: >-
+      if [ ! -f /usr/lib/node_modules/openclaw/dist/index.js ] && [ -f /usr/lib/.cc-openclaw-previous/dist/index.js ]; then
+      rm -rf /usr/lib/node_modules/openclaw &&
+      mv /usr/lib/.cc-openclaw-previous /usr/lib/node_modules/openclaw &&
+      ln -sfn ../lib/node_modules/openclaw/openclaw.mjs /usr/bin/openclaw && echo restored; fi
+  register: openclaw_restored
+  changed_when: "'restored' in openclaw_restored.stdout"
+
+# The lowest OpenClaw this box may get: the version its files say, and the one its config was last
+# written by (an older OpenClaw refuses to start on that config). Read even when the build is gone,
+# so a broken install is put back at that version or newer, never at the pin.
+- name: Read the OpenClaw version this box last ran
   ansible.builtin.command:
-    cmd: openclaw --version
+    argv:
+      - python3
+      - -c
+      - |
+        import json, re, sys
+        found = []
+        for path, keys in ((sys.argv[1], ('version',)), (sys.argv[2], ('meta', 'lastTouchedVersion'))):
+            try:
+                value = json.load(open(path))
+                for key in keys:
+                    value = value[key]
+            except Exception:
+                continue
+            if isinstance(value, str) and re.fullmatch(r'[0-9]{4}\.[0-9]+\.[0-9]+', value):
+                found.append(value)
+        print(max(found, key=lambda v: tuple(map(int, v.split('.')))) if found else '')
+      - /usr/lib/node_modules/openclaw/package.json
+      - "{{ controlclaw_home }}/.openclaw/openclaw.json"
+  register: openclaw_floor
+  changed_when: false
+  failed_when: false
+
+# `openclaw --version` answers from package.json even when the build is gone, so a half installed
+# OpenClaw (dist/ missing or cut short) also reads as none, and is installed again over itself
+# (T-openclaw-autopatch). The binary's own entry is dist/index.js.
+- name: Check the installed OpenClaw version
+  ansible.builtin.shell:
+    cmd: test -f /usr/lib/node_modules/openclaw/dist/index.js && openclaw --version
   register: openclaw_installed_version
   changed_when: false
   failed_when: false
@@ -134,7 +176,21 @@
     group: root
     mode: '0755'
 
-- name: Resolve and verify the newest stable patch of the pinned OpenClaw month
+# The resolver tries each newer OpenClaw patch with this file before installing it (T-openclaw-
+# autopatch), so it is put in place here, before openclaw-meetings.yml copies it again.
+- name: Install the Meet patch helper the resolver checks candidates with
+  ansible.builtin.copy:
+    src: meeting-runtime-patch.py
+    dest: /opt/controlclaw/meeting-runtime-patch.py
+    owner: root
+    group: root
+    mode: '0755'
+
+# Only a patch the Meet step below knows is installed: one it would refuse is skipped, and named in
+# the state file the health check reads ("a newer OpenClaw patch is waiting for review"). The nightly
+# Update runs a role at least a day old, while npm publishes at any time; before this a patch out for
+# 77 minutes was installed by a role that refused it, with the gateway stopped (2026-10-27).
+- name: Resolve and verify the newest known stable patch of the pinned OpenClaw month
   ansible.builtin.command:
     argv:
       - /usr/local/bin/cc-openclaw-patch
@@ -143,8 +199,16 @@
       - "{{ openclaw_installed_semver }}"
       - "{{ 'true' if openclaw_auto_patch | default(true) | bool else 'false' }}"
       - /opt/controlclaw/openclaw-pinned.tgz
+      - /opt/controlclaw/meeting-runtime-patch.py
+      - /var/lib/controlclaw/openclaw-patch.json
+      - "{{ openclaw_floor.stdout | default('') | trim }}"
   register: openclaw_patch
   changed_when: (openclaw_patch.stdout | from_json).changed
+
+- name: Say which newer OpenClaw patches were skipped
+  ansible.builtin.debug:
+    msg: "Not installed, the Meet patch does not know them yet: {{ (openclaw_patch.stdout | from_json).skipped | default([]) | map(attribute='version') | join(', ') }}"
+  when: (openclaw_patch.stdout | from_json).skipped | default([]) | length > 0
 
 - name: Use the verified OpenClaw version
   ansible.builtin.set_fact:
@@ -174,9 +238,29 @@
   ansible.builtin.systemd:
     name: openclaw
     state: stopped
-  when: openclaw_upgrading | bool
+  # Also before npm reinstalls a broken OpenClaw over itself: a unit restarting while npm writes is
+  # the T-107 race.
+  when: openclaw_upgrading | bool or (openclaw_install_wanted | bool and openclaw_floor.stdout | default('') | trim | length > 0)
   # A base image carries the binary before it has a unit; nothing is running to stop.
   failed_when: false
+
+# Kept aside until npm has finished: an install that fails or is cut short is replaced by the version
+# that ran before (main.yml's rescue), never left half installed. Only until then: once the new
+# build has run, it stamps the config with its version, and an older OpenClaw refuses to start on
+# that config ("this OpenClaw binary is older than the config last written"; seen on a dev pair,
+# 2026-10-28). A rename in the same file system, so it costs nothing.
+- name: Keep the installed OpenClaw for a rollback
+  ansible.builtin.shell:
+    cmd: >-
+      rm -rf /usr/lib/.cc-openclaw-previous &&
+      if [ -d /usr/lib/node_modules/openclaw ]; then mv /usr/lib/node_modules/openclaw /usr/lib/.cc-openclaw-previous; fi
+  when: openclaw_upgrading | bool
+  changed_when: true
+
+- name: Remember that a rollback is possible
+  ansible.builtin.set_fact:
+    openclaw_previous_saved: true
+  when: openclaw_upgrading | bool
 
 - name: Install OpenClaw globally from npm
   ansible.builtin.command:
@@ -185,6 +269,15 @@
   environment: "{{ controlclaw_node_env }}"
   when: openclaw_install_wanted | bool
   changed_when: openclaw_npm_install.changed
+
+- name: Drop the OpenClaw kept for a rollback (the new one is installed)
+  ansible.builtin.file:
+    path: /usr/lib/.cc-openclaw-previous
+    state: absent
+
+- name: No rollback past this point
+  ansible.builtin.set_fact:
+    openclaw_previous_saved: false
 
 # The same migration, for a box that is already in the loop: one updated before this task existed,
 # where the new build is already installed and nothing above changes. The gateway's own message is
@@ -722,3 +815,4 @@
     state: started
     enabled: true
   when: not ci_test
+
