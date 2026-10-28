@@ -76,6 +76,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 from html import unescape as html_unescape
@@ -2592,10 +2593,46 @@ def _strict_json(text: str) -> Any:
     def constant(_name: str) -> Any:
         raise _NotASignIn()
 
+    def number(literal: str) -> float:
+        # `1e400` is infinity to Python, an error or a huge number elsewhere: refused like `Infinity`.
+        value = float(literal)
+        if not math.isfinite(value):
+            raise _NotASignIn()
+        return value
+
     try:
-        return json.loads(text, object_pairs_hook=members, parse_constant=constant)
+        return json.loads(text, object_pairs_hook=members, parse_constant=constant, parse_float=number)
     except (ValueError, RecursionError):
         raise _NotASignIn() from None
+
+
+def _json_string_spans(text: str) -> set[tuple[int, int]]:
+    """Every string of a JSON text, as the indexes of its opening and its closing quote."""
+    spans: set[tuple[int, int]] = set()
+    start = -1
+    escaped = False
+    for i, ch in enumerate(text):
+        if start >= 0:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                spans.add((start, i))
+                start = -1
+        elif ch == '"':
+            start = i
+    return spans
+
+
+def _plain_string_once(text: str, found: "re.Pattern[str]") -> bool:
+    """Whether the stand-in is in this JSON text once, and that once is the whole of one of its
+    strings written out as it is. The swap replaces that match in the text, so it has to be the
+    member the parsed document found the stand-in in. Otherwise the holder could spell the stand-in
+    in escapes (`"\\u00348213907"`) while the one match is a number elsewhere (`"note":48213907`),
+    which the parsed check does not read, and the password would go into the number."""
+    matches = list(found.finditer(text))
+    return len(matches) == 1 and (matches[0].start() - 1, matches[0].end()) in _json_string_spans(text)
 
 
 def _strings(node: Any) -> "Iterator[str]":
@@ -2646,9 +2683,51 @@ def _sign_in_field(flow: http.HTTPFlow, placeholder: str) -> tuple[str, list[tup
         raise _NotASignIn()
     _no_method_override(doc)
     holders = [k for k, v in doc.items() if isinstance(v, str) and v == placeholder]
-    if len(holders) != 1 or sum(1 for t in _strings(doc) if _carries(found, t)) != 1:
+    if len(holders) != 1 or sum(1 for t in _strings(doc) if _carries(found, t)) != 1 or not _plain_string_once(text, found):
         raise _NotASignIn()
     return holders[0], []
+
+
+def _known_sign_in(flow: http.HTTPFlow, host: str) -> bool:
+    """A request to a sign-in whose path and body shape are known here (`LOGIN_KNOWN_SIGN_IN`)."""
+    path = _plain_path(flow.request.path)
+    return flow.request.port == 443 and path is not None and any(path.startswith(known) for known in LOGIN_KNOWN_SIGN_IN.get(_ascii_host(host) or "", ()))
+
+
+def _swap_json_member(text: str, placeholder: str, secret: str) -> str:
+    """A JSON sign-in with the password put into the one top-level member whose value is the
+    stand-in, by setting that member and writing the document out again: wherever else the
+    stand-in's characters are in the text (a number, inside an escape), they get nothing."""
+    doc = _strict_json(text)
+    holders = [k for k, v in doc.items() if v == placeholder] if isinstance(doc, dict) else []
+    if len(holders) != 1:
+        raise _NotASignIn()
+    doc[holders[0]] = secret
+    return json.dumps(doc, separators=(",", ":"))
+
+
+def _swap_google_sign_in(body: str, placeholder: str, secret: str) -> str:
+    """Google's sign-in (`_google_sign_in`) with the password set at `payload[3][4][0]` and the
+    `f.req` field written out again; every other byte of the form stays as the page sent it."""
+    from urllib.parse import quote_plus, unquote_plus
+    parts = body.split("&")
+    done = 0
+    for i, part in enumerate(parts):
+        key, eq, value = part.partition("=")
+        if key != "f.req" or not eq:
+            continue
+        envelope = _strict_json(unquote_plus(value))
+        call = envelope[0][0]
+        payload = _strict_json(call[1])
+        if payload[3][4][0] != placeholder:
+            raise _NotASignIn()
+        payload[3][4][0] = secret
+        call[1] = json.dumps(payload, separators=(",", ":"))
+        parts[i] = f"f.req={quote_plus(json.dumps(envelope, separators=(',', ':')), safe='*')}"
+        done += 1
+    if done != 1:
+        raise _NotASignIn()
+    return "&".join(parts)
 
 
 def _google_sign_in(flow: http.HTTPFlow, placeholder: str) -> None:
@@ -2693,7 +2772,7 @@ def _google_sign_in(flow: http.HTTPFlow, placeholder: str) -> None:
         at = payload
         for index in (3, 4):
             at = at[index] if isinstance(at, list) and len(at) > index else None
-        if not (isinstance(at, list) and at and at[0] == placeholder) or sum(1 for t in _strings(payload) if _carries(found, t)) != 1:
+        if not (isinstance(at, list) and at and at[0] == placeholder) or sum(1 for t in _strings(payload) if _carries(found, t)) != 1 or not _plain_string_once(call[1], found):
             raise _NotASignIn()
         exact += 1
     if exact != 1:
@@ -2729,15 +2808,12 @@ def login_scope(flow: http.HTTPFlow, cred: dict[str, Any], host: str, places: di
         return ("basic", None) if _only_basic_header(flow, places, placeholder) else (None, "header")
     if places["in_path"] or places["in_query"] or places["headers"] or flow.request.method not in ("POST", "PUT"):
         return None, "basic" if _only_basic_header(flow, places) else "place"
-    here = _ascii_host(host) or ""
     try:
         # Google's sign-in is built in JavaScript: there is no form to read, so its path and its
         # one body shape are known here.
-        for known in LOGIN_KNOWN_SIGN_IN.get(here, ()):
-            path = _plain_path(flow.request.path)
-            if flow.request.port == 443 and path is not None and path.startswith(known):
-                _google_sign_in(flow, placeholder)
-                return "page", None
+        if _known_sign_in(flow, host):
+            _google_sign_in(flow, placeholder)
+            return "page", None
         field, pairs = _sign_in_field(flow, placeholder)
     except _NotASignIn as refused:
         return None, refused.why
@@ -3034,12 +3110,22 @@ def apply_login_swap(flow: http.HTTPFlow, cred: dict[str, Any], host: str) -> bo
         flow.request.headers.set_all("authorization", [_swap_login_header("authorization", v, placeholder, secret) for v in flow.request.headers.get_all("authorization")])
         flow.metadata.setdefault("cc_login_in", []).append("header")
     else:
-        # `login_scope` has read the body as exactly one of these two, with the stand-in once.
+        # `login_scope` has read the body as one of these three, with the stand-in once. JSON is
+        # swapped by its structure, not by finding the stand-in in the text: the check reads the
+        # parsed document, so the swap has to land where the parsed document has it.
         body = _body_text(flow)
-        if _content_type(flow) == "form":
-            flow.request.set_text(swap_login_form(body, placeholder, secret))
-        else:
-            flow.request.set_text(swap_login_text(body, placeholder, secret, "json"))
+        try:
+            if _known_sign_in(flow, host):
+                flow.request.set_text(_swap_google_sign_in(body, placeholder, secret))
+            elif _content_type(flow) == "form":
+                flow.request.set_text(swap_login_form(body, placeholder, secret))
+            else:
+                flow.request.set_text(_swap_json_member(body, placeholder, secret))
+        except (_NotASignIn, LookupError, TypeError, ValueError) as exc:
+            # Not the shape `login_scope` read, or not one that can be written out again (a lone
+            # surrogate): no password, and the other logins and the answer's scrubbing still run.
+            log.warning("[mitm] login=%s host=%s swap refused: %s", cred.get("login_id"), host, type(exc).__name__)
+            return False
         flow.metadata.setdefault("cc_login_in", []).append("body")
     # For the log record and the AI review: where the password went and why it was allowed there
     # (never the values).
@@ -4818,10 +4904,18 @@ def backup_refusal(flow: http.HTTPFlow, host: str, vm_id: str | None) -> str | N
     method = flow.request.method.upper()
     if method not in ("GET", "PUT", "HEAD"):
         return f"{method[:10]} is not a backup upload or download"
+    # A host the bucket cannot be read from (a regional endpoint with no MITM_BACKUP_BUCKET): any
+    # path on it names a bucket, so nothing on it can be checked as ours.
+    if not BACKUP_BUCKET:
+        return "the backup bucket is not configured on this firewall"
     path = flow.request.path.split("?", 1)[0]
-    # Path-style (the regional endpoint, or a store that is not AWS on BACKUP_HOST itself): drop the
-    # "/<bucket>" in front of the key. Virtual-hosted, the path is the key.
-    if BACKUP_PATH_HOST and _wire_name(host) == BACKUP_PATH_HOST and path.split("/", 2)[1:2] == [BACKUP_BUCKET]:
+    # Path-style (the regional endpoint, or a store that is not AWS on BACKUP_HOST itself): the
+    # first segment is the bucket, and it must be ours. Without this, a store that is not AWS would
+    # read "/<org id>/..." as a key in our bucket while the store serves it from a bucket named
+    # after the organisation. Then drop "/<bucket>". Virtual-hosted, the path is the key.
+    if BACKUP_PATH_HOST and _wire_name(host) == BACKUP_PATH_HOST:
+        if path.split("/", 2)[1:2] != [BACKUP_BUCKET]:
+            return "not the backup bucket"
         path = path[len(BACKUP_BUCKET) + 1:]
     # An object key, nothing that could be read as another one: no dot segments, no encoded
     # separators.
@@ -7319,14 +7413,32 @@ def _no_constant(name: str) -> Any:
     raise ValueError(f"{name} is not JSON")
 
 
-def _mcp_plain(raw: bytes) -> Any:
+def _mcp_plain(raw: bytes, pairs: Any = None) -> Any:
     """
     The body as plain UTF-8 JSON, the one reading every server shares; raises on anything else: a
     BOM, a bad byte, or `NaN`/`Infinity`, which Python's parser takes and JavaScript's does not.
     """
     if raw.startswith(b"\xef\xbb\xbf"):
         raise ValueError("a BOM")
-    return json.loads(raw.decode("utf-8"), parse_constant=_no_constant)
+    return json.loads(raw.decode("utf-8"), parse_constant=_no_constant, object_pairs_hook=pairs)
+
+
+def _go_json_key(key: str) -> str:
+    """A key as Go's encoding/json matches it (the mitm-agent's `goJsonKey`): any case, `ſ` as `s`,
+    the Kelvin sign as `k`, and `ı` and `İ` as `i`."""
+    return key.replace("\u0130", "i").replace("\u0131", "i").lower().replace("\u017f", "s")
+
+
+def _pairs_noting_twice(twice: list[str]) -> Any:
+    """An `object_pairs_hook` that notes, in `twice`, a key an object names twice as Go reads keys.
+    Python keeps the last of two equal keys; Go can keep the first (`"method": null` after
+    `"method": "tools/call"` leaves a tool call), so such a body cannot be read one way only."""
+    def hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        keys = [_go_json_key(k) for k, _ in pairs]
+        if len(keys) != len(set(keys)):
+            twice.append(next(k for i, k in enumerate(keys) if k in keys[:i]))
+        return dict(pairs)
+    return hook
 
 
 def _looks_wide_json(raw: bytes) -> bool:
@@ -7357,10 +7469,13 @@ def mcp_request_kind(flow: http.HTTPFlow) -> str | None:
         # The byte search cannot see an escaped `tools/call`: anything that starts like JSON counts.
         return "call"
     doc = None
+    twice: list[str] = []
+    hook = _pairs_noting_twice(twice)
     # As a server could read it: plain UTF-8, then bytes (BOM and UTF-16/32 detected), then UTF-8
     # with bad bytes replaced (the TypeScript SDK's way). Only the first is `cc_mcp_plain`: a tool
     # call read any other way is refused (`mcp_request`).
-    for i, attempt in enumerate((lambda: _mcp_plain(raw), lambda: json.loads(raw), lambda: json.loads(raw.decode("utf-8", "replace").lstrip("\ufeff")))):
+    for i, attempt in enumerate((lambda: _mcp_plain(raw, hook), lambda: json.loads(raw, object_pairs_hook=hook), lambda: json.loads(raw.decode("utf-8", "replace").lstrip("\ufeff"), object_pairs_hook=hook))):
+        twice.clear()
         try:
             doc = attempt()
             flow.metadata["cc_mcp_plain"] = i == 0
@@ -7372,8 +7487,12 @@ def mcp_request_kind(flow: http.HTTPFlow) -> str | None:
         flow.metadata["cc_mcp_plain"] = False
         return "call" if _mcp_mentions_call(raw) else None
     msgs = doc if isinstance(doc, list) else [doc]
-    if _mcp_odd_keys(msgs):
-        # Read one way here and another by a server that matches keys in any case: refused as a call.
+    # A key named twice only counts where a server could take the body for JSON-RPC: other JSON
+    # with a repeated key (any website's) is none of this check's business.
+    rpc_twice = bool(twice) and (any(k in ("jsonrpc", "method", "params", "id") for k in twice) or _mcp_mentions_call(raw) or any(isinstance(m, dict) and any(isinstance(k, str) and _go_json_key(k) == "jsonrpc" for k in m) for m in msgs))
+    if _mcp_odd_keys(msgs) or rpc_twice:
+        # Read one way here and another by a server that matches keys in any case, or keeps the other
+        # of two equal keys: refused as a call.
         flow.metadata["cc_mcp_plain"] = False
         first = next((m for m in msgs if isinstance(m, dict) and isinstance(m.get("id"), (str, int)) and not isinstance(m.get("id"), bool)), None)
         if first is not None:

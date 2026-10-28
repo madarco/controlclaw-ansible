@@ -41935,8 +41935,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "2474e50" : "unknown",
-  builtAt: true ? "2026-10-28T18:35:33Z" : "unknown"
+  commit: true ? "64b5138" : "unknown",
+  builtAt: true ? "2026-10-28T21:34:39Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -60507,6 +60507,7 @@ var VOICE_DIR2 = "/opt/controlclaw/meeting-voice";
 var GUARD = "/opt/controlclaw/meeting-guard/index.js";
 var PHONE_VERSION = PHONE_PACKAGE.slice(PHONE_PACKAGE.lastIndexOf("@") + 1);
 var CHECK_TIMEOUT_MS = 15e3;
+var OPENCLAW_PATCH_STATE = "/var/lib/controlclaw/openclaw-patch.json";
 var readJson2 = (path) => {
   try {
     return JSON.parse(readFileSync36(path, "utf8"));
@@ -60557,6 +60558,15 @@ function meetingsRuntimeItem(raw, openclaw) {
   const statuses = (r2.files ?? []).map((f2) => f2.status);
   const status = statuses.includes("unknown") ? "mismatch" : statuses.includes("missing") ? "missing" : statuses.includes("unpatched") ? "unpatched" : statuses.length ? "ok" : "unknown";
   return { id: "meetings_runtime", status, expected, actual: openclaw };
+}
+var versionKey = (v2) => typeof v2 === "string" && /^\d{4}\.\d+\.\d+$/.test(v2) ? v2.split(".").map(Number) : null;
+var newer = (a2, b2) => a2[0] - b2[0] || a2[1] - b2[1] || a2[2] - b2[2];
+function openclawPatchItem(state, openclaw) {
+  const installed = versionKey(openclaw);
+  if (!state || !installed) return { id: "openclaw_patch", status: "unknown" };
+  const waiting = versionKey(state.waiting);
+  if (waiting && newer(waiting, installed) > 0) return { id: "openclaw_patch", status: "mismatch", actual: state.waiting };
+  return { id: "openclaw_patch", status: "ok" };
 }
 function phonePluginItem(dir, read = (p2) => readFileSync36(p2, "utf8")) {
   if (!dir) return { id: "phone_plugin", status: "not_installed", expected: PHONE_VERSION };
@@ -60642,7 +60652,8 @@ async function patchReport(deps) {
     { id: "meeting_guard", status: existsSync30(GUARD) ? "ok" : "missing" },
     browserStealthItem(deps.host),
     emailCliItem(deps.stateDir),
-    modelProviderItem(config2)
+    modelProviderItem(config2),
+    openclawPatchItem(deps.patchState ? deps.patchState() : readJson2(OPENCLAW_PATCH_STATE), openclaw)
   ];
   return { openclaw, items };
 }
@@ -64163,7 +64174,7 @@ async function reportOwnAction(tag2, action, line2, agentId, ok) {
 }
 async function openClawUnit() {
   try {
-    const { stdout } = await defaultExec("systemctl", ["show", "openclaw", "-p", "LoadState", "-p", "ActiveState", "-p", "ActiveEnterTimestampMonotonic", "-p", "InactiveEnterTimestampMonotonic"], 5e3);
+    const { stdout } = await defaultExec("systemctl", ["show", "openclaw", "-p", "LoadState", "-p", "UnitFileState", "-p", "ActiveState", "-p", "ActiveEnterTimestampMonotonic", "-p", "InactiveEnterTimestampMonotonic"], 5e3);
     const prop = (name) => stdout.match(new RegExp(`^${name}=(.*)$`, "m"))?.[1] ?? "";
     const now = Number(process.hrtime.bigint() / 1000n);
     const since = (name) => Math.max(0, now - (Number(prop(name)) || 0)) / 1e3;
@@ -64171,6 +64182,7 @@ async function openClawUnit() {
     return {
       state,
       loaded: prop("LoadState") === "loaded",
+      enabled: prop("UnitFileState") === "enabled",
       activeFor: state === "active" && Number(prop("ActiveEnterTimestampMonotonic")) ? since("ActiveEnterTimestampMonotonic") : null,
       downFor: state === "inactive" || state === "failed" ? since("InactiveEnterTimestampMonotonic") : null
     };
@@ -64182,9 +64194,9 @@ async function openClawActiveFor() {
   return (await openClawUnit())?.activeFor ?? null;
 }
 async function openClawDownFor() {
-  if (!existsSync34(process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json")) return null;
+  if (POOL_UNCLAIMED) return null;
   const unit = await openClawUnit();
-  return unit?.loaded ? unit.downFor : null;
+  return unit?.loaded && unit.enabled ? unit.downFor : null;
 }
 var doctorSessionOpen = () => defaultExec("pgrep", ["-u", "ccdoctor"], 5e3).then((r2) => r2.stdout.trim().length > 0, () => false);
 function startWatchdog() {
@@ -64219,6 +64231,7 @@ function startWatchdog() {
     hold: async () => {
       const phase = update.status().phase;
       if (phase === "resolving" || phase === "installing" || phase === "running") return "update";
+      if (await defaultExec("systemctl", ["is-active", "cc-reprovision"], 5e3).then((r2) => r2.stdout.trim(), () => "") === "active") return "update";
       return await doctorSessionOpen() ? "doctor" : null;
     },
     inCall: () => {

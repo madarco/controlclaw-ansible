@@ -53233,6 +53233,44 @@ var McpCatalog = class {
 
 // src/mcp-calls.ts
 import { randomBytes as randomBytes30 } from "crypto";
+
+// src/go-json.ts
+function goJsonKey(key) {
+  return key.replace(/[\u0130\u0131]/g, "i").toLowerCase().replace(/\u017f/g, "s");
+}
+function duplicateKey(text4) {
+  const objects = [];
+  let expectKey = false;
+  for (let i2 = 0; i2 < text4.length; i2++) {
+    const c2 = text4[i2];
+    if (c2 === '"') {
+      let end = i2 + 1;
+      while (end < text4.length && text4[end] !== '"') end += text4[end] === "\\" ? 2 : 1;
+      const keys = objects.at(-1);
+      if (keys && expectKey) {
+        const key = goJsonKey(JSON.parse(text4.slice(i2, end + 1)));
+        if (keys.has(key)) return key;
+        keys.add(key);
+        expectKey = false;
+      }
+      i2 = end;
+    } else if (c2 === "{") {
+      objects.push(/* @__PURE__ */ new Set());
+      expectKey = true;
+    } else if (c2 === "[") {
+      objects.push(null);
+      expectKey = false;
+    } else if (c2 === "}" || c2 === "]") {
+      objects.pop();
+      expectKey = false;
+    } else if (c2 === ",") {
+      expectKey = !!objects.at(-1);
+    }
+  }
+  return null;
+}
+
+// src/mcp-calls.ts
 var MCP_CALL_MAX_BODY = 1024 * 1024;
 var MCP_RESULT_MAX = 2 * 1024 * 1024;
 var CALL_NEEDLES = ["tools/call", "tools\\/call", "tools\\u002fcall", "tools\\u002Fcall"].flatMap((n2) => {
@@ -53271,7 +53309,7 @@ function otherDecodings(body) {
   return out;
 }
 var RPC_KEYS = /* @__PURE__ */ new Set(["jsonrpc", "method", "params", "name", "arguments", "id"]);
-var fold2 = (k2) => k2.toLowerCase().replace(/ſ/g, "s");
+var fold2 = goJsonKey;
 function oddKeys(messages) {
   const odd = (d2) => !!d2 && typeof d2 === "object" && !Array.isArray(d2) && Object.keys(d2).some((k2) => !RPC_KEYS.has(k2) && RPC_KEYS.has(fold2(k2)));
   const call = (m2) => Object.entries(m2).some(([k2, v2]) => fold2(k2) === "method" && v2 === "tools/call");
@@ -53293,9 +53331,15 @@ function rpcMessages(body) {
     return oddKeys(got.messages) ? { kind: "unreadable", ...got, odd: true } : { kind, ...got };
   };
   if (plain !== null && !plain.startsWith("\uFEFF")) {
+    let doc;
     try {
-      return read("messages", JSON.parse(plain));
+      doc = JSON.parse(plain);
     } catch {
+      doc = void 0;
+    }
+    if (doc !== void 0) {
+      if (duplicateKey(plain)) return { kind: "unreadable", ...asMessages(doc), odd: true };
+      return read("messages", doc);
     }
   }
   for (const text4 of otherDecodings(body)) {
@@ -53306,6 +53350,12 @@ function rpcMessages(body) {
   }
   const head = Buffer.from(body.subarray(0, 8).filter((c2) => c2 !== 0 && c2 !== 239 && c2 !== 187 && c2 !== 191 && c2 !== 255 && c2 !== 254)).toString("latin1").trimStart();
   return /^[[{]/.test(head) || mentionsToolCall(body) ? { kind: "unreadable", messages: [], batch: false } : { kind: "none" };
+}
+function mayRunTool(read) {
+  if (read.kind === "none") return false;
+  const calls = read.messages.some((m2) => m2.method === "tools/call");
+  if (read.kind === "unreadable") return calls || !!read.odd || !read.messages.length;
+  return calls;
 }
 function sameRpcId(a2, b2) {
   if (a2 === b2) return true;
@@ -53358,7 +53408,7 @@ function createMcpCalls(opts) {
     const startedAt = now2();
     const service = `mcp:${req.host}`;
     const server = req.managed ?? req.host;
-    const read = rpcMessages(req.body);
+    const read = req.read ?? rpcMessages(req.body);
     const logService = req.managed ? `mcp:${req.managed}` : service;
     const base0 = { vm_id: req.vmId, route: req.route, service: logService, action_id: null, operation: null, method: "POST", path: "tools/call", startedAt };
     const UNREADABLE = "Your organization's firewall could not read this tool call, so it did not send it. Send it as plain UTF-8 JSON, with the tool's name as a string.";
@@ -53368,11 +53418,10 @@ function createMcpCalls(opts) {
       const one = (id2) => toolAnswer(id2, { ok: false, error: { code: "unreadable_tool_call", message: UNREADABLE } }, true);
       return answer(200, batch ? (ids2.length ? ids2 : [void 0]).map(one) : one(ids2[0]));
     };
-    if (read.kind === "none") return { kind: "pass" };
+    if (read.kind === "none" || !mayRunTool(read)) return { kind: "pass" };
     const calls = read.messages.filter((m2) => m2.method === "tools/call");
-    if (read.kind === "unreadable") return calls.length || read.odd || !read.messages.length ? unreadable2(read.messages, read.batch) : { kind: "pass" };
+    if (read.kind === "unreadable") return unreadable2(read.messages, read.batch);
     const messages = read.messages;
-    if (!calls.length) return { kind: "pass" };
     const whole = read.batch ? messages.length : 1;
     if (whole > 1) {
       record2(base0, { decision: "blocked", by: "gate", rule: "batched tool call", ok: null, http_status: 200, error_code: "batch_refused" });
@@ -53748,15 +53797,22 @@ function rpcSummary(body) {
   } catch {
     return { method: null, tool: null, tools: [], id: null, count: 0 };
   }
+  const get = (o2, name26) => {
+    if (!o2 || typeof o2 !== "object" || Array.isArray(o2)) return void 0;
+    let v2;
+    for (const [k2, x2] of Object.entries(o2)) if (goJsonKey(k2) === name26) v2 = x2;
+    return v2;
+  };
   const list3 = Array.isArray(doc) ? doc : [doc];
-  const tools = list3.flatMap((m2) => {
-    const x2 = m2;
-    return x2 && x2.method === "tools/call" && typeof x2.params?.name === "string" ? [x2.params.name.slice(0, 128)] : [];
-  }).slice(0, 50);
-  const first = list3.find((m2) => m2 && typeof m2 === "object" && m2.method === "tools/call") ?? list3[0];
-  const method = typeof first?.method === "string" ? first.method.slice(0, 80) : null;
-  const tool2 = method === "tools/call" && typeof first?.params?.name === "string" ? first.params.name.slice(0, 128) : null;
-  const id = typeof first?.id === "string" || typeof first?.id === "number" ? first.id : null;
+  const nameOf = (m2) => get(get(m2, "params"), "name");
+  const tools = list3.flatMap((m2) => get(m2, "method") === "tools/call" && typeof nameOf(m2) === "string" ? [nameOf(m2).slice(0, 128)] : []).slice(0, 50);
+  const first = list3.find((m2) => get(m2, "method") === "tools/call") ?? list3[0];
+  const m0 = get(first, "method");
+  const method = typeof m0 === "string" ? m0.slice(0, 80) : null;
+  const n0 = nameOf(first);
+  const tool2 = method === "tools/call" && typeof n0 === "string" ? n0.slice(0, 128) : null;
+  const i0 = get(first, "id");
+  const id = typeof i0 === "string" || typeof i0 === "number" ? i0 : null;
   return { method, tool: tool2, tools, id, count: list3.length };
 }
 function createServerGateHandler(opts) {
@@ -53885,7 +53941,8 @@ function createServerGateHandler(opts) {
       };
       const checker = opts.calls?.() ?? null;
       let ticket = null;
-      if (body && rpc?.tools.length) {
+      const read = body ? rpcMessages(body) : null;
+      if (body && read && mayRunTool(read)) {
         if (!checker && opts.calls) return blocked2(503, "check_unavailable", "checks unavailable", "The firewall cannot check tool calls right now, so it did not make this one. Try again in a minute.", id);
         if (checker) {
           const verdict = await checker.check({
@@ -53894,6 +53951,7 @@ function createServerGateHandler(opts) {
             managed: name26,
             route: "mcp_server",
             body,
+            read,
             // A held call, sent on Send with the firewall's credential as it is then; its answer goes nowhere.
             replay: async () => {
               const h2 = await headersOut();
@@ -55161,8 +55219,34 @@ import { randomBytes as randomBytes34 } from "crypto";
 var GATE_MAX_BODY3 = 70 * 1024 * 1024;
 var GATE_MAX_CHECKED_BODY = 1024 * 1024;
 var GATE_MAX_CHECKED_ANSWER = 8 * 1024 * 1024;
-var TEXT_KEYS = /* @__PURE__ */ new Set(["body", "text", "title", "topic", "description", "purpose", "name"]);
-var MESSAGE_POST = /^\/api\/(?:(channels|dms)\/([^/]+)\/messages|messages\/([^/]+)\/replies)$/;
+var TEXT_KEYS = /* @__PURE__ */ new Set([
+  "body",
+  "text",
+  "title",
+  "topic",
+  "description",
+  "purpose",
+  "name",
+  "display_name",
+  "display_title",
+  "label",
+  "handle",
+  "moderation_note",
+  "command",
+  "emoji",
+  "args_hint",
+  "tool_name",
+  "toolname",
+  "sidebar_section",
+  "external_url",
+  "external_ref",
+  "avatar_url",
+  "icon_url"
+]);
+var MESSAGE_POST = /^\/api\/(?:(channels|dms)\/([^/]+)\/messages|messages\/([^/]+)\/thread\/replies)$/;
+var UPLOAD_PATH = "/api/uploads";
+var AmbiguousKeys = class extends Error {
+};
 function chatText(value, under = false, depth = 0, out = []) {
   if (depth > 40) throw new Error("nested too deep");
   if (typeof value === "string") {
@@ -55170,7 +55254,7 @@ function chatText(value, under = false, depth = 0, out = []) {
   } else if (Array.isArray(value)) {
     for (const v2 of value) chatText(v2, under, depth + 1, out);
   } else if (value && typeof value === "object") {
-    for (const [k2, v2] of Object.entries(value)) chatText(v2, under || TEXT_KEYS.has(k2), depth + 1, out);
+    for (const [k2, v2] of Object.entries(value)) chatText(v2, under || TEXT_KEYS.has(goJsonKey(k2)), depth + 1, out);
   }
   return out;
 }
@@ -55195,7 +55279,13 @@ var CheckFailed = class extends Error {
 var CHECKS_AT_ONCE = 4;
 var DROP2 = /* @__PURE__ */ new Set(["authorization", "cookie", "host", "x-clickclack-user", "cf-access-jwt-assertion", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "proxy-authorization"]);
 function gateAllows2(path) {
-  return /^\/api\//.test(path) && !/^\/api\/(auth|bot-setup-codes|me\/push)(\/|$)/.test(path);
+  const bare3 = path.split("?")[0];
+  if (/[%\\]|\/\/|(^|\/)\.{1,2}(\/|$)/.test(bare3)) return false;
+  return /^\/api\//.test(bare3) && !/^\/api\/(auth|bot-setup-codes|me\/push|hooks)(\/|$)/i.test(bare3);
+}
+function isCheckedWrite(method, path) {
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+  return !(method === "POST" && path.split("?")[0] === UPLOAD_PATH);
 }
 function templatePath(path) {
   return path.split("?")[0].split("/").map((seg) => /^[a-z]{2,6}_[0-9a-z]{8,}$/i.test(seg) || /^[0-9A-Z]{12,}$/.test(seg) || /^\d+$/.test(seg) ? "[id]" : seg.length > 40 ? "[\u2026]" : seg).join("/").slice(0, 200) || "/";
@@ -55284,7 +55374,7 @@ function createTeamChatGate(opts) {
         res.end(text4);
       }
     };
-    const isJsonWrite = (method === "POST" || method === "PUT" || method === "PATCH") && !/^multipart\//i.test(String(req.headers["content-type"] ?? "").trim());
+    const isJsonWrite = isCheckedWrite(method, path);
     let content = null;
     let checkOut = false;
     let checkIn = false;
@@ -55332,9 +55422,15 @@ function createTeamChatGate(opts) {
           } catch {
             doc = void 0;
           }
+          const twice = doc === void 0 ? null : duplicateKey(raw);
+          if (twice) throw new AmbiguousKeys(twice);
           text4 = doc === void 0 ? raw : chatText(doc).join("\n");
           rule = text4 ? await content.check("out", "teamchat", text4, who2.vmId) : null;
         } catch (err) {
+          if (err instanceof AmbiguousKeys) {
+            content.record("error", "teamchat", "out", "block", who2.vmId, { detail: "ambiguous keys" });
+            return json8(403, reason(`it names "${err.message}" twice`), "content: ambiguous keys");
+          }
           content.record("error", "teamchat", "out", "block", who2.vmId, err instanceof ContentTooLong ? { detail: "too long" } : {});
           return json8(403, reason(err instanceof ContentTooLong ? "it is too long to check" : "the check could not run"), "content: error");
         }
@@ -55354,12 +55450,14 @@ function createTeamChatGate(opts) {
           }).catch(() => null);
           if (holdId) {
             content.record(rule.id, "teamchat", "out", "hold", who2.vmId, { hold: holdId, ...ai2 });
-            let parsed = {};
+            let said = "";
             try {
-              parsed = JSON.parse(body.toString("utf8"));
+              const doc = JSON.parse(body.toString("utf8"));
+              const hit = doc && typeof doc === "object" && !Array.isArray(doc) ? Object.entries(doc).find(([k2]) => goJsonKey(k2) === "body") : void 0;
+              if (typeof hit?.[1] === "string") said = hit[1];
             } catch {
             }
-            return json8(201, { message: { id: `msg_held_${holdId.replace(/[^A-Za-z0-9]/g, "").slice(0, 24)}`, body: typeof parsed.body === "string" ? parsed.body : "", author_id: "held", created_at: new Date(now2()).toISOString() } });
+            return json8(201, { message: { id: `msg_held_${holdId.replace(/[^A-Za-z0-9]/g, "").slice(0, 24)}`, body: said, author_id: "held", created_at: new Date(now2()).toISOString() } });
           }
           content.record(rule.id, "teamchat", "out", "block", who2.vmId, { held: false, ...ai2 });
           return json8(403, reason(`${rule.reason} (nobody could be asked to approve it)`), `content: ${rule.id}`);
@@ -107453,8 +107551,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync25 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "3b57471" : "unknown",
-  builtAt: true ? "2026-10-28T16:33:00Z" : "unknown"
+  commit: true ? "64b5138" : "unknown",
+  builtAt: true ? "2026-10-28T21:34:39Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
