@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.36.1",
+    "date": "2026-10-28",
+    "changes": [
+      "An agent no longer stays offline after an automatic update fails: OpenClaw is started again, and the agent restarts it by itself if it stops for any other reason.",
+      "Refreshing an agent's firewall certificate no longer fails with 'fetch failed'."
+    ]
+  },
+  {
     "version": "1.36.0",
     "date": "2026-10-28",
     "changes": [
