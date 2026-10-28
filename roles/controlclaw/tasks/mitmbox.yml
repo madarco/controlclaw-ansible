@@ -345,6 +345,42 @@
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-fw-logs *
 
 # --- systemd services ---
+# The mitmproxy command line, once: the unit runs it, and cc-runtime-fallback puts it back (on one
+# line) when the Rust proxy crash-loops. `$$` is systemd's literal `$`.
+- name: The mitmproxy command line
+  ansible.builtin.set_fact:
+    cc_mitmproxy_exec: |-
+      /opt/controlclaw/mitm/venv/bin/mitmdump --listen-port {{ mitm_proxy_port }} \
+        --ignore-hosts "^{{ controlclaw_url | urlsplit('hostname') | regex_escape }}:[0-9]+$$" \
+        --set flow_detail=0 --set connection_strategy=lazy \
+        --set confdir=/opt/controlclaw/mitm/ca -s /opt/controlclaw/mitm/proxy/addon.py
+
+- name: Rust or Node (and mitmproxy) for the firewall
+  ansible.builtin.include_tasks: rust-runtime.yml
+  vars:
+    rust_components:
+      - key: proxy
+        unit: controlclaw-mitmproxy
+        bin: cc-proxy
+        setting: cc_proxy_runtime
+        node_exec: "{{ cc_mitmproxy_exec | split('\n') | map('trim') | map('regex_replace', ' \\\\$', '') | join(' ') }}"
+        rust_args: "--listen 0.0.0.0:{{ mitm_proxy_port }}"
+        migrate_role: ''
+      - key: mitm_agent
+        unit: controlclaw-mitm-agent
+        bin: mitm-agent
+        setting: cc_mitm_agent_runtime
+        node_exec: /usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
+        migrate_role: firewall
+        # The same store paths the unit gives the agent, so the check opens what it will read.
+        migrate_env:
+          EXIT_STORE_PATH: /opt/controlclaw/state/exit.enc
+          WEBHOOK_STORE_PATH: /opt/controlclaw/state/webhooks.enc
+          WEBHOOKS_PATH: /opt/controlclaw/state/webhooks.json
+          PROXY_CONFIG_DIR: /run/mitm/config
+
+# mitmproxy or Rust: tasks/rust-runtime.yml. The Rust proxy reads the CA folder from MITM_CA_DIR
+# (mitmproxy takes it as --set confdir). With mitmproxy the unit is written exactly as before.
 - name: Create controlclaw-mitmproxy service
   ansible.builtin.copy:
     dest: /etc/systemd/system/controlclaw-mitmproxy.service
@@ -353,6 +389,9 @@
       [Unit]
       Description=ControlClaw mitm egress proxy
       After=network.target
+      {% if cc_rt.proxy.runtime == 'rust' %}
+      {{ cc_rt.proxy.unit_extra }}
+      {% endif %}
 
       [Service]
       Type=simple
@@ -414,10 +453,12 @@
       # no longer mirrors the server's ALPN to the client (it picks from the client's offers and
       # translates h2/h1 itself, which it already does), and a connect failure surfaces as a 502
       # at request time instead of at CONNECT time.
-      ExecStart=/opt/controlclaw/mitm/venv/bin/mitmdump --listen-port {{ mitm_proxy_port }} \
-        --ignore-hosts "^{{ controlclaw_url | urlsplit('hostname') | regex_escape }}:[0-9]+$$" \
-        --set flow_detail=0 --set connection_strategy=lazy \
-        --set confdir=/opt/controlclaw/mitm/ca -s /opt/controlclaw/mitm/proxy/addon.py
+      {% if cc_rt.proxy.runtime == 'rust' %}
+      Environment=MITM_CA_DIR=/opt/controlclaw/mitm/ca
+      ExecStart={{ cc_rt.proxy.exec }}
+      {% else %}
+      ExecStart={{ cc_mitmproxy_exec }}
+      {% endif %}
       Restart=always
       RestartSec=5
 
@@ -425,6 +466,7 @@
       WantedBy=multi-user.target
   notify: restart controlclaw-mitmproxy
 
+# Node or Rust: tasks/rust-runtime.yml. With the Node build the unit is written exactly as before.
 - name: Create controlclaw-mitm-agent service
   ansible.builtin.copy:
     dest: /etc/systemd/system/controlclaw-mitm-agent.service
@@ -433,6 +475,9 @@
       [Unit]
       Description=ControlClaw mitm agent (store sync + permission bridge)
       After=network.target
+      {% if cc_rt.mitm_agent.runtime == 'rust' %}
+      {{ cc_rt.mitm_agent.unit_extra }}
+      {% endif %}
 
       [Service]
       Type=simple
@@ -483,7 +528,7 @@
       # until it is re-provisioned.
       Environment=WEBHOOK_STORE_PATH=/opt/controlclaw/state/webhooks.enc
       Environment=WEBHOOKS_PATH=/opt/controlclaw/state/webhooks.json
-      ExecStart=/usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
+      ExecStart={{ cc_rt.mitm_agent.exec }}
       Restart=always
       RestartSec=10
 

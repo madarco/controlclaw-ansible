@@ -1,0 +1,7 @@
+# The pinned Rust box binaries: written by controlclaw's rust/scripts/release.sh, never by hand.
+# Empty until the first release: every box runs the Node builds whatever its runtime settings say.
+cc_rust_release:
+  version: ""
+  commit: ""
+  base_url: ""
+  binaries: {}

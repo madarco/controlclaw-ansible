@@ -1,0 +1,24 @@
+# The role's rust-runtime.yml for one agent component, then what it decided, in /tmp/cc_rt.json.
+- hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    box_role: openclaw
+    vm_id: vm_test
+  tasks:
+    - name: The runtime step, as vm-agent.yml includes it
+      ansible.builtin.include_role:
+        name: controlclaw
+        tasks_from: rust-runtime
+      vars:
+        rust_components:
+          - key: vm_agent
+            unit: controlclaw-agent
+            bin: vm-agent
+            setting: cc_vm_agent_runtime
+            node_exec: /usr/bin/node /opt/controlclaw/agent/dist/index.js
+            migrate_role: agent
+    - name: What it decided
+      ansible.builtin.copy:
+        dest: /tmp/cc_rt.json
+        content: "{{ cc_rt | to_json }}"
