@@ -112,7 +112,7 @@
 
       {% endif %}
       systemctl daemon-reload
-      systemctl try-restart openclaw.service caddy.service || true
+      systemctl try-restart openclaw.service || true
       {% if box_role == 'openclaw' %}
       # NSS trust is read once at browser start, so the running Chrome still distrusts the CA.
       systemctl try-restart browser-stream.service || true
@@ -121,6 +121,12 @@
       # unit) once at start: restart GBrain so it trusts the CA it could not see a moment ago.
       systemctl try-restart gbrain.service || true
       {% endif %}
+      # Caddy last, and queued rather than waited for. The vm-agent runs this script from
+      # POST /mitm-ca/refresh, a request that came in through Caddy. Caddy's graceful stop waits for
+      # that request, the request waits for this script, and after the unit's stop timeout (5 s)
+      # systemd kills Caddy with the reply unsent ("fetch failed" on the control plane). Queued as
+      # the last step, the stop begins as the script exits, and Caddy's drain lets the reply out.
+      systemctl try-restart --no-block caddy.service || true
 
 # --- Time from the firewall (controlclaw T-138). Once egress is confined to the firewall, the
 #     stock NTP servers are unreachable and the clock drifts unchecked; the firewall's phone stream

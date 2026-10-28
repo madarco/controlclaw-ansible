@@ -35997,7 +35997,7 @@ async function handlePhone(req, res, url3, service) {
 // src/index.ts
 import { createServer as createServer2 } from "http";
 import { randomUUID as randomUUID6 } from "crypto";
-import { readFileSync as readFileSync41, existsSync as existsSync34, writeFileSync as writeFileSync28, rmSync as rmSync14 } from "fs";
+import { readFileSync as readFileSync42, existsSync as existsSync34, writeFileSync as writeFileSync29, rmSync as rmSync15 } from "fs";
 
 // src/routes/access.ts
 import { createHash as createHash6, randomBytes as randomBytes2 } from "crypto";
@@ -41935,8 +41935,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "3b57471" : "unknown",
-  builtAt: true ? "2026-10-28T16:33:00Z" : "unknown"
+  commit: true ? "2474e50" : "unknown",
+  builtAt: true ? "2026-10-28T18:35:33Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -42453,6 +42453,7 @@ function handleHealth(res) {
 
 // src/routes/openclaw.ts
 import { execFile as execFile5, execSync as execSync2 } from "child_process";
+import { readFileSync as readFileSync15, rmSync as rmSync2, writeFileSync as writeFileSync8 } from "fs";
 import { promisify } from "util";
 
 // src/openclaw-state.ts
@@ -42523,7 +42524,51 @@ function send(res, statusCode, body2) {
   res.writeHead(statusCode, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body2));
 }
-function runAction(action) {
+var STOPPED_MARK = `${process.env.STATE_DIR ?? "/opt/controlclaw/state"}/${SERVICE2}-stopped`;
+var stoppedHere = null;
+function noteAction(action, forMs) {
+  const now = Date.now();
+  stoppedHere = action === "stop" ? { at: now, until: forMs ? now + forMs : null } : null;
+  try {
+    if (stoppedHere) writeFileSync8(STOPPED_MARK, `${JSON.stringify(stoppedHere)}
+`);
+    else rmSync2(STOPPED_MARK, { force: true });
+  } catch (err) {
+    console.error(`[openclaw] could not note the ${action}: ${err.message}`);
+  }
+}
+function stopMark() {
+  try {
+    const parsed = JSON.parse(readFileSync15(STOPPED_MARK, "utf8"));
+    return { at: Number(parsed.at) || 0, until: typeof parsed.until === "number" ? parsed.until : null };
+  } catch (err) {
+    return err.code === "ENOENT" ? stoppedHere : { at: 0, until: null };
+  }
+}
+function stoppedOnPurpose(now = Date.now()) {
+  const mark = stopMark();
+  return mark !== null && (mark.until === null || now < mark.until);
+}
+function forgetStop(activeForMs, now = Date.now()) {
+  const mark = stopMark();
+  if (mark && mark.at < now - activeForMs) noteAction("start");
+}
+async function startUnlessStopped(exec = defaultExec) {
+  if (stoppedOnPurpose()) return false;
+  let ok = true;
+  try {
+    await exec("sudo", ["-n", "systemctl", "start", SERVICE2], ACTION_TIMEOUT_MS);
+  } catch {
+    ok = false;
+  }
+  if (stoppedOnPurpose()) {
+    await exec("sudo", ["-n", "systemctl", "stop", SERVICE2], ACTION_TIMEOUT_MS).catch(() => void 0);
+    return false;
+  }
+  return ok;
+}
+function runAction(action, opts = {}) {
+  noteAction(action, opts.forMs);
   try {
     execSync2(`sudo systemctl ${action} ${SERVICE2}`, { encoding: "utf-8", timeout: ACTION_TIMEOUT_MS });
     return { ok: true };
@@ -42532,7 +42577,8 @@ function runAction(action) {
     return { ok: false, error: message2 };
   }
 }
-async function runActionAsync(action, exec = defaultExec) {
+async function runActionAsync(action, exec = defaultExec, opts = {}) {
+  noteAction(action, opts.forMs);
   try {
     await exec("sudo", ["-n", "systemctl", action, SERVICE2], ACTION_TIMEOUT_MS);
     return { ok: true };
@@ -42614,7 +42660,7 @@ function handleStatus(res, drive2, gateway2) {
 
 // src/audit.ts
 import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync15, renameSync as renameSync5, writeFileSync as writeFileSync8 } from "fs";
+import { existsSync as existsSync10, mkdirSync as mkdirSync6, readFileSync as readFileSync16, renameSync as renameSync5, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname5 } from "path";
 var PAGE_LIMIT = 500;
 var MAX_PAGES = 40;
@@ -42676,7 +42722,7 @@ var AuditShipper = class {
   loadCursor() {
     try {
       if (!existsSync10(this.opts.cursorPath)) return null;
-      const c2 = JSON.parse(readFileSync15(this.opts.cursorPath, "utf-8"));
+      const c2 = JSON.parse(readFileSync16(this.opts.cursorPath, "utf-8"));
       if (typeof c2.sequence === "number" && typeof c2.occurredAt === "number") return { sequence: c2.sequence, occurredAt: c2.occurredAt };
     } catch {
     }
@@ -42685,7 +42731,7 @@ var AuditShipper = class {
   saveCursor() {
     const tmp = `${this.opts.cursorPath}.tmp`;
     mkdirSync6(dirname5(this.opts.cursorPath), { recursive: true });
-    writeFileSync8(tmp, JSON.stringify(this.cursor), { mode: 384 });
+    writeFileSync9(tmp, JSON.stringify(this.cursor), { mode: 384 });
     renameSync5(tmp, this.opts.cursorPath);
   }
   async tick() {
@@ -42795,7 +42841,7 @@ var AuditShipper = class {
 };
 
 // src/session-shipper.ts
-import { existsSync as existsSync11, mkdirSync as mkdirSync7, readdirSync as readdirSync3, readFileSync as readFileSync16, renameSync as renameSync6, statSync as statSync2, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync11, mkdirSync as mkdirSync7, readdirSync as readdirSync3, readFileSync as readFileSync17, renameSync as renameSync6, statSync as statSync2, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname6, join as join15 } from "path";
 var SESSION_LOOKBACK_MS = 48 * 60 * 60 * 1e3;
 var MAX_BATCH = 100;
@@ -42828,7 +42874,7 @@ var SessionShipper = class {
   load() {
     try {
       if (!existsSync11(this.opts.statePath)) return {};
-      const raw = JSON.parse(readFileSync16(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync17(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object") return {};
       const out = {};
       for (const [k2, v2] of Object.entries(raw))
@@ -42841,7 +42887,7 @@ var SessionShipper = class {
   save(sent) {
     const tmp = `${this.opts.statePath}.tmp`;
     mkdirSync7(dirname6(this.opts.statePath), { recursive: true });
-    writeFileSync9(tmp, JSON.stringify(sent), { mode: 384 });
+    writeFileSync10(tmp, JSON.stringify(sent), { mode: 384 });
     renameSync6(tmp, this.opts.statePath);
   }
   /** Sends what is new or newly ended. Returns how many sessions the control plane took. */
@@ -42913,7 +42959,7 @@ function meetingSessions(dir, now, lookbackMs = SESSION_LOOKBACK_MS, cache3 = /*
 }
 function readMeeting(file2) {
   try {
-    const r2 = JSON.parse(readFileSync16(file2, "utf8"));
+    const r2 = JSON.parse(readFileSync17(file2, "utf8"));
     if (typeof r2.id !== "string" || typeof r2.startedAt !== "string") return null;
     const startedAt = Date.parse(r2.startedAt);
     if (!Number.isFinite(startedAt)) return null;
@@ -43294,6 +43340,7 @@ var START_GRACE_MS = 3 * 6e4;
 var START_LIMIT_MS = GATEWAY_START_LIMIT_MS;
 var SAME_START_MS = 5e3;
 var JAM_IN_CALL_MS = 5 * 6e4;
+var DOWN_LIMIT_MS = 5 * 6e4;
 var RESTART_QUIET_MS = 10 * 6e4;
 var MAX_RESTARTS = 3;
 var RESTART_WINDOW_MS2 = 60 * 6e4;
@@ -43317,6 +43364,7 @@ var Watchdog = class {
   answered = false;
   jamFails = 0;
   gatewayLimit = new Limiter();
+  startLimit = new Limiter();
   jamLimit = new Limiter();
   state = { gatewayAnswers: null, outbound: null, jammed: false };
   jamSince = null;
@@ -43360,8 +43408,10 @@ var Watchdog = class {
       this.answered = false;
       this.gatewayFails = 0;
       this.state.gatewayAnswers = null;
+      await this.checkDown();
       return;
     }
+    this.deps.forgetStop?.(activeFor);
     const startedAt = this.now() - activeFor;
     if (this.startedAt === null || Math.abs(startedAt - this.startedAt) > SAME_START_MS) {
       this.startedAt = startedAt;
@@ -43398,6 +43448,21 @@ var Watchdog = class {
     const ok = await this.deps.restartOpenClaw();
     if (!ok) this.log("the restart failed");
     this.deps.report?.(hung ? "OpenClaw stopped answering and was restarted" : "OpenClaw did not finish starting and was restarted", ok);
+  }
+  /** A unit that is down, not on purpose, for `DOWN_LIMIT_MS` is started. */
+  async checkDown() {
+    if (!this.deps.unitDownFor || !this.deps.startOpenClaw || !this.deps.stoppedOnPurpose) return;
+    const downFor = await this.deps.unitDownFor();
+    if (downFor === null || downFor < DOWN_LIMIT_MS) return;
+    if (this.deps.stoppedOnPurpose()) return;
+    if (await this.hold()) return;
+    if (!this.startLimit.allow(this.now())) return;
+    const still = await this.deps.unitDownFor();
+    if (still === null || this.deps.stoppedOnPurpose()) return;
+    this.log(`OpenClaw has been stopped for ${Math.round(still / 6e4)} minutes, and not by the console: starting it`);
+    const ok = await this.deps.startOpenClaw();
+    if (!ok) this.log("the start failed");
+    this.deps.report?.("OpenClaw had been stopped and was started again", ok);
   }
   async checkOutbound() {
     const out = await this.deps.outbound();
@@ -43775,7 +43840,7 @@ var ApprovalsBridge = class {
 
 // src/meeting-followup.ts
 import { createHash as createHash9, randomUUID } from "crypto";
-import { existsSync as existsSync14, readFileSync as readFileSync18, renameSync as renameSync8, rmSync as rmSync3, statSync as statSync3, writeFileSync as writeFileSync11, chownSync } from "fs";
+import { existsSync as existsSync14, readFileSync as readFileSync19, renameSync as renameSync8, rmSync as rmSync4, statSync as statSync3, writeFileSync as writeFileSync12, chownSync } from "fs";
 import { join as join18 } from "path";
 
 // ../meetings/src/archive.ts
@@ -43852,10 +43917,10 @@ function meetingsPage(all, page, pageSize = MEETINGS_PAGE_SIZE) {
 import {
   existsSync as existsSync13,
   mkdirSync as mkdirSync8,
-  readFileSync as readFileSync17,
+  readFileSync as readFileSync18,
   renameSync as renameSync7,
-  rmSync as rmSync2,
-  writeFileSync as writeFileSync10,
+  rmSync as rmSync3,
+  writeFileSync as writeFileSync11,
   readdirSync as readdirSync4
 } from "fs";
 import { join as join17, resolve, sep } from "path";
@@ -43897,7 +43962,7 @@ function cleanCaptions(input2) {
   return out;
 }
 function atomicJson(path, value2) {
-  writeFileSync10(`${path}.tmp`, JSON.stringify(value2), { mode: 384 });
+  writeFileSync11(`${path}.tmp`, JSON.stringify(value2), { mode: 384 });
   renameSync7(`${path}.tmp`, path);
 }
 var MeetingArchive = class {
@@ -43912,7 +43977,7 @@ var MeetingArchive = class {
   }
   deleted() {
     if (!existsSync13(this.tombstonesPath)) return {};
-    return JSON.parse(readFileSync17(this.tombstonesPath, "utf8"));
+    return JSON.parse(readFileSync18(this.tombstonesPath, "utf8"));
   }
   save(record2) {
     if (this.deleted()[record2.id]) return false;
@@ -43924,7 +43989,7 @@ var MeetingArchive = class {
     const deleted = this.deleted();
     if (!existsSync13(this.root)) return [];
     return readdirSync4(this.root).filter((n2) => /^[a-f0-9-]{36}\.json$/.test(n2)).map(
-      (n2) => JSON.parse(readFileSync17(join17(this.root, n2), "utf8"))
+      (n2) => JSON.parse(readFileSync18(join17(this.root, n2), "utf8"))
     ).filter((r2) => !deleted[r2.id]).sort((a2, b2) => b2.startedAt.localeCompare(a2.startedAt));
   }
   tombstone(record2) {
@@ -43939,10 +44004,10 @@ var MeetingArchive = class {
     return existsSync13(this.tombstonesPath + ".pending");
   }
   deletionFinished() {
-    rmSync2(this.tombstonesPath + ".pending", { force: true });
+    rmSync3(this.tombstonesPath + ".pending", { force: true });
   }
   remove(id) {
-    rmSync2(this.filename(id), { force: true });
+    rmSync3(this.filename(id), { force: true });
   }
 };
 function nativeMeetingIds(stateDir) {
@@ -44012,9 +44077,9 @@ function eraseNativeMeetings(stateDir, sessionIds) {
         throw new Error("Invalid transcript export");
       const metadata = join17(dir, "metadata.json");
       if (!existsSync13(metadata)) continue;
-      const raw = JSON.parse(readFileSync17(metadata, "utf8"));
+      const raw = JSON.parse(readFileSync18(metadata, "utf8"));
       if (raw.sessionId && sessionIds.includes(raw.sessionId))
-        rmSync2(dir, { recursive: true, force: true });
+        rmSync3(dir, { recursive: true, force: true });
     }
   }
 }
@@ -44138,11 +44203,11 @@ var MeetingFollowUpService = class {
     return join18(this.opts.workspace, "AGENTS.md");
   }
   readAgents() {
-    return existsSync14(this.agentsPath) ? readFileSync18(this.agentsPath, "utf8") : "";
+    return existsSync14(this.agentsPath) ? readFileSync19(this.agentsPath, "utf8") : "";
   }
   savedHash() {
     try {
-      const s2 = JSON.parse(readFileSync18(this.opts.statePath, "utf8"));
+      const s2 = JSON.parse(readFileSync19(this.opts.statePath, "utf8"));
       return typeof s2.hash === "string" ? s2.hash : null;
     } catch {
       return null;
@@ -44168,7 +44233,7 @@ var MeetingFollowUpService = class {
     const path = this.agentsPath;
     const tmp = `${path}.cc-tmp`;
     const before = statSync3(path);
-    writeFileSync11(tmp, withOrders(agents, text3), { mode: before.mode & 511 });
+    writeFileSync12(tmp, withOrders(agents, text3), { mode: before.mode & 511 });
     try {
       chownSync(tmp, before.uid, before.gid);
     } catch {
@@ -44200,8 +44265,8 @@ var MeetingFollowUpService = class {
     const path = this.reportPath(id);
     try {
       if (!existsSync14(path)) return null;
-      const report = statSync3(path).size > REPORT_MAX_BYTES ? null : parseReport(readFileSync18(path, "utf8"));
-      rmSync3(path, { force: true });
+      const report = statSync3(path).size > REPORT_MAX_BYTES ? null : parseReport(readFileSync19(path, "utf8"));
+      rmSync4(path, { force: true });
       return report;
     } catch {
       return null;
@@ -44226,7 +44291,7 @@ var MeetingFollowUpService = class {
     };
     if (!hooks) return void set2({ state: "failed", startedAt, endedAt: startedAt, error: "The agent could not be started for this meeting. Restart it and check its model settings." });
     if (!set2({ state: "running", startedAt })) return;
-    rmSync3(this.reportPath(record2.id), { force: true });
+    rmSync4(this.reportPath(record2.id), { force: true });
     let result = { ok: false, status: 503 };
     try {
       result = await hooks.run(
@@ -44311,7 +44376,7 @@ var MeetingFollowUpService = class {
   /** The meeting is being deleted: its report goes, and its cards leave the console's queue. */
   async forget(record2) {
     try {
-      rmSync3(this.reportPath(record2.id), { force: true });
+      rmSync4(this.reportPath(record2.id), { force: true });
     } catch {
     }
     for (const request of record2.followUp?.requests ?? []) {
@@ -44390,7 +44455,7 @@ var MeetingFollowUpService = class {
 };
 
 // src/channels.ts
-import { existsSync as existsSync16, mkdirSync as mkdirSync9, readFileSync as readFileSync19, renameSync as renameSync9, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync16, mkdirSync as mkdirSync9, readFileSync as readFileSync20, renameSync as renameSync9, writeFileSync as writeFileSync13 } from "fs";
 import { dirname as dirname7 } from "path";
 import { randomUUID as randomUUID2 } from "crypto";
 
@@ -44723,7 +44788,7 @@ function looksBusy2(message2) {
 function readChannelState(path) {
   if (!path || !existsSync16(path)) return { version: 1, seededAt: null, approved: [] };
   try {
-    const parsed = JSON.parse(readFileSync19(path, "utf8"));
+    const parsed = JSON.parse(readFileSync20(path, "utf8"));
     const approved = Array.isArray(parsed.approved) ? parsed.approved : [];
     return {
       version: 1,
@@ -44739,7 +44804,7 @@ function readChannelState(path) {
 function writeChannelState(path, state) {
   mkdirSync9(dirname7(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync12(tmp, JSON.stringify(state), { mode: 384 });
+  writeFileSync13(tmp, JSON.stringify(state), { mode: 384 });
   renameSync9(tmp, path);
 }
 function channelBlock(input2) {
@@ -45065,7 +45130,7 @@ var ChannelsService = class {
     for (const type of CHANNEL_TYPES) {
       let raw;
       try {
-        raw = readFileSync19(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
+        raw = readFileSync20(`${this.opts.credentialsDir}/${type}-pairing.json`, "utf8");
       } catch {
         continue;
       }
@@ -45625,7 +45690,7 @@ async function handleChannels(req, res, pathname, service) {
 }
 
 // src/llm.ts
-import { existsSync as existsSync17, mkdirSync as mkdirSync10, readFileSync as readFileSync20, renameSync as renameSync10, writeFileSync as writeFileSync13 } from "fs";
+import { existsSync as existsSync17, mkdirSync as mkdirSync10, readFileSync as readFileSync21, renameSync as renameSync10, writeFileSync as writeFileSync14 } from "fs";
 import { dirname as dirname8 } from "path";
 var CLI_TIMEOUT_MS2 = 45e3;
 var MODELS_CACHE_MS = 3e4;
@@ -45684,7 +45749,7 @@ function readMemory(config2) {
 function readReindexFailure(path) {
   if (!path || !existsSync17(path)) return null;
   try {
-    const parsed = JSON.parse(readFileSync20(path, "utf8"));
+    const parsed = JSON.parse(readFileSync21(path, "utf8"));
     return typeof parsed.error === "string" && parsed.error ? parsed.error : null;
   } catch {
     return null;
@@ -45866,7 +45931,7 @@ var LlmService = class {
     try {
       mkdirSync10(dirname8(path), { recursive: true });
       const tmp = `${path}.tmp`;
-      writeFileSync13(tmp, JSON.stringify({ version: 1, error: error62 }), { mode: 384 });
+      writeFileSync14(tmp, JSON.stringify({ version: 1, error: error62 }), { mode: 384 });
       renameSync10(tmp, path);
     } catch (err) {
       this.log(`[llm] could not record the memory index state: ${err.message}`);
@@ -46085,12 +46150,12 @@ async function handleLlm(req, res, url3, service) {
 
 // src/meetings.ts
 import { randomUUID as randomUUID3 } from "crypto";
-import { existsSync as existsSync18, readFileSync as readFileSync21, statfsSync } from "fs";
+import { existsSync as existsSync18, readFileSync as readFileSync22, statfsSync } from "fs";
 import { totalmem } from "os";
 import { join as join20 } from "path";
 
 // src/meeting-captions.ts
-import { appendFileSync, mkdirSync as mkdirSync11, renameSync as renameSync11, rmSync as rmSync4, writeFileSync as writeFileSync14 } from "fs";
+import { appendFileSync, mkdirSync as mkdirSync11, renameSync as renameSync11, rmSync as rmSync5, writeFileSync as writeFileSync15 } from "fs";
 import { join as join19 } from "path";
 var BINDING = "__ccCap";
 var MAX_TEXT = 2e4;
@@ -46386,7 +46451,7 @@ var CaptionContext = class {
   }
   start() {
     mkdirSync11(this.dir, { recursive: true, mode: 448 });
-    writeFileSync14(this.file, "", { mode: 384 });
+    writeFileSync15(this.file, "", { mode: 384 });
     this.live.clear();
     this.writeLive();
   }
@@ -46413,15 +46478,15 @@ var CaptionContext = class {
   }
   writeLive() {
     try {
-      writeFileSync14(`${this.liveFile}.tmp`, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), rows: [...this.live.values()].slice(-20) }), { mode: 384 });
+      writeFileSync15(`${this.liveFile}.tmp`, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), rows: [...this.live.values()].slice(-20) }), { mode: 384 });
       renameSync11(`${this.liveFile}.tmp`, this.liveFile);
     } catch {
     }
   }
   end() {
     this.live.clear();
-    rmSync4(this.file, { force: true });
-    rmSync4(this.liveFile, { force: true });
+    rmSync5(this.file, { force: true });
+    rmSync5(this.liveFile, { force: true });
   }
 };
 
@@ -46493,7 +46558,7 @@ var MeetingService = class {
     this.ready = opts.browser(false).then(() => opts.reserve?.(false));
     void this.ready.catch(() => void 0);
     if (existsSync18(opts.statePath)) {
-      const saved = JSON.parse(readFileSync21(opts.statePath, "utf8"));
+      const saved = JSON.parse(readFileSync22(opts.statePath, "utf8"));
       this.applied = saved.applied;
       this.revision = saved.revision;
       this.wakeCheck = saved.wakeCheck ?? null;
@@ -47331,7 +47396,7 @@ var MeetingService = class {
   sanitizeRestoredConfig(staging) {
     const path = join20(staging, "openclaw.json");
     if (!existsSync18(path)) return;
-    const config2 = JSON.parse(readFileSync21(path, "utf8"));
+    const config2 = JSON.parse(readFileSync22(path, "utf8"));
     config2.plugins ??= {};
     config2.plugins.entries ??= {};
     config2.plugins.entries["google-meet"] = {
@@ -47359,7 +47424,7 @@ var MeetingService = class {
     config2.browser.profiles["cc-meetings"] = { cdpUrl: "http://127.0.0.1:9223", attachOnly: true };
     const livePath = join20(this.opts.openclawStateDir, "openclaw.json");
     if (existsSync18(livePath)) {
-      const live = JSON.parse(readFileSync21(livePath, "utf8"));
+      const live = JSON.parse(readFileSync22(livePath, "utf8"));
       if (live.plugins?.installs?.["google-meet"]) {
         config2.plugins.installs ??= {};
         config2.plugins.installs["google-meet"] = live.plugins.installs["google-meet"];
@@ -47607,7 +47672,7 @@ var MeetingMic = class {
 };
 
 // src/meeting-signin.ts
-import { existsSync as existsSync19, readFileSync as readFileSync22, rmSync as rmSync5 } from "fs";
+import { existsSync as existsSync19, readFileSync as readFileSync23, rmSync as rmSync6 } from "fs";
 var LIST_ACCOUNTS = "https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard";
 var same = (a2, b2) => a2.trim().toLowerCase() === b2.trim().toLowerCase();
 function signinUrl(account) {
@@ -47694,7 +47759,7 @@ var MeetingSignin = class {
   constructor(opts) {
     this.opts = opts;
     try {
-      const raw = JSON.parse(readFileSync22(opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync23(opts.statePath, "utf8"));
       if (["ready", "expired"].includes(raw.status) && typeof raw.email === "string")
         this.saved = { status: raw.status, email: raw.email, ...typeof raw.signedInAt === "string" ? { signedInAt: raw.signedInAt } : {} };
       else if (raw.status === "pending") this.wipe();
@@ -47714,7 +47779,7 @@ var MeetingSignin = class {
     atomicJson(this.opts.statePath, this.saved);
   }
   wipe() {
-    rmSync5(this.opts.profileDir, { recursive: true, force: true });
+    rmSync6(this.opts.profileDir, { recursive: true, force: true });
     this.saved = { status: "none" };
     this.save();
   }
@@ -48334,7 +48399,7 @@ async function handleSearch(req, res, url3, service) {
 }
 
 // src/connectors.ts
-import { existsSync as existsSync20, mkdirSync as mkdirSync12, readFileSync as readFileSync23, renameSync as renameSync12, rmSync as rmSync6, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync20, mkdirSync as mkdirSync12, readFileSync as readFileSync24, renameSync as renameSync12, rmSync as rmSync7, statSync as statSync4, unlinkSync, writeFileSync as writeFileSync16 } from "fs";
 import { dirname as dirname9 } from "path";
 import { createServer, request as httpRequest } from "http";
 var MCP_SERVER_NAME = "controlclaw-apps";
@@ -48400,7 +48465,7 @@ function repairConfigFile(path, entry, log = (l2) => console.log(l2)) {
   let text3;
   let mode2;
   try {
-    text3 = readFileSync23(path, "utf8");
+    text3 = readFileSync24(path, "utf8");
     mode2 = statSync4(path).mode & 511;
   } catch {
     return false;
@@ -48420,8 +48485,8 @@ function repairConfigFile(path, entry, log = (l2) => console.log(l2)) {
   const { [OLD_MCP_SERVER_NAME]: _old, ...servers } = isRecord(mcp.servers) ? mcp.servers : {};
   config2.mcp = { ...mcp, servers: { ...servers, ...moved, ...entry ? { [MCP_SERVER_NAME]: entry } : {} } };
   const tmp = `${path}.tmp`;
-  rmSync6(tmp, { force: true });
-  writeFileSync15(tmp, `${JSON.stringify(config2, null, 2)}
+  rmSync7(tmp, { force: true });
+  writeFileSync16(tmp, `${JSON.stringify(config2, null, 2)}
 `, { mode: mode2 });
   renameSync12(tmp, path);
   return true;
@@ -48632,7 +48697,7 @@ var ConnectorsService = class {
 function readState(path) {
   if (!existsSync20(path)) return { gateway: null, connections: [], updatedAt: "" };
   try {
-    const parsed = JSON.parse(readFileSync23(path, "utf8"));
+    const parsed = JSON.parse(readFileSync24(path, "utf8"));
     return {
       gateway: parsed.gateway && typeof parsed.gateway.url === "string" && typeof parsed.gateway.token === "string" ? parsed.gateway : null,
       connections: Array.isArray(parsed.connections) ? parsed.connections : [],
@@ -48645,7 +48710,7 @@ function readState(path) {
 function writeState(path, state) {
   mkdirSync12(dirname9(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync15(tmp, JSON.stringify(state), { mode: 384 });
+  writeFileSync16(tmp, JSON.stringify(state), { mode: 384 });
   renameSync12(tmp, path);
 }
 function cliEnvContents(relayUrl, token) {
@@ -48660,7 +48725,7 @@ function cliEnvContents(relayUrl, token) {
 function writeCliEnv(path, relayUrl, token) {
   mkdirSync12(dirname9(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync15(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
+  writeFileSync16(tmp, cliEnvContents(relayUrl, token), { mode: 384 });
   renameSync12(tmp, path);
 }
 function removeFile(path) {
@@ -48740,7 +48805,7 @@ async function handleConnectors(req, res, url3, service) {
 }
 
 // src/mcp-servers.ts
-import { existsSync as existsSync21, mkdirSync as mkdirSync13, readFileSync as readFileSync24, renameSync as renameSync13, writeFileSync as writeFileSync16 } from "fs";
+import { existsSync as existsSync21, mkdirSync as mkdirSync13, readFileSync as readFileSync25, renameSync as renameSync13, writeFileSync as writeFileSync17 } from "fs";
 import { dirname as dirname10 } from "path";
 var McpServersService = class {
   constructor(opts) {
@@ -48811,7 +48876,7 @@ var McpServersService = class {
 function readState2(path) {
   if (!existsSync21(path)) return { names: [], updatedAt: "" };
   try {
-    const parsed = JSON.parse(readFileSync24(path, "utf8"));
+    const parsed = JSON.parse(readFileSync25(path, "utf8"));
     return { names: Array.isArray(parsed.names) ? parsed.names.filter((n2) => typeof n2 === "string") : [], updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "" };
   } catch {
     return { names: [], updatedAt: "" };
@@ -48820,7 +48885,7 @@ function readState2(path) {
 function writeState2(path, state) {
   mkdirSync13(dirname10(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync16(tmp, JSON.stringify(state), { mode: 384 });
+  writeFileSync17(tmp, JSON.stringify(state), { mode: 384 });
   renameSync13(tmp, path);
 }
 
@@ -48916,7 +48981,7 @@ async function handleMcpServers(req, res, url3, service, firewallIp) {
 }
 
 // src/drive.ts
-import { existsSync as existsSync22, mkdirSync as mkdirSync14, readFileSync as readFileSync25, renameSync as renameSync14, writeFileSync as writeFileSync17 } from "fs";
+import { existsSync as existsSync22, mkdirSync as mkdirSync14, readFileSync as readFileSync26, renameSync as renameSync14, writeFileSync as writeFileSync18 } from "fs";
 import { dirname as dirname11 } from "path";
 var LAUNCH_TIMEOUT_MS = 2e4;
 var RC_TIMEOUT_MS = 3e3;
@@ -48970,7 +49035,7 @@ function parseApply4(body2) {
 function writeAtomic(path, body2, mode2) {
   mkdirSync14(dirname11(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync17(tmp, body2, { mode: mode2 });
+  writeFileSync18(tmp, body2, { mode: mode2 });
   renameSync14(tmp, path);
 }
 var DriveService = class {
@@ -48993,7 +49058,7 @@ var DriveService = class {
   modes() {
     const out = /* @__PURE__ */ new Map();
     try {
-      const desired = JSON.parse(readFileSync25(this.opts.desiredPath, "utf8"));
+      const desired = JSON.parse(readFileSync26(this.opts.desiredPath, "utf8"));
       for (const m2 of desired.mounts ?? []) if (m2?.name) out.set(m2.name, m2.mode);
     } catch {
     }
@@ -49007,7 +49072,7 @@ var DriveService = class {
    */
   readState() {
     try {
-      const raw = JSON.parse(readFileSync25(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync26(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object" || !Array.isArray(raw.mounts)) return null;
       const mounts = raw.mounts.filter((m2) => !!m2 && typeof m2.name === "string" && typeof m2.rcPort === "number");
       return {
@@ -49048,7 +49113,7 @@ var DriveService = class {
   /** The desired file as written, so a failed launch can put it back byte for byte. */
   readDesiredRaw() {
     try {
-      return readFileSync25(this.opts.desiredPath, "utf8");
+      return readFileSync26(this.opts.desiredPath, "utf8");
     } catch {
       return null;
     }
@@ -49196,9 +49261,9 @@ async function handleDrive(req, res, url3, service) {
 import {
   existsSync as existsSync23,
   mkdirSync as mkdirSync15,
-  readFileSync as readFileSync26,
+  readFileSync as readFileSync27,
   renameSync as renameSync15,
-  writeFileSync as writeFileSync18
+  writeFileSync as writeFileSync19
 } from "fs";
 import { dirname as dirname12 } from "path";
 
@@ -49277,7 +49342,7 @@ var SecretsService = class {
     this.opts = opts;
   }
   apply(input2) {
-    const current = existsSync23(this.opts.envPath) ? readFileSync26(this.opts.envPath, "utf8") : "";
+    const current = existsSync23(this.opts.envPath) ? readFileSync27(this.opts.envPath, "utf8") : "";
     const unmanaged = current.split(/\r?\n/).filter(
       (line2) => !/^[A-Z][A-Z0-9_]{0,63}=CC-SEC-[a-f0-9]{48}$/.test(line2)
     );
@@ -49296,7 +49361,7 @@ var SecretsService = class {
     if (current !== next) {
       mkdirSync15(dirname12(this.opts.envPath), { recursive: true });
       const tmp = `${this.opts.envPath}.secrets.tmp`;
-      writeFileSync18(tmp, next, { mode: 384 });
+      writeFileSync19(tmp, next, { mode: 384 });
       renameSync15(tmp, this.opts.envPath);
     }
     if (!this.opts.restartService().ok)
@@ -49567,9 +49632,9 @@ async function handleLogins(req, res, url3, browser, wake) {
 import {
   existsSync as existsSync24,
   mkdirSync as mkdirSync16,
-  readFileSync as readFileSync27,
+  readFileSync as readFileSync28,
   renameSync as renameSync16,
-  writeFileSync as writeFileSync19
+  writeFileSync as writeFileSync20
 } from "fs";
 import { dirname as dirname13 } from "path";
 function parseAgentMailApply(raw) {
@@ -49639,7 +49704,7 @@ var AgentMailService = class {
       GATEWAY_READ_MS
     );
     if (!snapshot.hash) throw new Error("OpenClaw returned no config hash");
-    const current = existsSync24(this.opts.envPath) ? readFileSync27(this.opts.envPath, "utf8") : "";
+    const current = existsSync24(this.opts.envPath) ? readFileSync28(this.opts.envPath, "utf8") : "";
     const lines = current.split(/\r?\n/).filter(
       (line2) => !/^\s*(?:export\s+)?AGENTMAIL_(?:API_KEY|WEBHOOK_SECRET)\s*=/.test(
         line2
@@ -49648,7 +49713,7 @@ var AgentMailService = class {
     if (input2.placeholder) lines.push(`AGENTMAIL_API_KEY=${input2.placeholder}`);
     mkdirSync16(dirname13(this.opts.envPath), { recursive: true });
     const tmp = `${this.opts.envPath}.agentmail.tmp`;
-    writeFileSync19(tmp, `${lines.filter(Boolean).join("\n")}
+    writeFileSync20(tmp, `${lines.filter(Boolean).join("\n")}
 `, {
       mode: 384
     });
@@ -49736,7 +49801,7 @@ var AgentMailService = class {
 
 // src/meeting-schedule.ts
 import { randomUUID as randomUUID4 } from "crypto";
-import { existsSync as existsSync25, readFileSync as readFileSync28 } from "fs";
+import { existsSync as existsSync25, readFileSync as readFileSync29 } from "fs";
 
 // ../../node_modules/.pnpm/ical.js@2.2.1/node_modules/ical.js/dist/ical.js
 var Binary = class _Binary {
@@ -57240,7 +57305,7 @@ var MeetingSchedule = class {
     this.now = deps.now ?? Date.now;
     if (existsSync25(deps.statePath)) {
       try {
-        const saved = JSON.parse(readFileSync28(deps.statePath, "utf8"));
+        const saved = JSON.parse(readFileSync29(deps.statePath, "utf8"));
         this.store = { entries: saved.entries ?? [], invites: saved.invites ?? {}, seen: saved.seen ?? [], emailCursor: saved.emailCursor, emailFailures: saved.emailFailures };
       } catch {
       }
@@ -57467,7 +57532,7 @@ var MeetingSchedule = class {
 };
 
 // src/meeting-sources.ts
-import { existsSync as existsSync26, readFileSync as readFileSync29 } from "fs";
+import { existsSync as existsSync26, readFileSync as readFileSync30 } from "fs";
 var AGENTMAIL_API = "https://api.agentmail.to/v0";
 var CALENDAR_API = "https://www.googleapis.com/calendar/v3";
 var FIRST_LOOK_BACK_MS = 14 * 24 * 36e5;
@@ -57475,7 +57540,7 @@ var MAX_PAGES2 = 5;
 function envFile(path) {
   if (!existsSync26(path)) return {};
   const out = {};
-  for (const line2 of readFileSync29(path, "utf8").split("\n")) {
+  for (const line2 of readFileSync30(path, "utf8").split("\n")) {
     const m2 = /^([A-Z0-9_]+)=(.*)$/.exec(line2.trim());
     if (m2) out[m2[1]] = m2[2].replace(/^(["'])(.*)\1$/, "$2");
   }
@@ -57606,7 +57671,7 @@ async function handleAgentMail(req, res, url3, service) {
 }
 
 // src/google.ts
-import { existsSync as existsSync27, mkdirSync as mkdirSync17, readFileSync as readFileSync30, renameSync as renameSync17, rmSync as rmSync7, writeFileSync as writeFileSync20 } from "fs";
+import { existsSync as existsSync27, mkdirSync as mkdirSync17, readFileSync as readFileSync31, renameSync as renameSync17, rmSync as rmSync8, writeFileSync as writeFileSync21 } from "fs";
 import { dirname as dirname14 } from "path";
 var PLACEHOLDER_RE2 = /^CC-GOOG-[0-9a-f]{8,64}$/;
 var PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
@@ -57640,7 +57705,7 @@ function parseApply5(body2) {
 function writeAtomic2(path, body2, mode2) {
   mkdirSync17(dirname14(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync20(tmp, body2, { mode: mode2 });
+  writeFileSync21(tmp, body2, { mode: mode2 });
   renameSync17(tmp, path);
 }
 function envValue(value2) {
@@ -57671,7 +57736,7 @@ var GoogleService = class {
     const granted = input2.connected && !!input2.placeholder;
     try {
       if (!granted) {
-        rmSync7(this.opts.envPath, { force: true });
+        rmSync8(this.opts.envPath, { force: true });
       } else {
         const lines = [
           "# Written by the ControlClaw agent from what the org firewall pushed. Do not edit:",
@@ -57741,7 +57806,7 @@ var GoogleService = class {
   }
   readState() {
     try {
-      const raw = JSON.parse(readFileSync30(this.opts.statePath, "utf8"));
+      const raw = JSON.parse(readFileSync31(this.opts.statePath, "utf8"));
       if (!raw || typeof raw !== "object") return null;
       return {
         placeholder: null,
@@ -57813,7 +57878,7 @@ async function handleGoogle(req, res, url3, service) {
 }
 
 // src/update.ts
-import { readFileSync as readFileSync31 } from "fs";
+import { readFileSync as readFileSync32 } from "fs";
 import { spawn as spawn3 } from "child_process";
 var IDLE = { phase: "idle", detail: null, ref: null, at: null };
 var STALE_MS = 45 * 6e4;
@@ -57845,7 +57910,7 @@ var UpdateService = class {
     const path = this.opts.confPath ?? "/etc/controlclaw/update.conf";
     let raw;
     try {
-      raw = readFileSync31(path, "utf8");
+      raw = readFileSync32(path, "utf8");
     } catch {
       return null;
     }
@@ -57859,7 +57924,7 @@ var UpdateService = class {
   status() {
     let raw;
     try {
-      raw = readFileSync31(this.opts.statePath, "utf8");
+      raw = readFileSync32(this.opts.statePath, "utf8");
     } catch {
       return IDLE;
     }
@@ -59259,7 +59324,7 @@ async function readHead(path, max) {
 
 // src/ssh.ts
 import { createHash as createHash10 } from "crypto";
-import { mkdirSync as mkdirSync18, mkdtempSync, readFileSync as readFileSync32, rmSync as rmSync8, writeFileSync as writeFileSync21 } from "fs";
+import { mkdirSync as mkdirSync18, mkdtempSync, readFileSync as readFileSync33, rmSync as rmSync9, writeFileSync as writeFileSync22 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { dirname as dirname17, join as join23 } from "path";
 var MIN_SECONDS = 5 * 60;
@@ -59339,7 +59404,7 @@ var SshAccessService = class {
   async close() {
     const was = this.readState();
     await this.exec("sudo", ["/usr/local/bin/cc-ssh-close"], SUDO_TIMEOUT_MS);
-    rmSync8(this.opts.statePath, { force: true });
+    rmSync9(this.opts.statePath, { force: true });
     if (was) this.log(`[ssh] closed for ${this.user} (was ${was.fingerprint})`);
     return { user: this.user, closed: !!was };
   }
@@ -59354,16 +59419,16 @@ var SshAccessService = class {
         KEYGEN_TIMEOUT_MS
       );
       return {
-        publicKey: readFileSync32(`${path}.pub`, "utf8").trim(),
-        privateKey: readFileSync32(path, "utf8")
+        publicKey: readFileSync33(`${path}.pub`, "utf8").trim(),
+        privateKey: readFileSync33(path, "utf8")
       };
     } finally {
-      rmSync8(dir, { recursive: true, force: true });
+      rmSync9(dir, { recursive: true, force: true });
     }
   }
   readState() {
     try {
-      const parsed = JSON.parse(readFileSync32(this.opts.statePath, "utf8"));
+      const parsed = JSON.parse(readFileSync33(this.opts.statePath, "utf8"));
       if (typeof parsed.grantId !== "string" || typeof parsed.endsAt !== "string") return null;
       return {
         grantId: parsed.grantId,
@@ -59377,7 +59442,7 @@ var SshAccessService = class {
   }
   writeState(state) {
     mkdirSync18(dirname17(this.opts.statePath), { recursive: true });
-    writeFileSync21(this.opts.statePath, JSON.stringify(state), { mode: 384 });
+    writeFileSync22(this.opts.statePath, JSON.stringify(state), { mode: 384 });
   }
 };
 
@@ -59931,7 +59996,7 @@ import { request as httpRequest2 } from "http";
 
 // src/gmail-watch.ts
 import { execFile as execFile7 } from "child_process";
-import { existsSync as existsSync28, mkdirSync as mkdirSync19, readFileSync as readFileSync33, rmSync as rmSync9, writeFileSync as writeFileSync22 } from "fs";
+import { existsSync as existsSync28, mkdirSync as mkdirSync19, readFileSync as readFileSync34, rmSync as rmSync10, writeFileSync as writeFileSync23 } from "fs";
 import { dirname as dirname18 } from "path";
 import { promisify as promisify2 } from "util";
 var run2 = promisify2(execFile7);
@@ -59996,23 +60061,23 @@ var GmailWatchService = class {
       "OPENCLAW_SKIP_GMAIL_WATCHER=1",
       ""
     ];
-    writeFileSync22(this.opts.envPath, lines.join("\n"), { mode: 384 });
-    writeFileSync22(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
+    writeFileSync23(this.opts.envPath, lines.join("\n"), { mode: 384 });
+    writeFileSync23(this.opts.statePath, JSON.stringify({ ...cfg, at: (/* @__PURE__ */ new Date()).toISOString() }), { mode: 384 });
     await this.systemctl("restart");
     this.log(`[gmail-watch] serving ${cfg.path} on 127.0.0.1:${cfg.port} for ${cfg.audience}`);
     return this.status();
   }
   /** Stop watching and forget the configuration. Used when the registration is revoked. */
   async clear() {
-    rmSync9(this.opts.envPath, { force: true });
-    rmSync9(this.opts.statePath, { force: true });
+    rmSync10(this.opts.envPath, { force: true });
+    rmSync10(this.opts.statePath, { force: true });
     await this.systemctl("stop").catch(() => void 0);
     return this.status();
   }
   async status() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync33(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync34(this.opts.statePath, "utf8"));
     } catch {
       cfg = null;
     }
@@ -60047,7 +60112,7 @@ var GmailWatchService = class {
   async renew() {
     let cfg = null;
     try {
-      cfg = JSON.parse(readFileSync33(this.opts.statePath, "utf8"));
+      cfg = JSON.parse(readFileSync34(this.opts.statePath, "utf8"));
     } catch {
       return { ok: false, message: "This box is not watching a mailbox." };
     }
@@ -60067,7 +60132,7 @@ var GmailWatchService = class {
 
 // src/gmail-wake.ts
 import { randomBytes as randomBytes3 } from "crypto";
-import { existsSync as existsSync29, readFileSync as readFileSync34, renameSync as renameSync18, writeFileSync as writeFileSync23 } from "fs";
+import { existsSync as existsSync29, readFileSync as readFileSync35, renameSync as renameSync18, writeFileSync as writeFileSync24 } from "fs";
 var gmailWakeInput = external_exports.object({
   messageId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   threadId: external_exports.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
@@ -60106,7 +60171,7 @@ var GmailWakeService = class {
   readState() {
     try {
       if (!existsSync29(this.opts.statePath)) return null;
-      const s2 = JSON.parse(readFileSync34(this.opts.statePath, "utf8"));
+      const s2 = JSON.parse(readFileSync35(this.opts.statePath, "utf8"));
       return typeof s2.token === "string" && /^[a-f0-9]{64}$/.test(s2.token) ? s2 : null;
     } catch {
       return null;
@@ -60122,7 +60187,7 @@ var GmailWakeService = class {
       if (state && snapshot.config?.hooks?.enabled === true) return { ok: true, changed: false };
       const token = state?.token ?? randomBytes3(32).toString("hex");
       const tmp = `${this.opts.statePath}.tmp`;
-      writeFileSync23(tmp, JSON.stringify({ token }), { mode: 384 });
+      writeFileSync24(tmp, JSON.stringify({ token }), { mode: 384 });
       renameSync18(tmp, this.opts.statePath);
       await patchConfig(client, { hooks: { enabled: true, token, path: "/hooks", allowRequestSessionKey: false } }, {
         timeoutMs: CONFIG_PATCH_RESTART_MS,
@@ -60433,7 +60498,7 @@ import os from "os";
 // src/patch-check.ts
 import { execFile as execFile8 } from "child_process";
 import { createHash as createHash12 } from "crypto";
-import { existsSync as existsSync30, lstatSync, readFileSync as readFileSync35, readdirSync as readdirSync5 } from "fs";
+import { existsSync as existsSync30, lstatSync, readFileSync as readFileSync36, readdirSync as readdirSync5 } from "fs";
 import { homedir } from "os";
 import { join as join24 } from "path";
 var HOST = "/usr/lib/node_modules/openclaw";
@@ -60444,7 +60509,7 @@ var PHONE_VERSION = PHONE_PACKAGE.slice(PHONE_PACKAGE.lastIndexOf("@") + 1);
 var CHECK_TIMEOUT_MS = 15e3;
 var readJson2 = (path) => {
   try {
-    return JSON.parse(readFileSync35(path, "utf8"));
+    return JSON.parse(readFileSync36(path, "utf8"));
   } catch {
     return null;
   }
@@ -60468,7 +60533,7 @@ function findPlugin(stateDir, name) {
 function runMeetingCheck(host, stateDir) {
   let source = "";
   try {
-    source = readFileSync35(MEETING_PATCH, "utf8");
+    source = readFileSync36(MEETING_PATCH, "utf8");
   } catch {
     return Promise.resolve(null);
   }
@@ -60493,7 +60558,7 @@ function meetingsRuntimeItem(raw, openclaw) {
   const status = statuses.includes("unknown") ? "mismatch" : statuses.includes("missing") ? "missing" : statuses.includes("unpatched") ? "unpatched" : statuses.length ? "ok" : "unknown";
   return { id: "meetings_runtime", status, expected, actual: openclaw };
 }
-function phonePluginItem(dir, read = (p2) => readFileSync35(p2, "utf8")) {
+function phonePluginItem(dir, read = (p2) => readFileSync36(p2, "utf8")) {
   if (!dir) return { id: "phone_plugin", status: "not_installed", expected: PHONE_VERSION };
   const version2 = readJson2(join24(dir, "package.json"))?.version ?? null;
   if (version2 !== PHONE_VERSION) return { id: "phone_plugin", status: "mismatch", expected: PHONE_VERSION, actual: version2 };
@@ -60519,7 +60584,7 @@ function phoneRuntimeItem(host, openclaw) {
     const dist = join24(host, "dist");
     const files2 = readdirSync5(dist).filter((f2) => /^gateway-work-admission-[A-Za-z0-9_-]{8}\.mjs$/.test(f2));
     if (files2.length !== 1) return { id: "phone_runtime", status: "mismatch", actual: openclaw };
-    const ok = phoneAdmissionDigest(readFileSync35(join24(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
+    const ok = phoneAdmissionDigest(readFileSync36(join24(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
     return { id: "phone_runtime", status: ok ? "ok" : "mismatch", actual: openclaw };
   } catch {
     return { id: "phone_runtime", status: "missing", actual: openclaw };
@@ -60903,7 +60968,7 @@ async function handleTemplateCaptureSession(req, res, url3, templates) {
 }
 
 // src/cpu-sampler.ts
-import { readFileSync as readFileSync36 } from "fs";
+import { readFileSync as readFileSync37 } from "fs";
 var CPU_SAMPLE_MS = 1e4;
 var CPU_MISSED_WINDOWS = 2;
 function parseProcStat(text3) {
@@ -60920,7 +60985,7 @@ function cpuPct(prev, next) {
   const busy = 1 - (next.idle - prev.idle) / total;
   return Math.round(Math.min(1, Math.max(0, busy)) * 1e3) / 10;
 }
-var readProcStat = () => readFileSync36("/proc/stat", "utf8");
+var readProcStat = () => readFileSync37("/proc/stat", "utf8");
 function createCpuSampler(read = readProcStat, now = () => performance.now()) {
   let prev = null;
   let last = null;
@@ -60958,7 +61023,7 @@ function startCpuSampler() {
 
 // src/metrics.ts
 import os2 from "os";
-import { readFileSync as readFileSync37, writeFileSync as writeFileSync24 } from "fs";
+import { readFileSync as readFileSync38, writeFileSync as writeFileSync25 } from "fs";
 var METRIC_SAMPLE_MS = 6e4;
 var METRIC_QUEUE_MAX = 24 * 60;
 var BATCH = 500;
@@ -60968,7 +61033,7 @@ var ChannelsSeen = class {
     this.seen = /* @__PURE__ */ new Set();
     if (!path) return;
     try {
-      const v2 = JSON.parse(readFileSync37(path, "utf8"));
+      const v2 = JSON.parse(readFileSync38(path, "utf8"));
       if (Array.isArray(v2)) this.seen = new Set(v2.filter((x2) => typeof x2 === "string"));
     } catch {
     }
@@ -60986,7 +61051,7 @@ var ChannelsSeen = class {
     const after = [...this.seen].sort().join(",");
     if (this.path && before !== after) {
       try {
-        writeFileSync24(this.path, JSON.stringify([...this.seen]));
+        writeFileSync25(this.path, JSON.stringify([...this.seen]));
       } catch {
       }
     }
@@ -61144,7 +61209,7 @@ function startMetricSampler(opts) {
 }
 
 // src/skills.ts
-import { existsSync as existsSync32, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync12 } from "fs";
+import { existsSync as existsSync32, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync13 } from "fs";
 import { lstat as lstat4, readdir as readdir3, readFile as readFile8 } from "fs/promises";
 import { join as join27 } from "path";
 
@@ -61406,7 +61471,7 @@ function notesNameProblem(name) {
 }
 
 // ../templates/src/notes-folder.ts
-import { lstatSync as lstatSync2, mkdirSync as mkdirSync20, readdirSync as readdirSync6, readFileSync as readFileSync38, rmSync as rmSync10, statSync as statSync5, writeFileSync as writeFileSync25 } from "fs";
+import { lstatSync as lstatSync2, mkdirSync as mkdirSync20, readdirSync as readdirSync6, readFileSync as readFileSync39, rmSync as rmSync11, statSync as statSync5, writeFileSync as writeFileSync26 } from "fs";
 import { dirname as dirname19, join as join25 } from "path";
 function notesPlace(env2 = process.env) {
   return { root: env2.CC_NOTES_DIR ?? "/var/lib/controlclaw-notes/sets", helper: env2.CC_NOTES_HELPER ? [env2.CC_NOTES_HELPER] : ["sudo", "-n", "/usr/local/sbin/cc-notes"] };
@@ -61425,7 +61490,7 @@ var recordPath = (home, set2) => join25(home, ".controlclaw", "notes", `${set2}.
 function readNotesRecord(home, set2) {
   if (notesNameProblem(set2)) return null;
   try {
-    const r2 = JSON.parse(readFileSync38(recordPath(home, set2), "utf8"));
+    const r2 = JSON.parse(readFileSync39(recordPath(home, set2), "utf8"));
     if (!r2 || r2.source !== "organization" && r2.source !== "template" || typeof r2.id !== "string" || typeof r2.hash !== "string" || !/^[0-9a-f]{64}$/.test(r2.hash)) return null;
     return { source: r2.source, id: r2.id, version: typeof r2.version === "string" ? r2.version : null, payload: typeof r2.payload === "string" ? r2.payload : null, hash: r2.hash, always: typeof r2.always === "string" ? r2.always : null, installedAt: typeof r2.installedAt === "string" ? r2.installedAt : "" };
   } catch {
@@ -61434,7 +61499,7 @@ function readNotesRecord(home, set2) {
 }
 function removeNotesRecord(home, set2) {
   if (notesNameProblem(set2)) return;
-  rmSync10(recordPath(home, set2), { force: true });
+  rmSync11(recordPath(home, set2), { force: true });
 }
 function installedNotes(root, set2) {
   if (notesNameProblem(set2)) return null;
@@ -61450,7 +61515,7 @@ function installedNotes(root, set2) {
       else {
         bytes += stat5.size;
         if (files2.length >= NOTES_LIMITS.files || stat5.size > NOTES_LIMITS.fileBytes || bytes > NOTES_LIMITS.totalBytes) return false;
-        files2.push({ path: `${prefix}${name}`, content: readFileSync38(path), executable: false });
+        files2.push({ path: `${prefix}${name}`, content: readFileSync39(path), executable: false });
       }
     }
     return true;
@@ -61521,7 +61586,7 @@ function reportNotes(home, place = notesPlace(), read = installedNotes) {
 
 // ../templates/src/skill-folder.ts
 import { randomBytes as randomBytes4 } from "crypto";
-import { existsSync as existsSync31, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync39, realpathSync as realpathSync2, renameSync as renameSync19, rmSync as rmSync11, writeFileSync as writeFileSync26 } from "fs";
+import { existsSync as existsSync31, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync40, realpathSync as realpathSync2, renameSync as renameSync19, rmSync as rmSync12, writeFileSync as writeFileSync27 } from "fs";
 import { join as join26, resolve as resolve3, sep as sep3 } from "path";
 var TooBig = class extends Error {
 };
@@ -61540,7 +61605,7 @@ function listFolder(dir, notes = false) {
       else {
         bytes += stat5.size;
         if (files2.length >= limits.files + 8 || stat5.size > limits.fileBytes || bytes > limits.totalBytes + 65536) throw new TooBig();
-        files2.push({ path: relative, content: readFileSync39(path), executable: (stat5.mode & 73) !== 0 });
+        files2.push({ path: relative, content: readFileSync40(path), executable: (stat5.mode & 73) !== 0 });
       }
     }
   };
@@ -61567,7 +61632,7 @@ function skillHash(dir) {
 }
 function readSkillRecord(dir) {
   try {
-    return parseSkillRecord(JSON.parse(readFileSync39(join26(dir, SKILL_RECORD), "utf8")));
+    return parseSkillRecord(JSON.parse(readFileSync40(join26(dir, SKILL_RECORD), "utf8")));
   } catch {
     return null;
   }
@@ -61815,7 +61880,7 @@ var SkillsService = class {
     if (evenIfChanged !== true && await this.hashes.of(dir) !== expectedHash) return { ok: false, changed: true };
     const done = this.writes.then(async () => {
       try {
-        rmSync12(dir, { recursive: true, force: true });
+        rmSync13(dir, { recursive: true, force: true });
       } catch (err) {
         throw new SkillsError(`The skill's folder could not be removed (${err.code ?? "error"}).`, 500);
       }
@@ -61893,7 +61958,7 @@ ${err.stderr ?? ""}`)) {
 
 // src/templates.ts
 import { createHash as createHash15 } from "crypto";
-import { existsSync as existsSync33, mkdirSync as mkdirSync21, readdirSync as readdirSync9, readFileSync as readFileSync40, renameSync as renameSync20, rmSync as rmSync13, statSync as statSync7, writeFileSync as writeFileSync27 } from "fs";
+import { existsSync as existsSync33, mkdirSync as mkdirSync21, readdirSync as readdirSync9, readFileSync as readFileSync41, renameSync as renameSync20, rmSync as rmSync14, statSync as statSync7, writeFileSync as writeFileSync28 } from "fs";
 import { homedir as homedir2 } from "os";
 import { dirname as dirname21, join as join28 } from "path";
 
@@ -62013,7 +62078,7 @@ function reviewFilesOf(raw) {
 }
 function readTemplateReview(stateDir, now = /* @__PURE__ */ new Date()) {
   try {
-    const raw = JSON.parse(readFileSync40(templateReviewPath(stateDir), "utf8"));
+    const raw = JSON.parse(readFileSync41(templateReviewPath(stateDir), "utf8"));
     if (typeof raw.template !== "string" || !TEMPLATE_ID.test(raw.template) || typeof raw.at !== "string") return null;
     const age = now.getTime() - new Date(raw.at).getTime();
     if (!(age >= 0 && age < TEMPLATE_REVIEW_MS)) return null;
@@ -62048,7 +62113,7 @@ var TemplateService = class {
   constructor(opts) {
     this.opts = opts;
     try {
-      const kept = JSON.parse(readFileSync40(this.unsentPath, "utf8"));
+      const kept = JSON.parse(readFileSync41(this.unsentPath, "utf8"));
       if (kept && typeof kept === "object") this.unsent = kept;
     } catch {
     }
@@ -62114,7 +62179,7 @@ var TemplateService = class {
   }
   marker() {
     try {
-      const raw = JSON.parse(readFileSync40(this.markerPath, "utf8"));
+      const raw = JSON.parse(readFileSync41(this.markerPath, "utf8"));
       if (typeof raw.template !== "string" || typeof raw.at !== "string") return null;
       const vars = varsOf(raw.vars);
       return { template: raw.template, at: raw.at, ...raw.missing ? { missing: true } : {}, ...typeof raw.rerun === "string" ? { rerun: raw.rerun } : {}, ...typeof raw.request === "string" ? { request: raw.request } : {}, ...typeof raw.hash === "string" && BUNDLE_HASH.test(raw.hash) ? { hash: raw.hash } : {}, ...vars ? { vars } : {} };
@@ -62128,7 +62193,7 @@ var TemplateService = class {
   /** The bundles applied beside this agent's template, oldest first. */
   beside() {
     try {
-      const raw = JSON.parse(readFileSync40(this.besidePath, "utf8"));
+      const raw = JSON.parse(readFileSync41(this.besidePath, "utf8"));
       const kept = {};
       for (const [id, b2] of Object.entries(raw ?? {})) {
         const vars = varsOf(b2?.vars);
@@ -62143,7 +62208,7 @@ var TemplateService = class {
   write(path, value2) {
     mkdirSync21(dirname21(path), { recursive: true, mode: 448 });
     const tmp = `${path}.tmp`;
-    writeFileSync27(tmp, JSON.stringify(value2), { mode: 384 });
+    writeFileSync28(tmp, JSON.stringify(value2), { mode: 384 });
     renameSync20(tmp, path);
   }
   async call(method, body2, path = "", maxBytes = BUNDLE_MAX_BYTES) {
@@ -62189,7 +62254,7 @@ var TemplateService = class {
     const dir = join28(this.opts.stateDir, "org", template);
     const remove = (path) => {
       try {
-        rmSync13(path, { recursive: true, force: true });
+        rmSync14(path, { recursive: true, force: true });
       } catch {
       }
     };
@@ -62217,7 +62282,7 @@ var TemplateService = class {
     }
     try {
       mkdirSync21(dirname21(kept), { recursive: true, mode: 448 });
-      writeFileSync27(`${kept}.tmp`, text3, { mode: 384 });
+      writeFileSync28(`${kept}.tmp`, text3, { mode: 384 });
       renameSync20(`${kept}.tmp`, kept);
     } catch (error62) {
       this.log(`${template}: its files could not be kept on this agent (${error62.code ?? "error"})`);
@@ -62277,7 +62342,7 @@ var TemplateService = class {
       this.log(`the control plane refused the result (${status}); not sent again`);
     }
     this.unsent = null;
-    rmSync13(this.unsentPath, { force: true });
+    rmSync14(this.unsentPath, { force: true });
   }
   /** What the control plane says about this agent now, or null when the answer cannot be read. */
   async assignment() {
@@ -62352,7 +62417,7 @@ var TemplateService = class {
   tidy(wanted) {
     const folder = join28(this.opts.stateDir, "org");
     try {
-      for (const name of readdirSync9(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync13(join28(folder, name), { recursive: true, force: true });
+      for (const name of readdirSync9(folder)) if (!wanted.includes(name.replace(/\.json(\.tmp)?$/, ""))) rmSync14(join28(folder, name), { recursive: true, force: true });
     } catch {
     }
   }
@@ -62420,7 +62485,7 @@ var TemplateService = class {
   async captureSkill(req) {
     const done = join28(this.opts.stateDir, "skill-capture.json");
     try {
-      if (JSON.parse(readFileSync40(done, "utf8")).id === req.id) return;
+      if (JSON.parse(readFileSync41(done, "utf8")).id === req.id) return;
     } catch {
     }
     this.log(`reading the skill ${req.name} of this agent's own, to be saved in the organization's skills`);
@@ -62451,7 +62516,7 @@ var TemplateService = class {
   async capture(id) {
     const done = join28(this.opts.stateDir, "capture.json");
     try {
-      if (JSON.parse(readFileSync40(done, "utf8")).id === id) return;
+      if (JSON.parse(readFileSync41(done, "utf8")).id === id) return;
     } catch {
     }
     this.log("reading this agent's setup for Save as template");
@@ -62478,7 +62543,7 @@ var TemplateService = class {
     const closed = { id: "", at: "", items: [], tries: 0, done: true };
     let text3;
     try {
-      text3 = readFileSync40(this.startSkillsPath, "utf8");
+      text3 = readFileSync41(this.startSkillsPath, "utf8");
     } catch (error62) {
       return error62.code === "ENOENT" ? null : closed;
     }
@@ -62576,7 +62641,7 @@ var TemplateService = class {
     const file2 = join28(this.opts.stateDir, "skills", `${item.payload}${run3}.json`);
     try {
       mkdirSync21(dirname21(file2), { recursive: true, mode: 448 });
-      writeFileSync27(file2, text3, { mode: 384 });
+      writeFileSync28(file2, text3, { mode: 384 });
       let stdout = "";
       try {
         const named = confirmedName !== null ? ["--name", confirmedName] : [];
@@ -62596,7 +62661,7 @@ var TemplateService = class {
       this.log(`${item.payload}: the skill could not be kept on this agent (${error62.code ?? "error"})`);
       return { broken: true };
     } finally {
-      rmSync13(file2, { force: true });
+      rmSync14(file2, { force: true });
     }
   }
   get skillPendingPath() {
@@ -62611,7 +62676,7 @@ var TemplateService = class {
   /** The skill this agent has prepared and is waiting for a ticket for, while it is recent. */
   skillPending() {
     try {
-      const raw = JSON.parse(readFileSync40(this.skillPendingPath, "utf8"));
+      const raw = JSON.parse(readFileSync41(this.skillPendingPath, "utf8"));
       const r2 = raw;
       if (r2.kind !== "skill" && r2.kind !== "notes" || typeof r2.ref !== "string" || !REQUEST_ID.test(r2.ref) || !this.fresh(r2.at, TEMPLATE_REVIEW_MS)) return null;
       if (typeof r2.name !== "string" || !SKILL_NAME_RE.test(r2.name) || typeof r2.hash !== "string" || !BUNDLE_HASH.test(r2.hash) || typeof r2.files !== "number") return null;
@@ -62651,30 +62716,30 @@ var TemplateService = class {
   async install(req) {
     if (!this.coded) return;
     if (!req) {
-      rmSync13(this.skillPendingPath, { force: true });
-      rmSync13(this.skillTicketPath, { force: true });
+      rmSync14(this.skillPendingPath, { force: true });
+      rmSync14(this.skillTicketPath, { force: true });
       return;
     }
     let done = null;
     try {
-      done = JSON.parse(readFileSync40(this.skillDonePath, "utf8")).id ?? null;
+      done = JSON.parse(readFileSync41(this.skillDonePath, "utf8")).id ?? null;
     } catch {
     }
     if (done === req.id) return;
     const finish = () => {
       this.write(this.skillDonePath, { id: req.id });
-      rmSync13(this.skillPendingPath, { force: true });
-      rmSync13(this.skillTicketPath, { force: true });
+      rmSync14(this.skillPendingPath, { force: true });
+      rmSync14(this.skillTicketPath, { force: true });
     };
     const report = (body2) => this.call("POST", { kind: "skills", requestId: req.id, ...body2 });
     let kept = null;
     try {
-      kept = JSON.parse(readFileSync40(this.skillPendingPath, "utf8"));
+      kept = JSON.parse(readFileSync41(this.skillPendingPath, "utf8"));
     } catch {
     }
     if (!kept || kept.ref !== req.id) {
-      rmSync13(this.skillPendingPath, { force: true });
-      rmSync13(this.skillTicketPath, { force: true });
+      rmSync14(this.skillPendingPath, { force: true });
+      rmSync14(this.skillTicketPath, { force: true });
       const facts = await this.checkSkill(req);
       if ("missing" in facts || "broken" in facts) {
         await report({ skills: [{ payload: req.payload, ...facts }] });
@@ -62710,11 +62775,11 @@ var TemplateService = class {
       }
       let ticket = null;
       try {
-        ticket = JSON.parse(readFileSync40(this.skillTicketPath, "utf8"));
+        ticket = JSON.parse(readFileSync41(this.skillTicketPath, "utf8"));
       } catch {
       }
       if (!ticket) return;
-      rmSync13(this.skillTicketPath, { force: true });
+      rmSync14(this.skillTicketPath, { force: true });
       if (ticket.ref !== req.id || ticket.hash !== pending.hash || pending.hash !== req.hash || pending.item !== req.payload || !this.fresh(ticket.at, TEMPLATE_TICKET_MS)) return;
       pending.confirmedAt = typeof ticket.at === "string" ? ticket.at : (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
       keep({});
@@ -62748,7 +62813,7 @@ var TemplateService = class {
     const file2 = join28(this.opts.stateDir, "skills", `${item.payload}.check.json`);
     try {
       mkdirSync21(dirname21(file2), { recursive: true, mode: 448 });
-      writeFileSync27(file2, text3, { mode: 384 });
+      writeFileSync28(file2, text3, { mode: 384 });
       let stdout = "";
       try {
         stdout = (await this.opts.exec(this.opts.node, [this.opts.runbook, notes ? "notes" : "skill", file2, "--hash", item.hash, "--as", item.payload, "--check", "--json", "--public"], SKILL_TIMEOUT_MS, void 0, { maxBuffer: 4 * 1024 * 1024 })).stdout;
@@ -62783,7 +62848,7 @@ var TemplateService = class {
     } catch {
       return { broken: true };
     } finally {
-      rmSync13(file2, { force: true });
+      rmSync14(file2, { force: true });
     }
   }
   /** The folder of a skill OpenClaw manages on this agent. */
@@ -62813,8 +62878,8 @@ var TemplateService = class {
       try {
         const asked4 = await this.call("GET");
         if (!skillInstallOf(asked4?.install)) {
-          rmSync13(this.skillPendingPath, { force: true });
-          rmSync13(this.skillTicketPath, { force: true });
+          rmSync14(this.skillPendingPath, { force: true });
+          rmSync14(this.skillTicketPath, { force: true });
         }
       } catch {
       }
@@ -62909,7 +62974,7 @@ var TemplateService = class {
       return facts;
     }
     try {
-      const raw = JSON.parse(readFileSync40(this.pendingPath, "utf8"));
+      const raw = JSON.parse(readFileSync41(this.pendingPath, "utf8"));
       if (raw.kind !== "template" || raw.ref !== ref || !this.fresh(raw.at, TEMPLATE_REVIEW_MS)) return null;
       if (typeof raw.template !== "string" || typeof raw.name !== "string" || typeof raw.hash !== "string" || typeof raw.steps !== "number" || typeof raw.change !== "number" || typeof raw.scripts !== "number") return null;
       const vars = varsOf(raw.vars);
@@ -62936,7 +63001,7 @@ var TemplateService = class {
     if (!pending || pending.payload !== payload) return false;
     let vars = null;
     try {
-      vars = varsOf(JSON.parse(readFileSync40(this.pendingPath, "utf8")).vars);
+      vars = varsOf(JSON.parse(readFileSync41(this.pendingPath, "utf8")).vars);
     } catch {
     }
     if (!vars) return false;
@@ -62953,10 +63018,10 @@ var TemplateService = class {
   async ticketed(request, dir) {
     let ticket = null;
     try {
-      ticket = JSON.parse(readFileSync40(this.ticketPath, "utf8"));
+      ticket = JSON.parse(readFileSync41(this.ticketPath, "utf8"));
     } catch {
     }
-    rmSync13(this.ticketPath, { force: true });
+    rmSync14(this.ticketPath, { force: true });
     const vars = varsOf(ticket?.vars);
     if (!ticket || !vars || !request.preview || ticket.ref !== request.preview || ticket.template !== request.template || !this.fresh(ticket.at, TEMPLATE_TICKET_MS)) return null;
     if (ticket.beside === true !== request.beside) {
@@ -62965,14 +63030,14 @@ var TemplateService = class {
     }
     const hash3 = isOrgTemplate(request.template) ? request.bundle : (await this.facts(dir))?.hash ?? null;
     if (!hash3 || hash3 !== ticket.hash) return null;
-    rmSync13(this.pendingPath, { force: true });
+    rmSync14(this.pendingPath, { force: true });
     return vars;
   }
   /** A preview or an apply an owner or admin asked for in the console. Each request once. */
   async asked(request, assignment) {
     let handled = null;
     try {
-      handled = JSON.parse(readFileSync40(this.handledPath, "utf8")).id ?? null;
+      handled = JSON.parse(readFileSync41(this.handledPath, "utf8")).id ?? null;
     } catch {
     }
     if (handled === request.id || this.marker()?.request === request.id || Object.values(this.beside()).some((b2) => b2.request === request.id)) return;
@@ -63007,8 +63072,8 @@ var TemplateService = class {
     const noScripts = this.coded && isOrgTemplate(request.template);
     const report = folder.dir && own2.length ? await this.runbook("check", request.template, folder.dir, assignment, own2, noScripts, request.beside && isOrgTemplate(request.template)) : null;
     this.write(this.handledPath, { id: request.id });
-    rmSync13(this.pendingPath, { force: true });
-    rmSync13(this.ticketPath, { force: true });
+    rmSync14(this.pendingPath, { force: true });
+    rmSync14(this.ticketPath, { force: true });
     const hash3 = isOrgTemplate(request.template) ? request.bundle : facts?.hash ?? null;
     if (facts && hash3 && (report || !own2.length)) {
       const said = (report?.steps ?? []).filter((s2) => typeof s2.id === "string" && own2.includes(s2.id));
@@ -63052,7 +63117,7 @@ var TemplateService = class {
       this.write(path, { template: request.template, requestId: request.id, at: (this.opts.now ?? (() => /* @__PURE__ */ new Date()))().toISOString(), files: files2 });
       return Object.fromEntries(files2.flatMap((f2) => f2.exists && f2.stamp ? [[f2.step, f2.stamp]] : []));
     } catch {
-      if (readTemplateReview(this.opts.stateDir)?.template !== request.template) rmSync13(path, { force: true });
+      if (readTemplateReview(this.opts.stateDir)?.template !== request.template) rmSync14(path, { force: true });
       return {};
     }
   }
@@ -63065,9 +63130,9 @@ var TemplateService = class {
     if (wanted === void 0) return;
     const path = templateReviewPath(this.opts.stateDir);
     try {
-      if (JSON.parse(readFileSync40(path, "utf8")).template !== wanted) rmSync13(path, { force: true });
+      if (JSON.parse(readFileSync41(path, "utf8")).template !== wanted) rmSync14(path, { force: true });
     } catch {
-      rmSync13(path, { force: true });
+      rmSync14(path, { force: true });
     }
   }
   /**
@@ -63109,7 +63174,7 @@ var TemplateService = class {
     if (marker.vars) return marker.vars;
     let kept = null;
     try {
-      kept = varsOf(JSON.parse(readFileSync40(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
+      kept = varsOf(JSON.parse(readFileSync41(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
     } catch {
     }
     const vars = kept ?? { note: "", name: assignment.name, timeZone: "UTC" };
@@ -63123,12 +63188,12 @@ var TemplateService = class {
   dropRepair(template) {
     const dir = join28(this.runbookState, "repair", template);
     try {
-      rmSync13(`${dir}.json`, { force: true });
-      rmSync13(dir, { recursive: true, force: true });
+      rmSync14(`${dir}.json`, { force: true });
+      rmSync14(dir, { recursive: true, force: true });
     } catch {
       this.log(`${template}: the repair folder could not be removed; it is put out of use`);
       try {
-        rmSync13(join28(dir, "template.yaml"), { force: true });
+        rmSync14(join28(dir, "template.yaml"), { force: true });
       } catch {
         this.log(`${template}: the repair folder is still in use. Remove ${dir} by hand`);
       }
@@ -63149,7 +63214,7 @@ var TemplateService = class {
       if (!dir || !facts) return null;
       let failedSteps = [];
       try {
-        const state = JSON.parse(readFileSync40(join28(this.runbookState, `${marker.template}.json`), "utf8"));
+        const state = JSON.parse(readFileSync41(join28(this.runbookState, `${marker.template}.json`), "utf8"));
         const failed = (state.steps ?? []).filter((s2) => s2.status === "failed" && typeof s2.id === "string" && facts.steps.some((f2) => f2.id === s2.id));
         failedSteps = [...failed.filter((s2) => s2.optional !== true), ...failed.filter((s2) => s2.optional === true)].map((s2) => s2.id);
       } catch {
@@ -63179,7 +63244,7 @@ var TemplateService = class {
     let vars = marker.vars ?? null;
     if (!vars) {
       try {
-        vars = varsOf(JSON.parse(readFileSync40(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
+        vars = varsOf(JSON.parse(readFileSync41(join28(this.opts.stateDir, APPLIED_VARS), "utf8")));
       } catch {
         vars = null;
       }
@@ -63767,6 +63832,7 @@ var PORT = parseInt(process.env.AGENT_PORT ?? "3100", 10);
 var BIND = process.env.AGENT_BIND ?? "127.0.0.1";
 var KEYS_DIR2 = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
 var STATE_DIR = process.env.STATE_DIR ?? "/opt/controlclaw/state";
+var OWN_STOP_MS = 60 * 6e4;
 var phoneHistoryFiles = phoneHistoryPaths(`${process.env.HOME ?? "/home/controlclaw"}/.openclaw`, STATE_DIR);
 var phoneCallLog = new PhoneCallLog(phoneHistoryFiles.log);
 var phoneCalls = new PluginCallStore(phoneHistoryFiles.plugin);
@@ -63784,10 +63850,10 @@ var poolHealthy = false;
 if (POOL_UNCLAIMED && !existsSync34(`${KEYS_DIR2}/saas_public_key.pem`)) {
   const key = ensureVmKeypair(KEYS_DIR2);
   if (!key) throw new Error("Pool signing key unavailable");
-  writeFileSync28(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
+  writeFileSync29(`${KEYS_DIR2}/saas_public_key.pem`, key, { mode: 420 });
 }
 try {
-  const saasPublicKey2 = readFileSync41(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
+  const saasPublicKey2 = readFileSync42(`${KEYS_DIR2}/saas_public_key.pem`, "utf-8");
   setSaasPublicKey(saasPublicKey2);
   console.log("Loaded SaaS public key");
 } catch (err) {
@@ -63795,7 +63861,7 @@ try {
   process.exit(1);
 }
 try {
-  setOwnVmId(readFileSync41(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
+  setOwnVmId(readFileSync42(`${KEYS_DIR2}/vm_id`, "utf-8").trim());
   setOwnHostnames(() => [readKeyFile(KEYS_DIR2, "vm_hostname"), readKeyFile(KEYS_DIR2, "access_hostname")]);
   setBoundTokensLatch(`${process.env.STATE_DIR ?? "/opt/controlclaw/state"}/firewall-tokens-bound`);
 } catch {
@@ -64042,7 +64108,7 @@ var backup = new BackupService({
     }
     if (kind === "workspace") for (const id of Object.keys(deleted)) archive.remove(id);
   },
-  service: (action) => runAction(action)
+  service: (action) => runAction(action, { forMs: OWN_STOP_MS })
 });
 var fileWriteSequence = 0;
 var getBoxToken = makeBoxTokenSigner(KEYS_DIR2);
@@ -64095,16 +64161,30 @@ async function reportOwnAction(tag2, action, line2, agentId, ok) {
   });
   if (!res.ok) console.error(`[${tag2}] activity report: HTTP ${res.status}`);
 }
-async function openClawActiveFor() {
+async function openClawUnit() {
   try {
-    const { stdout } = await defaultExec("systemctl", ["show", "openclaw", "-p", "ActiveState", "-p", "ActiveEnterTimestampMonotonic"], 5e3);
-    if (!/^ActiveState=active$/m.test(stdout)) return null;
-    const entered = Number(stdout.match(/^ActiveEnterTimestampMonotonic=(\d+)$/m)?.[1]);
-    if (!entered) return null;
-    return Math.max(0, Number(process.hrtime.bigint() / 1000n) - entered) / 1e3;
+    const { stdout } = await defaultExec("systemctl", ["show", "openclaw", "-p", "LoadState", "-p", "ActiveState", "-p", "ActiveEnterTimestampMonotonic", "-p", "InactiveEnterTimestampMonotonic"], 5e3);
+    const prop = (name) => stdout.match(new RegExp(`^${name}=(.*)$`, "m"))?.[1] ?? "";
+    const now = Number(process.hrtime.bigint() / 1000n);
+    const since = (name) => Math.max(0, now - (Number(prop(name)) || 0)) / 1e3;
+    const state = prop("ActiveState");
+    return {
+      state,
+      loaded: prop("LoadState") === "loaded",
+      activeFor: state === "active" && Number(prop("ActiveEnterTimestampMonotonic")) ? since("ActiveEnterTimestampMonotonic") : null,
+      downFor: state === "inactive" || state === "failed" ? since("InactiveEnterTimestampMonotonic") : null
+    };
   } catch {
     return null;
   }
+}
+async function openClawActiveFor() {
+  return (await openClawUnit())?.activeFor ?? null;
+}
+async function openClawDownFor() {
+  if (!existsSync34(process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json")) return null;
+  const unit = await openClawUnit();
+  return unit?.loaded ? unit.downFor : null;
 }
 var doctorSessionOpen = () => defaultExec("pgrep", ["-u", "ccdoctor"], 5e3).then((r2) => r2.stdout.trim().length > 0, () => false);
 function startWatchdog() {
@@ -64118,6 +64198,10 @@ function startWatchdog() {
       await meetings?.stop();
     },
     restartOpenClaw: async () => (await runActionAsync("restart")).ok,
+    unitDownFor: openClawDownFor,
+    stoppedOnPurpose,
+    forgetStop,
+    startOpenClaw: () => startUnlessStopped(),
     outbound: async () => {
       const mitmIp = readKeyFile(KEYS_DIR2, "mitm_box_private_ip");
       if (!host || !mitmIp) return null;
@@ -64391,16 +64475,16 @@ server.listen(PORT, BIND, () => {
   }) : null;
   if (meetingFollowUp) setInterval(() => void meetingFollowUp.tick().catch(() => void 0), MEETING_REQUEST_POLL_MS).unref();
   const reserveMeetingBrowser = (reserved) => {
-    if (reserved) writeFileSync28(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
-    else rmSync14(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
+    if (reserved) writeFileSync29(`${STATE_DIR}/meeting-browser-reserved`, "reserved", { mode: 384 });
+    else rmSync15(`${STATE_DIR}/meeting-browser-reserved`, { force: true });
   };
   const meetingBrowser = async (start, voice = false, signedIn = false) => {
     const marker = `${STATE_DIR}/meeting-browser-voice`;
-    if (start && voice) writeFileSync28(marker, "bidi", { mode: 384 });
-    else rmSync14(marker, { force: true });
+    if (start && voice) writeFileSync29(marker, "bidi", { mode: 384 });
+    else rmSync15(marker, { force: true });
     const signed = `${STATE_DIR}/meeting-browser-signed`;
-    if (start && signedIn) writeFileSync28(signed, "signed", { mode: 384 });
-    else rmSync14(signed, { force: true });
+    if (start && signedIn) writeFileSync29(signed, "signed", { mode: 384 });
+    else rmSync15(signed, { force: true });
     meetingMic?.close();
     meetingMic = null;
     await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-browser.service"], 15e3);
@@ -64430,8 +64514,8 @@ server.listen(PORT, BIND, () => {
     account: () => google?.account() ?? null,
     connected: () => google?.connected() ?? false,
     window: async (start, url3) => {
-      if (start && url3) writeFileSync28(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
-      else rmSync14(`${STATE_DIR}/meeting-signin-url`, { force: true });
+      if (start && url3) writeFileSync29(`${STATE_DIR}/meeting-signin-url`, url3, { mode: 384 });
+      else rmSync15(`${STATE_DIR}/meeting-signin-url`, { force: true });
       await defaultExec("/usr/bin/systemctl", ["--user", start ? "start" : "stop", "cc-meeting-signin.service"], 15e3);
     },
     browser: (start) => meetingBrowser(start, false, true),
@@ -64448,7 +64532,7 @@ server.listen(PORT, BIND, () => {
     reserve: reserveMeetingBrowser,
     signin: meetingSignin ?? void 0,
     summarize: summarizeMeeting2,
-    service: (action) => runAction(action),
+    service: (action) => runAction(action, { forMs: OWN_STOP_MS }),
     // Reminders set in a meeting go to the first sender approved through the firewall, in their direct chat.
     ownerChat: async () => ownerChat(await channels?.approved() ?? []),
     settle: settleAfterUpdate,
@@ -64475,7 +64559,7 @@ server.listen(PORT, BIND, () => {
       let inboxId = agentmail?.status()?.inboxId;
       if (!inboxId) {
         try {
-          inboxId = JSON.parse(readFileSync41(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
+          inboxId = JSON.parse(readFileSync42(`${openclawHome}/openclaw.json`, "utf8")).channels?.agentmail?.inboxId;
         } catch {
         }
       }

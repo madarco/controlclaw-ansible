@@ -687,6 +687,9 @@
       Group={{ controlclaw_user }}
       WorkingDirectory={{ controlclaw_home }}
       Environment=HOME={{ controlclaw_home }}
+      # ControlClaw installs OpenClaw (cc-openclaw-patch, through an Update). OpenClaw's own updater
+      # would stop the gateway, install as this user and then fail to start a system unit again.
+      Environment=OPENCLAW_NO_AUTO_UPDATE=1
       ExecStart=/usr/bin/openclaw gateway run
       # 2 s, not 10 (T-102). A config change OpenClaw cannot hot-apply (memory.search, which the
       # first model push always writes) makes it exit and hand the restart to systemd, and every
