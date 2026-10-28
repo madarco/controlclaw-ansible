@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.35.2",
+    "date": "2026-10-28",
+    "changes": [
+      "The firewall's content rules can no longer be skipped with compressed, oddly formatted or oddly encoded messages, on Telegram and the other channels.",
+      "Calls to an app's tools are checked even when they are written in an unusual way."
+    ]
+  },
+  {
     "version": "1.35.1",
     "date": "2026-10-28",
     "changes": [
