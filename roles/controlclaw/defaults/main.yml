@@ -577,3 +577,24 @@ teamchat_gate_port: 3930
 # ControlClaw tools for agents (controlclaw docs/plans/controlplane-mcp.md §5): the mitm-agent's
 # gate on the private address that signs each agent's call to the control plane's agent MCP.
 controlplane_mcp_gate_port: 3940
+
+# --- Rust builds (controlclaw docs/plans/rust-rewrite.md §5.1) --------------------------------
+# Which build each component runs: `node` (or `mitmproxy` for the proxy) or `rust`. The canary
+# lists switch single boxes to `rust` without changing the default: a box is in a list when its
+# vm_id is, or (a firewall) its org_id is. An agent box does not know its organization, so it is
+# listed by vm_id. The choice is worked out from these on every run, so an Update keeps it.
+cc_vm_agent_runtime: node
+cc_mitm_agent_runtime: node
+cc_proxy_runtime: mitmproxy
+cc_rust_canary:
+  vm_agent: []
+  mitm_agent: []
+  proxy: []
+# Where the binaries come from: `release` downloads the assets vars/rust_release.yml pins (the
+# public release on the production repo); `files` takes them from files/rust/ (dev rounds). The
+# sha256 pin is checked either way.
+cc_rust_source: release
+# A Rust unit that restarts this many times in this many seconds is put back on its Node build
+# (cc-runtime-fallback), and stays there until a new release is pinned.
+cc_rust_start_limit_burst: 5
+cc_rust_start_limit_interval_s: 120
