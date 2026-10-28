@@ -5,8 +5,10 @@
 #   { key: vm_agent|mitm_agent|proxy, unit: <systemd unit>, bin: <binary>, setting: <runtime var>,
 #     node_exec: <the Node build's ExecStart>, rust_args: <optional>, migrate_role: agent|firewall|'',
 #     migrate_env: <the store paths the unit gives the agent, optional> }
-# It sets `cc_rt[key]` = { runtime: node|rust, exec: <ExecStart>, unit_extra: <[Unit] lines> }, which
-# the unit templates use.
+# It sets `cc_rt[key]` = { runtime: node|rust, exec: <ExecStart> }, which the unit templates use (with
+# Rust they also add the start limit, OnFailure=cc-runtime-fallback@%N.service and RestartMode=direct:
+# without it systemd 254+ passes a crashed service through `failed` on every restart, and OnFailure
+# would run after one crash instead of after the start limit).
 #
 # Both builds stay installed, and anything that goes wrong on the way leaves the component on Node:
 # a download that fails (tried again on the next run), a binary that is not the pinned one, a box
@@ -51,6 +53,19 @@
   when:
     - item.1.content is defined
     - ((item.1.content | b64decode | from_json).release | default('')) != cc_rust_release.version
+
+# A component nobody asks to run Rust any more (the setting is node and no canary list names the
+# box) has no fallback to report: its marker goes, so a deliberate rollback does not read as one.
+- name: Rust | forget markers of components no longer asked to run Rust
+  ansible.builtin.file:
+    path: "/etc/controlclaw/runtime/{{ item.unit }}.fallback"
+    state: absent
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+  when:
+    - lookup('vars', item.setting) != 'rust'
+    - (vm_id | default('')) not in (cc_rust_canary[item.key] | default([]))
+    - not (box_role == 'mitm' and (org_id | default('')) | length > 0 and org_id in (cc_rust_canary[item.key] | default([])))
 
 # Asked for: by the setting, or by a canary list (a list that is not there is an empty one). Held
 # back: a marker for the pinned release, or a release without a pin for this binary (or for
@@ -164,6 +179,8 @@
 
 # The port changes no store format; this proves the Rust build can read every store this box has
 # before it is switched, with the store paths the unit gives the agent.
+# check reads only, so it runs beside the service. A future `cc-migrate up` (a format change) must
+# run with the unit stopped: stop it, up, then the unit task below starts it.
 - name: Rust | the Rust build can read this box's stores
   ansible.builtin.command:
     argv:
@@ -198,14 +215,12 @@
     cc_rt: >-
       {{ cc_rt | combine({item.key: (
            {'runtime': 'rust',
-            'exec': '/opt/controlclaw/rust/' ~ cc_rust_release.version ~ '/' ~ item.bin ~ (' ' ~ item.rust_args if item.rust_args is defined else ''),
-            'unit_extra': 'StartLimitIntervalSec=' ~ cc_rust_start_limit_interval_s ~ '\nStartLimitBurst=' ~ cc_rust_start_limit_burst
-                          ~ '\nOnFailure=cc-runtime-fallback@%n.service'}
+            'exec': '/opt/controlclaw/rust/' ~ cc_rust_release.version ~ '/' ~ item.bin ~ (' ' ~ item.rust_args if item.rust_args is defined else '')}
            if (item in rust_try and item.bin in rust_verified
                and (item.migrate_role | length == 0
                     or (rust_store_check.results | selectattr('item.unit', 'equalto', item.unit) | selectattr('rc', 'defined')
                         | selectattr('rc', 'equalto', 0) | list | length > 0)))
-           else {'runtime': 'node', 'exec': item.node_exec, 'unit_extra': ''}
+           else {'runtime': 'node', 'exec': item.node_exec}
          )}) }}
   loop: "{{ rust_components }}"
   loop_control: { label: "{{ item.unit }}" }

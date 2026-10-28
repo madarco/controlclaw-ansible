@@ -159,7 +159,9 @@
       Description=ControlClaw VM Agent
       After=network.target
       {% if cc_rt.vm_agent.runtime == 'rust' %}
-      {{ cc_rt.vm_agent.unit_extra }}
+      StartLimitIntervalSec={{ cc_rust_start_limit_interval_s }}
+      StartLimitBurst={{ cc_rust_start_limit_burst }}
+      OnFailure=cc-runtime-fallback@%N.service
       {% endif %}
 
       [Service]
@@ -168,6 +170,9 @@
       # A brain runs the same bundle's second entry: the box lifecycle routes for GBrain's unit and
       # nothing of OpenClaw's (controlclaw packages/vm-agent/src/gbrain.ts).
       ExecStart={{ cc_rt.vm_agent.exec }}
+      {% if cc_rt.vm_agent.runtime == 'rust' %}
+      RestartMode=direct
+      {% endif %}
       Restart=always
       RestartSec=10
       Environment=HOME={{ controlclaw_home }}

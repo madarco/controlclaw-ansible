@@ -390,7 +390,9 @@
       Description=ControlClaw mitm egress proxy
       After=network.target
       {% if cc_rt.proxy.runtime == 'rust' %}
-      {{ cc_rt.proxy.unit_extra }}
+      StartLimitIntervalSec={{ cc_rust_start_limit_interval_s }}
+      StartLimitBurst={{ cc_rust_start_limit_burst }}
+      OnFailure=cc-runtime-fallback@%N.service
       {% endif %}
 
       [Service]
@@ -456,6 +458,7 @@
       {% if cc_rt.proxy.runtime == 'rust' %}
       Environment=MITM_CA_DIR=/opt/controlclaw/mitm/ca
       ExecStart={{ cc_rt.proxy.exec }}
+      RestartMode=direct
       {% else %}
       ExecStart={{ cc_mitmproxy_exec }}
       {% endif %}
@@ -476,7 +479,9 @@
       Description=ControlClaw mitm agent (store sync + permission bridge)
       After=network.target
       {% if cc_rt.mitm_agent.runtime == 'rust' %}
-      {{ cc_rt.mitm_agent.unit_extra }}
+      StartLimitIntervalSec={{ cc_rust_start_limit_interval_s }}
+      StartLimitBurst={{ cc_rust_start_limit_burst }}
+      OnFailure=cc-runtime-fallback@%N.service
       {% endif %}
 
       [Service]
@@ -529,6 +534,9 @@
       Environment=WEBHOOK_STORE_PATH=/opt/controlclaw/state/webhooks.enc
       Environment=WEBHOOKS_PATH=/opt/controlclaw/state/webhooks.json
       ExecStart={{ cc_rt.mitm_agent.exec }}
+      {% if cc_rt.mitm_agent.runtime == 'rust' %}
+      RestartMode=direct
+      {% endif %}
       Restart=always
       RestartSec=10
 

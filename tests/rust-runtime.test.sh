@@ -49,7 +49,6 @@ play && [ "$(runtime)" = node ] && [ ! -e /opt/controlclaw/rust ] && pass "defau
 fresh; play -e cc_vm_agent_runtime=rust
 if [ "$(runtime)" = rust ] && [ "$(field exec)" = /opt/controlclaw/rust/1.0.0/vm-agent ] \
    && [ -x /opt/controlclaw/rust/1.0.0/vm-agent ] && [ "$(stat -c %U /opt/controlclaw/rust/1.0.0/vm-agent)" = root ] \
-   && field unit_extra | grep -q 'OnFailure=cc-runtime-fallback@%n.service' \
    && [ "$(cat /etc/controlclaw/runtime/controlclaw-agent.node-exec)" = "/usr/bin/node /opt/controlclaw/agent/dist/index.js" ]; then
   pass "rust: the pinned binary, root-owned, with the fallback wired"
 else fail "rust: the pinned binary, root-owned, with the fallback wired"; tail -20 /tmp/play.log; fi
@@ -104,6 +103,33 @@ echo '{"unit":"controlclaw-agent","release":"0.9.0","reason":"crash-loop"}' > /e
 play -e cc_vm_agent_runtime=rust
 [ "$(runtime)" = node ] && grep -q '"release": "1.0.0", "reason": "store-check"' /etc/controlclaw/runtime/controlclaw-agent.fallback \
   && pass "an old release's marker goes, and this run's store-check marker stays" || { fail "an old release's marker goes, and this run's store-check marker stays"; cat /etc/controlclaw/runtime/controlclaw-agent.fallback; }
+
+fresh; mkdir -p /etc/controlclaw/runtime
+echo '{"unit":"controlclaw-agent","release":"1.0.0","reason":"crash-loop"}' > /etc/controlclaw/runtime/controlclaw-agent.fallback
+play
+[ "$(runtime)" = node ] && [ ! -e /etc/controlclaw/runtime/controlclaw-agent.fallback ] \
+  && pass "set back to node on purpose: the marker goes" || fail "set back to node on purpose: the marker goes"
+
+# The unit vm-agent.yml writes, rendered for each build: with Rust the start limit and OnFailure are
+# lines of their own (a literal "\\n" in one line would leave systemd without OnFailure).
+python3 - > /tmp/agent-unit.j2 <<'PY'
+import yaml
+for t in yaml.safe_load(open("/work/roles/controlclaw/tasks/vm-agent.yml")):
+    c = t.get("ansible.builtin.copy", {})
+    if c.get("dest") == "/etc/systemd/system/controlclaw-agent.service":
+        print(c["content"], end="")
+PY
+render() {
+  (cd /work && ansible localhost -c local -m ansible.builtin.copy \
+    -a "dest=/tmp/agent-unit-$1 content={{ lookup('template', '/tmp/agent-unit.j2') }}" \
+    -e "{\"cc_rt\": {\"vm_agent\": {\"runtime\": \"$1\", \"exec\": \"$2\"}}, \"box_role\": \"openclaw\", \"controlclaw_user\": \"controlclaw\", \"controlclaw_home\": \"/home/controlclaw\", \"openclaw_gateway_port\": 18789, \"cc_rust_start_limit_interval_s\": 120, \"cc_rust_start_limit_burst\": 5}" > /tmp/render.log 2>&1)
+}
+render rust /opt/controlclaw/rust/1.0.0/vm-agent && render node "/usr/bin/node /opt/controlclaw/agent/dist/index.js"
+grep -qx 'OnFailure=cc-runtime-fallback@%N.service' /tmp/agent-unit-rust && grep -qx 'RestartMode=direct' /tmp/agent-unit-rust && grep -qx 'StartLimitBurst=5' /tmp/agent-unit-rust \
+  && grep -qx 'ExecStart=/opt/controlclaw/rust/1.0.0/vm-agent' /tmp/agent-unit-rust \
+  && ! grep -q 'OnFailure\|StartLimit\|\\n' /tmp/agent-unit-node && grep -qx 'ExecStart=/usr/bin/node /opt/controlclaw/agent/dist/index.js' /tmp/agent-unit-node \
+  && pass "the unit: Rust gets its start limit and OnFailure as lines, Node gets nothing new" \
+  || { fail "the unit: Rust gets its start limit and OnFailure as lines, Node gets nothing new"; cat /tmp/render.log | tail -5; head -8 /tmp/agent-unit-rust; }
 
 # The fallback helper, as OnFailure runs it.
 fresh; mkdir -p /etc/controlclaw/runtime /etc/systemd/system; : > /tmp/systemctl.log
