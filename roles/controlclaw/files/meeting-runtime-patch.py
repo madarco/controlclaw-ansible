@@ -40,6 +40,23 @@ def host_imports(text, host):
 
 HOST_DIGESTS = {'dist/realtime-session-harness-C-e8-thM.mjs': ('1f03cd212682908f17101a63034f722d9d5f5aa3629c8b618bd695e3f678cc9f', 'd1be3563c51a2087b0a5b6f2059f6a5ce11df47e87f2ad3ec64ad28d692d9ad2'), 'dist/plugin-sdk/meeting-runtime.js': ('1f5010535a9c0b961c51876a13a9d599152bab93a94a7ddb7b93158693aeb0af', 'e85bae827397d90bcd5337a157bb4492eecb643f0e4f604c408153f2b9929796'), 'dist/transcripts-bridge.runtime-B9TtIF_x.mjs': ('f0c622761d60734c728c9e46c03c6f3ec52516ddfcc54c70e26d3d2de88b02d4', '09f9fe36d205edd5d773c0ba7caf9a884e8501de26696f302e14a3c5fb2e7a8e'), 'dist/agent-run-control-shared-Cc6QkFgv.mjs': ('fc8bf3a1b2eed7c52705c5424aa2ab098eadd62365c411d4404c270037bc5fa4', '352d1a09d566d9eba24b2da217afe611dfe024ee5342b9d4d846c7456eb05dad')}
 
+# Later upstream builds of a host file whose code changed only outside the replacements: their
+# canonical code before the patch -> after it. The same replacements run on them, and the result must
+# be exactly the "after" recorded here, so anything else is still refused. Each entry is reviewed
+# against the upstream diff before it is added (controlclaw docs/ops/t-meet-9-35.md).
+HOST_BUILDS = {
+    # 2026.9.35: createBridge's request object is now passed through wrapCurrentPluginInstance (one
+    # new import, plugin-instance-scope), so its callbacks keep to the plugin instance's lifecycle.
+    'dist/realtime-session-harness-C-e8-thM.mjs': {
+        'b1b4b6942f555be31e792d845ef51eb99bbba89f3cb5aa5853c7bce10e008b1c': '8560a5dc9ebf7e792da98ea0a8bfa7a92dc43014e096e13326a9eef4fac19317',
+    },
+}
+
+def host_builds(spec_path):
+    """Every reviewed (canonical before -> canonical after) pair of a host file."""
+    before, after = HOST_DIGESTS[spec_path]
+    return {before: after, **HOST_BUILDS.get(spec_path, {})}
+
 # The earlier patched code of a host file (canonical digest), with how many of its replacements it
 # has: only the ones after those run on it (an agent on another 2026.9.x build, patched by an earlier
 # release).
@@ -61,11 +78,12 @@ def patch(host, plugin):
             continue
         if spec['kind'] == 'host':
             # Host files are recognised by their canonical code, on any 2026.9.x build, patched or not.
-            before, after = HOST_DIGESTS[spec['path']]
+            builds = host_builds(spec['path'])
+            after = HOST_DIGESTS[spec['path']][1]
             # The exact pinned build names its modules as the replacements do; another build's are looked up.
             names = (lambda text: text) if digest == spec['before'] else (lambda text: host_imports(text, host))
             canonical = host_digest(source)
-            if canonical == after:
+            if canonical in builds.values():
                 continue
             applied = HOST_UPGRADES.get(spec['path'], {}).get(canonical)
             if applied is not None:
@@ -78,8 +96,9 @@ def patch(host, plugin):
                     raise RuntimeError('Unexpected patched runtime code')
                 changes.append((path, source))
                 continue
-            if canonical != before:
+            if canonical not in builds:
                 raise RuntimeError('Unexpected Meet runtime code: ' + str(path))
+            after = builds[canonical]
             for old, new, count in spec['replacements']:
                 old, new = names(old), names(new)
                 if source.count(old) != count:
@@ -147,10 +166,10 @@ def check(host, plugin):
         elif spec['kind'] == 'plugin' and (digest in (spec['before'], spec.get('previous')) or digest in spec.get('upgrades', {})):
             status = 'unpatched'
         elif spec['kind'] == 'host':
-            before, after = HOST_DIGESTS[spec['path']]
+            builds = host_builds(spec['path'])
             canonical = host_digest(source)
             # The previous release's patch is upgraded by the next run, like an unpatched file.
-            status = 'patched' if canonical == after else 'unpatched' if canonical == before or canonical in HOST_UPGRADES.get(spec['path'], {}) else 'unknown'
+            status = 'patched' if canonical in builds.values() else 'unpatched' if canonical in builds or canonical in HOST_UPGRADES.get(spec['path'], {}) else 'unknown'
         else:
             status = 'unknown'
         files.append({'path': spec['path'], 'status': status})

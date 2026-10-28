@@ -34,9 +34,17 @@ Implements the security-critical core of the two-box architecture
      gets host-level logging and byte counts, no credential swap and no AI review. It never falls
      back to this box's IP: every failure closes the connection and logs why.
   7. Non-routable targets (T-61): no connection ever goes to a link-local, loopback, unspecified
-     or multicast address, whatever a rule, the Host header or the CONNECT target says. Names are
-     resolved first and the connection is pinned to the checked address (`server_connect`), so a
+     or multicast address, nor to any address of the firewall itself (T-sni), whatever a rule, the
+     Host header or the CONNECT target says. Names are resolved first and the connection is pinned to the checked address (`server_connect`), so a
      name pointing at the metadata service is refused too. Each refusal is a `block` record.
+  8. One destination per connection (docs/ops/t-sni-passthrough.md): rules and swaps are decided
+     for one name, and the connection goes to that name. A passthrough matched by SNI is sent to
+     the SNI, never to the IP the box asked for, and only to a public address. Over TLS the SNI must
+     be the `Host:` header, and a CONNECT target that is an IP is replaced by that name. A mismatch
+     is refused with a `destination_mismatch` record, and so is a request that names a second host
+     (two Host headers, an HTTP/2 host header other than :authority). Credentials are only swapped
+     into https requests. mitmproxy's own `ignore_hosts` is cleared at
+     start: it matches the SNI and the Host header and then connects to the dialled address.
 
 This addon requires `connection_strategy=lazy` (the firewall's systemd unit sets it). With
 mitmproxy's default, `eager`, the destination is connected BEFORE any layer decision is made,
@@ -253,7 +261,8 @@ UPDATE_HOSTS = tuple(
 # the smoke-test compose files set; the production systemd unit pins them all to 0. This makes
 # "dev flags are off on secured boxes" a property of the proxy binary, not of a checklist.
 _DEV_FLAGS = ("MITM_DEV_LOG_SECRETS", "MITM_DEV_ALLOW_PLAINTEXT_STORE",
-              "MITM_DEV_INSECURE_UPSTREAM", "MITM_DEV_ALLOW_DIRECT_EGRESS")
+              "MITM_DEV_INSECURE_UPSTREAM", "MITM_DEV_ALLOW_DIRECT_EGRESS",
+              "MITM_DEV_PRIVATE_PASSTHROUGH")
 _dev_set = [k for k in _DEV_FLAGS if os.environ.get(k, "") not in ("", "0")]
 if _dev_set and os.environ.get("MITM_ALLOW_DEV_FLAGS") != "1":
     raise RuntimeError(f"refusing to start with dev flags set outside a smoke test: {_dev_set}")
@@ -272,6 +281,14 @@ BLOCK_STATUS = 403
 NON_ROUTABLE_RULE = "non_routable_target"
 # Prefix of the `server.error` a refused connection carries; the HTTP flow's error repeats it.
 NON_ROUTABLE_REFUSAL = "refused by the firewall:"
+# The `rule` on a record for a connection whose names disagree: a TLS name (SNI) that is not the
+# `Host:` header, or a name that is not the one the box asked to connect to. Every rule and every
+# swap is decided by one name, so the connection may only go to that name (see `request` and
+# `tls_clienthello`).
+DESTINATION_RULE = "destination_mismatch"
+# The one port the built-in passthroughs (the control plane, the backup store, Tailscale) are used
+# on. A connection to any other port with one of their names is intercepted like any other.
+PASSTHROUGH_PORT = 443
 PERMISSION_STATUS = 451
 
 
@@ -517,7 +534,27 @@ def match_rule(host: str, method: str, path: str, vm_id: str | None = None) -> d
     return None
 
 
+def _no_ignore_hosts() -> None:
+    """Clear mitmproxy's own `ignore_hosts` / `allow_hosts`. They pass a connection through when the
+    CONNECT target, the SNI OR a plain-HTTP `Host:` header matches, and then connect to the address
+    the box asked for: a forged SNI or Host is an uninspected tunnel to any IP (T-sni). The firewall's
+    unit set `--ignore-hosts <control plane>` until 2026-10-28; the control plane is passed through
+    by `tls_clienthello` instead, to its own name only."""
+    opts = _mitm_ctx.options
+    for name in ("ignore_hosts", "allow_hosts"):
+        if getattr(opts, name, None):
+            # A warning, not an error: mitmdump exits when an error is logged during startup.
+            log.warning(f"[mitm] {name} is set ({getattr(opts, name)}); clearing it, see docs/ops/t-sni-passthrough.md")
+            opts.update(**{name: []})
+
+
+def configure(updated) -> None:
+    if "ignore_hosts" in updated or "allow_hosts" in updated:
+        _no_ignore_hosts()
+
+
 def running() -> None:
+    _no_ignore_hosts()
     # mitmdump's built-in dumper otherwise prints the rewritten query string.
     # Activity is emitted separately below, with named swaps and no values.
     if hasattr(_mitm_ctx.options, "flow_detail"):
@@ -645,7 +682,7 @@ def _connection_matches(rule: dict[str, Any], host: str, port: int | None, vm_id
     if not _rule_applies_to_vm(rule, vm_id):
         return False
     pattern = rule.get("match_domain", "")
-    if _is_ip(host) and (pattern == "*" or pattern.startswith("*.")):
+    if is_ip_literal(host) and (pattern == "*" or pattern.startswith("*.")):
         # An IP is what we are left with when the destination has no name we could read. A
         # wildcard domain matching it would send a connection out by IP — which the provider
         # cannot route on and which throws away the whole point of resolving at the exit. A rule
@@ -3053,6 +3090,10 @@ def apply_swaps(flow: http.HTTPFlow, vm_id: str | None = None) -> list[tuple[str
     Returns [(secret, placeholder)] pairs applied, for later log redaction."""
     host = flow.request.pretty_host
     applied: list[tuple[str, str]] = []
+    if flow.request.scheme != "https":
+        # Plain HTTP would carry the real secret in clear to whoever answers on port 80; the
+        # placeholder goes out as it is instead (T-sni, docs/ops/t-sni-passthrough.md).
+        return applied
 
     for cred in credentials_for(host, vm_id):
         # Speech credentials may only be substituted after voice_request has
@@ -3426,10 +3467,6 @@ if _layer is not None:
             return True, None
 
 
-def _is_ip(host: str) -> bool:
-    return bool(re.fullmatch(r"[0-9.]+", host or "")) or ":" in (host or "")
-
-
 def encode_host(host: str) -> bytes | None:
     """The hostname as it goes on the wire, or None if it cannot go there at all.
 
@@ -3440,7 +3477,7 @@ def encode_host(host: str) -> bytes | None:
     """
     if not host or len(host) > 253:
         return None
-    if _is_ip(host):
+    if is_ip_literal(host):
         return host.encode("ascii", "ignore") or None
     try:
         # `idna` is the rule that actually applies: mitmproxy's own CONNECT does `encode("idna")`,
@@ -3670,8 +3707,13 @@ def tls_clienthello(data) -> None:
     OR an opt-in `tunnel` rule (uninspected egress).
 
     Keys off the TLS ClientHello SNI rather than the CONNECT authority, so it works for the explicit
-    proxy (CONNECT-by-host) AND transparent redsocks (CONNECT-by-IP). Defensive: a raised exception
-    here would stall the handshake, so a match error never takes down an interceptable connection.
+    proxy (CONNECT-by-host) AND transparent redsocks (CONNECT-by-IP). The SNI is only a name the
+    client wrote, so the connection is then sent to that name and nowhere else (`_pass_through`):
+    before 2026-10-28 it went to whatever address the box asked for, which made a forged SNI an
+    uninspected tunnel to any IP. The built-in hosts pass on port 443 only.
+
+    Defensive: a raised exception here would stall the handshake, so a match error never takes down
+    an interceptable connection.
     """
     try:
         sni = (getattr(getattr(data, "client_hello", None), "sni", None) or "").lower()
@@ -3680,7 +3722,7 @@ def tls_clienthello(data) -> None:
         if sni in MEETING_MEDIA_RANGES:
             return
         ctx = getattr(data, "context", None)
-        _, port = _server_addr(ctx)
+        host, port = _server_addr(ctx)
         vm_id = ctx_vm_id(ctx)
         if residential_rule(sni, port, vm_id) is not None:
             # Residential is decided in `next_layer`, which runs first and has the ClientHello.
@@ -3688,23 +3730,68 @@ def tls_clienthello(data) -> None:
             # flow out of THIS box's IP — the one outcome a residential rule must never produce.
             log.error(f"[mitm] residential rule reached tls_clienthello for {sni}; refusing to pass through")
             return
+        # Under an emergency stop the ONLY destination that still passes through is the control
+        # plane: the vm-agent's own channel rides it, and so does the relay an owner uses to unlock
+        # a box's disk. Everything else — the backup store, Tailscale, every `tunnel` rule the
+        # organisation wrote — is intercepted and refused in `request`, because a passed-through
+        # connection is one this proxy never sees again. (`tunnel_match` is None for a stopped box.)
         if kill_switched(vm_id):
-            # Under an emergency stop the ONLY destination that still passes through is the
-            # control plane: the vm-agent's own channel rides it, and so does the relay an owner
-            # uses to unlock a box's disk. Everything else — the backup store, Tailscale, every
-            # `tunnel` rule the organisation wrote — is intercepted and refused below, because a
-            # passed-through connection is one this proxy never sees again.
-            if CONTROL_PLANE_HOST and host_matches(CONTROL_PLANE_HOST, sni):
-                data.ignore_connection = True
-            return
+            built_in: tuple[str, ...] = (CONTROL_PLANE_HOST,) if CONTROL_PLANE_HOST else ()
+        else:
+            built_in = PASSTHROUGH_HOSTS + (TAILSCALE_HOSTS if tailscale_allowed(vm_id) else ())
         if (
-            any(host_matches(h, sni) for h in PASSTHROUGH_HOSTS)
-            or (tailscale_allowed(vm_id) and any(host_matches(h, sni) for h in TAILSCALE_HOSTS))
+            (port == PASSTHROUGH_PORT and any(host_matches(h, sni) for h in built_in))
             or tunnel_match(sni, port, vm_id)
         ):
-            data.ignore_connection = True
+            _pass_through(data, ctx, sni, host, port, vm_id)
     except Exception as exc:  # noqa: BLE001 — never break interception over a match error
         log.warning(f"[mitm] tls_clienthello passthrough check failed: {exc}")
+
+
+def _wire_name(name: str) -> str:
+    """A name as it is compared: `_ascii_host`'s form, or lower case without the root's dot."""
+    return _ascii_host(name) or name.lower().strip("[]").rstrip(".")
+
+
+def is_ip_literal(host: str) -> bool:
+    """True when `host` is an IP address (v4 or v6, brackets and a zone allowed), not a name."""
+    return _unwrapped_ip((host or "").strip("[]")) is not None
+
+
+def _pass_through(data, ctx, sni: str, host: str, port: int | None, vm_id: str | None) -> None:
+    """Pass a connection matched by its SNI through, to that name and nowhere else.
+
+    - Asked for by IP (redsocks, or a client that connected to an address): the upstream becomes the
+      SNI, so the firewall resolves it with its own resolver in `server_connect`. Which of the
+      name's addresses the box picked does not matter, so a CDN or S3 handing out a different one
+      each time changes nothing; an address the name does not have is never reached.
+    - Asked for by another NAME (the explicit proxy, `CONNECT evil.example:443` with the control
+      plane as SNI): refused, with a `block` record. The client said two different things.
+    - Either way the connection is marked, and `server_connect` refuses it unless every address the
+      name resolves to is public: an uninspected connection never goes to a private range (other
+      agents, the firewall's own listeners).
+
+    A refused connection is still marked `ignore_connection`, so it is not intercepted instead:
+    `server.error` closes it before anything is dialled.
+    """
+    server = ctx.server
+    if _wire_name(host) != _wire_name(sni):
+        if not is_ip_literal(host):
+            why = f"the TLS name is {sni[:80]} but the connection was asked for {host[:80]}"
+            server.error = f"{NON_ROUTABLE_REFUSAL} {why}"
+            data.ignore_connection = True
+            _log(_non_routable_record(vm_id, sni, port, why, rule=DESTINATION_RULE))
+            log.warning(f"[mitm] refused passthrough to {host}:{port}: {why}")
+            return
+        if server.connected:
+            # Only with `connection_strategy=eager`, which this firewall does not run: the socket to
+            # the box's address is already open and cannot be moved. Leave the connection to be
+            # intercepted, where `request` checks it by name like any other.
+            log.error(f"[mitm] {sni} was asked for by address {host}, already connected; not passing it through")
+            return
+        server.address = (sni, port)
+    server.cc_uninspected = True
+    data.ignore_connection = True
 
 
 def next_layer(data) -> None:
@@ -3795,6 +3882,9 @@ def next_layer(data) -> None:
                 return
         if not is_tls:
             if tunnel_match(host, port, vm_id) is not None:
+                # Matched by the very address it dials, so there is no name to disagree with; it is
+                # still uninspected, so `server_connect` keeps it off private ranges.
+                ctx.server.cc_uninspected = True
                 data.layer = _proxy_layers.TCPLayer(ctx, ignore=True)
     except Exception as exc:  # noqa: BLE001
         log.warning(f"[mitm] next_layer passthrough check failed: {exc}")
@@ -4000,18 +4090,56 @@ def _refuse_residential_http(flow: http.HTTPFlow, host: str, why: str) -> None:
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 
-def non_routable_kind(ip: str) -> str | None:
-    """Why `ip` is a target the firewall refuses, or None if it may be connected to. Also looks
-    through the IPv6 forms that carry an IPv4 address (`::ffff:169.254.169.254`, NAT64)."""
+def _unwrapped_ip(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """`ip` as an address, looking through the IPv6 forms that carry an IPv4 address
+    (`::ffff:169.254.169.254`, NAT64). None when it is not an address."""
     try:
         addr = ipaddress.ip_address(ip.split("%", 1)[0])
     except ValueError:
         return None
     if isinstance(addr, ipaddress.IPv6Address):
         if addr.ipv4_mapped is not None:
-            addr = addr.ipv4_mapped
-        elif addr in _NAT64:
-            addr = ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+            return addr.ipv4_mapped
+        if addr in _NAT64:
+            return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    return addr
+
+
+# Smoke tests only: their stand-in servers sit on Docker's private networks.
+_DEV_PRIVATE_PASSTHROUGH = os.environ.get("MITM_DEV_PRIVATE_PASSTHROUGH", "") not in ("", "0")
+
+
+def is_public_ip(ip: str) -> bool:
+    """True for an address on the public internet: not 10/8, 172.16/12, 192.168/16, 100.64/10 (the
+    agents' and the firewall's own networks), nor anything else `ipaddress` does not call global."""
+    addr = _unwrapped_ip(ip)
+    if addr is not None and _DEV_PRIVATE_PASSTHROUGH and addr.is_private and non_routable_kind(ip) is None:
+        return True
+    return addr is not None and addr.is_global
+
+
+def is_own_address(ip: str) -> bool:
+    """True when `ip` is an address of this machine (any interface: the firewall's public and private
+    IPs, Docker's bridge). Asked of the kernel, which lets a socket bind only to its own addresses, so
+    it stays right when an address changes. With `ip_nonlocal_bind` on, every address would look
+    local and every connection would be refused: closed, not open."""
+    addr = _unwrapped_ip(ip)
+    if addr is None or addr.is_link_local:
+        return False  # link-local is refused as non-routable before this is asked
+    family = socket.AF_INET6 if addr.version == 6 else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((str(addr), 0))
+        return True
+    except OSError:
+        return False
+
+
+def non_routable_kind(ip: str) -> str | None:
+    """Why `ip` is a target the firewall refuses, or None if it may be connected to."""
+    addr = _unwrapped_ip(ip)
+    if addr is None:
+        return None
     if addr.is_link_local:
         return "link-local"
     if addr.is_loopback:
@@ -4039,11 +4167,13 @@ async def _resolve(host: str, port: int | None) -> list[str]:
     return out
 
 
-async def check_target(host: str, port: int | None, strict: bool) -> tuple[str | None, str | None]:
+async def check_target(host: str, port: int | None, strict: bool, public_only: bool = False) -> tuple[str | None, str | None]:
     """Resolve `host` and refuse it if ANY address is non-routable, so a name that points at the
     metadata address is refused like the address itself. Returns (address to connect to, refusal).
     With `strict`, a name that does not resolve is refused too: the caller is about to connect, and
-    connecting would resolve again — the answer we checked must be the one that is used."""
+    connecting would resolve again — the answer we checked must be the one that is used. With
+    `public_only` (a connection passed through uninspected), a private or other non-public address
+    is refused as well: other agents and the firewall's own listeners are on those."""
     host = (host or "").strip().strip("[]")
     if not host:
         return None, None
@@ -4055,20 +4185,28 @@ async def check_target(host: str, port: int | None, strict: bool) -> tuple[str |
         return None, None
     for ip in ips:
         kind = non_routable_kind(ip)
+        shown = host if host == ip else f"{host} ({ip})"
         if kind:
-            shown = host if host == ip else f"{host} ({ip})"
             return None, f"{shown[:120]} is a {kind} address; the firewall never connects there"
+        if is_own_address(ip):
+            # Dialled from here, the firewall's own listeners (the mitm-agent on 3100, the gates on
+            # 39xx) would be reached over the loopback path, past the Hetzner firewall and UFW, and
+            # from the firewall's own address. A name like <ip>.sslip.io is enough to ask for it.
+            return None, f"{shown[:120]} is this firewall's own address; the firewall never connects there"
+        if public_only and not is_public_ip(ip):
+            return None, f"{shown[:120]} is not a public address; an uninspected connection never goes there"
     if not ips:
         return None, (f"could not resolve {host[:60]}" if strict else None)
     # Prefer IPv4, as most of these boxes route it; any address in the list passed the check.
     return next((ip for ip in ips if ":" not in ip), ips[0]), None
 
 
-def _non_routable_record(vm_id: str | None, host: str, port: int | None, why: str, flow_id: str | None = None) -> dict[str, Any]:
+def _non_routable_record(vm_id: str | None, host: str, port: int | None, why: str, flow_id: str | None = None,
+                         rule: str = NON_ROUTABLE_RULE) -> dict[str, Any]:
     return {
         "flow_id": flow_id or "nr_" + hashlib.sha256(f"{time.time()}{host}{port}".encode()).hexdigest()[:24],
         "ts": time.time(), "tenant": TENANT, "vm_id": vm_id,
-        "host": host, "port": port, "effect": "block", "rule": NON_ROUTABLE_RULE, "error": why[:200],
+        "host": host, "port": port, "effect": "block", "rule": rule, "error": why[:200],
     }
 
 
@@ -4112,9 +4250,11 @@ async def server_connect(data) -> None:
     addr = getattr(server, "address", None)
     if not addr:
         return
+    if getattr(server, "error", None):
+        return  # already refused (`_pass_through`); nothing to resolve
     host, port = str(addr[0]), addr[1]
     try:
-        ip, why = await check_target(host, port, strict=True)
+        ip, why = await check_target(host, port, strict=True, public_only=getattr(server, "cc_uninspected", False))
     except Exception as exc:  # noqa: BLE001 — a failed check refuses; it never lets through
         ip, why = None, f"could not check {host[:60]}: {exc}"[:200]
     if why:
@@ -4591,6 +4731,54 @@ def websocket_end(flow):
         _log(rec)
 
 
+def _authority_host(value: str) -> str:
+    """The host of a `Host:` value or an authority, without its port (IPv6 brackets kept off)."""
+    value = value.strip()
+    if value.startswith("["):
+        return value[1:].split("]", 1)[0]
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def _one_destination(flow: http.HTTPFlow, host: str) -> str | None:
+    """Make the request go to `host` (its `Host:` header, which every rule and swap matches), or say
+    why it cannot. None when the request may go on.
+
+    Before 2026-10-28 rules and swaps read the `Host:` header while the socket went to the CONNECT
+    target or the IP behind redsocks, so `Host: api.telegram.org` sent to an attacker's address got
+    the real bot token put in. Now:
+    - the request names one host: a single `Host:` header, and over HTTP/2 a `host` header (which
+      mitmproxy forwards) must be the `:authority` that `pretty_host` reads;
+    - over TLS the client's SNI must be `host`;
+    - a CONNECT target or request authority that is another NAME is refused;
+    - one that is an IP (redsocks) is re-pointed at `host`, so the firewall resolves it itself and
+      `server_connect` checks and pins what it connects to.
+    """
+    want = _wire_name(host)
+    named = flow.request.headers.get_all("host")
+    if flow.request.authority:
+        named = [flow.request.authority, *named]
+    if len(flow.request.headers.get_all("host")) > 1 or any(_wire_name(_authority_host(n)) != want for n in named):
+        flow.metadata["cc_misdirected"] = True
+        return f"the request names more than one host ({', '.join(n[:60] for n in named[:3])})"
+    sni = getattr(flow.client_conn, "sni", None)
+    if sni and _wire_name(sni) != want:
+        flow.metadata["cc_misdirected"] = True
+        return f"the TLS name is {sni[:80]} but the request is for {host[:80]}"
+    authority = flow.request.host
+    if _wire_name(authority) == want:
+        return None
+    if not is_ip_literal(authority):
+        return f"the request was sent to {authority[:80]} but is for {host[:80]}"
+    # The HTTP layer connects to (request.host, port) and takes the upstream SNI from it, so the name
+    # goes in as it is on the wire: no trailing dot, no capitals, punycode. A fresh Server drops the
+    # IP from this flow, for the checks below that read `server_conn`.
+    name = _wire_name(host)
+    flow.request.host = name
+    flow.server_conn = connection.Server(address=(name, flow.request.port), sni=name,
+                                         transport_protocol=flow.server_conn.transport_protocol)
+    return None
+
+
 async def request(flow: http.HTTPFlow) -> None:
     host = flow.request.pretty_host
     method = flow.request.method
@@ -4599,6 +4787,25 @@ async def request(flow: http.HTTPFlow) -> None:
     flow.metadata["cc_vm_id"] = vm_id
 
     if await _refuse_non_routable_http(flow):
+        return
+    # One destination for everything below: every rule, the windows and every credential swap
+    # match `host`, so the request may only go to `host` (`_one_destination`).
+    mismatch = _one_destination(flow, host)
+    if mismatch:
+        # 421 Misdirected Request when the TLS name is another host: what an HTTP/2 client that
+        # reused a connection for a second origin needs to retry on a connection of its own.
+        status = 421 if flow.metadata.pop("cc_misdirected", False) else BLOCK_STATUS
+        flow.metadata["cc_effect"] = "block"
+        flow.metadata["cc_rule"] = DESTINATION_RULE
+        flow.response = http.Response.make(
+            status,
+            json.dumps({"error": DESTINATION_RULE, "host": host, "reason": mismatch, "tenant": TENANT}),
+            {"Content-Type": "application/json"},
+        )
+        rec = _http_record(flow, "block")
+        rec.update({"status": status, "error": mismatch[:200]})
+        _log_once(flow, rec)
+        log.warning(f"[mitm] refused {host}: {mismatch}")
         return
 
     # The emergency stop, before anything that could let a request past

@@ -14799,6 +14799,16 @@ function canonicalMeetUrl(value2) {
     throw new Error("Use a link like https://meet.google.com/abc-defg-hij");
   return value2;
 }
+function isMeetPage(pageUrl, meetUrl) {
+  let page;
+  try {
+    page = new URL(pageUrl);
+  } catch {
+    return false;
+  }
+  const path = page.pathname.replace(/\/$/, "").replace(/^\/meet(?=\/[^/]+$)/, "");
+  return page.origin + path === meetUrl;
+}
 var AUTO_JOIN_REFUSALS = {
   off: "Joining automatically is off",
   source_off: "This kind of invite is off in the settings",
@@ -41925,8 +41935,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "8181502" : "unknown",
-  builtAt: true ? "2026-10-26T12:04:56Z" : "unknown"
+  commit: true ? "e8ef7d5" : "unknown",
+  builtAt: true ? "2026-10-28T12:30:13Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -46224,12 +46234,7 @@ var CaptionTap = class {
     const targets = await response.json();
     const page = targets.find((t2) => {
       if (t2.type !== "page" || typeof t2.url !== "string" || typeof t2.webSocketDebuggerUrl !== "string") return false;
-      try {
-        const u2 = new URL(t2.url);
-        return u2.origin + u2.pathname.replace(/\/$/, "") === this.opts.url;
-      } catch {
-        return false;
-      }
+      return isMeetPage(t2.url, this.opts.url);
     });
     if (!page || !/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/page\//.test(page.webSocketDebuggerUrl)) return false;
     const ws = (this.opts.connect ?? ((url3) => new wrapper_default(url3, { maxPayload: 4 * 1024 * 1024 })))(page.webSocketDebuggerUrl);
@@ -47021,11 +47026,8 @@ var MeetingService = class {
       if (!this.alive(runtime)) return;
       if (result.found === false) throw new Error("Native meeting session ended");
       const health2 = result.session?.chrome?.health;
-      if (health2?.browserUrl) {
-        const page = new URL(health2.browserUrl);
-        if (page.origin + page.pathname.replace(/\/$/, "") !== runtime.url)
-          throw new Error("Meet page changed");
-      }
+      if (health2?.browserUrl && !isMeetPage(health2.browserUrl, runtime.url))
+        throw new Error("Meet page changed");
       if (runtime.voiceStarted && (health2?.providerConnected === false || health2?.bridgeClosed === true))
         throw new Error("Voice connection ended");
       if (health2?.manualAction?.reason === "meet-admission-denied")
