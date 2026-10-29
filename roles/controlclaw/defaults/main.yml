@@ -312,6 +312,9 @@ org_id: ""                           # org this box serves
 # Scoped to this one host. Empty disables it, which turns backups off for every box behind
 # this firewall. See apps/saas/docs/features/backups.md.
 controlclaw_backup_host: "controlclaw-backups.s3.eu-west-1.amazonaws.com"
+# The bucket's name, only for a store that is not AWS (path-style on controlclaw_backup_host). Empty
+# for AWS: the firewall reads the bucket from the virtual-hosted name above.
+controlclaw_backup_bucket: ""
 
 # Caddy, installed from its GitHub release (tasks/caddy.yml). Checksums from
 # caddy_<version>_checksums.txt on the release page.

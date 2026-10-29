@@ -262,10 +262,13 @@
     mode: '0644'
   when: meeting_install_needed | bool
 
+# Only when the plugin is installed: this used to run on every Update, and with any later task
+# failing, the play ended before the handler that starts the gateway again (T-openclaw-autopatch).
 - name: Meetings | stop the gateway before installing a disabled plugin
   ansible.builtin.systemd:
     name: openclaw
     state: stopped
+  when: meeting_install_needed | bool
   failed_when: false
 
 - name: Meetings | install the pinned official package

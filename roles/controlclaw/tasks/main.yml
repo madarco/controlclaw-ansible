@@ -262,9 +262,52 @@
   ansible.builtin.include_tasks: gbrain.yml
   when: vm_id is defined and box_role == 'gbrain' and not ci_test
 
-- name: Include OpenClaw gateway install (systemd unit the vm-agent drives)
-  ansible.builtin.include_tasks: openclaw.yml
+# A failure anywhere in openclaw.yml stops the play before the handlers, and several of its steps
+# stop the gateway first (an OpenClaw upgrade, its state migration, a Meet plugin install). So an
+# Update that failed there used to leave the agent stopped until somebody pressed Restart: the
+# nightly Update of 2026-10-27 stopped every agent it reached that way, and they stayed down for days
+# (controlclaw docs/ops/t-openclaw-autopatch.md). The rescue puts back the OpenClaw a failed npm
+# install replaced, starts the gateway again, then fails the run as before, so the console still shows the
+# Update as failed and release.yml is not reached.
+- name: Install OpenClaw, and start the gateway again if that fails
   when: vm_id is defined and box_role == 'openclaw'
+  block:
+    - name: Include OpenClaw gateway install (systemd unit the vm-agent drives)
+      ansible.builtin.include_tasks: openclaw.yml
+  rescue:
+    # npm failed or was cut short during an upgrade: the version that ran before goes back, with
+    # its bin link. Never later (openclaw.yml says why).
+    - name: Put back the OpenClaw that ran before the failed upgrade
+      ansible.builtin.shell:
+        cmd: >-
+          rm -rf /usr/lib/node_modules/openclaw &&
+          mv /usr/lib/.cc-openclaw-previous /usr/lib/node_modules/openclaw &&
+          ln -sfn ../lib/node_modules/openclaw/openclaw.mjs /usr/bin/openclaw
+        removes: /usr/lib/.cc-openclaw-previous
+      when: openclaw_previous_saved | default(false) | bool
+      failed_when: false
+
+    - name: Look for the gateway unit after the failed OpenClaw step
+      ansible.builtin.stat:
+        path: /etc/systemd/system/openclaw.service
+      register: openclaw_unit_after_failure
+
+    - name: Start the gateway again after the failed OpenClaw step
+      ansible.builtin.systemd:
+        name: openclaw
+        state: started
+        daemon_reload: true
+        # Enabled too: a first run that fails here has not enabled it yet, and the vm-agent watchdog
+        # looks after an enabled unit only.
+        enabled: true
+      when: openclaw_unit_after_failure.stat.exists and not ci_test
+      failed_when: false
+
+    - name: OpenClaw step failed (the gateway was started again)
+      ansible.builtin.fail:
+        msg: >-
+          {{ ansible_failed_task.name | default('an OpenClaw task') }}:
+          {{ (ansible_failed_result.msg | default('') ~ ' ' ~ ansible_failed_result.stderr | default('')) | trim | truncate(400) }}
 
 # Shared notes: the root-owned folder, the helper that writes it, and memory search reading it.
 # After openclaw.yml, which installs and repairs the OpenClaw this talks to.

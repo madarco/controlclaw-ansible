@@ -101,8 +101,8 @@ fi
 # MIN_AGE_HOURS old, rather than whatever the branch points at right now. A malicious commit then
 # has to survive a day of public review before any running box will execute it.
 #
-# curl rather than node: once this box is confined to the org proxy, everything but the control
-# plane is TLS-intercepted, and node ignores the OS trust store (curl and git do not).
+# curl rather than node: once this box is confined to the org proxy, everything (the control plane
+# too, since 2026-10-28) is TLS-intercepted, and node ignores the OS trust store (curl and git do not).
 # An empty branch means cloud-init passed no -C and cloned the repo's default. Keep it empty
 # rather than guessing "main": GitHub's commits API uses the repo's default when `sha` is omitted,
 # so the box resolves commits on the branch it actually booted from.
