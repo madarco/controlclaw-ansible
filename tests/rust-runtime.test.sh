@@ -131,6 +131,50 @@ grep -qx 'OnFailure=cc-runtime-fallback@%N.service' /tmp/agent-unit-rust && grep
   && pass "the unit: Rust gets its start limit and OnFailure as lines, Node gets nothing new" \
   || { fail "the unit: Rust gets its start limit and OnFailure as lines, Node gets nothing new"; cat /tmp/render.log | tail -5; head -8 /tmp/agent-unit-rust; }
 
+# The firewall agent: its page assets go in dist-ui/ next to it, pinned like the binary.
+printf '#!/bin/sh\necho rust mitm-agent\n' > "$STAGE/mitm-agent-x86_64-linux-musl"
+printf '#!/bin/sh\necho "{\\"checked\\":0,\\"unreadable\\":0}"\nexit 0\n' > "$STAGE/cc-migrate-x86_64-linux-musl"
+printf 'body{--background:#fff}\n' > "$STAGE/mitm-agent-ui-app.css"
+printf 'console.log(1)\n' > "$STAGE/mitm-agent-ui-app.js"
+pins_fw() {
+  cat > /work/roles/controlclaw/vars/rust_release.yml <<YML
+cc_rust_release:
+  version: "1.0.0"
+  commit: "test"
+  base_url: "http://127.0.0.1:1/none"
+  binaries:
+    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "$(sha "$STAGE/mitm-agent-x86_64-linux-musl")" }
+    cc-migrate: { asset: "cc-migrate-x86_64-linux-musl", sha256: "$(sha "$STAGE/cc-migrate-x86_64-linux-musl")" }
+YML
+  [ "${1:-}" = none ] && return
+  cat >> /work/roles/controlclaw/vars/rust_release.yml <<YML
+  ui:
+    app.css: { asset: "mitm-agent-ui-app.css", sha256: "${1:-$(sha "$STAGE/mitm-agent-ui-app.css")}" }
+    app.js: { asset: "mitm-agent-ui-app.js", sha256: "$(sha "$STAGE/mitm-agent-ui-app.js")" }
+YML
+}
+play_fw() { (cd /work && ansible-playbook -i localhost, tests/rust-runtime/play-mitm.yml -e cc_rust_source=files "$@" > /tmp/play.log 2>&1); }
+fw_runtime() { python3 -c 'import json;print(json.load(open("/tmp/cc_rt.json"))["mitm_agent"]["runtime"])' 2>/dev/null; }
+ui=/opt/controlclaw/rust/1.0.0/dist-ui
+
+fresh; pins_fw; play_fw -e cc_mitm_agent_runtime=rust
+[ "$(fw_runtime)" = rust ] && cmp -s "$ui/app.css" "$STAGE/mitm-agent-ui-app.css" && [ -f "$ui/app.js" ] \
+  && [ "$(stat -c '%U %a' "$ui/app.css")" = "root 644" ] \
+  && pass "firewall agent: rust, its page assets in dist-ui/ next to it" \
+  || { fail "firewall agent: rust, its page assets in dist-ui/ next to it"; tail -20 /tmp/play.log; }
+
+fresh; pins_fw "0000000000000000000000000000000000000000000000000000000000000000"; play_fw -e cc_mitm_agent_runtime=rust
+[ "$(fw_runtime)" = node ] && [ ! -e "$ui/app.css" ] \
+  && grep -q '"reason": "pin-mismatch"' /etc/controlclaw/runtime/controlclaw-mitm-agent.fallback \
+  && pass "a page asset that is not the pinned one: removed, node stays, with a marker" \
+  || { fail "a page asset that is not the pinned one: removed, node stays, with a marker"; tail -20 /tmp/play.log; }
+
+fresh; pins_fw none; play_fw -e cc_mitm_agent_runtime=rust
+[ "$(fw_runtime)" = node ] && [ ! -e /etc/controlclaw/runtime/controlclaw-mitm-agent.fallback ] \
+  && pass "a release without page assets keeps the firewall agent on node" \
+  || { fail "a release without page assets keeps the firewall agent on node"; tail -20 /tmp/play.log; }
+pins 1.0.0
+
 # The fallback helper, as OnFailure runs it.
 fresh; mkdir -p /etc/controlclaw/runtime /etc/systemd/system; : > /tmp/systemctl.log
 echo '/usr/bin/node /opt/controlclaw/agent/dist/index.js' > /etc/controlclaw/runtime/controlclaw-agent.node-exec
