@@ -1,7 +1,14 @@
-# The pinned Rust box binaries: written by controlclaw's rust/scripts/release.sh, never by hand.
-# Empty until the first release: every box runs the Node builds whatever its runtime settings say.
+# Made by rust/scripts/release.sh 1.0.0 from controlclaw 113039d410c1f6dbce821b61d24ec89734db1dcb. Do not edit by hand.
 cc_rust_release:
-  version: ""
-  commit: ""
-  base_url: ""
-  binaries: {}
+  version: "1.0.0"
+  commit: "113039d410c1f6dbce821b61d24ec89734db1dcb"
+  base_url: "https://github.com/madarco/controlclaw-ansible/releases/download/rust-v1.0.0"
+  binaries:
+    vm-agent: { asset: "vm-agent-x86_64-linux-musl", sha256: "39c299fbb7055a4738d7396613d7fc417fbbffb699e805882a35c0164da3ef4a" }
+    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "5b7de76328af602acb40d23872ea3d7f7abb28bcbe931d2ebb2414f2a5d685d7" }
+    cc-proxy: { asset: "cc-proxy-x86_64-linux-musl", sha256: "0774fba3e92a2b96ad4fc55eadcaadc8a786e3e429157769959eefb355ca44d0" }
+    cc-migrate: { asset: "cc-migrate-x86_64-linux-musl", sha256: "195b3b93a695775dce5dddb6c0c690d8637d6a77bf87cbd163cd1c6760ddb436" }
+  ui:
+    app.css: { asset: "mitm-agent-ui-app.css", sha256: "fab915660e45b2f36412b785b334480efa0b04521c443254c5560dcb4a82f843" }
+    app.js: { asset: "mitm-agent-ui-app.js", sha256: "7cbf6282245feadf952c3f277d95d8a00522bd0350fe37b3fdcb816fb768513c" }
+    doctor-start.js: { asset: "mitm-agent-ui-doctor-start.js", sha256: "26a790915e7b2db32dd6cc3c89b0b7c8026a89cfbd40c3bd98d960c7e0626bed" }
