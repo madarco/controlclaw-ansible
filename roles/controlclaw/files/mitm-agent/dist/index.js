@@ -5468,6 +5468,10 @@ function validAudio(value) {
 }
 
 // ../meetings/src/index.ts
+var MEETING_MODES = ["transcript", "bidi"];
+function oneOf(value, allowed) {
+  return typeof value === "string" && allowed.includes(value);
+}
 var REALTIME_SUFFIX = "(?:-(?![a-z0-9.-]*(?:whisper|translate|transcribe))[a-z0-9][a-z0-9.-]{0,23})?";
 var FAMILIES = {
   gateway: {
@@ -5482,7 +5486,7 @@ var FAMILIES = {
   codex: { realtime: /^gpt-realtime$/ }
 };
 function speechFamily(provider, model) {
-  if (typeof model !== "string" || !Object.hasOwn(FAMILIES, String(provider))) return null;
+  if (typeof model !== "string" || typeof provider !== "string" || !Object.hasOwn(FAMILIES, provider)) return null;
   const families = FAMILIES[provider];
   for (const family of ["realtime", "live"]) if (families[family]?.test(model)) return family;
   return null;
@@ -5570,8 +5574,11 @@ var AUTO_JOIN_MAX_PER_DAY = 20;
 function parseAutoJoinPolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid automatic joining settings");
   const p2 = value;
-  if (Object.keys(p2).some((k2) => !["enabled", "mode", "email", "calendar", "maxPerDay"].includes(k2)) || typeof p2.enabled !== "boolean" || typeof p2.email !== "boolean" || !["transcript", "bidi"].includes(String(p2.mode)) || !["off", "invited", "all"].includes(String(p2.calendar)) || !Number.isSafeInteger(p2.maxPerDay) || Number(p2.maxPerDay) < 1 || Number(p2.maxPerDay) > AUTO_JOIN_MAX_PER_DAY)
+  if (Object.keys(p2).some((k2) => !["enabled", "mode", "email", "calendar", "maxPerDay"].includes(k2)) || typeof p2.enabled !== "boolean" || typeof p2.email !== "boolean" || !Number.isSafeInteger(p2.maxPerDay) || Number(p2.maxPerDay) < 1 || Number(p2.maxPerDay) > AUTO_JOIN_MAX_PER_DAY)
     throw new Error(`Choose where invites come from and 1 to ${AUTO_JOIN_MAX_PER_DAY} joins a day`);
+  if (!oneOf(p2.mode, MEETING_MODES)) throw new Error('Automatic joining: choose one mode, "transcript" or "bidi"');
+  if (!oneOf(p2.calendar, ["off", "invited", "all"]))
+    throw new Error('Automatic joining: choose one calendar setting, "off", "invited" or "all"');
   return { enabled: p2.enabled, mode: p2.mode, email: p2.email, calendar: p2.calendar, maxPerDay: Number(p2.maxPerDay) };
 }
 function autoJoinWidens(previous, next) {
@@ -5634,8 +5641,9 @@ function parseMeetingPolicy(value) {
     (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent", "present", "consultModel"].includes(
       k2
     )
-  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean" || p2.present !== void 0 && typeof p2.present !== "boolean" || p2.consultModel !== void 0 && !(typeof p2.consultModel === "string" && CONSULT_MODEL.test(p2.consultModel)))
+  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean" || p2.present !== void 0 && typeof p2.present !== "boolean" || p2.consultModel !== void 0 && !(typeof p2.consultModel === "string" && CONSULT_MODEL.test(p2.consultModel)))
     throw new Error("Invalid owner-browser Google Meet settings");
+  if (!oneOf(p2.defaultMode, MEETING_MODES)) throw new Error('Choose one meeting mode, "transcript" or "bidi"');
   const speech = parseSpeechPolicy(p2.speech);
   if (p2.defaultMode === "bidi" && !speech) throw new Error("Bidi needs a speech provider");
   const autoJoin = p2.autoJoin === void 0 ? void 0 : parseAutoJoinPolicy(p2.autoJoin);
@@ -86039,7 +86047,7 @@ function sanitizeResponseJsonSchema(schema) {
     items,
     additionalProperties,
     anyOf,
-    oneOf,
+    oneOf: oneOf2,
     ...result2
   } = schema;
   return {
@@ -86053,7 +86061,7 @@ function sanitizeResponseJsonSchema(schema) {
       additionalProperties: typeof additionalProperties === "boolean" ? additionalProperties : sanitizeDefinition2(additionalProperties)
     } : {},
     ...anyOf != null ? { anyOf: anyOf.map(sanitizeDefinition2) } : {},
-    ...oneOf != null ? { oneOf: oneOf.map(sanitizeDefinition2) } : {},
+    ...oneOf2 != null ? { oneOf: oneOf2.map(sanitizeDefinition2) } : {},
     ...result2.$defs != null ? { $defs: sanitizeDefinitions(result2.$defs) } : {}
   };
 }
@@ -107551,8 +107559,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync25 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "64b5138" : "unknown",
-  builtAt: true ? "2026-10-28T21:34:39Z" : "unknown"
+  commit: true ? "9f3938b" : "unknown",
+  builtAt: true ? "2026-10-29T09:00:29Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";

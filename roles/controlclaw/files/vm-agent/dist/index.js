@@ -14640,6 +14640,10 @@ async function handlePhonePage(req, res, pathname, ctx) {
 }
 
 // ../meetings/src/index.ts
+var MEETING_MODES = ["transcript", "bidi"];
+function oneOf(value2, allowed) {
+  return typeof value2 === "string" && allowed.includes(value2);
+}
 var REALTIME_SUFFIX = "(?:-(?![a-z0-9.-]*(?:whisper|translate|transcribe))[a-z0-9][a-z0-9.-]{0,23})?";
 var FAMILIES = {
   gateway: {
@@ -14654,7 +14658,7 @@ var FAMILIES = {
   codex: { realtime: /^gpt-realtime$/ }
 };
 function speechFamily(provider, model) {
-  if (typeof model !== "string" || !Object.hasOwn(FAMILIES, String(provider))) return null;
+  if (typeof model !== "string" || typeof provider !== "string" || !Object.hasOwn(FAMILIES, provider)) return null;
   const families = FAMILIES[provider];
   for (const family of ["realtime", "live"]) if (families[family]?.test(model)) return family;
   return null;
@@ -14742,8 +14746,11 @@ var AUTO_JOIN_MAX_PER_DAY = 20;
 function parseAutoJoinPolicy(value2) {
   if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) throw new Error("Invalid automatic joining settings");
   const p2 = value2;
-  if (Object.keys(p2).some((k2) => !["enabled", "mode", "email", "calendar", "maxPerDay"].includes(k2)) || typeof p2.enabled !== "boolean" || typeof p2.email !== "boolean" || !["transcript", "bidi"].includes(String(p2.mode)) || !["off", "invited", "all"].includes(String(p2.calendar)) || !Number.isSafeInteger(p2.maxPerDay) || Number(p2.maxPerDay) < 1 || Number(p2.maxPerDay) > AUTO_JOIN_MAX_PER_DAY)
+  if (Object.keys(p2).some((k2) => !["enabled", "mode", "email", "calendar", "maxPerDay"].includes(k2)) || typeof p2.enabled !== "boolean" || typeof p2.email !== "boolean" || !Number.isSafeInteger(p2.maxPerDay) || Number(p2.maxPerDay) < 1 || Number(p2.maxPerDay) > AUTO_JOIN_MAX_PER_DAY)
     throw new Error(`Choose where invites come from and 1 to ${AUTO_JOIN_MAX_PER_DAY} joins a day`);
+  if (!oneOf(p2.mode, MEETING_MODES)) throw new Error('Automatic joining: choose one mode, "transcript" or "bidi"');
+  if (!oneOf(p2.calendar, ["off", "invited", "all"]))
+    throw new Error('Automatic joining: choose one calendar setting, "off", "invited" or "all"');
   return { enabled: p2.enabled, mode: p2.mode, email: p2.email, calendar: p2.calendar, maxPerDay: Number(p2.maxPerDay) };
 }
 function parseFollowUpPolicy(value2) {
@@ -14770,8 +14777,9 @@ function parseMeetingPolicy(value2) {
     (k2) => !["enabled", "platforms", "defaultMode", "invokers", "speech", "wake", "always", "reminders", "followUp", "autoJoin", "fullAgent", "present", "consultModel"].includes(
       k2
     )
-  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || !["transcript", "bidi"].includes(String(p2.defaultMode)) || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean" || p2.present !== void 0 && typeof p2.present !== "boolean" || p2.consultModel !== void 0 && !(typeof p2.consultModel === "string" && CONSULT_MODEL.test(p2.consultModel)))
+  ) || typeof p2.enabled !== "boolean" || !Array.isArray(p2.platforms) || p2.platforms.length !== 1 || p2.platforms[0] !== "google-meet" || p2.invokers !== "owner-browser" || p2.always !== void 0 && typeof p2.always !== "boolean" || p2.reminders !== void 0 && typeof p2.reminders !== "boolean" || p2.present !== void 0 && typeof p2.present !== "boolean" || p2.consultModel !== void 0 && !(typeof p2.consultModel === "string" && CONSULT_MODEL.test(p2.consultModel)))
     throw new Error("Invalid owner-browser Google Meet settings");
+  if (!oneOf(p2.defaultMode, MEETING_MODES)) throw new Error('Choose one meeting mode, "transcript" or "bidi"');
   const speech = parseSpeechPolicy(p2.speech);
   if (p2.defaultMode === "bidi" && !speech) throw new Error("Bidi needs a speech provider");
   const autoJoin = p2.autoJoin === void 0 ? void 0 : parseAutoJoinPolicy(p2.autoJoin);
@@ -34508,6 +34516,14 @@ import { createHash as createHash3 } from "crypto";
 import { readdir, readFile } from "fs/promises";
 import { join as join6 } from "path";
 var PHONE_ADMISSION_DIGEST = "e9f7717502261327a4fe58a7f18fa0e60fa2e7a6193e18fdabebf98a9481b387";
+var PHONE_ADMISSION_DIGESTS = [
+  PHONE_ADMISSION_DIGEST,
+  "03ee4a4d4f0fbabe7420f8766a5fa3b8af789e3f5b4729f2f31d7785a8e69c0e",
+  "6cd00b695a57dedd6535e52c27daa11bbed793df42251ed4644bf9625547e75c"
+];
+function isReviewedAdmission(source) {
+  return PHONE_ADMISSION_DIGESTS.includes(phoneAdmissionDigest(source));
+}
 function phoneAdmissionDigest(source) {
   return createHash3("sha256").update(source.replace(/-[A-Za-z0-9_-]{8}(?=\.mjs["'])/g, "-BUILDHASH")).digest("hex");
 }
@@ -34518,9 +34534,13 @@ async function resolvePhoneAdmission(dir = "/usr/lib/node_modules/openclaw/dist"
   if (files2.length !== 1)
     throw new Error("Unsupported realtime consult runtime");
   const path = join6(dir, files2[0]);
-  if (phoneAdmissionDigest(await readFile(path, "utf8")) !== PHONE_ADMISSION_DIGEST)
+  if (!isReviewedAdmission(await readFile(path, "utf8")))
     throw new Error("Unsupported realtime consult runtime");
   return path;
+}
+function admissionCheck(digests) {
+  const digest = `createHash("sha256").update(admissionSource).digest("hex")`;
+  return `if (${digests.length === 1 ? `${digest} !== ${JSON.stringify(digests[0])}` : `!${JSON.stringify(digests)}.includes(${digest})`}) throw new Error("Unsupported realtime consult runtime");`;
 }
 var PHONE_ADMISSION_IMPORT = `const admissionDir = "/usr/lib/node_modules/openclaw/dist";
             const { readdir, readFile } = await import("node:fs/promises");
@@ -34529,8 +34549,26 @@ var PHONE_ADMISSION_IMPORT = `const admissionDir = "/usr/lib/node_modules/opencl
             if (admissionFiles.length !== 1) throw new Error("Unsupported realtime consult runtime");
             const admissionPath = admissionDir + "/" + admissionFiles[0];
             const admissionSource = (await readFile(admissionPath, "utf8")).replace(/-[A-Za-z0-9_-]{8}(?=\\.mjs["'])/g, "-BUILDHASH");
-            if (createHash("sha256").update(admissionSource).digest("hex") !== "${PHONE_ADMISSION_DIGEST}") throw new Error("Unsupported realtime consult runtime");
+            ${admissionCheck([PHONE_ADMISSION_DIGEST])}
             const { E: beginPhoneConsult } = await import(admissionPath);`;
+var PHONE_ADMISSION_COMPAT = [
+  {
+    file: "runtime-entry-BNOQRXii.mjs",
+    before: "5c9aed4c9cd6fe491625d42b6f99474d7cc5d1f63da94494dd3ed7d8acca8f4b",
+    after: "38baa0c8036a5179f9b589eb69d40188746e17a8c9b680019e4d68e907e4b93f",
+    digests: [
+      "e9f7717502261327a4fe58a7f18fa0e60fa2e7a6193e18fdabebf98a9481b387",
+      "03ee4a4d4f0fbabe7420f8766a5fa3b8af789e3f5b4729f2f31d7785a8e69c0e",
+      "6cd00b695a57dedd6535e52c27daa11bbed793df42251ed4644bf9625547e75c"
+    ]
+  }
+].map((stage, i2, stages) => ({
+  file: stage.file,
+  before: stage.before,
+  after: stage.after,
+  digests: stage.digests,
+  changes: [[admissionCheck(i2 ? stages[i2 - 1].digests : [PHONE_ADMISSION_DIGEST]), admissionCheck(stage.digests)]]
+}));
 
 // src/phone-realtime-compat.ts
 var PHONE_REALTIME_COMPAT = [
@@ -34720,6 +34758,9 @@ function patchPhoneSource(source, patch) {
     throw new Error("voice plugin patched integrity mismatch");
   return result;
 }
+function phonePatches() {
+  return [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT, ...PHONE_REPLY_COMPAT, ...PHONE_ADMISSION_COMPAT];
+}
 function patchPhoneStages(source, steps) {
   const digest = createHash4("sha256").update(source).digest("hex");
   if (digest === steps.at(-1)?.after) return source;
@@ -34730,7 +34771,7 @@ function patchPhoneStages(source, steps) {
   return source;
 }
 async function patchPhonePlugin(installPath) {
-  const patches = [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT, ...PHONE_REPLY_COMPAT];
+  const patches = phonePatches();
   const files2 = await Promise.all(
     [...new Set(patches.map((p2) => p2.file))].map(async (name) => {
       const path = join7(installPath, "dist", ".setup", name);
@@ -41935,8 +41976,8 @@ var ConsoleMcpService = class {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "64b5138" : "unknown",
-  builtAt: true ? "2026-10-28T21:34:39Z" : "unknown"
+  commit: true ? "9f3938b" : "unknown",
+  builtAt: true ? "2026-10-29T09:00:29Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -60572,7 +60613,7 @@ function phonePluginItem(dir, read = (p2) => readFileSync36(p2, "utf8")) {
   if (!dir) return { id: "phone_plugin", status: "not_installed", expected: PHONE_VERSION };
   const version2 = readJson2(join24(dir, "package.json"))?.version ?? null;
   if (version2 !== PHONE_VERSION) return { id: "phone_plugin", status: "mismatch", expected: PHONE_VERSION, actual: version2 };
-  const patches = [...PHONE_COMPAT, ...PHONE_REALTIME_COMPAT, ...PHONE_REPLY_COMPAT];
+  const patches = phonePatches();
   let unpatched = false;
   for (const file2 of new Set(patches.map((p2) => p2.file))) {
     let source;
@@ -60594,7 +60635,7 @@ function phoneRuntimeItem(host, openclaw) {
     const dist = join24(host, "dist");
     const files2 = readdirSync5(dist).filter((f2) => /^gateway-work-admission-[A-Za-z0-9_-]{8}\.mjs$/.test(f2));
     if (files2.length !== 1) return { id: "phone_runtime", status: "mismatch", actual: openclaw };
-    const ok = phoneAdmissionDigest(readFileSync36(join24(dist, files2[0]), "utf8")) === PHONE_ADMISSION_DIGEST;
+    const ok = isReviewedAdmission(readFileSync36(join24(dist, files2[0]), "utf8"));
     return { id: "phone_runtime", status: ok ? "ok" : "mismatch", actual: openclaw };
   } catch {
     return { id: "phone_runtime", status: "missing", actual: openclaw };
