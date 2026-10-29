@@ -591,7 +591,8 @@ cc_mitm_agent_runtime: node
 cc_proxy_runtime: mitmproxy
 cc_rust_canary:
   vm_agent: []
-  mitm_agent: []
+  # Canary step 1 (docs/ops/rust-cutover.md): the firewall agent of Family and JHM, by org id.
+  mitm_agent: [FYn3oUZ5UePBzJ7kRPJ32HNl1E5lZZnG, Fkz5ItuX0qOzgF8vRgbsgegJzRCQBsNJ]
   proxy: []
 # Where the binaries come from: `release` downloads the assets vars/rust_release.yml pins (the
 # public release on the production repo); `files` takes them from files/rust/ (dev rounds). The
