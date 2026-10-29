@@ -106219,6 +106219,7 @@ var CATEGORY_TEXT = {
 };
 var LOGINS_HOST = "controlclaw-logins";
 var LOGIN_TRIPWIRE_RULE = "login_tripwire";
+var BUILTIN_RULES = ["control_plane", "backup_store"];
 var LOGIN_USE_MS = 36e5;
 var REPEAT_MS = 36e5;
 var isLoginsNote = (r2) => r2.host === LOGINS_HOST && !!r2.login && typeof r2.flow_id === "string" && r2.flow_id.startsWith("lgn-");
@@ -106255,8 +106256,9 @@ var MAX_HOST_CHOICES = 20;
 function isRecord3(v2) {
   return !!v2 && typeof v2 === "object" && typeof v2.host === "string";
 }
+var isBuiltin = (r2) => !!r2.rule && BUILTIN_RULES.includes(r2.rule) && r2.effect === "allow" && r2.rule_id == null;
 function reviewable(raw, ignoreHosts) {
-  return raw.filter((r2) => isRecord3(r2) && !isLoginsNote(r2) && !ignoreHosts.includes(r2.host));
+  return raw.filter((r2) => isRecord3(r2) && !isLoginsNote(r2) && !isBuiltin(r2) && !ignoreHosts.includes(r2.host));
 }
 function compactEvent(r2) {
   const e = { ts: Math.round(r2.ts ?? 0), host: r2.host };
@@ -107563,8 +107565,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync25 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "0b5cb30" : "unknown",
-  builtAt: true ? "2026-10-29T13:31:56Z" : "unknown"
+  commit: true ? "c25565a" : "unknown",
+  builtAt: true ? "2026-10-29T21:31:13Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
