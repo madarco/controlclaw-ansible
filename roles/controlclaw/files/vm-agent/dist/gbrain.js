@@ -6516,8 +6516,8 @@ function localWakeInstalled() {
 // src/software.ts
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "9f3938b" : "unknown",
-  builtAt: true ? "2026-10-29T09:00:29Z" : "unknown"
+  commit: true ? "0b5cb30" : "unknown",
+  builtAt: true ? "2026-10-29T13:31:56Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -6538,6 +6538,10 @@ function readJson(path) {
   } catch {
     return null;
   }
+}
+var RUNTIME_MARKERS_DIR = "/etc/controlclaw/runtime";
+function runtimeFallback(units, dir = RUNTIME_MARKERS_DIR) {
+  return units.some((u2) => existsSync7(`${dir}/${u2}.fallback`)) ? ["runtime_fallback"] : [];
 }
 function readRelease(path = RELEASE_PATH) {
   const raw = readJson(path);
@@ -6608,6 +6612,7 @@ function boxSoftware(opts = {}) {
     // `meeting_instructions`: the firewall writes its meeting instructions (console-v3 unit 11).
     features: [
       ...speechFeatures(),
+      ...runtimeFallback(["controlclaw-agent"]),
       ...consoleMcpConfigured() ? ["console_mcp"] : [],
       ...doctorAvailable() ? ["doctor_v1"] : [],
       ...process.env.CC_SERVICE === "gbrain" ? [] : ["logs_page", "whatsapp_page", "meetings_page", "phone_page", "phone_voice_edit", "meetings_autojoin", "meeting_followup", "meeting_instructions", "templates", "templates_apply", "templates_org", "templates_review", "templates_capture", "templates_steps2", "templates_bundles", "templates_check", "templates_repair", "templates_capture_ai", "skills_start", "skills_remove", "skills_capture", "notes_start", "storage_grow"],

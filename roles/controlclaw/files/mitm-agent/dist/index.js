@@ -30495,7 +30495,10 @@ var PhoneFirewall = class {
               out = { status: "cancelled" };
             } else if (action === "unassign" || action === "forget" || action === "disconnect") {
               await this.opts.onCredentialsChanged();
-              await this.cleanup();
+              await this.cleanup().catch((e) => {
+                if (action !== "disconnect" || !(e instanceof PhoneError && e.code === "invalid_credentials")) throw e;
+                this.store.cleanup = null;
+              });
               if (action === "disconnect") {
                 const previous = this.store;
                 this.store = {
@@ -39847,6 +39850,7 @@ var LoginsFirewall = class {
       rows.forEach((r2, i2) => {
         const id = `lg_${randomBytes13(12).toString("base64url")}`;
         rememberEncryptedSecrets(r2.password, true);
+        if (totps[i2]) rememberEncryptedSecrets(totps[i2].secret, true);
         this.store.logins[id] = {
           id,
           kind: "password",
@@ -39945,7 +39949,7 @@ var LoginsFirewall = class {
     }
     await this.enqueue(async () => {
       const src = this.store.onePassword;
-      if (!src) return;
+      if (!src || src !== op) return;
       const at2 = this.iso();
       const seen = new Set(kept.filter((id) => this.store.logins[id]));
       for (const id of seen) this.store.logins[id].vmIds = src.vmIds;
@@ -107559,8 +107563,8 @@ import { uptime } from "os";
 import { existsSync as existsSync21, readFileSync as readFileSync25 } from "fs";
 var BUILD = {
   version: true ? "0.1.0" : "dev",
-  commit: true ? "9f3938b" : "unknown",
-  builtAt: true ? "2026-10-29T09:00:29Z" : "unknown"
+  commit: true ? "0b5cb30" : "unknown",
+  builtAt: true ? "2026-10-29T13:31:56Z" : "unknown"
 };
 var BOOTED_AT = new Date(Date.now() - uptime() * 1e3).toISOString();
 var RELEASE_PATH = process.env.RELEASE_FILE ?? "/etc/controlclaw/release.json";
@@ -107568,6 +107572,10 @@ var MAX_FIELD = 64;
 var SEMVER = /^\d+\.\d+\.\d+$/;
 function clip2(value) {
   return typeof value === "string" && value.length > 0 ? value.slice(0, MAX_FIELD) : null;
+}
+var RUNTIME_MARKERS_DIR = "/etc/controlclaw/runtime";
+function runtimeFallback(units, dir = RUNTIME_MARKERS_DIR) {
+  return units.some((u2) => existsSync21(`${dir}/${u2}.fallback`)) ? ["runtime_fallback"] : [];
 }
 function readRelease(path = RELEASE_PATH) {
   let raw;
@@ -107585,8 +107593,8 @@ function readRelease(path = RELEASE_PATH) {
   const version2 = clip2(rec.version);
   return version2 && SEMVER.test(version2) ? { commit, commitDate, installedAt, version: version2 } : { commit, commitDate, installedAt };
 }
-function boxSoftware(releasePath = RELEASE_PATH) {
-  return { agent: { ...BUILD }, release: readRelease(releasePath), rebootRequired: existsSync21("/var/run/reboot-required"), bootedAt: BOOTED_AT, features: ["llm_blocks"] };
+function boxSoftware(releasePath = RELEASE_PATH, markersDir = RUNTIME_MARKERS_DIR) {
+  return { agent: { ...BUILD }, release: readRelease(releasePath), rebootRequired: existsSync21("/var/run/reboot-required"), bootedAt: BOOTED_AT, features: ["llm_blocks", ...runtimeFallback(["controlclaw-mitm-agent", "controlclaw-mitmproxy"], markersDir)] };
 }
 
 // src/ready.ts
