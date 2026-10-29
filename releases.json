@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.37.2",
+    "date": "2026-10-29",
+    "changes": [
+      "The test organizations' firewall can update the brain's AI settings again."
+    ]
+  },
+  {
     "version": "1.37.1",
     "date": "2026-10-29",
     "changes": [
