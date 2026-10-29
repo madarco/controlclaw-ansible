@@ -25,6 +25,7 @@
   ansible.builtin.set_fact:
     rust_asked: {}
     rust_verified: []
+    rust_ui_ok: []
     cc_rt: "{{ cc_rt | default({}) }}"
 
 - name: Rust | where markers and the Node command lines are kept
@@ -69,7 +70,7 @@
 
 # Asked for: by the setting, or by a canary list (a list that is not there is an empty one). Held
 # back: a marker for the pinned release, or a release without a pin for this binary (or for
-# cc-migrate, which the store check needs).
+# cc-migrate, which the store check needs, or, for the firewall agent, its page assets).
 - name: Rust | what each component is asked to run
   ansible.builtin.set_fact:
     rust_asked: >-
@@ -77,6 +78,7 @@
            (cc_rust_release.version | length > 0)
            and cc_rust_release.binaries[item.0.bin] is defined
            and (item.0.migrate_role | length == 0 or cc_rust_release.binaries['cc-migrate'] is defined)
+           and (item.0.bin != 'mitm-agent' or (cc_rust_release.ui | default({})) | length > 0)
            and (lookup('vars', item.0.setting) == 'rust'
                 or (vm_id | default('')) in (cc_rust_canary[item.0.key] | default([]))
                 or (box_role == 'mitm' and (org_id | default('')) | length > 0
@@ -105,6 +107,12 @@
 - name: Rust | the binaries those need
   ansible.builtin.set_fact:
     rust_bins: "{{ (rust_try | map(attribute='bin') | list + (['cc-migrate'] if rust_try | selectattr('migrate_role') | list | length > 0 else [])) | unique }}"
+
+# The firewall agent's page assets (the stylesheet and the page scripts), read from dist-ui/ next
+# to its binary: without them every firewall page is unstyled.
+- name: Rust | the page assets those need
+  ansible.builtin.set_fact:
+    rust_ui: "{{ (cc_rust_release.ui | default({}) | list) if 'mitm-agent' in rust_bins else [] }}"
 
 - name: Rust | this release's folder
   ansible.builtin.file:
@@ -163,6 +171,67 @@
   loop: "{{ rust_bin_stats.results }}"
   loop_control: { label: "{{ item.item }}" }
   when: item.stat.exists and item.item not in rust_verified
+
+- name: Rust | the page assets' folder
+  ansible.builtin.file:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: rust_ui | length > 0
+
+- name: Rust | download the pinned page assets
+  ansible.builtin.get_url:
+    url: "{{ cc_rust_release.base_url }}/{{ cc_rust_release.ui[item].asset }}"
+    dest: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item }}"
+    checksum: "sha256:{{ cc_rust_release.ui[item].sha256 }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ rust_ui }}"
+  when: cc_rust_source == 'release'
+  ignore_errors: true
+
+- name: Rust | the staged page assets (dev rounds)
+  ansible.builtin.copy:
+    src: "rust/{{ cc_rust_release.ui[item].asset }}"
+    dest: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ rust_ui }}"
+  when: cc_rust_source == 'files'
+  ignore_errors: true
+
+- name: Rust | hash every page asset
+  ansible.builtin.stat:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item }}"
+    checksum_algorithm: sha256
+  loop: "{{ rust_ui }}"
+  register: rust_ui_stats
+
+- name: Rust | a page asset that is not the pinned one goes
+  ansible.builtin.file:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item.item }}"
+    state: absent
+  loop: "{{ rust_ui_stats.results | default([]) }}"
+  loop_control: { label: "{{ item.item }}" }
+  when: item.stat.exists and item.stat.checksum != cc_rust_release.ui[item.item].sha256
+
+- name: Rust | the page assets that are the pinned ones
+  ansible.builtin.set_fact:
+    rust_ui_ok: "{{ rust_ui_ok + [item.item] }}"
+  loop: "{{ rust_ui_stats.results | default([]) }}"
+  loop_control: { label: "{{ item.item }}" }
+  when: item.stat.exists and item.stat.checksum == cc_rust_release.ui[item.item].sha256
+
+# One missing or not pinned, and the firewall agent's binary counts as not the pinned one: it stays
+# on Node with the marker below, as for a binary that did not match.
+- name: Rust | the firewall agent runs Rust only with all its page assets
+  ansible.builtin.set_fact:
+    rust_verified: "{{ rust_verified | reject('equalto', 'mitm-agent') | list }}"
+  when: rust_ui | length > 0 and rust_ui_ok | length != rust_ui | length
 
 - name: Rust | a component whose binary is not the pinned one stays on Node
   ansible.builtin.copy:

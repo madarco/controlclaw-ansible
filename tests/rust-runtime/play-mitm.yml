@@ -1,0 +1,25 @@
+# The role's rust-runtime.yml for the firewall agent, then what it decided, in /tmp/cc_rt.json.
+- hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    box_role: mitm
+    vm_id: fw_test
+    org_id: org_test
+  tasks:
+    - name: The runtime step, as mitmbox.yml includes it
+      ansible.builtin.include_role:
+        name: controlclaw
+        tasks_from: rust-runtime
+      vars:
+        rust_components:
+          - key: mitm_agent
+            unit: controlclaw-mitm-agent
+            bin: mitm-agent
+            setting: cc_mitm_agent_runtime
+            node_exec: /usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
+            migrate_role: firewall
+    - name: What it decided
+      ansible.builtin.copy:
+        dest: /tmp/cc_rt.json
+        content: "{{ cc_rt | to_json }}"
