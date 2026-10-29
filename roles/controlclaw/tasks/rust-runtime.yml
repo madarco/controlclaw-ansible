@@ -1,0 +1,370 @@
+---
+# Which build each of this box's components runs, Rust or Node, and the Rust binaries it needs
+# (controlclaw docs/plans/rust-rewrite.md §5.1). Included by vm-agent.yml and mitmbox.yml before
+# they write their units, with `rust_components`: one item per unit, as
+#   { key: vm_agent|mitm_agent|proxy, unit: <systemd unit>, bin: <binary>, setting: <runtime var>,
+#     node_exec: <the Node build's ExecStart>, rust_args: <optional>, migrate_role: agent|firewall|'',
+#     migrate_env: <the store paths the unit gives the agent, optional> }
+# It sets `cc_rt[key]` = { runtime: node|rust, exec: <ExecStart> }, which the unit templates use (with
+# Rust they also add the start limit, OnFailure=cc-runtime-fallback@%N.service and RestartMode=direct:
+# without it systemd 254+ passes a crashed service through `failed` on every restart, and OnFailure
+# would run after one crash instead of after the start limit).
+#
+# Both builds stay installed, and anything that goes wrong on the way leaves the component on Node:
+# a download that fails (tried again on the next run), a binary that is not the pinned one, a box
+# that is not x86_64, stores the Rust build cannot read. A Rust unit that crash-loops is put back
+# on Node by cc-runtime-fallback@<unit> (OnFailure). Every reason but the download leaves a marker
+# naming the release; a box with a marker for the pinned release stays on Node, and tries Rust
+# again when a new release is pinned. The agents report a marker as `runtime_fallback`.
+
+- name: Rust | the pinned release, and a clean slate for this include
+  ansible.builtin.include_vars:
+    file: rust_release.yml
+
+- name: Rust | facts start empty (they live for the whole play)
+  ansible.builtin.set_fact:
+    rust_asked: {}
+    rust_verified: []
+    rust_ui_ok: []
+    cc_rt: "{{ cc_rt | default({}) }}"
+
+- name: Rust | where markers and the Node command lines are kept
+  ansible.builtin.file:
+    path: /etc/controlclaw/runtime
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Rust | fallback markers
+  ansible.builtin.slurp:
+    src: "/etc/controlclaw/runtime/{{ item.unit }}.fallback"
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+  register: rust_markers
+  failed_when: false
+
+# First, so the pinned release gets its try and a marker this run writes is never the one removed.
+- name: Rust | forget markers for releases no longer pinned
+  ansible.builtin.file:
+    path: "/etc/controlclaw/runtime/{{ item.0.unit }}.fallback"
+    state: absent
+  loop: "{{ rust_components | zip(rust_markers.results) | list }}"
+  loop_control: { label: "{{ item.0.unit }}" }
+  when:
+    - item.1.content is defined
+    - ((item.1.content | b64decode | from_json).release | default('')) != cc_rust_release.version
+
+# A component nobody asks to run Rust any more (the setting is node and no canary list names the
+# box) has no fallback to report: its marker goes, so a deliberate rollback does not read as one.
+- name: Rust | forget markers of components no longer asked to run Rust
+  ansible.builtin.file:
+    path: "/etc/controlclaw/runtime/{{ item.unit }}.fallback"
+    state: absent
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+  when:
+    - lookup('vars', item.setting) != 'rust'
+    - (vm_id | default('')) not in (cc_rust_canary[item.key] | default([]))
+    - not (box_role == 'mitm' and (org_id | default('')) | length > 0 and org_id in (cc_rust_canary[item.key] | default([])))
+
+# Asked for: by the setting, or by a canary list (a list that is not there is an empty one). Held
+# back: a marker for the pinned release, or a release without a pin for this binary (or for
+# cc-migrate, which the store check needs, or, for the firewall agent, its page assets).
+- name: Rust | what each component is asked to run
+  ansible.builtin.set_fact:
+    rust_asked: >-
+      {{ rust_asked | combine({item.0.key: (
+           (cc_rust_release.version | length > 0)
+           and cc_rust_release.binaries[item.0.bin] is defined
+           and (item.0.migrate_role | length == 0 or cc_rust_release.binaries['cc-migrate'] is defined)
+           and (item.0.bin != 'mitm-agent' or (cc_rust_release.ui | default({})) | length > 0)
+           and (lookup('vars', item.0.setting) == 'rust'
+                or (vm_id | default('')) in (cc_rust_canary[item.0.key] | default([]))
+                or (box_role == 'mitm' and (org_id | default('')) | length > 0
+                    and org_id in (cc_rust_canary[item.0.key] | default([]))))
+           and not (item.1.content is defined
+                    and ((item.1.content | b64decode | from_json).release | default('')) == cc_rust_release.version)
+         )}) }}
+  loop: "{{ rust_components | zip(rust_markers.results) | list }}"
+  loop_control: { label: "{{ item.0.unit }}" }
+
+- name: Rust | this machine cannot run the Rust builds
+  ansible.builtin.copy:
+    dest: "/etc/controlclaw/runtime/{{ item.unit }}.fallback"
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ {'unit': item.unit, 'release': cc_rust_release.version, 'reason': 'unsupported-arch', 'at': ansible_date_time.iso8601, 'detail': ansible_architecture} | to_json }}\n"
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+  when: rust_asked[item.key] and ansible_architecture != 'x86_64'
+
+- name: Rust | the components to install for, and their binaries
+  ansible.builtin.set_fact:
+    rust_try: "{{ (rust_components | selectattr('key', 'in', rust_asked | dict2items | selectattr('value') | map(attribute='key') | list) | list) if ansible_architecture == 'x86_64' else [] }}"
+
+- name: Rust | the binaries those need
+  ansible.builtin.set_fact:
+    rust_bins: "{{ (rust_try | map(attribute='bin') | list + (['cc-migrate'] if rust_try | selectattr('migrate_role') | list | length > 0 else [])) | unique }}"
+
+# The firewall agent's page assets (the stylesheet and the page scripts), read from dist-ui/ next
+# to its binary: without them every firewall page is unstyled.
+- name: Rust | the page assets those need
+  ansible.builtin.set_fact:
+    rust_ui: "{{ (cc_rust_release.ui | default({}) | list) if 'mitm-agent' in rust_bins else [] }}"
+
+- name: Rust | this release's folder
+  ansible.builtin.file:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: rust_bins | length > 0
+
+# Root-owned: the agent's own user cannot change what it runs. A download that fails is not an
+# error of the run: the component stays on Node, and the next run tries again.
+- name: Rust | download the pinned binaries
+  ansible.builtin.get_url:
+    url: "{{ cc_rust_release.base_url }}/{{ cc_rust_release.binaries[item].asset }}"
+    dest: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/{{ item }}"
+    checksum: "sha256:{{ cc_rust_release.binaries[item].sha256 }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop: "{{ rust_bins }}"
+  when: cc_rust_source == 'release'
+  ignore_errors: true
+
+- name: Rust | the staged binaries (dev rounds)
+  ansible.builtin.copy:
+    src: "rust/{{ cc_rust_release.binaries[item].asset }}"
+    dest: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/{{ item }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop: "{{ rust_bins }}"
+  when: cc_rust_source == 'files'
+  ignore_errors: true
+
+- name: Rust | hash every binary
+  ansible.builtin.stat:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/{{ item }}"
+    checksum_algorithm: sha256
+  loop: "{{ rust_bins }}"
+  register: rust_bin_stats
+
+- name: Rust | the binaries that are the pinned ones
+  ansible.builtin.set_fact:
+    rust_verified: "{{ rust_verified + [item.item] }}"
+  loop: "{{ rust_bin_stats.results }}"
+  loop_control: { label: "{{ item.item }}" }
+  when: item.stat.exists and item.stat.checksum == cc_rust_release.binaries[item.item].sha256
+
+# One on disk that is not the pinned one is removed and never run, and its component waits for
+# the next release.
+- name: Rust | a binary that is not the pinned one goes
+  ansible.builtin.file:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/{{ item.item }}"
+    state: absent
+  loop: "{{ rust_bin_stats.results }}"
+  loop_control: { label: "{{ item.item }}" }
+  when: item.stat.exists and item.item not in rust_verified
+
+- name: Rust | the page assets' folder
+  ansible.builtin.file:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: rust_ui | length > 0
+
+- name: Rust | download the pinned page assets
+  ansible.builtin.get_url:
+    url: "{{ cc_rust_release.base_url }}/{{ cc_rust_release.ui[item].asset }}"
+    dest: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item }}"
+    checksum: "sha256:{{ cc_rust_release.ui[item].sha256 }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ rust_ui }}"
+  when: cc_rust_source == 'release'
+  ignore_errors: true
+
+- name: Rust | the staged page assets (dev rounds)
+  ansible.builtin.copy:
+    src: "rust/{{ cc_rust_release.ui[item].asset }}"
+    dest: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ rust_ui }}"
+  when: cc_rust_source == 'files'
+  ignore_errors: true
+
+- name: Rust | hash every page asset
+  ansible.builtin.stat:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item }}"
+    checksum_algorithm: sha256
+  loop: "{{ rust_ui }}"
+  register: rust_ui_stats
+
+- name: Rust | a page asset that is not the pinned one goes
+  ansible.builtin.file:
+    path: "/opt/controlclaw/rust/{{ cc_rust_release.version }}/dist-ui/{{ item.item }}"
+    state: absent
+  loop: "{{ rust_ui_stats.results | default([]) }}"
+  loop_control: { label: "{{ item.item }}" }
+  when: item.stat.exists and item.stat.checksum != cc_rust_release.ui[item.item].sha256
+
+- name: Rust | the page assets that are the pinned ones
+  ansible.builtin.set_fact:
+    rust_ui_ok: "{{ rust_ui_ok + [item.item] }}"
+  loop: "{{ rust_ui_stats.results | default([]) }}"
+  loop_control: { label: "{{ item.item }}" }
+  when: item.stat.exists and item.stat.checksum == cc_rust_release.ui[item.item].sha256
+
+# One missing or not pinned, and the firewall agent's binary counts as not the pinned one: it stays
+# on Node with the marker below, as for a binary that did not match.
+- name: Rust | the firewall agent runs Rust only with all its page assets
+  ansible.builtin.set_fact:
+    rust_verified: "{{ rust_verified | reject('equalto', 'mitm-agent') | list }}"
+  when: rust_ui | length > 0 and rust_ui_ok | length != rust_ui | length
+
+- name: Rust | a component whose binary is not the pinned one stays on Node
+  ansible.builtin.copy:
+    dest: "/etc/controlclaw/runtime/{{ item.unit }}.fallback"
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ {'unit': item.unit, 'release': cc_rust_release.version, 'reason': 'pin-mismatch', 'at': ansible_date_time.iso8601} | to_json }}\n"
+  loop: "{{ rust_try }}"
+  loop_control: { label: "{{ item.unit }}" }
+  when: >-
+    (rust_bin_stats.results | selectattr('item', 'equalto', item.bin) | first).stat.exists
+    and item.bin not in rust_verified
+
+# The port changes no store format; this proves the Rust build can read every store this box has
+# before it is switched, with the store paths the unit gives the agent.
+# check reads only, so it runs beside the service. A future `cc-migrate up` (a format change) must
+# run with the unit stopped: stop it, up, then the unit task below starts it.
+- name: Rust | the Rust build can read this box's stores
+  ansible.builtin.command:
+    argv:
+      - "/opt/controlclaw/rust/{{ cc_rust_release.version }}/cc-migrate"
+      - check
+      - --role
+      - "{{ item.migrate_role }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ {'ORG_ID': org_id | default(''), 'BOX_ID': vm_id | default(''), 'BOX_KEY_PATH': '/opt/controlclaw/keys/box_key'} | combine(item.migrate_env | default({})) }}"
+  loop: "{{ rust_try }}"
+  loop_control: { label: "{{ item.unit }}" }
+  when: item.migrate_role | length > 0 and item.bin in rust_verified and 'cc-migrate' in rust_verified
+  register: rust_store_check
+  changed_when: false
+  failed_when: false
+
+- name: Rust | a component whose stores do not open stays on Node
+  ansible.builtin.copy:
+    dest: "/etc/controlclaw/runtime/{{ item.item.unit }}.fallback"
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ {'unit': item.item.unit, 'release': cc_rust_release.version, 'reason': 'store-check', 'at': ansible_date_time.iso8601, 'report': item.stdout | default('')} | to_json }}\n"
+  loop: "{{ rust_store_check.results }}"
+  loop_control: { label: "{{ item.item.unit }}" }
+  when: item.rc is defined and item.rc != 0
+
+# Rust only where its binary is the pinned one and, for an agent, its stores opened.
+- name: Rust | what each component runs
+  ansible.builtin.set_fact:
+    cc_rt: >-
+      {{ cc_rt | combine({item.key: (
+           {'runtime': 'rust',
+            'exec': '/opt/controlclaw/rust/' ~ cc_rust_release.version ~ '/' ~ item.bin ~ (' ' ~ item.rust_args if item.rust_args is defined else '')}
+           if (item in rust_try and item.bin in rust_verified
+               and (item.migrate_role | length == 0
+                    or (rust_store_check.results | selectattr('item.unit', 'equalto', item.unit) | selectattr('rc', 'defined')
+                        | selectattr('rc', 'equalto', 0) | list | length > 0)))
+           else {'runtime': 'node', 'exec': item.node_exec}
+         )}) }}
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+
+# What cc-runtime-fallback puts back, and which release it is falling back from.
+- name: Rust | the Node command line each Rust unit falls back to
+  ansible.builtin.copy:
+    dest: "/etc/controlclaw/runtime/{{ item.unit }}.node-exec"
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ item.node_exec }}\n"
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+  when: cc_rt[item.key].runtime == 'rust'
+
+- name: Rust | the release each Rust unit runs
+  ansible.builtin.copy:
+    dest: "/etc/controlclaw/runtime/{{ item.unit }}.release"
+    owner: root
+    group: root
+    mode: '0644'
+    content: "{{ cc_rust_release.version }}\n"
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+  when: cc_rt[item.key].runtime == 'rust'
+
+# The unit itself now says which build runs, so a fallback's drop-in is no longer needed.
+- name: Rust | drop the fallback drop-ins
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item.unit }}.service.d/50-runtime-fallback.conf"
+    state: absent
+  loop: "{{ rust_components }}"
+  loop_control: { label: "{{ item.unit }}" }
+  register: rust_dropins
+
+# Older releases' binaries: nothing runs them after this run's units (a process still running one
+# keeps its copy until it restarts).
+- name: Rust | the release folders on this box
+  ansible.builtin.find:
+    paths: /opt/controlclaw/rust
+    file_type: directory
+  register: rust_folders
+
+- name: Rust | prune the folders of releases no longer pinned
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ rust_folders.files | default([]) | rejectattr('path', 'equalto', '/opt/controlclaw/rust/' ~ cc_rust_release.version) | list }}"
+  loop_control: { label: "{{ item.path }}" }
+
+- name: Rust | the fallback helper
+  ansible.builtin.copy:
+    src: cc-runtime-fallback
+    dest: /usr/local/bin/cc-runtime-fallback
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Rust | the fallback unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/cc-runtime-fallback@.service
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Put %i back on its Node build after its Rust build crash-looped
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/cc-runtime-fallback %i
+  register: rust_fallback_unit
+
+- name: Rust | systemd sees the fallback unit and the drop-ins that went
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: rust_fallback_unit is changed or rust_dropins is changed

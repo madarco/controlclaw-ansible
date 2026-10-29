@@ -134,6 +134,20 @@
   register: pnpm_install
   changed_when: "'Already up to date' not in pnpm_install.stdout"
 
+- name: Rust or Node for the agent
+  ansible.builtin.include_tasks: rust-runtime.yml
+  vars:
+    rust_components:
+      - key: vm_agent
+        unit: controlclaw-agent
+        bin: vm-agent
+        setting: cc_vm_agent_runtime
+        node_exec: "/usr/bin/node /opt/controlclaw/agent/dist/{{ 'gbrain' if box_role == 'gbrain' else 'index' }}.js"
+        migrate_role: agent
+
+# What it runs (Node or Rust) comes from tasks/rust-runtime.yml; the Rust binary picks the brain
+# entry from CC_SERVICE. With the Node build the unit is written exactly as before, so switching
+# nothing restarts nothing.
 - name: Create controlclaw-agent systemd service
   ansible.builtin.copy:
     dest: /etc/systemd/system/controlclaw-agent.service
@@ -144,13 +158,21 @@
       [Unit]
       Description=ControlClaw VM Agent
       After=network.target
+      {% if cc_rt.vm_agent.runtime == 'rust' %}
+      StartLimitIntervalSec={{ cc_rust_start_limit_interval_s }}
+      StartLimitBurst={{ cc_rust_start_limit_burst }}
+      OnFailure=cc-runtime-fallback@%N.service
+      {% endif %}
 
       [Service]
       Type=simple
       User={{ controlclaw_user }}
       # A brain runs the same bundle's second entry: the box lifecycle routes for GBrain's unit and
       # nothing of OpenClaw's (controlclaw packages/vm-agent/src/gbrain.ts).
-      ExecStart=/usr/bin/node /opt/controlclaw/agent/dist/{{ 'gbrain' if box_role == 'gbrain' else 'index' }}.js
+      ExecStart={{ cc_rt.vm_agent.exec }}
+      {% if cc_rt.vm_agent.runtime == 'rust' %}
+      RestartMode=direct
+      {% endif %}
       Restart=always
       RestartSec=10
       Environment=HOME={{ controlclaw_home }}

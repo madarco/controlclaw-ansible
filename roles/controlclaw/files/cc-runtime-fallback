@@ -1,0 +1,53 @@
+#!/bin/bash
+# cc-runtime-fallback <unit>: the Rust build of <unit> failed its start limit (systemd's OnFailure).
+# Put the Node build back with a drop-in, leave a marker naming the release that failed, start it.
+#
+# The role (tasks/rust-runtime.yml) wrote the Node command line and the release it installed to
+# /etc/controlclaw/runtime/. A re-run of the role keeps the unit on Node while the marker names the
+# pinned release, and tries Rust again when a new one is pinned. The agents report the marker as the
+# feature `runtime_fallback`.
+set -euo pipefail
+
+unit="${1:?usage: cc-runtime-fallback <unit>}"
+unit="${unit%.service}"
+case "$unit" in
+  controlclaw-agent|controlclaw-mitm-agent|controlclaw-mitmproxy) ;;
+  *) echo "cc-runtime-fallback: $unit is not a unit with a Node build" >&2; exit 2 ;;
+esac
+dir=/etc/controlclaw/runtime
+node_exec="$(cat "$dir/$unit.node-exec" 2>/dev/null || true)"
+if [ -z "$node_exec" ]; then
+  logger -t cc-runtime-fallback "$unit failed, and there is no Node command line to put back"
+  exit 1
+fi
+release="$(cat "$dir/$unit.release" 2>/dev/null || true)"
+# systemd's word for how it failed (start-limit-hit, exit-code, signal, ...), never a log line: a
+# line from the service can carry what it was handling, and the marker is reported.
+result="$(systemctl show -p Result --value "$unit.service" 2>/dev/null | head -c 64 || true)"
+
+mkdir -p "/etc/systemd/system/$unit.service.d"
+# No start limit and no OnFailure on the Node build: it is the way out, and it restarts as before.
+cat > "/etc/systemd/system/$unit.service.d/50-runtime-fallback.conf.tmp" <<EOF
+[Unit]
+OnFailure=
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=
+ExecStart=$node_exec
+EOF
+mv "/etc/systemd/system/$unit.service.d/50-runtime-fallback.conf.tmp" "/etc/systemd/system/$unit.service.d/50-runtime-fallback.conf"
+
+python3 -c '
+import json, sys, datetime
+unit, release, result = sys.argv[1:4]
+print(json.dumps({"unit": unit, "release": release, "reason": "crash-loop",
+                  "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "result": result}))' "$unit" "$release" "$result" > "$dir/$unit.fallback.tmp"
+chmod 0644 "$dir/$unit.fallback.tmp"
+mv "$dir/$unit.fallback.tmp" "$dir/$unit.fallback"
+
+systemctl daemon-reload
+systemctl reset-failed "$unit" || true
+systemctl start "$unit"
+logger -t cc-runtime-fallback "$unit: the Rust build ($release) crash-looped; back on the Node build"
