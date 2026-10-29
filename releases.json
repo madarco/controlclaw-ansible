@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.36.3",
+    "date": "2026-10-29",
+    "changes": [
+      "Meeting agents no longer leave a Google Meet a second after joining.",
+      "Realtime phone calls work again on the newest OpenClaw.",
+      "Meeting settings with a list where one choice is expected are refused when saved."
+    ]
+  },
+  {
     "version": "1.36.2",
     "date": "2026-10-28",
     "changes": [
