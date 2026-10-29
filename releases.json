@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.37.3",
+    "date": "2026-10-29",
+    "changes": [
+      "The firewall's AI Log Review no longer flags your agents' own backups as data leaving the box."
+    ]
+  },
+  {
     "version": "1.37.2",
     "date": "2026-10-29",
     "changes": [
