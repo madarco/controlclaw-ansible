@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.37.1",
+    "date": "2026-10-29",
+    "changes": [
+      "Two test organizations move their firewall to the new Rust build."
+    ]
+  },
+  {
     "version": "1.37.0",
     "date": "2026-10-29",
     "changes": [
