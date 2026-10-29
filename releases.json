@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.37.0",
+    "date": "2026-10-29",
+    "changes": [
+      "The firewall and agents can now run the new, faster Rust builds; they stay off until we turn them on for your organization.",
+      "An agent's health check no longer returns the list of processes running on it."
+    ]
+  },
+  {
     "version": "1.36.3",
     "date": "2026-10-29",
     "changes": [
