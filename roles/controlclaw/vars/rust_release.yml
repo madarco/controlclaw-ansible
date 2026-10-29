@@ -1,12 +1,12 @@
-# Made by rust/scripts/release.sh 1.0.1 from controlclaw ca6aa709d2b817fd7587422a1afac10411f4c868. Do not edit by hand.
+# Made by rust/scripts/release.sh 1.0.2 from controlclaw 9559d4d9ee856d45bfdd23699a0f05c216c6060c. Do not edit by hand.
 cc_rust_release:
-  version: "1.0.1"
-  commit: "ca6aa709d2b817fd7587422a1afac10411f4c868"
-  base_url: "https://github.com/madarco/controlclaw-ansible/releases/download/rust-v1.0.1"
+  version: "1.0.2"
+  commit: "9559d4d9ee856d45bfdd23699a0f05c216c6060c"
+  base_url: "https://github.com/madarco/controlclaw-ansible/releases/download/rust-v1.0.2"
   binaries:
-    vm-agent: { asset: "vm-agent-x86_64-linux-musl", sha256: "e28444af37fb783c257641ce0b730af638dfb709017fe60db0c8388a3be6b9c5" }
-    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "69ad01871add5dcaccd5d68415f0127c16e049c51758f6f0491c6f8e1214b550" }
-    cc-proxy: { asset: "cc-proxy-x86_64-linux-musl", sha256: "0fabb737d1995798530f2b71b860145867a7711e7ed7f45998625ebb1af0730b" }
+    vm-agent: { asset: "vm-agent-x86_64-linux-musl", sha256: "b6110b002db926368b28435516397c4da675cf5f316facc7f4036b94c05135df" }
+    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "d131c723d30f171149fefb4e850fb77c56a1c707e830a653ace995b537daef8c" }
+    cc-proxy: { asset: "cc-proxy-x86_64-linux-musl", sha256: "a18910e7c8c51c95369fae3b6df6e9e4c3af061c20c3162d2d39690b20d1f91e" }
     cc-migrate: { asset: "cc-migrate-x86_64-linux-musl", sha256: "195b3b93a695775dce5dddb6c0c690d8637d6a77bf87cbd163cd1c6760ddb436" }
   ui:
     app.css: { asset: "mitm-agent-ui-app.css", sha256: "fab915660e45b2f36412b785b334480efa0b04521c443254c5560dcb4a82f843" }
