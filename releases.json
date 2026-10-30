@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.37.5",
+    "date": "2026-10-30",
+    "changes": [
+      "Two test organizations move their agents' manager to the new Rust build."
+    ]
+  },
+  {
     "version": "1.37.4",
     "date": "2026-10-30",
     "changes": [
