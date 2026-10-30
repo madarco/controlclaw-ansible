@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.38.0",
+    "date": "2026-10-30",
+    "changes": [
+      "The firewall and your agents now run on the new, faster Rust build."
+    ]
+  },
+  {
     "version": "1.37.5",
     "date": "2026-10-30",
     "changes": [
