@@ -590,7 +590,8 @@ cc_vm_agent_runtime: node
 cc_mitm_agent_runtime: node
 cc_proxy_runtime: mitmproxy
 cc_rust_canary:
-  vm_agent: []
+  # Canary step 3: the vm-agent of Family's and JHM's agents, by vm id.
+  vm_agent: [el14d4xvjvlt4n7qx2uvg53n, y9ccy78082ieagoohrpixeyi]
   # Canary step 1 (docs/ops/rust-cutover.md): the firewall agent of Family and JHM, by org id.
   mitm_agent: [FYn3oUZ5UePBzJ7kRPJ32HNl1E5lZZnG, Fkz5ItuX0qOzgF8vRgbsgegJzRCQBsNJ]
   # Canary step 2: the proxy (cc-proxy) of Family and JHM.
