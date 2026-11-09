@@ -33,3 +33,21 @@
     state: absent
   loop: "{{ rust_folders.files | default([]) | rejectattr('path', 'equalto', cc_rust_dir) | list }}"
   loop_control: { label: "{{ item.path }}" }
+
+# The Node builds of the three components, on a box set up before the Rust builds were the only ones
+# or built from an image that carried them. The image bakes both roles, so an agent box can have the
+# firewall's and a firewall the agent's. Nothing runs them now. What stays in /opt/controlclaw/agent:
+# dist/cc-runbook.js (cc-runbook, cc-ensure), dist/files-ui (the agent's own pages, served by the
+# Rust agent) and templates/.
+- name: Rust | the Node builds of the three components go
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/controlclaw/agent/dist/index.js
+    - /opt/controlclaw/agent/dist/gbrain.js
+    - /opt/controlclaw/agent/package.json
+    - /opt/controlclaw/agent/node_modules
+    - /opt/controlclaw/mitm/agent
+    - /opt/controlclaw/mitm/proxy
+    - /opt/controlclaw/mitm/venv

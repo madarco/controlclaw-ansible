@@ -39,7 +39,7 @@ cc_rust_release:
     cc-migrate: { asset: "cc-migrate-x86_64-linux-musl", sha256: "$(sha "$STAGE/cc-migrate-x86_64-linux-musl")" }
 YML
 }
-fresh() { rm -rf /etc/controlclaw/runtime /opt/controlclaw/rust /tmp/cc_rust_dir /usr/local/bin/cc-runtime-fallback /etc/systemd/system/cc-runtime-fallback@.service; }
+fresh() { rm -rf /etc/controlclaw/runtime /opt/controlclaw/agent /opt/controlclaw/mitm /opt/controlclaw/rust /tmp/cc_rust_dir /usr/local/bin/cc-runtime-fallback /etc/systemd/system/cc-runtime-fallback@.service; }
 play() { (cd /work && ansible-playbook -i localhost, tests/rust-runtime/play.yml -e cc_rust_source=files "$@" > /tmp/play.log 2>&1); }
 # The Node fallback's leftovers, as a box from before this role has them.
 leftovers() {
@@ -49,6 +49,8 @@ leftovers() {
   echo '1.0.0' > /etc/controlclaw/runtime/controlclaw-agent.release
   echo '#!/bin/sh' > /usr/local/bin/cc-runtime-fallback
   echo '[Unit]' > /etc/systemd/system/cc-runtime-fallback@.service
+  mkdir -p /opt/controlclaw/agent/dist /opt/controlclaw/mitm/agent/dist /opt/controlclaw/mitm/venv/bin /opt/controlclaw/mitm/proxy
+  touch /opt/controlclaw/agent/dist/index.js /opt/controlclaw/agent/dist/gbrain.js /opt/controlclaw/agent/dist/cc-runbook.js /opt/controlclaw/mitm/agent/dist/index.js /opt/controlclaw/mitm/proxy/addon.py
 }
 
 fresh; pins 1.0.0
@@ -61,8 +63,10 @@ else fail "the pinned binaries, root-owned"; tail -20 /tmp/play.log; fi
 fresh; leftovers; play
 [ $? = 0 ] && [ ! -e /etc/controlclaw/runtime ] && [ ! -e /usr/local/bin/cc-runtime-fallback ] \
   && [ ! -e /etc/systemd/system/cc-runtime-fallback@.service ] \
-  && pass "a box from before: the markers, the helper and its unit go" \
-  || { fail "a box from before: the markers, the helper and its unit go"; tail -20 /tmp/play.log; }
+  && [ ! -e /opt/controlclaw/agent/dist/index.js ] && [ ! -e /opt/controlclaw/agent/dist/gbrain.js ] && [ -e /opt/controlclaw/agent/dist/cc-runbook.js ] \
+  && [ ! -e /opt/controlclaw/mitm/agent ] && [ ! -e /opt/controlclaw/mitm/venv ] && [ ! -e /opt/controlclaw/mitm/proxy ] \
+  && pass "a box from before: the markers, the helper, its unit and the Node builds go; cc-runbook stays" \
+  || { fail "a box from before: the markers, the helper, its unit and the Node builds go; cc-runbook stays"; tail -20 /tmp/play.log; }
 
 fresh; pins 1.0.0 "0000000000000000000000000000000000000000000000000000000000000000"
 play

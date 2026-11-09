@@ -567,15 +567,3 @@
     - controlclaw-mitmproxy
     - controlclaw-mitm-agent
   when: not ci_test
-
-# The Node firewall agent, mitmproxy's venv and its addon, on a firewall set up before the Rust
-# builds were the only ones. Nothing else on the box runs them. Removed once systemd has the new
-# units and the handlers have restarted them, so a restart never looks for them.
-- name: The Node firewall agent and mitmproxy go
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /opt/controlclaw/mitm/agent
-    - /opt/controlclaw/mitm/proxy
-    - /opt/controlclaw/mitm/venv
