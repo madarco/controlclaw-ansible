@@ -4,20 +4,20 @@ description: Answers customers.
 
 todo:
   - id: channel
-    title: Connect the channel customers write on
-    why: Customers reach it there.
+    title: Connect the channel your customers use
+    why: Your customers can message the agent there.
     go: connect-channel
   - id: knowledge
     title: Add your knowledge files
     why: It answers only from the files in its knowledge folder.
     go: files
   - id: company-site
-    title: Allow the company site and help centre
-    why: So it can read your own pages. Anything else it asks for.
+    title: Allow your company site and help centre
+    why: It reads your own pages and asks you before it opens any other site.
     go: company-domain-rule
   - id: email-anyone
     title: Let anyone write to it
-    why: Customers email it. It replies only to people who wrote first.
+    why: Customers can email it, and it replies only to people who wrote first.
     go: email-rules
     optional: true
 

@@ -27914,7 +27914,8 @@ var TODO_DESTINATIONS = [
   "phone-number",
   "company-domain-rule",
   "email-rules",
-  "files"
+  "files",
+  "connect-app"
 ];
 var TemplateError = class extends Error {
   constructor(problems) {
@@ -28580,7 +28581,10 @@ function folderSource(dir) {
     name: basename(dir),
     read: (relative3) => {
       const path = fileInFolder(dir, relative3);
-      return path ? readFileSync5(path) : null;
+      return path ? readFileSync5(
+        /*turbopackIgnore: true*/
+        path
+      ) : null;
     },
     list: (relative3, notes) => listInFolder(dir, relative3, notes)
   };

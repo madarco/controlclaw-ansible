@@ -5,20 +5,25 @@ description: A work routine for one person.
 todo:
   - id: google
     title: Connect Google
-    why: The morning brief and the inbox triage read the calendar and the mail.
+    why: It reads the calendar and mail to write the morning brief and sort the inbox.
     go: connect-google
   - id: channel
     title: Connect a channel
-    why: The brief and its questions arrive there.
+    why: You get the morning brief and its questions there.
     go: connect-channel
   - id: meetings
     title: Turn on Meetings
-    why: It joins from the calendar, silent, and sends the notes afterwards. This needs your confirmation code.
+    why: It joins meetings from the calendar, stays quiet and sends you the notes.
     go: turn-on-meetings
   - id: email-allowed
-    title: Allow its person and the company domain
-    why: It may email them freely; anyone else is asked for first.
+    title: Let it email the person it works for and your company
+    why: It asks you before it emails anyone else.
     go: email-rules
+  - id: tickets
+    title: Connect Linear or another ticketing tool
+    why: It reads and updates your tickets.
+    go: connect-app
+    optional: true
 
 steps:
   - id: soul

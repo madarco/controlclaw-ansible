@@ -8,29 +8,29 @@ description: One person's general helper.
 todo:
   - id: channel
     title: Connect a channel
-    why: So its person can talk to it, on Telegram, WhatsApp or Slack.
+    why: You can message it on Telegram, WhatsApp or Slack.
     go: connect-channel
   - id: meetings
-    title: Turn on Meetings, with always listening
-    why: It joins from the calendar and from invites, listens, takes notes and reminds. This needs your confirmation code.
+    title: Turn on Meetings
+    why: It joins meetings from invites, takes notes and sends reminders.
     go: turn-on-meetings
   - id: email-person
-    title: Add its person to the allowed recipients
-    why: It may email its person freely; anyone else is asked for first.
+    title: Let it email the person it works for
+    why: It asks you before it emails anyone else.
     go: email-rules
   - id: google
     title: Connect Google
-    why: For the calendar and the inbox.
+    why: It can use the calendar and the inbox.
     go: connect-google
     optional: true
   - id: meet-sign-in
     title: Sign it in to Meet
-    why: So it joins meetings as itself and not as a guest.
+    why: It joins meetings with its own account, not as a guest.
     go: meet-sign-in
     optional: true
   - id: phone
     title: Give it a phone number
-    why: So it can take and make calls.
+    why: It can answer and make phone calls.
     go: phone-number
     optional: true
 

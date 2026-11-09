@@ -4,17 +4,17 @@ description: Takes tickets, opens pull requests.
 
 todo:
   - id: github-token
-    title: Add the GitHub token as a firewall secret
-    why: It opens pull requests with it. The agent never sees the token.
+    title: Add your GitHub token as a firewall secret
+    why: It opens pull requests with the token but never sees it.
     go: add-secret
     secret: GITHUB_TOKEN
   - id: repositories
     title: Name the repositories it works on
-    why: Its instructions have a list for them.
+    why: It works only on the repositories you list in its instructions.
     go: files
   - id: channel
     title: Connect a channel or Team chat
-    why: It reports there what it started, opened and is blocked on.
+    why: It tells you there what it started, what it opened and where it is stuck.
     go: connect-channel
 
 steps:
