@@ -1,5 +1,15 @@
 [
   {
+    "version": "1.41.0",
+    "date": "2026-11-09",
+    "changes": [
+      "The firewall can be updated, and updates itself at night, before you connect a channel.",
+      "Pairing requests show the person's name.",
+      "Agents and firewalls run only the new faster build of the ControlClaw software.",
+      "Clearer setup steps in the agent templates."
+    ]
+  },
+  {
     "version": "1.40.0",
     "date": "2026-11-09",
     "changes": [
