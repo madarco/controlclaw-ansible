@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.40.0",
+    "date": "2026-11-09",
+    "changes": [
+      "Web search no longer asks for approval, and an action you approved is not asked about again.",
+      "Auto approve rules now apply to the agent they are set for.",
+      "Connected apps show their logos on the firewall's pages."
+    ]
+  },
+  {
     "version": "1.39.0",
     "date": "2026-11-01",
     "changes": [
