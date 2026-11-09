@@ -1,5 +1,5 @@
 ---
-# ControlClaw mitm box (the "secret zone"): mitmproxy egress filter + credential swap,
+# ControlClaw mitm box (the "secret zone"): the egress proxy (cc-proxy) + credential swap,
 # the mitm-agent (box key + encrypted-store sync), an on-box CA, and NAT so it is the
 # sole internet gateway for the org's OpenClaw box(es). See
 # controlclaw/docs/plans/mitm-box-security-rollout.md.
@@ -33,34 +33,6 @@
       box_role=mitm needs vm_id, org_id, controlclaw_url and saas_public_key. Running without them
       would blank this box's identity and leave it recoverable only by a rebuild.
 
-# Install mitmproxy into a dedicated venv at a FIXED path. This avoids pipx entirely:
-# Ubuntu 24.04's apt pipx (1.4.3) is too old for the community.general pipx module's
-# `source=` (needs >=1.7.0), and pipx's per-user bin dir made the service binary path
-# ambiguous. A venv is version-independent and the service points straight at it.
-- name: Install python venv + pip tooling
-  ansible.builtin.apt:
-    name: [python3-venv, python3-pip]
-    state: present
-  when: not ci_test
-
-- name: Ensure mitm base dir exists (for the venv)
-  ansible.builtin.file:
-    path: /opt/controlclaw/mitm
-    state: directory
-    mode: '0755'
-
-- name: Create the mitmproxy venv
-  ansible.builtin.command:
-    cmd: python3 -m venv /opt/controlclaw/mitm/venv
-    creates: /opt/controlclaw/mitm/venv/bin/pip
-  when: not ci_test
-
-- name: Install mitmproxy (pinned) into the venv
-  ansible.builtin.pip:
-    name: mitmproxy==12.2.2
-    virtualenv: /opt/controlclaw/mitm/venv
-  when: not ci_test
-
 - name: Create mitm directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -70,8 +42,6 @@
     mode: '0750'
   loop:
     - /opt/controlclaw/keys
-    - /opt/controlclaw/mitm/agent
-    - /opt/controlclaw/mitm/proxy
     - /opt/controlclaw/mitm/ca
     # Traffic log + shipper cursor. The parent /opt/controlclaw/mitm is root-owned, so without
     # this directory the proxy (running as controlclaw) could never create its log file.
@@ -158,25 +128,6 @@
     owner: "{{ controlclaw_user }}"
     group: "{{ controlclaw_user }}"
     recurse: true
-
-# --- proxy addon + mitm-agent code ---
-- name: Deploy mitmproxy addon
-  ansible.builtin.copy:
-    src: mitm-proxy/addon.py
-    dest: /opt/controlclaw/mitm/proxy/addon.py
-    mode: '0644'
-  notify: restart controlclaw-mitmproxy
-
-- name: Deploy mitm-agent (self-contained bundle — no node_modules needed)
-  ansible.builtin.copy:
-    src: mitm-agent/
-    dest: /opt/controlclaw/mitm/agent/
-    owner: "{{ controlclaw_user }}"
-    group: "{{ controlclaw_user }}"
-    mode: '0644'
-    directory_mode: '0755'
-  when: not cc_skip.mitm_agent | default(false) | bool
-  notify: restart controlclaw-mitm-agent
 
 # --- NAT: this box is the only internet egress for the private network ---
 - name: Enable IPv4 forwarding
@@ -345,31 +296,15 @@
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-fw-logs *
 
 # --- systemd services ---
-# The mitmproxy command line, once: the unit runs it, and cc-runtime-fallback puts it back (on one
-# line) when the Rust proxy crash-loops. `$$` is systemd's literal `$`.
-- name: The mitmproxy command line
-  ansible.builtin.set_fact:
-    cc_mitmproxy_exec: |-
-      /opt/controlclaw/mitm/venv/bin/mitmdump --listen-port {{ mitm_proxy_port }} \
-        --set flow_detail=0 --set connection_strategy=lazy \
-        --set confdir=/opt/controlclaw/mitm/ca -s /opt/controlclaw/mitm/proxy/addon.py
-
-- name: Rust or Node (and mitmproxy) for the firewall
+- name: The firewall's Rust builds
   ansible.builtin.include_tasks: rust-runtime.yml
   vars:
     rust_components:
-      - key: proxy
-        unit: controlclaw-mitmproxy
+      - unit: controlclaw-mitmproxy
         bin: cc-proxy
-        setting: cc_proxy_runtime
-        node_exec: "{{ cc_mitmproxy_exec | split('\n') | map('trim') | map('regex_replace', ' \\\\$', '') | join(' ') }}"
-        rust_args: "--listen 0.0.0.0:{{ mitm_proxy_port }}"
         migrate_role: ''
-      - key: mitm_agent
-        unit: controlclaw-mitm-agent
+      - unit: controlclaw-mitm-agent
         bin: mitm-agent
-        setting: cc_mitm_agent_runtime
-        node_exec: /usr/bin/node /opt/controlclaw/mitm/agent/dist/index.js
         migrate_role: firewall
         # The same store paths the unit gives the agent, so the check opens what it will read.
         migrate_env:
@@ -378,8 +313,8 @@
           WEBHOOKS_PATH: /opt/controlclaw/state/webhooks.json
           PROXY_CONFIG_DIR: /run/mitm/config
 
-# mitmproxy or Rust: tasks/rust-runtime.yml. The Rust proxy reads the CA folder from MITM_CA_DIR
-# (mitmproxy takes it as --set confdir). With mitmproxy the unit is written exactly as before.
+# The proxy (cc-proxy). The unit keeps the name it had when it ran mitmproxy: the console, the
+# firewall agent and the logs page name it.
 - name: Create controlclaw-mitmproxy service
   ansible.builtin.copy:
     dest: /etc/systemd/system/controlclaw-mitmproxy.service
@@ -388,11 +323,6 @@
       [Unit]
       Description=ControlClaw mitm egress proxy
       After=network.target
-      {% if cc_rt.proxy.runtime == 'rust' %}
-      StartLimitIntervalSec={{ cc_rust_start_limit_interval_s }}
-      StartLimitBurst={{ cc_rust_start_limit_burst }}
-      OnFailure=cc-runtime-fallback@%N.service
-      {% endif %}
 
       [Service]
       Type=simple
@@ -420,7 +350,7 @@
       Environment=MITM_LOG_FILE=/opt/controlclaw/mitm/logs/traffic.jsonl
       Environment=MITM_LOG_MAX_BYTES=8388608
       Environment=MITM_TENANT={{ org_id | default('unknown') }}
-      # Dev escape hatches, pinned off. The addon refuses to start with any of them set unless
+      # Dev escape hatches, pinned off. The proxy refuses to start with any of them set unless
       # MITM_ALLOW_DEV_FLAGS=1, which only the smoke-test compose files carry. This unit is the
       # enforcement point for "no dev flags on a secured box".
       Environment=MITM_DEV_LOG_SECRETS=0
@@ -430,12 +360,12 @@
       # The control plane: inspected (for a box the firewall has seen trust its CA, see cp-inspect in
       # the mitm-agent), and allowed for every box, also under the emergency stop, only for its own
       # paths (/api/vm-agent/, /api/internal/ready-pool/) on this exact host. Nothing in them is
-      # changed; see CONTROL_PLANE_HOST in addon.py.
+      # changed.
       Environment=MITM_CONTROL_PLANE_HOST={{ controlclaw_url | urlsplit('hostname') }}
       # The backup bucket (virtual-hosted name, defaults/main.yml): inspected, only presigned URLs for
       # keys under this organisation's id, which the proxy reads from org.json (written by the
       # mitm-agent from ORG_ID, so a ready-pool claim updates it; MITM_TENANT is log attribution only).
-      # Bodies streamed. See BACKUP_HOST in addon.py.
+      # Bodies streamed.
       Environment=MITM_BACKUP_HOST={{ controlclaw_backup_host }}
       Environment=MITM_BACKUP_BUCKET={{ controlclaw_backup_bucket }}
       # The package hosts an agent box may reach while it runs a confirmed update, and only then
@@ -445,28 +375,9 @@
       # (apps/saas/docs/features/residential-exit.md). An org without one gets
       # `{"enabled": false}` here and every residential rule fails closed.
       Environment=MITM_EXIT_PATH=/run/mitm/config/exit.json
-      # No --ignore-hosts (T-sni, controlclaw docs/ops/t-sni-passthrough.md). mitmproxy matches it
-      # against the CONNECT target, the SNI and a plain-HTTP Host header, then connects to the
-      # address the box asked for, so a forged SNI was an uninspected tunnel to any IP. The addon
-      # passes the control plane through itself (MITM_CONTROL_PLANE_HOST), to that name only, and
-      # clears the option if a unit still sets it.
-      # connection_strategy=lazy: mitmproxy's default (eager) opens the connection to the
-      # destination BEFORE the addon is asked what to do with it. For a residential rule that is
-      # fatal twice over — the firewall has already completed a TCP connection from this box's
-      # address to the very site the customer is reaching from somewhere else, and the relay would
-      # then run over that socket instead of the tunnel. The addon refuses to run the residential
-      # path when it sees an already-open connection, so without this flag the feature is off
-      # rather than wrong; the flag is what turns it on. What it costs everything else: mitmproxy
-      # no longer mirrors the server's ALPN to the client (it picks from the client's offers and
-      # translates h2/h1 itself, which it already does), and a connect failure surfaces as a 502
-      # at request time instead of at CONNECT time.
-      {% if cc_rt.proxy.runtime == 'rust' %}
+      # The CA folder gen-ca.sh writes (mitmproxy-ca.pem, the key and certificate it signs with).
       Environment=MITM_CA_DIR=/opt/controlclaw/mitm/ca
-      ExecStart={{ cc_rt.proxy.exec }}
-      RestartMode=direct
-      {% else %}
-      ExecStart={{ cc_mitmproxy_exec }}
-      {% endif %}
+      ExecStart={{ cc_rust_dir }}/cc-proxy --listen 0.0.0.0:{{ mitm_proxy_port }}
       Restart=always
       RestartSec=5
 
@@ -474,7 +385,6 @@
       WantedBy=multi-user.target
   notify: restart controlclaw-mitmproxy
 
-# Node or Rust: tasks/rust-runtime.yml. With the Node build the unit is written exactly as before.
 - name: Create controlclaw-mitm-agent service
   ansible.builtin.copy:
     dest: /etc/systemd/system/controlclaw-mitm-agent.service
@@ -483,11 +393,6 @@
       [Unit]
       Description=ControlClaw mitm agent (store sync + permission bridge)
       After=network.target
-      {% if cc_rt.mitm_agent.runtime == 'rust' %}
-      StartLimitIntervalSec={{ cc_rust_start_limit_interval_s }}
-      StartLimitBurst={{ cc_rust_start_limit_burst }}
-      OnFailure=cc-runtime-fallback@%N.service
-      {% endif %}
 
       [Service]
       Type=simple
@@ -538,15 +443,26 @@
       # until it is re-provisioned.
       Environment=WEBHOOK_STORE_PATH=/opt/controlclaw/state/webhooks.enc
       Environment=WEBHOOKS_PATH=/opt/controlclaw/state/webhooks.json
-      ExecStart={{ cc_rt.mitm_agent.exec }}
-      {% if cc_rt.mitm_agent.runtime == 'rust' %}
-      RestartMode=direct
-      {% endif %}
+      ExecStart={{ cc_rust_dir }}/mitm-agent
       Restart=always
       RestartSec=10
 
       [Install]
       WantedBy=multi-user.target
+  notify: restart controlclaw-mitm-agent
+
+# A firewall the Node fallback put back on Node or mitmproxy has a drop-in naming that command
+# line. The units above run Rust; a drop-in would override them.
+- name: The Node fallback's drop-in goes (proxy)
+  ansible.builtin.file:
+    path: /etc/systemd/system/controlclaw-mitmproxy.service.d/50-runtime-fallback.conf
+    state: absent
+  notify: restart controlclaw-mitmproxy
+
+- name: The Node fallback's drop-in goes (firewall agent)
+  ansible.builtin.file:
+    path: /etc/systemd/system/controlclaw-mitm-agent.service.d/50-runtime-fallback.conf
+    state: absent
   notify: restart controlclaw-mitm-agent
 
 - name: Allow proxy port from the private network only
@@ -648,3 +564,15 @@
     - controlclaw-mitmproxy
     - controlclaw-mitm-agent
   when: not ci_test
+
+# The Node firewall agent, mitmproxy's venv and its addon, on a firewall set up before the Rust
+# builds were the only ones. Nothing else on the box runs them. Removed once the units above run
+# Rust (the handlers were flushed before the start), so a restart never looks for them.
+- name: The Node firewall agent and mitmproxy go
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /opt/controlclaw/mitm/agent
+    - /opt/controlclaw/mitm/proxy
+    - /opt/controlclaw/mitm/venv

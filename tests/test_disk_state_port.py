@@ -92,8 +92,7 @@ class DiskStatePort(unittest.TestCase):
 
     def test_the_firewall_judge_and_the_daemon_share_the_port_by_default(self):
         # The reason for the exception: if either default moves, the exception may be dropped.
-        addon = (ROOT / 'roles/controlclaw/files/mitm-proxy/addon.py').read_text()
-        self.assertIn('http://127.0.0.1:3101/judge', addon)
+        # The proxy's side is JUDGE_PORT in controlclaw rust/crates/cc-contracts/src/loopback.rs.
         self.assertIn('process.env.CC_LOCKED_PORT || 3101', DAEMON)
 
     def test_main_never_closes_the_listener_itself(self):

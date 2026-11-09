@@ -1,5 +1,6 @@
 ---
-# ControlClaw VM Agent - lightweight Node.js server for remote management
+# ControlClaw VM Agent: the Rust agent every box runs (tasks/rust-runtime.yml), plus the template
+# runner and the agent's pages, which stay in /opt/controlclaw/agent.
 
 - name: Create agent directories
   ansible.builtin.file:
@@ -120,34 +121,15 @@
     - { name: cc-ensure, args: 'ensure ' }
   when: box_role == 'openclaw'
 
-- name: Install vm-agent production dependencies
-  ansible.builtin.command:
-    cmd: pnpm install --prod
-    chdir: /opt/controlclaw/agent
-  become: true
-  become_user: "{{ controlclaw_user }}"
-  environment: "{{ controlclaw_node_env }}"
-  # Compatibility with an older staged bundle that still has runtime dependencies.
-  when:
-    - not cc_skip.vm_agent | default(false) | bool
-    - (lookup('file', role_path ~ '/files/vm-agent/package.json') | from_json).dependencies | default({}) | length > 0
-  register: pnpm_install
-  changed_when: "'Already up to date' not in pnpm_install.stdout"
-
-- name: Rust or Node for the agent
+- name: The agent's Rust build
   ansible.builtin.include_tasks: rust-runtime.yml
   vars:
     rust_components:
-      - key: vm_agent
-        unit: controlclaw-agent
+      - unit: controlclaw-agent
         bin: vm-agent
-        setting: cc_vm_agent_runtime
-        node_exec: "/usr/bin/node /opt/controlclaw/agent/dist/{{ 'gbrain' if box_role == 'gbrain' else 'index' }}.js"
         migrate_role: agent
 
-# What it runs (Node or Rust) comes from tasks/rust-runtime.yml; the Rust binary picks the brain
-# entry from CC_SERVICE. With the Node build the unit is written exactly as before, so switching
-# nothing restarts nothing.
+# The Rust binary picks the brain entry from CC_SERVICE.
 - name: Create controlclaw-agent systemd service
   ansible.builtin.copy:
     dest: /etc/systemd/system/controlclaw-agent.service
@@ -158,21 +140,13 @@
       [Unit]
       Description=ControlClaw VM Agent
       After=network.target
-      {% if cc_rt.vm_agent.runtime == 'rust' %}
-      StartLimitIntervalSec={{ cc_rust_start_limit_interval_s }}
-      StartLimitBurst={{ cc_rust_start_limit_burst }}
-      OnFailure=cc-runtime-fallback@%N.service
-      {% endif %}
 
       [Service]
       Type=simple
       User={{ controlclaw_user }}
-      # A brain runs the same bundle's second entry: the box lifecycle routes for GBrain's unit and
-      # nothing of OpenClaw's (controlclaw packages/vm-agent/src/gbrain.ts).
-      ExecStart={{ cc_rt.vm_agent.exec }}
-      {% if cc_rt.vm_agent.runtime == 'rust' %}
-      RestartMode=direct
-      {% endif %}
+      # A brain runs the same binary with CC_SERVICE=gbrain: the box lifecycle routes for GBrain's
+      # unit and nothing of OpenClaw's.
+      ExecStart={{ cc_rust_dir }}/vm-agent
       Restart=always
       RestartSec=10
       Environment=HOME={{ controlclaw_home }}
@@ -186,18 +160,37 @@
       # The unit Start / Stop / Restart / Logs act on.
       Environment=CC_SERVICE={{ 'gbrain' if box_role == 'gbrain' else 'openclaw' }}
       {% if mitm_box_private_ip is defined and mitm_box_private_ip | length > 0 %}
-      # Behind the org firewall every request it inspects is signed by its CA, and Node does not
-      # read the OS trust store that cc-install-ca writes to. Without this the agent's own backups
-      # failed as a bare "fetch failed" while curl on the same box worked (T-88, prod 2026-09-29).
-      # It is also what the OpenClaw CLIs the agent runs inherit. On the first boot the file does
-      # not exist yet: Node logs one "Ignoring extra certs" warning and starts, and the agent trusts
-      # the CA in-process once it has installed it (vm-agent src/mitm-ca.ts).
+      # Behind the org firewall every request it inspects is signed by its CA. The agent adds this
+      # file to the roots it trusts (T-88), and the OpenClaw CLIs it runs, which are Node and do not
+      # read the OS trust store that cc-install-ca writes to, inherit it. On the first boot the file
+      # does not exist yet; the agent trusts the CA in-process once it has installed it.
       Environment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}
       {% endif %}
 
       [Install]
       WantedBy=multi-user.target
   notify: restart controlclaw-agent
+
+# A box the Node fallback put back on Node has a drop-in naming the Node command line. The unit
+# above runs Rust; the drop-in would override it.
+- name: The Node fallback's drop-in goes
+  ansible.builtin.file:
+    path: /etc/systemd/system/controlclaw-agent.service.d/50-runtime-fallback.conf
+    state: absent
+  notify: restart controlclaw-agent
+
+# The Node build of the agent, on a box set up before the Rust builds were the only ones. What
+# stays in /opt/controlclaw/agent: dist/cc-runbook.js (cc-runbook, cc-ensure), dist/files-ui (the
+# agent's own pages, served by the Rust agent) and templates/.
+- name: The Node build of the agent goes
+  ansible.builtin.file:
+    path: "/opt/controlclaw/agent/{{ item }}"
+    state: absent
+  loop:
+    - dist/index.js
+    - dist/gbrain.js
+    - package.json
+    - node_modules
 
 # 3100 is loopback-only: the control plane reaches the vm-agent through Caddy on 443
 # (/__cc/agent/*). Boxes provisioned before this had a public 3100 rule; drop it.

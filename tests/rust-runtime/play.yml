@@ -1,4 +1,4 @@
-# The role's rust-runtime.yml for one agent component, then what it decided, in /tmp/cc_rt.json.
+# The role's rust-runtime.yml for the agent, then the folder it chose, in /tmp/cc_rust_dir.
 - hosts: localhost
   connection: local
   gather_facts: true
@@ -12,13 +12,10 @@
         tasks_from: rust-runtime
       vars:
         rust_components:
-          - key: vm_agent
-            unit: controlclaw-agent
+          - unit: controlclaw-agent
             bin: vm-agent
-            setting: cc_vm_agent_runtime
-            node_exec: /usr/bin/node /opt/controlclaw/agent/dist/index.js
             migrate_role: agent
-    - name: What it decided
+    - name: What it chose
       ansible.builtin.copy:
-        dest: /tmp/cc_rt.json
-        content: "{{ cc_rt | to_json }}"
+        dest: /tmp/cc_rust_dir
+        content: "{{ cc_rust_dir }}"
