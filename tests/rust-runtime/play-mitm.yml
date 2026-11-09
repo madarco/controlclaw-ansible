@@ -16,6 +16,10 @@
           - unit: controlclaw-mitm-agent
             bin: mitm-agent
             migrate_role: firewall
+    - name: The cleanup, as the includers run it after the daemon-reload
+      ansible.builtin.include_role:
+        name: controlclaw
+        tasks_from: rust-runtime-cleanup
     - name: What it chose
       ansible.builtin.copy:
         dest: /tmp/cc_rust_dir

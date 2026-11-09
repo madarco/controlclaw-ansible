@@ -179,19 +179,6 @@
     state: absent
   notify: restart controlclaw-agent
 
-# The Node build of the agent, on a box set up before the Rust builds were the only ones. What
-# stays in /opt/controlclaw/agent: dist/cc-runbook.js (cc-runbook, cc-ensure), dist/files-ui (the
-# agent's own pages, served by the Rust agent) and templates/.
-- name: The Node build of the agent goes
-  ansible.builtin.file:
-    path: "/opt/controlclaw/agent/{{ item }}"
-    state: absent
-  loop:
-    - dist/index.js
-    - dist/gbrain.js
-    - package.json
-    - node_modules
-
 # 3100 is loopback-only: the control plane reaches the vm-agent through Caddy on 443
 # (/__cc/agent/*). Boxes provisioned before this had a public 3100 rule; drop it.
 - name: Remove the legacy public 3100 UFW rule
@@ -204,6 +191,22 @@
 - name: Reload systemd daemon
   ansible.builtin.systemd:
     daemon_reload: true
+
+- name: What only the old units could start goes
+  ansible.builtin.include_tasks: rust-runtime-cleanup.yml
+
+# The Node build of the agent, on a box set up before the Rust builds were the only ones. What
+# stays in /opt/controlclaw/agent: dist/cc-runbook.js (cc-runbook, cc-ensure), dist/files-ui (the
+# agent's own pages, served by the Rust agent) and templates/.
+- name: The Node build of the agent goes
+  ansible.builtin.file:
+    path: "/opt/controlclaw/agent/{{ item }}"
+    state: absent
+  loop:
+    - dist/index.js
+    - dist/gbrain.js
+    - package.json
+    - node_modules
 
 # The agent is NOT started here: see vm-agent-start.yml, which main.yml includes as the last step
 # of an agent box. Starting it is what confines the box to the org firewall.

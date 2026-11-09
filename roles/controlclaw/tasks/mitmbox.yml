@@ -547,6 +547,9 @@
   ansible.builtin.systemd:
     daemon_reload: true
 
+- name: What only the old units could start goes
+  ansible.builtin.include_tasks: rust-runtime-cleanup.yml
+
 # Run the pending restarts now, before the first start. Otherwise a new firewall's agent starts here,
 # reports ready, and is restarted a few seconds later by the handler at the end of the play; a command
 # the control plane handed to the first process dies with it (T-109: the included key's first replace
@@ -566,8 +569,8 @@
   when: not ci_test
 
 # The Node firewall agent, mitmproxy's venv and its addon, on a firewall set up before the Rust
-# builds were the only ones. Nothing else on the box runs them. Removed once the units above run
-# Rust (the handlers were flushed before the start), so a restart never looks for them.
+# builds were the only ones. Nothing else on the box runs them. Removed once systemd has the new
+# units and the handlers have restarted them, so a restart never looks for them.
 - name: The Node firewall agent and mitmproxy go
   ansible.builtin.file:
     path: "{{ item }}"

@@ -10,6 +10,9 @@
 # fails, a binary or page asset that is not the pinned one, stores the Rust build cannot read) fails
 # the run before a unit is written: the update shows as failed and the units keep running what they
 # ran before. Fix the cause and run the update again; to go back, pin the previous release.
+#
+# What the old units may still need (older release folders, the Node fallback's helper) is removed by
+# rust-runtime-cleanup.yml, which the includers run after systemd has loaded the new units.
 
 - name: Rust | the pinned release
   ansible.builtin.include_vars:
@@ -175,33 +178,3 @@
   loop: "{{ rust_components | selectattr('migrate_role') | list }}"
   loop_control: { label: "{{ item.unit }}" }
   changed_when: false
-
-# What the Node fallback left: its markers (`.fallback`, `.node-exec`, `.release`), its helper and
-# its unit. A box with a marker ran Node for the whole release; from here it runs Rust.
-- name: Rust | the Node fallback's markers go
-  ansible.builtin.file:
-    path: /etc/controlclaw/runtime
-    state: absent
-
-- name: Rust | the Node fallback's helper and unit go
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /usr/local/bin/cc-runtime-fallback
-    - /etc/systemd/system/cc-runtime-fallback@.service
-
-# Older releases' binaries: nothing runs them after this run's units (a process still running one
-# keeps its copy until it restarts).
-- name: Rust | the release folders on this box
-  ansible.builtin.find:
-    paths: /opt/controlclaw/rust
-    file_type: directory
-  register: rust_folders
-
-- name: Rust | prune the folders of releases no longer pinned
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: absent
-  loop: "{{ rust_folders.files | default([]) | rejectattr('path', 'equalto', cc_rust_dir) | list }}"
-  loop_control: { label: "{{ item.path }}" }

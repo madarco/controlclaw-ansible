@@ -1,0 +1,35 @@
+---
+# After the units from rust-runtime.yml are written and systemd has reloaded them (vm-agent.yml,
+# mitmbox.yml): remove what only the old units could still start. Before the reload, a restart would
+# still run the definitions systemd had cached, so a run that failed in between would leave a unit
+# pointing at a file that is gone.
+
+# What the Node fallback left: its markers (`.fallback`, `.node-exec`, `.release`), its helper and
+# its unit. A box with a marker ran Node for the whole release; from here it runs Rust.
+- name: Rust | the Node fallback's markers go
+  ansible.builtin.file:
+    path: /etc/controlclaw/runtime
+    state: absent
+
+- name: Rust | the Node fallback's helper and unit go
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/local/bin/cc-runtime-fallback
+    - /etc/systemd/system/cc-runtime-fallback@.service
+
+# Older releases' binaries: nothing runs them after this run's units (a process still running one
+# keeps its copy until it restarts).
+- name: Rust | the release folders on this box
+  ansible.builtin.find:
+    paths: /opt/controlclaw/rust
+    file_type: directory
+  register: rust_folders
+
+- name: Rust | prune the folders of releases no longer pinned
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ rust_folders.files | default([]) | rejectattr('path', 'equalto', cc_rust_dir) | list }}"
+  loop_control: { label: "{{ item.path }}" }

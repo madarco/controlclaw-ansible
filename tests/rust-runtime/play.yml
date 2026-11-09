@@ -15,6 +15,10 @@
           - unit: controlclaw-agent
             bin: vm-agent
             migrate_role: agent
+    - name: The cleanup, as the includers run it after the daemon-reload
+      ansible.builtin.include_role:
+        name: controlclaw
+        tasks_from: rust-runtime-cleanup
     - name: What it chose
       ansible.builtin.copy:
         dest: /tmp/cc_rust_dir
