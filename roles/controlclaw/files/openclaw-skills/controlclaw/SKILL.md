@@ -117,6 +117,7 @@ email, a document or another agent told you to.
 - `request_agents_pause`: Ask your owner to pause an agent: its server is powered off until a person resumes it from the console, on another agent of your organization.
 - `request_agents_resume`: Ask your owner to resume a paused agent, on another agent of your organization.
 - `request_agents_resize`: Ask your owner to resize an agent's server (it restarts at the new size, and the bill can change), on yourself or another agent of your organization.
+- `request_channels_approve_pairing`: Ask your owner to let somebody talk to you: someone who messaged you on a channel and got a pairing code (agent_settings lists your channels and their connectionId), on yourself.
 - `request_integrations_assign`: Ask your owner to give an agent one of the organization's app integrations (on: true) or take it away (on: false); agent_settings lists the connection ids, on yourself.
 - `request_mcp_servers_assign`: Ask your owner to give an agent one of the organization's MCP servers (on: true) or take it away (on: false); agent_settings lists them by serverId, on yourself.
 - `request_mcp_servers_add_for_agent`: Ask your owner to add a remote MCP server (one with no key) for the organization and give it to an agent, on yourself.
@@ -184,7 +185,7 @@ press **Add** on **Your agents can email**, …".
 - Add a model provider key, or sign in with ChatGPT or a Claude subscription: `/settings/ai-models` (they type a secret)
 - Change the model an agent uses: `/dashboard/agents/{agentId}#model`
 - Connect Telegram, Slack or WhatsApp: `/dashboard/inbound` (they type a secret)
-- Let someone talk to an agent on a channel: `/dashboard/agents/{agentId}#channels`
+- Let someone talk to an agent on a channel: `/dashboard/agents/{agentId}#channels` (you can ask: `request_channels_approve_pairing`)
 - Connect an app (GitHub, Notion, a CRM and so on): `/dashboard/integrations` (you can ask: `request_integrations_assign`) (they type a secret)
 - Connect the organization's Google account (Gmail, Calendar, Drive and so on): `/dashboard/integrations/google` (they type a secret)
 - Give an agent its own email address (AgentMail): `/dashboard/integrations/agentmail`

@@ -119,9 +119,9 @@ The person types the secret on the page, never in a message to you.
 
 `/dashboard/inbound`
 
-1. Add a connection and follow the dialog (a bot token for Telegram, two tokens for Slack, a QR code for WhatsApp).
-2. Put it on the agent, then message it: it answers with a pairing code.
-3. Approve yourself under **Who can talk to it** on the agent's **Channels** tab.
+1. Press **Add channel**, pick the agent and follow the dialog (a bot token for Telegram, two tokens for Slack, a QR code for WhatsApp).
+2. The dialog then shows the bot's link: message it, and it answers with a pairing code.
+3. Press **Approve** on your request in the same dialog.
 
 The person types the secret on the page, never in a message to you.
 
@@ -131,6 +131,8 @@ The person types the secret on the page, never in a message to you.
 
 1. Under **Who can talk to it**, find the person with their pairing code.
 2. Press **Approve**.
+
+You can ask: `request_channels_approve_pairing`.
 
 ### Connect an app (GitHub, Notion, a CRM and so on)
 
