@@ -41,7 +41,7 @@
 # one that gets disabled.
 - name: Check the live browser's gate refuses an unauthenticated request
   ansible.builtin.uri:
-    url: "http://127.0.0.1:3100/__cc/verify-view"
+    url: "http://127.0.0.1:{{ vm_agent_port }}/__cc/verify-view"
     status_code: 401
   register: novnc_gate
   retries: 10

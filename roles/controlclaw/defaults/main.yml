@@ -299,6 +299,15 @@ proxy_routes_interval_sec: 20
 #   proxy_domain_suffixes: [{ suffix: "ccl.bot" }]
 proxy_domain_suffixes: []
 
+# The vm-agent's port on agent and brain boxes. 3100 is the firewall agent's everywhere, 3101 its AI
+# judge and a locked box's listener. The vm-agent also listens on the old port, 3100, until every
+# box runs a vm-agent that knows 3102; Caddy tries 3102 first and 3100 second. Dropping 3100:
+# controlclaw docs/ops/t-vmagent-port-3102.md.
+vm_agent_port: 3102
+vm_agent_legacy_port: 3100
+# What Caddy proxies to, in order (templates/Caddyfile*.j2, the `vm_agent` snippet).
+vm_agent_upstreams: "127.0.0.1:{{ vm_agent_port }}{{ (' 127.0.0.1:' ~ vm_agent_legacy_port) if vm_agent_legacy_port else '' }}"
+
 # mitm box settings (secret zone)
 mitm_proxy_port: 8080
 mitm_agent_port: 3100

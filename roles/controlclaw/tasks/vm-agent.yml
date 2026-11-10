@@ -151,7 +151,9 @@
       RestartSec=10
       Environment=HOME={{ controlclaw_home }}
       Environment=KEYS_DIR=/opt/controlclaw/keys
-      Environment=AGENT_PORT=3100
+      Environment=AGENT_PORT={{ vm_agent_port }}
+      # The old port, same routes, for whatever still dials it. Empty turns it off.
+      Environment=AGENT_LEGACY_PORT={{ vm_agent_legacy_port }}
       Environment=AGENT_BIND=127.0.0.1
       Environment=STATE_DIR=/opt/controlclaw/state
       # The agent keeps one socket to the local OpenClaw gateway: audit ledger shipping and the

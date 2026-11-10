@@ -40,7 +40,7 @@ def confined(env):
         try:
             sockets.create_connection((host,port),timeout=2).close(); return True
         except OSError: return False
-    if any(reaches(h,p) for h,p in [('1.1.1.1',443),('8.8.8.8',53),('127.0.0.1',22),('127.0.0.1',2019),('127.0.0.1',3100),('127.0.0.1',8080)]): return 'network'
+    if any(reaches(h,p) for h,p in [('1.1.1.1',443),('8.8.8.8',53),('127.0.0.1',22),('127.0.0.1',2019),('127.0.0.1',3100),('127.0.0.1',3102),('127.0.0.1',8080)]): return 'network'
     if any(k in env for k in ('ANTHROPIC_API_KEY','OPENAI_API_KEY','AI_GATEWAY_API_KEY')) or re.match(r'(sk-|vck_|eyJ)',env.get('ANTHROPIC_AUTH_TOKEN','')): return 'key'
     if any(Path(p).exists() for p in ('/opt/controlclaw','/etc/shadow','/etc/caddy','/var/lib','/var/log')) or [p.name for p in Path('/run/ccdoctor').iterdir()]!=[sid]: return 'files'
     # What is left of the folders a firewall keeps things in: nothing but this session's own.

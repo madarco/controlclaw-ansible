@@ -13,6 +13,7 @@ import unittest
 import urllib.parse
 
 import jinja2
+import yaml
 
 ROLE = pathlib.Path(__file__).resolve().parent.parent / "roles/controlclaw"
 HOST = "pool-ab12.ccl.bot"
@@ -20,6 +21,18 @@ HOST = "pool-ab12.ccl.bot"
 
 VARS = dict(caddy_acme_email="ops@example.com", config_api_url="https://controlclaw.com/api/vm-agent/config",
             browser_novnc_port=6080, openclaw_gateway_port=18789, openclaw_sandbox_port=18790, luks_locked_port=3101)
+# The vm-agent's upstreams as the role's defaults build them.
+_DEFAULTS = yaml.safe_load((ROLE / "defaults/main.yml").read_text())
+VARS["vm_agent_upstreams"] = jinja2.Template(_DEFAULTS["vm_agent_upstreams"]).render(_DEFAULTS)
+
+
+def without_port_move(caddyfile):
+    """The Caddyfile with the vm-agent's port move (3102 first, then 3100) and comments taken out, so a
+    Caddyfile from before the move compares equal to today's (controlclaw docs/ops/t-vmagent-port-3102.md)."""
+    text = re.sub(r"\(vm_agent\) \{.*?\n\}\n\n", "", caddyfile, flags=re.S)
+    text = "\n".join(l for l in text.split("\n") if not l.strip().startswith("#") and l.strip() != "import vm_agent")
+    text = text.replace(VARS["vm_agent_upstreams"], "127.0.0.1:3100")
+    return re.sub(r"(reverse_proxy 127\.0\.0\.1:3100) \{\n\s*\}", r"\1", text)
 
 
 def render(alias="", enabled=True, template=None):
@@ -65,7 +78,7 @@ class SandboxSite(unittest.TestCase):
 
     def test_the_shell_only_after_the_vm_agent_check(self):
         shell = self.handle("@shell")
-        self.assertIn("forward_auth 127.0.0.1:3100", shell)
+        self.assertIn("forward_auth 127.0.0.1:3102 127.0.0.1:3100", shell)
         self.assertIn("uri /__cc/sandbox/verify", shell)
         self.assertLess(shell.index("forward_auth"), shell.index("reverse_proxy 127.0.0.1:18790"))
         self.assertIn("path /mcp-app-sandbox\n", self.sandbox)
@@ -89,11 +102,11 @@ class SandboxSite(unittest.TestCase):
     def test_public_only_the_two_renderer_bundles_everything_else_404(self):
         self.assertIn("path /__openclaw__/a2ui/a2ui.bundle.js /__openclaw__/a2ui/a2ui-v0.9.bundle.js\n", self.sandbox)
         self.assertNotIn("forward_auth", self.handle("@renderer"))
-        self.assertIn("reverse_proxy 127.0.0.1:3100", self.handle("/__cc/sandbox/exchange"))
+        self.assertIn("reverse_proxy 127.0.0.1:3102 127.0.0.1:3100", self.handle("/__cc/sandbox/exchange"))
         self.assertEqual(self.handle("").strip(), "respond 404")
         # Nothing on this host reaches the gateway or the vm-agent's other routes.
         self.assertNotIn("18789", self.sandbox)
-        self.assertEqual(len(re.findall(r"reverse_proxy 127\.0\.0\.1:3100", self.sandbox)), 1)
+        self.assertEqual(len(re.findall(r"reverse_proxy 127\.0\.0\.1:3102", self.sandbox)), 1)
 
 
 class Claim(unittest.TestCase):
@@ -126,7 +139,7 @@ class Switch(unittest.TestCase):
         if before.returncode:
             self.skipTest("the 1.19.1 commit is not in this clone")
         for alias in ("", "mjhtest.ccl.bot"):
-            self.assertEqual(render(alias, enabled=False), render(alias, template=before.stdout), alias)
+            self.assertEqual(without_port_move(render(alias, enabled=False)), without_port_move(render(alias, template=before.stdout)), alias)
 
     def test_off_no_sandbox_origin_and_one_set_earlier_is_cleared(self):
         tasks = (ROLE / "tasks/openclaw.yml").read_text()

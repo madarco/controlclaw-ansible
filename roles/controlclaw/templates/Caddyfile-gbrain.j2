@@ -18,11 +18,24 @@
     admin off
 }
 
+# Every route to the vm-agent: its port first, then the old one while it still listens there too
+# (defaults/main.yml, vm_agent_port; controlclaw docs/ops/t-vmagent-port-3102.md). 3100 is used only
+# when 3102 refuses the connection: a vm-agent from before the move, between this Caddyfile and the
+# agent's restart. `fail_duration` marks a refused port down so the retry takes the next one (without
+# it `first` picks 3102 again until the try runs out), and it is shorter than `lb_try_duration`, so a
+# restarting agent is waited for, not refused. Checked against caddy:2 (2.10), POST bodies included.
+(vm_agent) {
+    lb_policy first
+    lb_try_duration 5s
+    fail_duration 2s
+}
+
 {{ vm_hostname }} {
     # Control plane -> vm-agent (bearer JWT checked by the vm-agent itself).
     handle /__cc/agent/* {
         uri strip_prefix /__cc/agent
-        reverse_proxy 127.0.0.1:3100 {
+        reverse_proxy {{ vm_agent_upstreams }} {
+            import vm_agent
             flush_interval -1
         }
     }
@@ -41,7 +54,9 @@
     # four and nothing else of an agent's shim. /__cc/agent/* and /__cc/disk/* win over this by
     # matcher specificity, not by file order.
     handle /__cc/* {
-        reverse_proxy 127.0.0.1:3100
+        reverse_proxy {{ vm_agent_upstreams }} {
+            import vm_agent
+        }
     }
 
     # GBrain's admin page, for a browser the console signed in (owners and admins). GBrain's own
@@ -51,7 +66,8 @@
     @admin path /admin /admin/*
     handle @admin {
         header ?X-Frame-Options "DENY"
-        forward_auth 127.0.0.1:3100 {
+        forward_auth {{ vm_agent_upstreams }} {
+            import vm_agent
             uri /__cc/verify
             header_up -Connection
             header_up -Upgrade

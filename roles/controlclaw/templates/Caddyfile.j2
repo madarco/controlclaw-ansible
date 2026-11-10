@@ -16,11 +16,24 @@
     cert_issuer acme https://acme.zerossl.com/v2/DV90
 }
 
+# Every route to the vm-agent: its port first, then the old one while it still listens there too
+# (defaults/main.yml, vm_agent_port; controlclaw docs/ops/t-vmagent-port-3102.md). 3100 is used only
+# when 3102 refuses the connection: a vm-agent from before the move, between this Caddyfile and the
+# agent's restart. `fail_duration` marks a refused port down so the retry takes the next one (without
+# it `first` picks 3102 again until the try runs out), and it is shorter than `lb_try_duration`, so a
+# restarting agent is waited for, not refused. Checked against caddy:2 (2.10), POST bodies included.
+(vm_agent) {
+    lb_policy first
+    lb_try_duration 5s
+    fail_duration 2s
+}
+
 {{ vm_hostname }}{% if cc_handle_alias | default('') and cc_handle_alias != vm_hostname %}, {{ cc_handle_alias }}{% endif %} {
     # Control plane -> vm-agent (bearer JWT checked by the vm-agent itself)
     handle /__cc/agent/* {
         uri strip_prefix /__cc/agent
-        reverse_proxy 127.0.0.1:3100 {
+        reverse_proxy {{ vm_agent_upstreams }} {
+            import vm_agent
             # /logs/stream is SSE: forward every write as it happens.
             flush_interval -1
         }
@@ -28,7 +41,7 @@
 
     # A box whose encrypted disk has not been opened. Separate from /__cc/agent/* on purpose: the
     # vm-agent is not running then (it waits on cc-secure.service, whose keys are inside the
-    # container), so there is nothing on 3100 to answer. cc-secure-daemon is on 3101 and is the only
+    # container), so there is no vm-agent to answer. cc-secure-daemon is on 3101 and is the only
     # thing up.
     #
     # Unauthenticated here, and the daemon does not check a bearer either. /disk/status returns a boot
@@ -66,7 +79,8 @@
         uri strip_prefix /__cc/novnc
         # Same reason as the catch-all below: the vm-agent registers no 'upgrade' listener, so a
         # forwarded Connection/Upgrade makes Node destroy the socket and Caddy answer 502.
-        forward_auth 127.0.0.1:3100 {
+        forward_auth {{ vm_agent_upstreams }} {
+            import vm_agent
             uri /__cc/verify-view
             header_up -Connection
             header_up -Upgrade
@@ -77,7 +91,9 @@
     # ControlClaw login shim (login page, session exchange, logout, the live-browser bootstrap).
     # /__cc/novnc/* wins over this by matcher specificity, not by file order.
     handle /__cc/* {
-        reverse_proxy 127.0.0.1:3100
+        reverse_proxy {{ vm_agent_upstreams }} {
+            import vm_agent
+        }
     }
 
     # Everything else is OpenClaw, gated by the ControlClaw session cookie. On 401 the
@@ -105,7 +121,8 @@
         # response would go out with neither. Verified against caddy:2-alpine, both ways round.
         header ?X-Frame-Options "SAMEORIGIN"
         header ?Content-Security-Policy "frame-ancestors 'self'"
-        forward_auth 127.0.0.1:3100 {
+        forward_auth {{ vm_agent_upstreams }} {
+            import vm_agent
             uri /__cc/verify
             header_up -Connection
             header_up -Upgrade
@@ -152,7 +169,9 @@ sandbox.{{ vm_hostname }} {
     }
 
     handle /__cc/sandbox/exchange {
-        reverse_proxy 127.0.0.1:3100
+        reverse_proxy {{ vm_agent_upstreams }} {
+            import vm_agent
+        }
     }
 
     @shell {
@@ -160,7 +179,8 @@ sandbox.{{ vm_hostname }} {
         path /mcp-app-sandbox
     }
     handle @shell {
-        forward_auth 127.0.0.1:3100 {
+        forward_auth {{ vm_agent_upstreams }} {
+            import vm_agent
             uri /__cc/sandbox/verify
             header_up -Connection
             header_up -Upgrade

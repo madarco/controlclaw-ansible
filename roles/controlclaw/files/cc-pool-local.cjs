@@ -70,7 +70,11 @@ async function healthy() {
   cmd(['mountpoint', '-q', keys]);
   const units = config.role === 'mitm' ? ['controlclaw-mitm-agent', 'controlclaw-mitmproxy', 'controlclaw-connector', 'dnsmasq'] : ['openclaw', 'controlclaw-agent', 'browser-stream'];
   for (const unit of [...units, 'caddy', 'cc-secure', 'tangd.socket']) cmd(['systemctl', 'is-active', '--quiet', unit]);
-  const response = await fetch('http://127.0.0.1:3100/health', { signal: AbortSignal.timeout(2000) });
+  // A firewall agent is on 3100. A vm-agent is on 3102, or on 3100 alone if it is older than the move.
+  const health = (port) => fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
+  const response = config.role === 'mitm'
+    ? await health(3100)
+    : await health(3102).catch((e) => { if (e?.cause?.code !== 'ECONNREFUSED') throw e; return health(3100); });
   return response.ok && await cert(config.hostname);
 }
 function activate(vars) {
