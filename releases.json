@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.42.0",
+    "date": "2026-11-10",
+    "changes": [
+      "The agent's control service moves to a new port, so a firewall and an agent can run on one machine.",
+      "Sites a model provider or channel needs are allowed by rules ControlClaw adds and removes by itself, so they keep working when you block every other site.",
+      "Activity hides routine model and channel traffic by default; a switch shows it."
+    ]
+  },
+  {
     "version": "1.41.0",
     "date": "2026-11-09",
     "changes": [
