@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.43.0",
+    "date": "2026-11-11",
+    "changes": [
+      "Auto approve rules are now kept and checked on your firewall, and a change that lets more through needs your firewall's code.",
+      "Calls your agents make in connected apps and MCP servers show in Activity again, with their rule counts."
+    ]
+  },
+  {
     "version": "1.42.0",
     "date": "2026-11-10",
     "changes": [
