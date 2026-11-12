@@ -93,11 +93,13 @@
   when: register_api_url is defined and register_api_url | length > 0
 
 # One rsync, not `copy` (one module call per file: 40 s on a fast box and 95 s on a cx23 for its 127
-# files, in every pass). The same result: files 0644 and folders 0755, the box user's, nothing removed
-# that the bundle no longer has; "changed" when rsync changed something.
+# files, in every pass). The same result: files 0644 and folders 0755, the box user's, also for files
+# that are there already (-p -o -g), nothing removed that the bundle no longer has. --checksum compares
+# contents as `copy` did, not size and time: a fresh checkout has new times, and must not count as a
+# change (it would restart the agent). "changed" when rsync changed something.
 - name: Copy vm-agent package files
   ansible.builtin.command: >-
-    rsync -rlt --itemize-changes --chown={{ controlclaw_user }}:{{ controlclaw_user }}
+    rsync -rlt -p -o -g --checksum --itemize-changes --chown={{ controlclaw_user }}:{{ controlclaw_user }}
     --chmod=D0755,F0644 {{ role_path }}/files/vm-agent/ /opt/controlclaw/agent/
   register: vm_agent_files
   changed_when: vm_agent_files.stdout | length > 0
