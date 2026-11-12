@@ -92,14 +92,15 @@
     mode: '0644'
   when: register_api_url is defined and register_api_url | length > 0
 
+# One rsync, not `copy` (one module call per file: 40 s on a fast box and 95 s on a cx23 for its 127
+# files, in every pass). The same result: files 0644 and folders 0755, the box user's, nothing removed
+# that the bundle no longer has; "changed" when rsync changed something.
 - name: Copy vm-agent package files
-  ansible.builtin.copy:
-    src: vm-agent/
-    dest: /opt/controlclaw/agent/
-    owner: "{{ controlclaw_user }}"
-    group: "{{ controlclaw_user }}"
-    mode: '0644'
-    directory_mode: '0755'
+  ansible.builtin.command: >-
+    rsync -rlt --itemize-changes --chown={{ controlclaw_user }}:{{ controlclaw_user }}
+    --chmod=D0755,F0644 {{ role_path }}/files/vm-agent/ /opt/controlclaw/agent/
+  register: vm_agent_files
+  changed_when: vm_agent_files.stdout | length > 0
   when: not cc_skip.vm_agent | default(false) | bool
   notify: restart controlclaw-agent
 
@@ -122,7 +123,11 @@
   when: box_role == 'openclaw'
 
 - name: The agent's Rust build
-  ansible.builtin.include_tasks: rust-runtime.yml
+  ansible.builtin.include_tasks:
+    file: rust-runtime.yml
+    apply:
+      tags: [cc-rust]
+  tags: [cc-rust]
   vars:
     rust_components:
       - unit: controlclaw-agent
@@ -172,6 +177,7 @@
       [Install]
       WantedBy=multi-user.target
   notify: restart controlclaw-agent
+  tags: [cc-rust]
 
 # A box the Node fallback put back on Node has a drop-in naming the Node command line. The unit
 # above runs Rust; the drop-in would override it.
@@ -180,6 +186,7 @@
     path: /etc/systemd/system/controlclaw-agent.service.d/50-runtime-fallback.conf
     state: absent
   notify: restart controlclaw-agent
+  tags: [cc-rust]
 
 # 3100 is loopback-only: the control plane reaches the vm-agent through Caddy on 443
 # (/__cc/agent/*). Boxes provisioned before this had a public 3100 rule; drop it.
@@ -193,9 +200,14 @@
 - name: Reload systemd daemon
   ansible.builtin.systemd:
     daemon_reload: true
+  tags: [cc-rust]
 
 - name: What only the old units could start goes
-  ansible.builtin.include_tasks: rust-runtime-cleanup.yml
+  ansible.builtin.include_tasks:
+    file: rust-runtime-cleanup.yml
+    apply:
+      tags: [cc-rust]
+  tags: [cc-rust]
 
 # The agent is NOT started here: see vm-agent-start.yml, which main.yml includes as the last step
 # of an agent box. Starting it is what confines the box to the org firewall.
