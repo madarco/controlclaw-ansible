@@ -256,6 +256,9 @@
 - name: Include VM agent tasks (OpenClaw box)
   ansible.builtin.include_tasks: vm-agent.yml
   when: vm_id is defined and box_role in ['openclaw', 'gbrain']
+  # cc-rust: the base image build's pin passes (`ansible-pull --tags cc-rust`, controlclaw
+  # scripts/ship-release.sh) run only the Rust release's tasks: the download, the units, the cleanup.
+  tags: [cc-rust]
 
 # The brain's database and GBrain itself, inside the container disk-encryption.yml has just opened.
 - name: Include GBrain (the org's database and brain)
@@ -389,6 +392,7 @@
 - name: Include mitm box tasks (secret zone)
   ansible.builtin.include_tasks: mitmbox.yml
   when: box_role == 'mitm'
+  tags: [cc-rust]
 
 # The shared residential exit relay. No agent, no Docker, no customer data on it: one Node daemon
 # and a certificate. See apps/saas/docs/features/residential-exit.md in the controlclaw repo.

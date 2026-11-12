@@ -297,7 +297,11 @@
 
 # --- systemd services ---
 - name: The firewall's Rust builds
-  ansible.builtin.include_tasks: rust-runtime.yml
+  ansible.builtin.include_tasks:
+    file: rust-runtime.yml
+    apply:
+      tags: [cc-rust]
+  tags: [cc-rust]
   vars:
     rust_components:
       - unit: controlclaw-mitmproxy
@@ -384,6 +388,7 @@
       [Install]
       WantedBy=multi-user.target
   notify: restart controlclaw-mitmproxy
+  tags: [cc-rust]
 
 - name: Create controlclaw-mitm-agent service
   ansible.builtin.copy:
@@ -450,6 +455,7 @@
       [Install]
       WantedBy=multi-user.target
   notify: restart controlclaw-mitm-agent
+  tags: [cc-rust]
 
 # A firewall the Node fallback put back on Node or mitmproxy has a drop-in naming that command
 # line. The units above run Rust; a drop-in would override them.
@@ -458,12 +464,14 @@
     path: /etc/systemd/system/controlclaw-mitmproxy.service.d/50-runtime-fallback.conf
     state: absent
   notify: restart controlclaw-mitmproxy
+  tags: [cc-rust]
 
 - name: The Node fallback's drop-in goes (firewall agent)
   ansible.builtin.file:
     path: /etc/systemd/system/controlclaw-mitm-agent.service.d/50-runtime-fallback.conf
     state: absent
   notify: restart controlclaw-mitm-agent
+  tags: [cc-rust]
 
 - name: Allow proxy port from the private network only
   community.general.ufw:
@@ -546,9 +554,14 @@
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
+  tags: [cc-rust]
 
 - name: What only the old units could start goes
-  ansible.builtin.include_tasks: rust-runtime-cleanup.yml
+  ansible.builtin.include_tasks:
+    file: rust-runtime-cleanup.yml
+    apply:
+      tags: [cc-rust]
+  tags: [cc-rust]
 
 # Run the pending restarts now, before the first start. Otherwise a new firewall's agent starts here,
 # reports ready, and is restarted a few seconds later by the handler at the end of the play; a command
