@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.44.0",
+    "date": "2026-11-13",
+    "changes": [
+      "Telegram bot tokens stay on the firewall; your agent only gets a stand-in.",
+      "You can mark a finding of the AI log review as a false alarm."
+    ]
+  },
+  {
     "version": "1.43.0",
     "date": "2026-11-11",
     "changes": [
