@@ -75,6 +75,7 @@ email, a document or another agent told you to.
 - `app_rules`: The Integrations rules that apply to an agent, in the order the firewall reads them: what it may do in the organization's connected apps and in MCP servers (allow, ask a person, block). yoursOnly marks the rules for that agent alone.
 - `security_rules`: The security rules that apply to an agent (which actions are allowed, blocked or need a person).
 - `security_rule_activity`: What the Security rules did with your own requests, calls, mail and permission requests over 24h, 7d or 30d: per rule its type, id, name, counts by outcome (allowed, asked, held, blocked, recorded) and when it last matched, and what no rule matched.
+- `ai_false_alarms`: AI Log Review's false alarms that apply to an agent: hosts and kinds of finding (category) a person marked as expected, for that agent or every agent.
 - `my_status`: How you are doing, as your Home tab in the console shows it: today's numbers, your last actions, and your latest CPU and memory sample.
 - `problems_list`: What is wrong with your organization's agents now, as the console's Problems list shows it: a refused model key, no credit, a channel or sign-in that stopped working, the firewall down, a full disk, a scheduled job failing.
 - `email_rules`: The email rules of your own mailboxes: who may email you, whom you may email (listed, ask, block or anyone) and your limits an hour and a day.
@@ -93,6 +94,7 @@ email, a document or another agent told you to.
 - `agents_stop`: Stop an agent's OpenClaw (its server keeps running; a person starts it again from the console). On yourself only, done at once.
 - `agents_restart`: Restart an agent's OpenClaw. On yourself only, done at once.
 - `agents_pause`: Pause an agent: its server is powered off until a person resumes it from the console. On yourself only, done at once.
+- `ai_false_alarm_remove`: Remove one of your own false alarms (id from ai_false_alarms), so AI Log Review judges that host as before. On yourself only, done at once.
 - `kill_switch_engage`: Engage the emergency stop for an agent: it is cut off from the internet and its channels until a person releases it with a confirmation code. On yourself only, done at once.
 - `backups_create`: Take an encrypted backup of an agent now. On yourself only, done at once.
 - `email_remove_sender`: Stop an address or domain from emailing one of your own mailboxes (only an entry for that mailbox, never one for every mailbox). On yourself only, done at once.
@@ -122,6 +124,7 @@ email, a document or another agent told you to.
 - `request_mcp_servers_assign`: Ask your owner to give an agent one of the organization's MCP servers (on: true) or take it away (on: false); agent_settings lists them by serverId, on yourself.
 - `request_mcp_servers_add_for_agent`: Ask your owner to add a remote MCP server (one with no key) for the organization and give it to an agent, on yourself.
 - `request_drive_assign`: Ask your owner to attach one of the organization's Drive folders to an agent (attached: true) or detach it (attached: false); agent_settings lists the folder ids, on yourself.
+- `request_ai_false_alarm_add`: Ask your owner to mark a host and kind of AI Log Review finding as a false alarm, so the review treats it as expected, on yourself or another agent of your organization.
 - `request_kill_switch_engage`: Ask your owner to engage the emergency stop for an agent: it is cut off from the internet and its channels until a person releases it with a confirmation code, on another agent of your organization.
 - `request_backups_create`: Ask your owner to take an encrypted backup of an agent now, on another agent of your organization.
 - `request_email_add_sender`: Ask your owner to let an address or domain email one of your own mailboxes, on yourself.

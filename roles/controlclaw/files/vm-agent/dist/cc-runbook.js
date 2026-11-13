@@ -7366,19 +7366,19 @@ var require_dist = __commonJS({
   }
 });
 
-// ../templates/src/cli-runbook.ts
+// src/cli-runbook.ts
 import { parseArgs } from "util";
 import { resolve as resolve5 } from "path";
 
-// ../templates/src/box.ts
+// src/box.ts
 import { existsSync, readFileSync as readFileSync3 } from "fs";
 import { homedir } from "os";
 import { join as join2 } from "path";
 
-// ../templates/src/exec.ts
+// src/exec.ts
 import { spawn } from "child_process";
 
-// ../templates/src/util.ts
+// src/util.ts
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -7387,7 +7387,7 @@ function shown(value) {
   return text3.length > 60 ? `${text3.slice(0, 57)}...` : text3;
 }
 
-// ../templates/src/ids.ts
+// src/ids.ts
 var HIDDEN_CHARACTERS = /[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u;
 var BUNDLE_LIMITS = { files: 40, fileBytes: 64 * 1024, totalBytes: 256 * 1024 };
 var bundlePath = (relative3) => relative3.replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
@@ -7499,7 +7499,7 @@ function everyText(ms) {
   return null;
 }
 
-// ../templates/src/kinds/types.ts
+// src/kinds/types.ts
 var EXIT_TIMEOUT = 124;
 var EXIT_NOT_RUNNABLE = 126;
 var EXIT_NOT_FOUND = 127;
@@ -7540,7 +7540,7 @@ function differences(wanted, current, path = "") {
   return [`${name} is ${current === void 0 ? "not set" : shown(JSON.stringify(current))}, wanted ${shown(JSON.stringify(wanted))}`];
 }
 
-// ../templates/src/exec.ts
+// src/exec.ts
 var MAX_OUTPUT = 8 * 1024 * 1024;
 var running = /* @__PURE__ */ new Set();
 var interrupted = false;
@@ -7588,7 +7588,7 @@ timed out after ${Math.round(timeoutMs / 1e3)} s`);
   child.on("close", (code, signal) => finish(code ?? (signal ? EXIT_INTERRUPTED : 1)));
 });
 
-// ../templates/src/redact.ts
+// src/redact.ts
 import { lstatSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
@@ -7620,7 +7620,7 @@ function makeRedactor(values) {
   };
 }
 
-// ../templates/src/secrets.ts
+// src/secrets.ts
 var SECRET_WORDS = /* @__PURE__ */ new Set(["key", "keys", "apikey", "apikeys", "secret", "secrets", "token", "tokens", "password", "passwords", "passwd", "passphrase", "pass", "pwd", "pat", "credential", "credentials", "authorization", "bearer"]);
 var ABOUT_A_SECRET = /* @__PURE__ */ new Set(["file", "path", "dir", "url", "uri", "name", "names", "id", "ids", "count", "limit", "length", "len", "type", "format", "header", "prefix", "suffix", "endpoint", "ttl", "expiry", "expires", "env", "var", "hint", "label", "title", "field", "budget"]);
 var DATA_KEY = /* @__PURE__ */ new Set(["primary", "sort", "foreign", "partition", "cache", "idempotency", "hash", "public", "unique", "index", "row", "map", "object", "group", "routing", "dedupe", "range", "shard", "lookup", "natural", "surrogate", "candidate", "composite", "storage", "bucket", "s3", "item", "record", "config", "option", "setting", "property", "json", "dict", "translation", "i18n", "sorting", "order", "column", "field"]);
@@ -7710,7 +7710,7 @@ function secretFields(value, path = [], underSecretKey2 = false) {
   return [];
 }
 
-// ../templates/src/redact.ts
+// src/redact.ts
 var SECRET_FILES = ["openclaw_gateway_token", "session_secret", "bootstrap_token"];
 var MASK = "[redacted]";
 var HEADER = /\b(Authorization\s*:\s*)(Basic|Bearer|Token)\s+\S+/gi;
@@ -7823,7 +7823,7 @@ function makeRedact(values = []) {
   };
 }
 
-// ../templates/src/settings-client.ts
+// src/settings-client.ts
 import { readFileSync as readFileSync2 } from "fs";
 var GATE_PORT = 3940;
 var READ_TOOL = "setting_read";
@@ -7934,7 +7934,7 @@ function makeSettingsClient(url2, doFetch = fetch, wait = (ms) => new Promise((r
   };
 }
 
-// ../templates/src/box.ts
+// src/box.ts
 function boxContext(runId, vars = { note: "", name: "", timeZone: "UTC" }) {
   const home = process.env.HOME ?? homedir();
   const keysDir = process.env.KEYS_DIR ?? "/opt/controlclaw/keys";
@@ -7966,7 +7966,7 @@ function varsFromFile(path) {
   return { note: cleanVar(raw.note), name: cleanVar(raw.name), timeZone: cleanTimeZone(raw.timeZone) };
 }
 
-// ../templates/src/cli-shared.ts
+// src/cli-shared.ts
 function refusesRoot(err) {
   if (process.getuid?.() !== 0) return false;
   err("This does not run as root. Run it as the agent's user (controlclaw).");
@@ -7991,7 +7991,7 @@ function unexpected(err) {
   };
 }
 
-// ../templates/src/load.ts
+// src/load.ts
 var import_yaml3 = __toESM(require_dist(), 1);
 import { createHash as createHash3 } from "crypto";
 import { existsSync as existsSync3, readFileSync as readFileSync5, realpathSync as realpathSync2, statSync } from "fs";
@@ -27665,7 +27665,7 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 
-// ../templates/src/skill-names.ts
+// src/skill-names.ts
 var SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 var BUILTIN_SKILL_NAMES = ["agentmail", "apify-scraping", "controlclaw", "google-account"];
 var carriedSkillFolder = (name) => `files/skills/${name}`;
@@ -27699,7 +27699,7 @@ var NOTES_LIMITS = {
 };
 var NOTES_LIMITS_TEXT = `at most ${NOTES_LIMITS.files} files, ${size(NOTES_LIMITS.fileBytes)} a file and ${size(NOTES_LIMITS.totalBytes)} in all`;
 
-// ../templates/src/schema.ts
+// src/schema.ts
 var KINDS = ["openclaw.plugin", "openclaw.config", "openclaw.skill", "openclaw.notes", "openclaw.schedule", "openclaw.mcp", "controlclaw.setting", "file", "line", "run"];
 var json2 = external_exports.lazy(() => external_exports.union([external_exports.string(), external_exports.number(), external_exports.boolean(), external_exports.null(), external_exports.array(json2), external_exports.record(external_exports.string(), json2)]));
 var inFolder = external_exports.string().min(1).refine((p) => !p.startsWith("/") && !p.startsWith("~") && !p.split(/[\\/]/).includes(".."), "must be a path inside the template folder");
@@ -28222,13 +28222,13 @@ function parseSkillSetup(raw) {
   return { title: typeof raw.title === "string" ? raw.title.trim() : null, category: typeof raw.category === "string" ? raw.category.trim() : null, todo, steps };
 }
 
-// ../templates/src/notes-directory.ts
+// src/notes-directory.ts
 import { createHash as createHash2 } from "crypto";
 
-// ../templates/src/skill-directory.ts
+// src/skill-directory.ts
 var import_yaml2 = __toESM(require_dist(), 1);
 
-// ../templates/src/skill-files.ts
+// src/skill-files.ts
 var import_yaml = __toESM(require_dist(), 1);
 import { createHash } from "crypto";
 var SKILL_RECORD = ".controlclaw.json";
@@ -28320,7 +28320,7 @@ function parseSkillRecord(raw) {
   return { source: r.source, id: r.id, version: r.version, installedHash: r.installedHash, installedAt: typeof r.installedAt === "string" ? r.installedAt : "" };
 }
 
-// ../templates/src/skill-directory.ts
+// src/skill-directory.ts
 var SEGMENT = /^[A-Za-z0-9_](?:[A-Za-z0-9._ -]*[A-Za-z0-9._-])?$/;
 var MAX_PATH = 200;
 var MAX_DEPTH = 8;
@@ -28407,7 +28407,7 @@ function checkDirectorySkill(all) {
   };
 }
 
-// ../templates/src/notes-directory.ts
+// src/notes-directory.ts
 var NOTES_PAYLOAD_ID = /^snt-[a-z0-9]{8,40}$/;
 function isNotesPayloadId(id) {
   return !!id && NOTES_PAYLOAD_ID.test(id);
@@ -28468,7 +28468,7 @@ function parseNotesPayload(raw) {
   return { payload: { kind: "notes", hash: r.hash, set: { name: set2.name, id: set2.id, version: set2.version, always: set2.always ?? null }, files: r.files.map((f) => ({ path: f.path, content: f.content })) }, files };
 }
 
-// ../templates/src/skill-folder.ts
+// src/skill-folder.ts
 import { randomBytes } from "crypto";
 import { existsSync as existsSync2, lstatSync as lstatSync2, readdirSync as readdirSync2, readFileSync as readFileSync4, realpathSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join as join3, resolve, sep } from "path";
@@ -28538,7 +28538,7 @@ function writeSkillRecord(dir, record2) {
   }
 }
 
-// ../templates/src/load.ts
+// src/load.ts
 var TEMPLATE_FILE = "template.yaml";
 function fileInFolder(dir, relative3) {
   const path = resolve2(dir, relative3);
@@ -28690,12 +28690,12 @@ function templateHash(steps, todo) {
   return createHash3("sha256").update([...steps.map((s) => `${s.id}:${s.hash}`), JSON.stringify(todo)].join("\n")).digest("hex").slice(0, 16);
 }
 
-// ../templates/src/runner.ts
+// src/runner.ts
 import { randomBytes as randomBytes3 } from "crypto";
 import { mkdirSync as mkdirSync4, readFileSync as readFileSync9, renameSync as renameSync3, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname5, join as join9 } from "path";
 
-// ../templates/src/kinds/files.ts
+// src/kinds/files.ts
 import { randomBytes as randomBytes2 } from "crypto";
 import { chmodSync, existsSync as existsSync4, lstatSync as lstatSync3, mkdirSync, readFileSync as readFileSync6, readlinkSync, realpathSync as realpathSync3, renameSync as renameSync2, rmSync as rmSync2, statSync as statSync2, writeFileSync as writeFileSync2 } from "fs";
 import { basename as basename2, dirname as dirname2, join as join5, resolve as resolve3, sep as sep3 } from "path";
@@ -28817,13 +28817,13 @@ var run = {
   }
 };
 
-// ../templates/src/kinds/mcp.ts
+// src/kinds/mcp.ts
 import { readFileSync as readFileSync7 } from "fs";
 
-// ../templates/src/config-retry.ts
+// src/config-retry.ts
 var CONFIG_CHANGED_MEANWHILE = /config (file )?changed (while|since)/i;
 
-// ../templates/src/kinds/openclaw.ts
+// src/kinds/openclaw.ts
 var READ_MS = 6e4;
 var WRITE_MS = 12e4;
 var INSTALL_MS = 10 * 6e4;
@@ -28924,7 +28924,7 @@ var openclawPlugin = {
   }
 };
 
-// ../templates/src/kinds/mcp.ts
+// src/kinds/mcp.ts
 var READ_MS2 = 6e4;
 var WRITE_MS2 = 12e4;
 async function mcpServers(box) {
@@ -28985,7 +28985,7 @@ var openclawMcp = {
   }
 };
 
-// ../templates/src/kinds/schedule.ts
+// src/kinds/schedule.ts
 var READ_MS3 = 3e4;
 var WRITE_MS3 = 6e4;
 var READ_TRIES = 9;
@@ -29063,17 +29063,17 @@ var openclawSchedule = {
   }
 };
 
-// ../templates/src/kinds/setting.ts
+// src/kinds/setting.ts
 var controlclawSetting = {
   diff: (step, ctx) => ctx.settings.read({ tool: step.spec.tool, values: step.spec.values }),
   apply: (step, ctx) => ctx.settings.apply({ runId: ctx.runId, template: ctx.template, stepId: step.id, tool: step.spec.tool, values: step.spec.values })
 };
 
-// ../templates/src/kinds/notes.ts
+// src/kinds/notes.ts
 import { mkdirSync as mkdirSync3, mkdtempSync, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "fs";
 import { dirname as dirname4, join as join7 } from "path";
 
-// ../templates/src/notes-folder.ts
+// src/notes-folder.ts
 import { lstatSync as lstatSync4, mkdirSync as mkdirSync2, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync as rmSync3, statSync as statSync3, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
 function notesPlace(env = process.env) {
@@ -29123,7 +29123,7 @@ function installedNotes(root, set2) {
   }
 }
 
-// ../templates/src/kinds/notes.ts
+// src/kinds/notes.ts
 var PUT_MS = 12e4;
 var place = (ctx) => ctx.notes ?? notesPlace();
 var filesHash = (files) => hashSkillFiles(files.map((f) => ({ ...f, executable: false })));
@@ -29179,7 +29179,7 @@ var openclawNotes = {
   }
 };
 
-// ../templates/src/kinds/skill.ts
+// src/kinds/skill.ts
 import { existsSync as existsSync5 } from "fs";
 import { join as join8 } from "path";
 import { resolve as resolve4 } from "path";
@@ -29256,7 +29256,7 @@ var openclawSkill = {
   }
 };
 
-// ../templates/src/kinds/index.ts
+// src/kinds/index.ts
 var kinds = {
   "openclaw.plugin": openclawPlugin,
   "openclaw.config": openclawConfig,
@@ -29270,7 +29270,7 @@ var kinds = {
   run
 };
 
-// ../templates/src/runner.ts
+// src/runner.ts
 var STATUSES = ["ok", "changed", "failed", "would-change", "unconfirmed"];
 var LOG_LINES = 20;
 var LOG_WIDTH = 300;
@@ -29449,7 +29449,7 @@ function publicReport(report) {
   };
 }
 
-// ../templates/src/output.ts
+// src/output.ts
 var LABEL = { ok: "ok", changed: "changed", failed: "FAILED", "would-change": "would change", unconfirmed: "waiting" };
 function stepLine(result, width) {
   return `${LABEL[result.status].padEnd(13)}${width === null ? "" : result.id.padEnd(width + 2)}${result.message}`;
@@ -29470,7 +29470,7 @@ function exitCode(report) {
   return report.result === "failed" ? 1 : report.result === "would-change" ? 2 : 0;
 }
 
-// ../templates/src/cli-cc.ts
+// src/cli-cc.ts
 var USAGE = `cc-ensure: make one thing true on this agent, with the same step kinds a template uses.
 
   cc-ensure <kind> <field>=<value>... [--check] [--restart] [--dir <folder>] [--run-id <id>] [--json]
@@ -29582,10 +29582,10 @@ ${USAGE}`);
   return exitCode(report);
 }
 
-// ../templates/src/cli-runbook.ts
+// src/cli-runbook.ts
 import { readFileSync as readFileSync16 } from "fs";
 
-// ../templates/src/bundle.ts
+// src/bundle.ts
 import { createHash as createHash4 } from "crypto";
 var OWN = "(template\\.yaml|README\\.md|(files|scripts)\\/[A-Za-z0-9._-]+(\\/[A-Za-z0-9._-]+)*)";
 var PATH = new RegExp(`^(bundles\\/[a-z0-9][a-z0-9-]*\\/)?${OWN}$`);
@@ -29712,7 +29712,7 @@ function loadBundle(files, options = {}) {
   return { name: template.name, description: template.description, dir: "", steps, todo, hash: templateHash(steps, todo), bundleHash: bundleHash(files) };
 }
 
-// ../templates/src/bundle-folder.ts
+// src/bundle-folder.ts
 import { chmodSync as chmodSync2, lstatSync as lstatSync5, mkdirSync as mkdirSync5, readdirSync as readdirSync4, readFileSync as readFileSync10, statSync as statSync4, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname6, join as join10 } from "path";
 function readBundleFolder(dir) {
@@ -29749,7 +29749,7 @@ function writeBundleFolder(dir, files) {
   for (const file3 of files) if (statSync4(join10(dir, file3.path)).size !== Buffer.byteLength(file3.content, "utf8")) throw new TemplateError([`${file3.path}: could not be written in full`]);
 }
 
-// ../templates/src/capture.ts
+// src/capture.ts
 import { lstatSync as lstatSync6, readdirSync as readdirSync5, readFileSync as readFileSync11 } from "fs";
 import { join as join11, relative, sep as sep4 } from "path";
 var EXACT_REFERENCE = new RegExp(`^${MCP_REFERENCE.source}$`);
@@ -29992,7 +29992,7 @@ async function observeAgent(box) {
   return { files: out.files, plugins, config: config2, schedules, mcpServers: servers, leftOut: out.leftOut() };
 }
 
-// ../templates/src/probe.ts
+// src/probe.ts
 import { lstatSync as lstatSync7, readFileSync as readFileSync12 } from "fs";
 import { delimiter, join as join12 } from "path";
 var PROBE_VERBS = ["state", "readme", "steps", "verify", "plugins", "skills", "config", "file", "tool", "schedule"];
@@ -30111,7 +30111,7 @@ async function probe(template, verb, arg, opts) {
   }
 }
 
-// ../templates/src/review.ts
+// src/review.ts
 import { readFileSync as readFileSync13, statSync as statSync5 } from "fs";
 import { relative as relative2, sep as sep5 } from "path";
 var REVIEW_MAX_BYTES = 256 * 1024;
@@ -30140,11 +30140,11 @@ function reviewFiles(template, ctx) {
   return files;
 }
 
-// ../templates/src/capture-session.ts
+// src/capture-session.ts
 import { mkdirSync as mkdirSync7, readFileSync as readFileSync15, rmSync as rmSync7, writeFileSync as writeFileSync8 } from "fs";
 import { join as join14 } from "path";
 
-// ../templates/src/repair.ts
+// src/repair.ts
 import { cpSync, existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync14, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname7, join as join13 } from "path";
 function repairDir(stateDir, template) {
@@ -30237,7 +30237,7 @@ function packRepair(base, baseFiles, scratch, secrets, hashOf) {
   return { ok: true, pack: { base: hashOf(baseFiles), files: changed, before: changed.flatMap((f) => before.has(f.path) ? [before.get(f.path)] : []), steps: repaired } };
 }
 
-// ../templates/src/capture-session.ts
+// src/capture-session.ts
 function captureDir(home, session) {
   return join14(home, ".controlclaw", "capture", session);
 }
@@ -30287,12 +30287,12 @@ function packCapture(dir, secrets) {
   return { ok: true, files, steps: steps.map((s) => s.id) };
 }
 
-// ../templates/src/cli-runbook.ts
+// src/cli-runbook.ts
 import { existsSync as existsSync7 } from "fs";
 import { homedir as homedir2 } from "os";
 import { join as join17 } from "path";
 
-// ../templates/src/notes-install.ts
+// src/notes-install.ts
 var import_yaml4 = __toESM(require_dist(), 1);
 import { mkdirSync as mkdirSync8, mkdtempSync as mkdtempSync2, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname8, join as join15 } from "path";
@@ -30323,11 +30323,11 @@ async function installNotesPayload(parsed, run2) {
   }
 }
 
-// ../templates/src/skill-install.ts
+// src/skill-install.ts
 import { chmodSync as chmodSync3, mkdirSync as mkdirSync9, mkdtempSync as mkdtempSync3, rmSync as rmSync9, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname9, join as join16 } from "path";
 
-// ../templates/src/skill-payload.ts
+// src/skill-payload.ts
 var import_yaml5 = __toESM(require_dist(), 1);
 var SKILL_PAYLOAD_ID = /^sks-[a-z0-9]{8,40}$/;
 function isSkillPayloadId(id) {
@@ -30376,7 +30376,7 @@ function payloadTemplateYaml(skill, enabled) {
   });
 }
 
-// ../templates/src/skill-install.ts
+// src/skill-install.ts
 async function installSkillPayload(parsed, skill, run2) {
   const { payload, files } = parsed;
   const parent = join16(run2.context.home, ".controlclaw");
@@ -30407,7 +30407,7 @@ async function installSkillPayload(parsed, skill, run2) {
   }
 }
 
-// ../templates/src/cli-runbook.ts
+// src/cli-runbook.ts
 var USAGE2 = `cc-runbook: apply an agent template (template.yaml) to this agent.
 
   cc-runbook run [folder]                  apply every step that does not hold yet
@@ -30810,7 +30810,7 @@ ${error62.problems.map((p) => `  ${p}`).join("\n")}`);
   }
 }
 
-// src/cc-runbook.ts
+// src/cc-runbook-bin.ts
 main2(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (error62) => {
