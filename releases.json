@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.45.0",
+    "date": "2026-11-14",
+    "changes": [
+      "Agents report their AI usage, so the AI usage page shows tokens and cost for each agent and model."
+    ]
+  },
+  {
     "version": "1.44.0",
     "date": "2026-11-13",
     "changes": [
