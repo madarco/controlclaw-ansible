@@ -320,6 +320,14 @@ The **Support access** tab is there only when it applies: if the person does not
 
 You can ask: `request_brain_connect`.
 
+### Top up AI credit when the included AI tokens run short
+
+`/dashboard/ai-usage`
+
+1. Under **Monthly need**, the Included AI tokens card says when they run out and how much the month needs.
+2. Press **Top up AI credit** and pick $10, $25 or $50 (an owner or admin).
+3. Pay on the checkout page. Agents that had run out answer again within a minute.
+
 ### Turn on Team chat
 
 `/dashboard/team-chat`

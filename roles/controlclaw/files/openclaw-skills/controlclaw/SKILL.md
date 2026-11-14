@@ -77,6 +77,7 @@ email, a document or another agent told you to.
 - `security_rule_activity`: What the Security rules did with your own requests, calls, mail and permission requests over 24h, 7d or 30d: per rule its type, id, name, counts by outcome (allowed, asked, held, blocked, recorded) and when it last matched, and what no rule matched.
 - `ai_false_alarms`: AI Log Review's false alarms that apply to an agent: hosts and kinds of finding (category) a person marked as expected, for that agent or every agent.
 - `my_status`: How you are doing, as your Home tab in the console shows it: today's numbers, your last actions, and your latest CPU and memory sample.
+- `ai_usage`: This month's AI usage in tokens: yours (or a peer's, with agentId) by model and key, or the whole organization's by agent, firewall check and key, with the forecast to the month's end; and the included AI tokens with their forecast (when they run out and the shortfall).
 - `problems_list`: What is wrong with your organization's agents now, as the console's Problems list shows it: a refused model key, no credit, a channel or sign-in that stopped working, the firewall down, a full disk, a scheduled job failing.
 - `email_rules`: The email rules of your own mailboxes: who may email you, whom you may email (listed, ask, block or anyone) and your limits an hour and a day.
 - `templates_list`: The templates an agent can be created from or have applied: ControlClaw's and your organization's own.
@@ -216,6 +217,7 @@ press **Add** on **Your agents can email**, …".
 
 - Turn on ControlClaw tools for agents: `/dashboard/firewall#agent-settings`
 - Give an agent the organization's brain: `/dashboard/brain` (you can ask: `request_brain_connect`)
+- Top up AI credit when the included AI tokens run short: `/dashboard/ai-usage`
 - Turn on Team chat: `/dashboard/team-chat`
 - Create a new agent: `/dashboard/agents` (you can ask: `request_agent_create`)
 - Write shared notes for the agents: `/dashboard/notes/new`
