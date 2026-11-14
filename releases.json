@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.46.0",
+    "date": "2026-11-14",
+    "changes": [
+      "AI Log Review now knows each agent's apps and model, skips findings you marked as safe, and investigates suspicious traffic before it emails you."
+    ]
+  },
+  {
     "version": "1.45.0",
     "date": "2026-11-14",
     "changes": [
