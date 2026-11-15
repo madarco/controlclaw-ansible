@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as d:
         print('; createMeetingRealtimeOutputQueue')
         sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[2] == 'recovery':
-        source = (dest / 'plugin/dist/.setup/runtime-BdiF53A2.mjs').read_text()
+        source = next((dest / 'plugin/dist/.setup').glob('runtime-????????.mjs')).read_text()
         start = source.index('async function recoverCurrentMeetTab(params) {')
         end = source.index('\n}', start) + 2
         print(source[start:end])
@@ -54,6 +54,6 @@ with tempfile.TemporaryDirectory() as d:
         print(source[start:end])
         print('}; new Probe()')
         sys.exit(0)
-    source = (dest / 'plugin/dist/.setup/google-meet-platform-adapter-gosgbMIM.mjs').read_text()
+    source = next((dest / 'plugin/dist/.setup').glob('google-meet-platform-adapter-*.mjs')).read_text()
     print(source[source.index('const GOOGLE_MEET_TRANSCRIPT_MAX_LINES'):source.index('function meetAudioCaptureScript(')])
     print(source[source.index('function meetStatusScript(params) {'):source.index('\nfunction meetLeaveScript(')])

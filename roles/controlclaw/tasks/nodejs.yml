@@ -60,6 +60,28 @@
     lock_timeout: 300
   when: not cc_skip.node | default(false) | bool
 
+# `state: present` installs Node once and never moves it, so a box keeps the Node 24 it was built
+# with. OpenClaw 2026.10.6 and later warn below 24.22.1, the release that drops the certificates of
+# the October 2026 eMudhra incident. A Node below that is upgraded within the same line (NodeSource's
+# `nodejs_version`); one at or above it is left alone. The running gateway keeps the old Node until
+# its next restart, which every OpenClaw upgrade does anyway.
+- name: Read the installed Node.js version
+  ansible.builtin.command: node --version
+  register: node_installed_version
+  changed_when: false
+  failed_when: false
+  when: not cc_skip.node | default(false) | bool
+
+- name: Upgrade Node.js below the security floor
+  ansible.builtin.apt:
+    name: nodejs
+    state: latest
+    lock_timeout: 300
+  when:
+    - not cc_skip.node | default(false) | bool
+    - node_installed_version.rc | default(1) == 0
+    - node_installed_version.stdout | regex_replace('^v', '') is version(nodejs_security_floor, '<')
+
 - name: Check if pnpm is already installed
   ansible.builtin.command: pnpm --version
   register: pnpm_check

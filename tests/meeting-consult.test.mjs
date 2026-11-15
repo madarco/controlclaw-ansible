@@ -33,7 +33,7 @@ test('a genuinely draining gateway rejects new meeting consults plainly',async()
 });
 test('missing isolated participant capture fails closed instead of remapping bot output',async()=>{
  const text=execFileSync('python3',[new URL('./export-meet-status.py',import.meta.url).pathname,process.env.MEET_UPSTREAM||'/tmp/meet-upstream','backend'],{encoding:'utf8'});
- const commands=[];const ensure=runInNewContext(text,{PIPEWIRE_SINK_NAME:'openclaw_meeting_audio',PIPEWIRE_SOURCE_NAME:'cc_meeting_remote.monitor',assertCommandSucceeded:()=>{},pulseListContains:(text,name)=>text.includes(name)});
+ const commands=[];const ensure=runInNewContext(text,{PIPEWIRE_SINK_NAME:'openclaw_meeting_audio',PIPEWIRE_SOURCE_NAME:'cc_meeting_remote.monitor',PIPEWIRE_MONITOR_NAME:'openclaw_meeting_audio.monitor',PIPEWIRE_MEETING_AUDIO_DEVICE_LABEL:'OpenClaw Meeting Audio',assertCommandSucceeded:()=>{},pulseListContains:(text,name)=>text.includes(name)});
  await assert.rejects(ensure({backend:'pipewire-pulse',run:async args=>{commands.push(args);return {code:0,stdout:args.at(-1)==='sinks'?'0 openclaw_meeting_audio':'0 openclaw_meeting_audio.monitor'};}}),/Isolated meeting participant audio source is missing/);
  assert.equal(commands.some(x=>x.includes('module-remap-source')),false);
 });

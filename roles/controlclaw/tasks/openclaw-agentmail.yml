@@ -28,6 +28,26 @@
   register: agentmail_previous_config
   no_log: true
 
+- name: AgentMail | decide whether the pinned plugin needs installing
+  ansible.builtin.set_fact:
+    agentmail_install_needed: >-
+      {{ (agentmail_plugins.stdout[agentmail_plugins.stdout.index('{'):] | from_json).plugins
+         | selectattr('id', 'equalto', 'agentmail')
+         | selectattr('version', 'defined')
+         | selectattr('version', 'equalto', agentmail_plugin_version)
+         | list | length == 0 }}
+
+# From OpenClaw 2026.10.10 a plugin install with a gateway running goes through that gateway, and
+# without one it takes the plugin state for itself. Stopping it first, as the Meet task does, keeps
+# the install the same in both cases; the `restart openclaw` handler starts it at the end of the
+# play. Only when the plugin is installed, so an Update that changes nothing here does not stop it.
+- name: AgentMail | stop the gateway before installing the plugin
+  ansible.builtin.systemd:
+    name: openclaw
+    state: stopped
+  when: agentmail_install_needed | bool
+  failed_when: false
+
 - name: AgentMail | install pinned plugin through the org proxy
   ansible.builtin.command:
     argv:
@@ -43,12 +63,7 @@
   environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
   notify: restart openclaw
   register: agentmail_plugin_install
-  when: >-
-    (agentmail_plugins.stdout[agentmail_plugins.stdout.index('{'):] | from_json).plugins
-    | selectattr('id', 'equalto', 'agentmail')
-    | selectattr('version', 'defined')
-    | selectattr('version', 'equalto', agentmail_plugin_version)
-    | list | length == 0
+  when: agentmail_install_needed | bool
 
 - name: AgentMail | leave new installations disabled until the firewall assigns an inbox
   ansible.builtin.shell: |
