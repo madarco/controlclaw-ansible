@@ -34,10 +34,9 @@
 # that resolves to whatever npm has today is one more thing that can differ between two boxes
 # built an hour apart.
 #
-# The pin is safe to leave behind a newer gateway: both packages declare
-# `peerDependencies.openclaw: ">=2026.9.5"` and `openclaw.compat.pluginApi: ">=2026.9.5"`, so a
-# newer OpenClaw satisfies an older plugin. The chore is the other direction — an OpenClaw that
-# raises the plugin API floor needs this bumped.
+# Each release of these plugins declares `peerDependencies.openclaw` and `pluginApi` at or above its
+# own number, so the pin moves with openclaw_version (defaults/main.yml). A newer OpenClaw patch
+# satisfies an older plugin; an older OpenClaw does not.
 
 # The pinned plugins, pre-staged.
 #
@@ -125,8 +124,8 @@
 
 # `npm:` rather than a bare spec: bare names resolve against the bundled/official catalog first,
 # and we want the published package at the pinned version and nothing else. Both are first-party
-# OpenClaw packages from the official catalog, so no capability review is required and neither
-# `--force` nor `--accept-capabilities` is needed.
+# OpenClaw packages from the official catalog, so no capability review is required and
+# `--accept-capabilities` is not needed (`--force` is, below).
 #
 # `controlclaw_node_env` carries NODE_EXTRA_CA_CERTS when the org mitm CA is on the box, and it
 # is not optional here. npm does not fail against an untrusted proxy, it HANGS on the TLS
@@ -153,9 +152,22 @@
     - openclaw_search_prestaged is changed
     - openclaw_search_plugins_needed | length > 0
 
+# From OpenClaw 2026.10.10 an install over a plugin that is already there is refused unless forced
+# ("plugin already exists"; with a gateway running, "Cannot admit plugins.install"), so `--force`
+# replaces the old version in place and the plugin's settings (`enabled: false` for the keyed ones)
+# are kept. The gateway is stopped first, as for Meet and AgentMail, so the install never races a
+# running one; it happens only when the pin moves, on an Update that restarts the gateway anyway.
+# The `restart openclaw` handler starts it again.
+- name: Stop the gateway before installing the web-search plugins
+  ansible.builtin.systemd:
+    name: openclaw
+    state: stopped
+  when: openclaw_search_plugins_needed | length > 0
+  failed_when: false
+
 - name: Install the web-search plugins (pinned)
   ansible.builtin.command:
-    cmd: "/usr/bin/openclaw plugins install npm:{{ item.package }}@{{ openclaw_search_plugin_version }}"
+    cmd: "/usr/bin/openclaw plugins install npm:{{ item.package }}@{{ openclaw_search_plugin_version }} --force"
   become: true
   become_user: "{{ controlclaw_user }}"
   environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"

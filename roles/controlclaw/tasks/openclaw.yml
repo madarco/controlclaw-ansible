@@ -333,6 +333,102 @@
       {{ (openclaw_doctor.stderr | default('') ~ ' ' ~ openclaw_doctor.stdout | default('')) | trim | truncate(600) }}
   when: openclaw_migrate | bool and openclaw_doctor.rc | default(0) != 0
 
+# OpenClaw's own plugins from npm (@openclaw/codex, which `doctor --fix` installs for an OpenAI
+# model, and the Slack, WhatsApp and Team chat channels the vm-agent installs) are built for the
+# OpenClaw release of the same number, and a newer one declares that release as its plugin API
+# floor. An upgrade of OpenClaw leaves them where they were: a Codex plugin older than its OpenClaw
+# makes turns time out (openclaw#182995), and nothing else moves them. So every run puts each one at
+# the version of the OpenClaw installed, named exactly: `plugins update <id>` would take npm's
+# latest, which can be newer than this OpenClaw.
+#
+# Not the ones pinned elsewhere: Google Meet (openclaw-meetings.yml, patched), the voice-call plugin
+# (the vm-agent installs and patches it) and the web-search plugins (openclaw-search.yml). Only npm
+# installs of @openclaw/ packages; a plugin from ClawHub (AgentMail) or a local path is left alone.
+- name: List OpenClaw's npm plugins that are not at the installed OpenClaw's version
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      /usr/bin/openclaw plugins list --json 2>/dev/null | python3 -c '
+      import json, re, sys
+      text = sys.stdin.read()
+      try:
+          plugins = json.loads(text[text.index("{"):]).get("plugins") or []
+      except ValueError:
+          plugins = []
+      want, pinned = sys.argv[1], set(sys.argv[2:])
+      out = []
+      for p in plugins:
+          trust = p.get("trust") or {}
+          spec = re.sub(r"^npm:", "", str(trust.get("installSpec") or ""))
+          m = re.fullmatch(r"(@openclaw/[a-z0-9-]+)(?:@.*)?", spec)
+          if trust.get("installSource") != "npm" or not m or p.get("id") in pinned:
+              continue
+          if p.get("version") != want:
+              out.append({"id": p.get("id"), "package": m.group(1), "version": p.get("version")})
+      print(json.dumps(out))
+      ' {{ openclaw_resolved_version | quote }} google-meet voice-call {{ openclaw_search_plugins | map(attribute='id') | map('quote') | join(' ') }}
+    chdir: "{{ controlclaw_home }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  register: openclaw_plugins_behind
+  changed_when: false
+  failed_when: false
+  when: openclaw_install_wanted | bool or openclaw_installed_semver | length > 0
+
+- name: Decide which OpenClaw plugins to move to the installed version
+  ansible.builtin.set_fact:
+    openclaw_plugins_to_update: >-
+      {{ (openclaw_plugins_behind.stdout | from_json)
+         if (openclaw_plugins_behind.rc | default(1) == 0 and (openclaw_plugins_behind.stdout | default('') | trim)[:1] == '[')
+         else [] }}
+
+- name: Stop the gateway before moving its plugins
+  ansible.builtin.systemd:
+    name: openclaw
+    state: stopped
+  when: openclaw_plugins_to_update | length > 0
+  failed_when: false
+
+- name: Move OpenClaw's plugins to the installed version
+  ansible.builtin.command:
+    argv: [/usr/bin/openclaw, plugins, update, "{{ item.package }}@{{ openclaw_resolved_version }}"]
+    chdir: "{{ controlclaw_home }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  loop: "{{ openclaw_plugins_to_update }}"
+  loop_control:
+    label: "{{ item.id }} {{ item.version }} -> {{ openclaw_resolved_version }}"
+  register: openclaw_plugins_updated
+  # A plugin that cannot be moved is reported, not fatal: the gateway still starts, and the next
+  # Update tries again.
+  failed_when: false
+  changed_when: openclaw_plugins_updated.rc == 0
+  notify: restart openclaw
+
+- name: Warn about OpenClaw plugins that stayed on another version
+  ansible.builtin.debug:
+    msg: "{{ item.item.id }} is still {{ item.item.version }}, not {{ openclaw_resolved_version }}: {{ (item.stderr | default('') ~ ' ' ~ item.stdout | default('')) | trim | truncate(300) }}"
+  loop: "{{ openclaw_plugins_updated.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.id }}"
+  when: item.rc | default(0) != 0
+
+# A plugin's own state migrations run in Doctor, with the new plugin's code (openclaw#165049).
+- name: Migrate the moved plugins' state (openclaw doctor --fix)
+  ansible.builtin.command:
+    cmd: timeout 900 openclaw doctor --fix --non-interactive
+    chdir: "{{ controlclaw_home }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  when: openclaw_plugins_updated is changed
+  changed_when: true
+  failed_when: false
+  notify: restart openclaw
+
 # The plan and the agent-https doc both assume /usr/bin/openclaw. NodeSource sets npm's prefix
 # to /usr so that holds, but assert it rather than baking an unverified path into ExecStart.
 - name: Locate the openclaw binary

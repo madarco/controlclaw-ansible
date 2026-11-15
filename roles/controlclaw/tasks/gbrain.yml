@@ -264,7 +264,10 @@
             *) echo "cc-gbrain-token: scope must be read or read_write" >&2; exit 2 ;;
           esac
           revoke
-          out="$(g auth create "$name" --scopes "$scopes")"
+          # Every connected agent reads the whole brain: that is what the brain is for
+          # (apps/saas/docs/features/brain.md). GBrain 0.60.708 refuses a token bound to no member
+          # on a brain with two or more members unless it says so (--reads-unscoped).
+          out="$(g auth create "$name" --scopes "$scopes" --reads-unscoped --yes)"
           token="$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]+([A-Za-z0-9_]{32,})[[:space:]]*$/\1/p' | head -1)"
           [ -n "$token" ] || { echo "cc-gbrain-token: GBrain printed no token" >&2; exit 3; }
           printf '%s\n' "$token"
@@ -276,6 +279,32 @@
 # The gate (the vm-agent, on this box's private address) is what connected agents reach. The whole
 # private subnet, like the connector gate: the gate itself answers only the addresses it holds a
 # token for, and refuses the rest with a 403.
+# MIGRATION (GBrain 0.60.708, the release that moves brains to it): agent tokens minted before
+# cc-gbrain-token passed --reads-unscoped are bound to nobody, and GBrain refuses their reads 14 days
+# after the brain gets a second member (requester_scope_required). Every active `cc-` token is
+# rescoped once; `auth rescope` prints "(updated)" only when it changed something, so later runs
+# change nothing. Delete this task once every brain has run an Update on this release or later:
+# from then on every agent token is minted with the flag.
+- name: GBrain | Agent tokens read the whole brain (rescope tokens minted before 0.60.708)
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      set -a; . {{ gbrain_home }}/.gbrain/env; set +a
+      g=/usr/local/bin/gbrain
+      for name in $($g auth list --json 2>/dev/null | python3 -c 'import json, sys; print("\n".join(t["name"] for t in json.load(sys.stdin) if t.get("status") == "active" and str(t.get("name", "")).startswith("cc-")))'); do
+        # One token that cannot be rescoped (a name GBrain finds twice) must not stop the play
+        # before GBrain is served on its new release: it is reported, and the next Update tries again.
+        $g auth rescope --token "$name" --reads-unscoped --yes || echo "could not rescope $name" >&2
+      done
+    executable: /bin/bash
+    chdir: "{{ gbrain_home }}"
+  become: true
+  become_user: "{{ gbrain_user }}"
+  environment:
+    HOME: "{{ gbrain_home }}"
+  register: gbrain_rescoped
+  changed_when: "'(updated)' in gbrain_rescoped.stdout"
+
 - name: GBrain | Allow the agents' gate from the private network only
   community.general.ufw:
     rule: allow

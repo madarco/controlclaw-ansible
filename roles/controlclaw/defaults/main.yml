@@ -61,6 +61,8 @@ tailscale_authkey: ""
 # OpenClaw requires node >=24.16.0 (<25) or >=26.1.0. npm resolves `openclaw@latest`
 # against the installed node, so an older node silently installs an older OpenClaw.
 nodejs_version: "24.x"
+# The lowest Node.js a box keeps (tasks/nodejs.yml): OpenClaw's recommended security patch level.
+nodejs_security_floor: "24.22.1"
 
 # User settings (will be created as system user)
 controlclaw_user: controlclaw
@@ -156,12 +158,11 @@ patchright_prefix: /usr/local/lib/controlclaw-patchright
 # (search.parallel.ai:443). duckduckgo is installed alongside it but NOT selected: it is a
 # config switch away when Parallel is rate limiting, without needing npm on a confined box.
 #
-# The version is pinned rather than tracking @latest: both packages declare
-# `peerDependencies.openclaw: ">=2026.9.5"`, so a newer gateway is happy with this pin and two
-# boxes built an hour apart get the same plugin. Bump it when an OpenClaw release raises the
-# plugin API floor — the same chore patchright_version carries.
+# The version is pinned rather than tracking @latest, so two boxes built an hour apart get the same
+# plugin. Each release declares `peerDependencies.openclaw` and `pluginApi` at or above its own
+# number, so this moves with openclaw_version (2026.11.3 needs OpenClaw 2026.11.3 or newer).
 openclaw_web_search_provider: parallel-free
-openclaw_search_plugin_version: "2026.9.5"
+openclaw_search_plugin_version: "2026.11.3"
 #
 # tavily and brave are the PAID providers an organisation can switch to from the console
 # (controlclaw apps/saas/docs/features/web-search.md). The key never reaches this box — the org
@@ -487,8 +488,10 @@ luks_dependent_units: >-
 # Design: controlclaw docs/plans/gbrain.md. GBrain is a single compiled binary (bun build --compile)
 # published with every upstream release; it is pinned here by version AND sha256 and moves only when
 # this file does, never by GBrain's own self-upgrade (which the role switches off).
-gbrain_version: "0.60.10.0"
-gbrain_sha256: "16c27c6660b50f61cff62a435e0bf26ea0091dc98d47160cccda00e4b3594650"
+# The release publishes no checksum for the binary: this is the sha256 of the downloaded asset
+# (213,555,376 bytes), taken on 2026-11-15.
+gbrain_version: "0.60.723.0"
+gbrain_sha256: "283e1230d538f6faa3f2a5c3e03a1c9fab3bdc695f553f5a1bb7ae82713c9c9f"
 gbrain_download_url: "https://github.com/garrytan/gbrain/releases/download/v{{ gbrain_version }}/gbrain-linux-x64"
 gbrain_bin_dir: /opt/controlclaw/gbrain
 # A system account with no shell. Its home is GBrain's home (~/.gbrain holds config.json, the env
@@ -525,9 +528,10 @@ agentmail_cli_arches:
     release: arm64
     sha256: 3aaaa675793c6c182ce5877205e7211ed490ec92fcfef1da8ca555dd402d4a6e
 
-# Compatible host and official Google Meet plugin, reviewed 2026-10-02.
-openclaw_version: "2026.9.7"
-openclaw_meet_version: "2026.9.7"
+# Compatible host and official Google Meet plugin, reviewed 2026-11-15. The Meet plugin declares
+# pluginApi >= its own version, so the two move together.
+openclaw_version: "2026.11.3"
+openclaw_meet_version: "2026.11.3"
 
 # Local wake-name listening for meetings (cc-wake, controlclaw docs/plans/gpt-live-and-wake-word.md
 # D6): libvosk.so from the pinned Vosk wheel (the Python package around it is not installed) and
@@ -542,8 +546,8 @@ cc_wake_vosk_wheels:
     sha256: "54efb47dd890e544e9e20f0316413acec7f8680d04ec095c6140ab4e70262704"
 cc_wake_model: vosk-model-small-en-us-0.15
 cc_wake_model_sha256: "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
-openclaw_host_sha512: "ffc3762e77d31503ef9d98b38bca8a4857e72d068fbd21b709be31a35615edbe09858894738dd9351a57274d5b5a084b2b41339371d57a8fc3187708450c1158"
-openclaw_meet_sha512: "92692214bca4fa925a8170d8b97e3423082dbc4c64048070030303d8e5ca48abf5c4af934481e537522519c5fd8301f73036a0aa4aaaf59a7cb295b0fd6b4918"
+openclaw_host_sha512: "141abfab44c26a80366fba9f755d2af357c7848e91041d730107c941111cd6ed9394ae6485580252c0255ec90b5ad87256a473e4f5848fea0e99f6202b9f1d1e"
+openclaw_meet_sha512: "dee0c15fb8fc2069e6fd59fe4b992a22d98651909bc0f0e33b528c37682fc02a029c3e84c3d4c66bb0aee2e62530b01627cb6cbd36ec02f056b92ca6ed0dd1ac"
 
 # Agent Doctor CLI hosts, registry SHA-512 pins. Updates are manual.
 doctor_cli_pins:

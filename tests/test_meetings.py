@@ -71,7 +71,9 @@ class MeetingPins(unittest.TestCase):
         if not upstream.exists():
             self.skipTest('download the documented pinned npm archives for this integration test')
         cases = [(p, applied) for p in patcher.PATCHES if p['kind'] == 'host' for applied in patcher.HOST_UPGRADES.get(p['path'], {}).values()]
-        self.assertTrue(cases)
+        if not cases:
+            # A new pin starts with no earlier patched states: every agent gets a fresh install.
+            self.skipTest('no earlier patched host states for this pin (HOST_UPGRADES is empty)')
         for target_spec, applied in cases:
             with self.subTest(path=target_spec['path'], applied=applied), tempfile.TemporaryDirectory() as d:
                 root = Path(d)
@@ -93,14 +95,15 @@ class MeetingPins(unittest.TestCase):
                 self.assertEqual(patcher.hashlib.sha256(target.read_bytes()).hexdigest(), target_spec['after'])
 
     def test_patched_host_of_another_month_build_upgrades(self):
-        """An agent on a later 2026.9.x build (other bundle hashes, the same code) that carries an
+        """An agent on a later build of the pinned month (other bundle hashes, the same code) that carries an
         earlier release's patch gets only the replacements added since (HOST_UPGRADES)."""
         upstream = Path(os.environ.get('MEET_UPSTREAM', '/tmp/meet-upstream'))
         later = os.environ.get('MEET_UPSTREAM_LATER')
         if not upstream.exists() or not later:
-            self.skipTest('set MEET_UPSTREAM_LATER to an extracted later 2026.9.x OpenClaw package')
+            self.skipTest('set MEET_UPSTREAM_LATER to an extracted later OpenClaw package of the pinned month')
         cases = [(p, canonical, applied) for p in patcher.PATCHES if p['kind'] == 'host' for canonical, applied in patcher.HOST_UPGRADES.get(p['path'], {}).items()]
-        self.assertTrue(cases)
+        if not cases:
+            self.skipTest('no earlier patched host states for this pin (HOST_UPGRADES is empty)')
         for spec, canonical, applied in cases:
             with self.subTest(path=spec['path'], applied=applied), tempfile.TemporaryDirectory() as d:
                 root = Path(d)

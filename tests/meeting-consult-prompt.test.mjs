@@ -11,11 +11,12 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const upstream = join(process.env.MEET_UPSTREAM || '/tmp/meet-upstream', 'host/package/dist');
-const PATH = 'dist/agent-run-control-shared-Cc6QkFgv.mjs';
+// The module's bundler name changes with every build: the patch's own spec names it.
 const spec = JSON.parse(execFileSync('python3', ['-c', `
 import importlib.util, json, sys
 s = importlib.util.spec_from_file_location('p', 'roles/controlclaw/files/meeting-runtime-patch.py'); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
-print(json.dumps([p for p in m.PATCHES if p['path'] == '${PATH}'][0]))`], { encoding: 'utf8' }));
+print(json.dumps([p for p in m.PATCHES if p['path'].startswith('dist/agent-run-control-shared-')][0]))`], { encoding: 'utf8' }));
+const PATH = spec.path;
 
 async function patchedTemplate() {
   let source = readFileSync(join(upstream, PATH.slice(5)), 'utf8');
@@ -26,7 +27,9 @@ async function patchedTemplate() {
   const dir = join(mkdtempSync(join(tmpdir(), 'consult-')), 'dist'); mkdirSync(dir);
   for (const name of readdirSync(upstream)) if (name !== PATH.slice(5)) symlinkSync(join(upstream, name), join(dir, name));
   writeFileSync(join(dir, PATH.slice(5)), source);
-  return (await import(pathToFileURL(join(dir, PATH.slice(5))).href)).b;
+  // The export alias changes with the build too: found by the function's own name.
+  const alias = /buildRealtimeVoiceAgentConsultPrompt as (\w+)/.exec(source)[1];
+  return (await import(pathToFileURL(join(dir, PATH.slice(5))).href))[alias];
 }
 const transcript = [{ role: 'user', text: 'Jarvis, what did Anna say about the budget?' }, { role: 'assistant', text: 'Let me check.' }];
 const labels = { surface: 'a Google Meet meeting', userLabel: 'Participant', assistantLabel: 'Agent' };
