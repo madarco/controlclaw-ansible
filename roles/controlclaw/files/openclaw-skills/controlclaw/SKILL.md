@@ -95,6 +95,7 @@ email, a document or another agent told you to.
 
 - `agents_stop`: Stop an agent's OpenClaw (its server keeps running; a person starts it again from the console). On yourself only, done at once.
 - `agents_restart`: Restart an agent's OpenClaw. On yourself only, done at once.
+- `agents_openclaw_doctor`: Run OpenClaw doctor on an agent (its OpenClaw stops for a few minutes while it runs). On yourself only, done at once.
 - `agents_pause`: Pause an agent: its server is powered off until a person resumes it from the console. On yourself only, done at once.
 - `ai_false_alarm_remove`: Remove one of your own false alarms (id from ai_false_alarms), so AI Log Review judges that host as before. On yourself only, done at once.
 - `kill_switch_engage`: Engage the emergency stop for an agent: it is cut off from the internet and its channels until a person releases it with a confirmation code. On yourself only, done at once.
@@ -118,6 +119,7 @@ email, a document or another agent told you to.
 - `request_agents_start`: Ask your owner to start an agent's OpenClaw, on another agent of your organization.
 - `request_agents_stop`: Ask your owner to stop an agent's OpenClaw (its server keeps running; a person starts it again from the console), on another agent of your organization.
 - `request_agents_restart`: Ask your owner to restart an agent's OpenClaw, on another agent of your organization.
+- `request_agents_openclaw_doctor`: Ask your owner to run OpenClaw doctor on an agent (its OpenClaw stops for a few minutes while it runs), on another agent of your organization.
 - `request_agents_pause`: Ask your owner to pause an agent: its server is powered off until a person resumes it from the console, on another agent of your organization.
 - `request_agents_resume`: Ask your owner to resume a paused agent, on another agent of your organization.
 - `request_agents_resize`: Ask your owner to resize an agent's server (it restarts at the new size, and the bill can change), on yourself or another agent of your organization.
