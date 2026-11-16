@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.47.1",
+    "date": "2026-11-16",
+    "changes": [
+      "Updates install OpenClaw 2026.11.3 exactly; 2026.11.4 stopped agents updated from older versions."
+    ]
+  },
+  {
     "version": "1.47.0",
     "date": "2026-11-15",
     "changes": [
