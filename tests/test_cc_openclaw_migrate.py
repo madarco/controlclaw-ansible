@@ -55,6 +55,7 @@ class Migrate(unittest.TestCase):
                     'CC_MIGRATE_LOG': str(self.tmp / 'migrate.log'), 'CC_SYSTEMCTL': str(systemctl),
                     'CC_MOUNTINFO': str(self.mountinfo),
                     'CC_MIGRATE_HOLD': str(self.tmp / 'hold'), 'CC_MIGRATE_DIR': str(self.tmp / 'private'),
+                    'CC_WRITE_OWNED': str(SCRIPT.parent / 'cc-write-owned'),
                     'CC_MIGRATE_EVERY_S': '1'}
 
     def run_it(self, doctor, *args, **env):

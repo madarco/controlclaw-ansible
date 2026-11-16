@@ -11,8 +11,9 @@ written while it is not mounted (the owner's orders are not written on the plain
 
 The text has to be what the vm-agent writes: exactly its header, then ControlClaw's sections (`drive`,
 `meetings`) and nothing else, at most as long as the plugin reads. The box user can run this too (it
-shares the vm-agent's user), so it can change the sections' text, and the vm-agent's next write puts
-its own back; only a vm-agent on a user of its own would close that.
+shares the vm-agent's user), so it can change the sections' text: the vm-agent writes the Drive
+section again within 30 s, and a changed meetings section shows in the console as changed outside it.
+Only a vm-agent on a user of its own would close that.
 """
 import fcntl
 import os

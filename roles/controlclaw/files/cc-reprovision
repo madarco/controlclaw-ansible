@@ -24,19 +24,15 @@ MIN_AGE_HOURS=24
 # The state file is what the console shows. Written at every step, world-readable (it holds no
 # secret: a phase, an exit code and a task name).
 #
-# As the owner of its folder, through a temporary file of its own and a rename. On an agent that
-# folder is the box user's, inside /opt/controlclaw, which the box user owns too: a fixed temporary
-# name, or the state file, could be a link there, and a root write would go wherever it points.
+# A file in a folder the box user may own, written by cc-write-owned (as that folder's owner, relative
+# to the folder opened once, a link replaced and never followed). Nothing without it.
 write_owned() {
-  local file="$1" dir owner
-  dir=$(dirname "$file")
-  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  owner=$(stat -c %U "$dir")
-  if [ "$owner" = root ]; then
-    local tmp
-    tmp=$(mktemp "$file.XXXXXX") && cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$file"
+  if [ -x /usr/local/lib/controlclaw/cc-write-owned ]; then
+    /usr/local/lib/controlclaw/cc-write-owned "$1"
   else
-    runuser -u "$owner" -- sh -c 't=$(mktemp "$1.XXXXXX") && cat > "$t" && chmod 0644 "$t" && mv -f "$t" "$1"' sh "$file"
+    cat >/dev/null
+    logger -t "$(basename "$0")" "not writing $1: cc-write-owned is not installed yet"
+    return 1
   fi
 }
 say() {

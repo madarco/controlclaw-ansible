@@ -117,6 +117,15 @@
     follow: false
   become: true
   become_user: "{{ controlclaw_user }}"
+  register: drive_mount_root_made
+  # Something else at that path (a link the agent made, say) must not stop every Update from here on:
+  # the Drive folders are not mounted (cc-drive-apply refuses the same path and says so), the rest goes on.
+  failed_when: false
+
+- name: Drive folders | Say why the mount root could not be made
+  ansible.builtin.debug:
+    msg: "{{ drive_mount_root }}: {{ drive_mount_root_made.msg | default('') | truncate(300) }}; the Drive folders are not mounted until it is a folder of the agent's"
+  when: (drive_mount_root_made.state | default('')) != 'directory'
 
 # One target so the mounts can be ordered against OpenClaw as a group, started and stopped as a
 # group, and enumerated without parsing unit names.

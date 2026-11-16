@@ -263,6 +263,17 @@
     - box_role in ['openclaw', 'gbrain']
     - mitm_box_private_ip | default('') | length > 0
 
+# How root's scripts write a file in a folder the box user owns (cc-reprovision, cc-drive-apply,
+# cc-openclaw-migrate): as that folder's owner, relative to the folder opened once. Before any of them
+# runs in this play.
+- name: Install cc-write-owned
+  ansible.builtin.copy:
+    src: cc-write-owned
+    dest: /usr/local/lib/controlclaw/cc-write-owned
+    owner: root
+    group: root
+    mode: '0755'
+
 # Before the vm-agent: the agent may be handed a mount set the moment it comes up (the firewall
 # re-pushes on /ready), and `sudo cc-drive-apply` has to exist by then. Inert until that push.
 - name: Include Google Drive folder support (rclone, the mount units, cc-drive-apply)

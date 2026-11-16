@@ -150,19 +150,15 @@ PY
   ) | write_owned "$STATE"
 }
 
-# A file in a folder the box user may own (/opt/controlclaw/state, inside /opt/controlclaw, which is
-# the box user's too), written as that folder's owner through a temporary file of its own and a
-# rename: root never writes there, where a link could be waiting. Nothing when the folder is a link.
+# A file in a folder the box user may own, written by cc-write-owned (as that folder's owner, relative
+# to the folder opened once, a link replaced and never followed). Nothing without it.
 write_owned() {
-  local file="$1" dir owner
-  dir=$(dirname "$file")
-  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
-  owner=$(stat -c %U "$dir")
-  if [ "$owner" = root ]; then
-    local tmp
-    tmp=$(mktemp "$file.XXXXXX") && cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$file"
+  if [ -x /usr/local/lib/controlclaw/cc-write-owned ]; then
+    /usr/local/lib/controlclaw/cc-write-owned "$1"
   else
-    runuser -u "$owner" -- sh -c 't=$(mktemp "$1.XXXXXX") && cat > "$t" && chmod 0644 "$t" && mv -f "$t" "$1"' sh "$file"
+    cat >/dev/null
+    logger -t "$(basename "$0")" "not writing $1: cc-write-owned is not installed yet"
+    return 1
   fi
 }
 
@@ -328,6 +324,16 @@ for line in ${DESIRED_LINES+"${DESIRED_LINES[@]}"}; do
   esac
 done
 
+# --- the config folder, pinned -----------------------------------------------------------------
+# DRIVE_DIR is root's (0750 root:controlclaw), but it is inside /opt/controlclaw, which the box user
+# owns: the box user can rename it and put a link in its place at any moment. So it is entered once,
+# checked to be root's own folder and not a link, and from here on every file in it is reached through
+# this shell's working folder ($D, /proc/<pid>/cwd), which stays that folder whatever is done to its
+# name. The paths written into the env files stay the real ones: systemd reads them.
+cd -- "$DRIVE_DIR" 2>/dev/null || die "no $DRIVE_DIR"
+[ "$(pwd -P)" = "$DRIVE_DIR" ] && [ "$(stat -c %u .)" = 0 ] || die "$DRIVE_DIR is not root's own folder"
+D="/proc/$$/cwd"
+
 # --- what is running now --------------------------------------------------------------------
 # By unit, not by what is in DRIVE_DIR: a config left behind by a crash is not a mount, and a mount
 # whose config was deleted still has to be taken down.
@@ -347,20 +353,20 @@ for esc in ${RUNNING+"${RUNNING[@]}"}; do
   is_wanted "$esc" && continue
   # The display name is not recoverable from the slug, so take it from the env file the last apply
   # wrote. Only for the log line; everything that matters is keyed by the slug.
-  name="$(sed -n 's|^CC_DRIVE_MOUNTPOINT=.*/||p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+  name="$(sed -n 's|^CC_DRIVE_MOUNTPOINT=.*/||p' "$D/$esc.env" 2>/dev/null)"
   name="${name:-$esc}"
   log "taking down $name: it is not in the mount set any more"
-  point="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+  point="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$D/$esc.env" 2>/dev/null)"
   point="${point:-$MOUNT_ROOT/$name}"
 
   # Give whatever has not been written back to Drive a chance to finish. Reading the port out of
   # the env file rather than recomputing it: the allocation belongs to whoever wrote that file.
-  drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+  drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$D/$esc.env" 2>/dev/null | tr -d '"')"
 
   systemctl disable --now "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
   is_mounted "$point" && release_mount "$point"
-  rm -f "$DRIVE_DIR/$esc.env" "$DRIVE_DIR/$esc.conf"
-  rm -rf -- "$DRIVE_DIR/cache/$esc"
+  rm -f "$D/$esc.env" "$D/$esc.conf"
+  rm -rf -- "$D/cache/$esc"
   # Only if it is empty: a non-empty directory here is the agent's own writes, and losing those
   # silently while removing a folder somebody unshared is not a trade anyone agreed to.
   as_agent rmdir -- "$point" 2>/dev/null || log "$point is not empty; left in place"
@@ -371,14 +377,14 @@ done
 # forgotten — an apply that died half way, or a box carrying files from an older layout — would
 # otherwise sit there forever, and its cache would keep holding disk. Reconciling means the disk
 # too, not only the units.
-for f in "$DRIVE_DIR"/*.conf "$DRIVE_DIR"/*.env; do
+for f in "$D"/*.conf "$D"/*.env; do
   [ -e "$f" ] || continue
   base="$(basename "$f")"
   is_wanted "${base%.*}" && continue
   log "removing $base: no mount in the set is called that"
   rm -f -- "$f"
 done
-for d in "$DRIVE_DIR"/cache/*; do
+for d in "$D"/cache/*; do
   [ -d "$d" ] || continue
   is_wanted "$(basename "$d")" && continue
   log "removing the cache of $(basename "$d"): it is not in the set"
@@ -402,8 +408,8 @@ for idx in "${!WANTED_NAMES[@]}"; do
   # vm-agent has turned egress on, and then simply retries.
   # The heredoc is deliberately UNQUOTED so $esc, $SCOPE and $folder expand. That also makes
   # backticks and $(...) inside it command substitution, including in the comments — no backticks.
-  install -o root -g "$USER_NAME" -m 0640 /dev/null "$DRIVE_DIR/$esc.conf.tmp"
-  cat > "$DRIVE_DIR/$esc.conf.tmp" <<EOF
+  install -o root -g "$USER_NAME" -m 0640 /dev/null "$D/$esc.conf.tmp"
+  cat > "$D/$esc.conf.tmp" <<EOF
 # Written by cc-drive-apply. Holds no credential: see the comment at the top of that script.
 [$esc]
 type = drive
@@ -416,31 +422,31 @@ scope = $SCOPE
 root_folder_id = $folder
 token = {"access_token":"unused","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}
 EOF
-  mv -f "$DRIVE_DIR/$esc.conf.tmp" "$DRIVE_DIR/$esc.conf"
+  mv -f "$D/$esc.conf.tmp" "$D/$esc.conf"
 
   # A folder that keeps its slug but changes mode is restarted below, not taken down, so the
   # teardown loop never drained it. Going from read-write to read-only is the case that matters:
   # rclone will not upload through a --read-only mount, so anything still queued would be stranded
   # in the cache with no way out. Repointing at a different Drive folder is already a takedown,
   # because the slug carries a hash of the folder id.
-  if [ -f "$DRIVE_DIR/$esc.env" ]; then
-    was_at="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+  if [ -f "$D/$esc.env" ]; then
+    was_at="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$D/$esc.env" 2>/dev/null)"
     # A mount that is moving (out of the workspace, T-oc114): what it has queued goes up first, then
     # it is stopped and its old mountpoint released, so the start below mounts it at the new place.
     if [ -n "$was_at" ] && [ "$was_at" != "$MOUNT_ROOT/$name" ]; then
       log "$name moves from $was_at to $MOUNT_ROOT/$name"
-      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$D/$esc.env" 2>/dev/null | tr -d '"')"
       systemctl stop "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
       is_mounted "$was_at" && release_mount "$was_at"
     fi
-    was_ro="$(sed -n 's/^CC_DRIVE_READONLY=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+    was_ro="$(sed -n 's/^CC_DRIVE_READONLY=//p' "$D/$esc.env" 2>/dev/null)"
     if [ "$mode" = "ro" ] && [ -z "$was_ro" ]; then
       log "$name is becoming read-only; letting it finish what it has queued first"
-      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$D/$esc.env" 2>/dev/null | tr -d '"')"
     fi
   fi
 
-  install -o root -g "$USER_NAME" -m 0640 /dev/null "$DRIVE_DIR/$esc.env.tmp"
+  install -o root -g "$USER_NAME" -m 0640 /dev/null "$D/$esc.env.tmp"
   {
     echo "# Written by cc-drive-apply. CC_DRIVE_PLACEHOLDER is not a secret: the org proxy swaps it"
     echo "# for the real Google token, which never reaches this box."
@@ -460,10 +466,10 @@ EOF
     # `echo --`: echo prints the `--`, and rclone reads that as "the positionals start here", which
     # turned --read-only into a third path argument and refused the mount (caught on a real box).
     echo "CC_DRIVE_READONLY=$([ "$mode" = "ro" ] && printf '%s' '--read-only')"
-  } > "$DRIVE_DIR/$esc.env.tmp"
-  mv -f "$DRIVE_DIR/$esc.env.tmp" "$DRIVE_DIR/$esc.env"
+  } > "$D/$esc.env.tmp"
+  mv -f "$D/$esc.env.tmp" "$D/$esc.env"
 
-  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$DRIVE_DIR/cache/$esc"
+  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$D/cache/$esc"
 
   # The mountpoint has to be writable by the agent or fusermount3 refuses it, which means the agent
   # can write into it while nothing is mounted. Anything found there is moved out of the way rather
