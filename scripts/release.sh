@@ -68,16 +68,16 @@ print(f"OpenClaw {pin}: upgrade tested from " + ", ".join(r["path"] for r in row
 PY
 fi
 
-# The role moves the Drive folders out of the workspace and loads controlclaw/AGENTS.md
-# (cc-workspace-context); the vm-agent that writes that file, and so tells the agent where its Drive
+# The role moves the Drive folders out of the workspace and loads ControlClaw's instructions
+# (cc-instructions); the vm-agent that writes them, and so tells the agent where its Drive
 # folders are, is in the Rust builds after 1.8.0 (T-oc114).
 rust=roles/controlclaw/vars/rust_release.yml
-if [ -f "$rust" ] && [ -d roles/controlclaw/files/workspace-context ]; then
+if [ -f "$rust" ] && [ -d roles/controlclaw/files/cc-instructions-plugin ]; then
   python3 - "$rust" <<'PY' || exit 1
 import re, sys
 m = re.search(r'^\s+version:\s*"?(\d+)\.(\d+)\.(\d+)"?', open(sys.argv[1]).read(), re.M)
 if not m or tuple(map(int, m.groups())) <= (1, 8, 0):
-    sys.exit("release.sh: the Rust builds pinned in vars/rust_release.yml do not write controlclaw/AGENTS.md (1.8.0 or older); pin a Rust release with controlclaw PR #816 first")
+    sys.exit("release.sh: the Rust builds pinned in vars/rust_release.yml do not write ControlClaw's instructions (1.8.0 or older); pin a Rust release with controlclaw PR #816 first")
 PY
 fi
 

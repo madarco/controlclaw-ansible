@@ -1,6 +1,6 @@
 {
-  "id": "cc-workspace-context",
-  "name": "ControlClaw workspace context",
+  "id": "cc-instructions",
+  "name": "ControlClaw instructions",
   "configSchema": {
     "type": "object",
     "properties": {},

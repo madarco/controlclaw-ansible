@@ -33,7 +33,8 @@ Doctor is not started while a network or FUSE mount is under the state folder. F
 pre-repair capture walks the whole state folder, the workspace included, and opens every file to read
 its first 16 bytes; on an agent whose Google Drive folders were mounted in the workspace each open
 was a download, and doctor ran for hours (family, 2026-11-16). Drive folders are mounted outside it
-now (/home/controlclaw/drive); the agent is told where in controlclaw/AGENTS.md.
+now (/home/controlclaw/drive); the agent is told where in ControlClaw's instructions
+(cc-instructions).
 
 Prints one JSON line and exits 0 when every configured agent database is current, 3 when one is not
 (the gateway would refuse it: do not start it), 4 when doctor hit the ceiling, 5 when a network

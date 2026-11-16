@@ -95,6 +95,11 @@
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/local/bin/cc-drive-apply
       {{ controlclaw_user }} ALL=(ALL) NOPASSWD: /usr/bin/systemd-run --unit=cc-drive-apply --collect /usr/local/bin/cc-drive-apply
 
+      # ControlClaw's instructions to the agent (T-oc114): a fixed root script taking NO arguments
+      # that writes the text on stdin to the root-owned file the cc-instructions plugin reads, outside
+      # the workspace. The box user cannot write that file itself.
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-instructions ""
+
       # Re-provisioning - fixed root script taking NO arguments. That is the whole security
       # property: this grant lets the agent trigger *the* update (what to pull is pinned in
       # /etc/controlclaw/update.conf, which the agent cannot write), never choose one. The run

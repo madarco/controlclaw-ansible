@@ -1,0 +1,52 @@
+#!/usr/bin/python3
+"""Write ControlClaw's instructions to the agent: the whole text on stdin, empty to remove them (T-oc114).
+
+  sudo cc-instructions < text
+
+The vm-agent calls this (through sudo, no arguments) because it runs as the box user, who must not be
+able to write the file itself: the file is root's, readable by everyone, outside the workspace and
+outside /opt/controlclaw (the box user owns that folder). The role's cc-instructions plugin adds it to
+every run of the agent. The text is checked for shape only: the vm-agent writes the Drive folders it
+reconciled and the meeting orders the owner saved with a firewall code.
+"""
+import os
+import sys
+
+FILE = os.environ.get('CC_INSTRUCTIONS_FILE', '/var/lib/controlclaw/instructions/AGENTS.md')
+MAX_BYTES = 64 * 1024
+
+
+def main():
+    if len(sys.argv) > 1:
+        print('usage: cc-instructions < text', file=sys.stderr)
+        return 2
+    raw = sys.stdin.buffer.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        print(f'cc-instructions: more than {MAX_BYTES} bytes', file=sys.stderr)
+        return 1
+    if not raw.strip():
+        try:
+            os.unlink(FILE)
+        except FileNotFoundError:
+            pass
+        return 0
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        print('cc-instructions: not UTF-8', file=sys.stderr)
+        return 1
+    if not text.startswith('# ControlClaw') or '\0' in text:
+        print('cc-instructions: not ControlClaw instructions', file=sys.stderr)
+        return 1
+    os.makedirs(os.path.dirname(FILE), mode=0o755, exist_ok=True)
+    tmp = FILE + '.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(text)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, FILE)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

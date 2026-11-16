@@ -121,8 +121,8 @@ class ReleaseTest(unittest.TestCase):
 
     def test_refuses_a_rust_pin_without_controlclaw_agents(self):
         role = self.dir / 'roles/controlclaw'
-        (role / 'files/workspace-context').mkdir(parents=True)
-        (role / 'files/workspace-context/index.js').write_text('')
+        (role / 'files/cc-instructions-plugin').mkdir(parents=True)
+        (role / 'files/cc-instructions-plugin/index.js').write_text('')
         (role / 'vars').mkdir(parents=True)
         for version, ok in (('1.8.0', False), ('1.9.0', True)):
             with self.subTest(version=version):
@@ -131,7 +131,7 @@ class ReleaseTest(unittest.TestCase):
                 r = self.release('99.0.0', 'x')
                 self.assertEqual(r.returncode == 0, ok, r.stderr)
                 if not ok:
-                    self.assertIn('do not write controlclaw/AGENTS.md', r.stderr)
+                    self.assertIn("do not write ControlClaw's instructions", r.stderr)
 
     def test_version_reader(self):
         def read():

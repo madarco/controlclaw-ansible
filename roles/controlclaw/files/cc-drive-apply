@@ -158,7 +158,7 @@ die() { log "FAILED: $1"; write_state "failed" "$1"; exit 1; }
 # Nothing with a file in it is touched: a plain workspace/Drive (the role created one on every box)
 # with the agent's own files, or a former mountpoint written into while it was not mounted, stays
 # where it is, in the workspace, in Files and in backups. Nothing is linked in its place: the agent
-# finds the folders in controlclaw/AGENTS.md.
+# finds the folders in ControlClaw's instructions (cc-instructions).
 #
 # The mount folders are the agent's (it has to be able to write them for fusermount3), so what
 # changes or releases them runs as the agent (runuser): a link swapped in cannot make root remove or
