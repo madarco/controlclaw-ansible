@@ -266,6 +266,14 @@
 # How root's scripts write a file in a folder the box user owns (cc-reprovision, cc-drive-apply,
 # cc-openclaw-migrate): as that folder's owner, relative to the folder opened once. Before any of them
 # runs in this play.
+- name: Create the folder for ControlClaw's root programs
+  ansible.builtin.file:
+    path: /usr/local/lib/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
 - name: Install cc-write-owned
   ansible.builtin.copy:
     src: cc-write-owned
