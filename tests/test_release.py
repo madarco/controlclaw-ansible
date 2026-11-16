@@ -73,6 +73,9 @@ class ReleaseTest(unittest.TestCase):
         d.mkdir(parents=True, exist_ok=True)
         (d / 'main.yml').write_text(f'openclaw_version: "{pin}"\nopenclaw_auto_patch: {auto}\n')
         if record is not None:
+            git(self.dir, 'add', 'roles')
+            roles = git(self.dir, 'rev-parse', git(self.dir, 'write-tree') + ':roles')
+            record = [{'roles_tree': roles, **r} for r in record]
             (self.dir / 'openclaw-upgrade-tests').mkdir(exist_ok=True)
             (self.dir / f'openclaw-upgrade-tests/{pin}.json').write_text(json.dumps(record))
         git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.')
@@ -109,6 +112,26 @@ class ReleaseTest(unittest.TestCase):
                 r = self.release('99.0.0', 'x')
                 self.assertNotEqual(r.returncode, 0)
                 self.assertIn('did not pass to 2026.11.3', r.stderr)
+
+    def test_refuses_a_test_of_other_roles(self):
+        self.with_openclaw(record=[{**self.PASSED[0], 'roles_tree': 'f' * 40}])
+        r = self.release('99.0.0', 'x')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('other roles than this commit', r.stderr)
+
+    def test_refuses_a_rust_pin_without_controlclaw_agents(self):
+        role = self.dir / 'roles/controlclaw'
+        (role / 'files/workspace-context').mkdir(parents=True)
+        (role / 'files/workspace-context/index.js').write_text('')
+        (role / 'vars').mkdir(parents=True)
+        for version, ok in (('1.8.0', False), ('1.9.0', True)):
+            with self.subTest(version=version):
+                (role / 'vars/rust_release.yml').write_text(f'cc_rust_release:\n  version: "{version}"\n')
+                self.with_openclaw(record=self.PASSED)
+                r = self.release('99.0.0', 'x')
+                self.assertEqual(r.returncode == 0, ok, r.stderr)
+                if not ok:
+                    self.assertIn('do not write controlclaw/AGENTS.md', r.stderr)
 
     def test_version_reader(self):
         def read():

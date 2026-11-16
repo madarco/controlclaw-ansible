@@ -312,6 +312,13 @@
         msg: >-
           {{ ansible_failed_task.name | default('an OpenClaw task') }}:
           {{ (ansible_failed_result.msg | default('') ~ ' ' ~ ansible_failed_result.stderr | default('')) | trim | truncate(400) }}
+      when: not openclaw_keep_stopped | default(false) | bool
+
+    - name: OpenClaw step failed (the gateway is kept stopped until its data is migrated)
+      ansible.builtin.fail:
+        msg: >-
+          {{ ansible_failed_task.name | default('an OpenClaw task') }}:
+          {{ (ansible_failed_result.msg | default('') ~ ' ' ~ ansible_failed_result.stderr | default('')) | trim | truncate(400) }}
 
 # Shared notes: the root-owned folder, the helper that writes it, and memory search reading it.
 # After openclaw.yml, which installs and repairs the OpenClaw this talks to.

@@ -3,9 +3,12 @@
 and tell whether the agent databases are now at the schema the installed OpenClaw needs (T-oc114).
 
   cc-openclaw-migrate [--gateway] <home> [<user>]
+  cc-openclaw-migrate --check <home>
 
 The gateway is stopped and held stopped for the run. --gateway: start it afterwards, only when every
-database is current (for a person or the Doctor session; the role starts it itself).
+database is current (for a person or the Doctor session; the role starts it itself). --check: run
+nothing, say whether a migration is still owed (exit 3) or not (0); the role asks it on every Update,
+so an Update after a failed one finishes the migration even though nothing new is installed.
 
 A migration of a large agent database is slow: 120 MB of sessions on a 2-vCPU box took longer than
 the 900 s the role used to give it, the run was killed halfway, and the gateway then refused the
@@ -18,19 +21,25 @@ because it cannot restart our system unit. The verdict is the databases' own sch
 the one the installed OpenClaw declares (OPENCLAW_AGENT_SCHEMA_VERSION in its build).
 
 Nothing may start the gateway while doctor runs: 11.4's doctor refuses maintenance when the
-gateway it is working on comes back (service-ownership-unverified), and the vm-agent's watchdog or a
-person pressing Start can do that. So the unit is masked for the run (`systemctl mask --runtime`, gone
-at the next boot whatever happens) and unmasked after it.
+gateway it is working on comes back (service-ownership-unverified), and the vm-agent's watchdog, its
+restarts or a person pressing Start can do that. Nor after a migration that did not finish: the
+gateway would refuse the database every two seconds. The role's drop-in on openclaw.service
+(cc-hold.conf) skips every start while either marker below exists: HOLD for the run (in /run, gone at
+the next boot whatever happens), UNMIGRATED while a database is behind (kept across a reboot, removed
+by the run that brings every database up). `systemctl mask --runtime` does not do this: its link in
+/run loses to the unit file in /etc/systemd/system, and a start still starts it (systemd 255).
 
 Doctor is not started while a network or FUSE mount is under the state folder. From 2026.11.3 its
 pre-repair capture walks the whole state folder, the workspace included, and opens every file to read
 its first 16 bytes; on an agent whose Google Drive folders were mounted in the workspace each open
 was a download, and doctor ran for hours (family, 2026-11-16). Drive folders are mounted outside it
-now (/home/controlclaw/drive, linked from the workspace; doctor does not follow the link).
+now (/home/controlclaw/drive); the agent is told where in controlclaw/AGENTS.md.
 
 Prints one JSON line and exits 0 when every configured agent database is current, 3 when one is not
 (the gateway would refuse it: do not start it), 4 when doctor hit the ceiling, 5 when a network
-mount is under the state folder (doctor not run), 2 on bad use.
+mount is under the state folder (doctor not run), 6 when the gateway could not be held (doctor not
+run), 2 on bad use. With --check: 3 when a database is
+behind or an earlier run left UNMIGRATED, else 0.
 """
 import glob
 import json
@@ -48,12 +57,41 @@ LOG = os.environ.get('CC_MIGRATE_LOG', '/var/log/controlclaw-openclaw-migrate.lo
 LIMIT = int(os.environ.get('CC_MIGRATE_LIMIT_S', str(6 * 3600)))
 EVERY = int(os.environ.get('CC_MIGRATE_EVERY_S', '30'))
 DOCTOR = os.environ.get('CC_MIGRATE_DOCTOR')  # tests: a command line to run instead of doctor
+HOLD = os.environ.get('CC_MIGRATE_HOLD', '/run/controlclaw-openclaw-migrating')
+UNMIGRATED = os.environ.get('CC_MIGRATE_UNMIGRATED', '/opt/controlclaw/state/openclaw-unmigrated')
+CACHE = os.environ.get('CC_MIGRATE_CACHE', '/opt/controlclaw/state/openclaw-schema.json')
 
 
 def required_versions(root):
     """The schema versions the installed OpenClaw needs, read from its build: {'agent': 27, 'state': 22}.
     Empty when the build does not say (renamed or inlined constants): nothing is judged here, and the
-    role's /readyz check after the start is what catches a database the gateway refuses."""
+    role's /readyz check after the start is what catches a database the gateway refuses. Kept per
+    installed version (CACHE), since the role asks on every Update and the build is tens of MB."""
+    try:
+        with open(os.path.join(root, 'package.json')) as f:
+            installed = json.load(f).get('version')
+    except (OSError, ValueError):
+        installed = None
+    if installed:
+        try:
+            with open(CACHE) as f:
+                cached = json.load(f)
+            if cached.get('openclaw') == installed and isinstance(cached.get('required'), dict):
+                return cached['required']
+        except (OSError, ValueError):
+            pass
+    found = scan_versions(root)
+    if installed and len(found) == 2:
+        try:
+            with open(CACHE + '.tmp', 'w') as f:
+                json.dump({'openclaw': installed, 'required': found}, f)
+            os.replace(CACHE + '.tmp', CACHE)
+        except OSError:
+            pass
+    return found
+
+
+def scan_versions(root):
     found = {}
     for path in glob.glob(os.path.join(root, 'dist', '**', '*.mjs'), recursive=True) + glob.glob(os.path.join(root, 'dist', '**', '*.js'), recursive=True):
         try:
@@ -175,13 +213,40 @@ def systemctl(*args):
     return subprocess.run([SYSTEMCTL, *args], capture_output=True, text=True)
 
 
+def mark(path, on, why=None):
+    """Create or remove a marker the gateway's start condition reads. False when that failed."""
+    try:
+        if on:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.write((json.dumps(why) if why is not None else '') + '\n')
+        else:
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f'cc-openclaw-migrate: {path}: {e}', file=sys.stderr)
+        return False
+    return True
+
+
+def check(home):
+    behind = pending(home, required_versions(OPENCLAW))
+    owed = bool(behind) or os.path.exists(UNMIGRATED)
+    print(json.dumps({'pending': behind, 'unmigrated_marker': os.path.exists(UNMIGRATED)}))
+    return 3 if owed else 0
+
+
 def main():
-    args = [a for a in sys.argv[1:] if a != '--gateway']
-    gateway = len(args) != len(sys.argv) - 1
-    if not args:
-        print('usage: cc-openclaw-migrate [--gateway] <home> [<user>]', file=sys.stderr)
+    flags = {a for a in sys.argv[1:] if a.startswith('--')}
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    if not args or flags - {'--gateway', '--check'}:
+        print('usage: cc-openclaw-migrate [--gateway] <home> [<user>] | --check <home>', file=sys.stderr)
         return 2
     home = args[0]
+    if '--check' in flags:
+        return check(home)
+    gateway = '--gateway' in flags
     user = args[1] if len(args) > 1 else 'controlclaw'
     left = network_mounts_under([os.path.join(home, '.openclaw')])
     if left:
@@ -189,16 +254,29 @@ def main():
         print(json.dumps({'doctor_exit': None, 'seconds': 0, 'network_mounts': left, 'pending': behind}))
         # Nothing to migrate: doctor is skipped, and the gateway starts as it would have.
         if not behind:
+            mark(UNMIGRATED, False)
             if gateway:
                 systemctl('start', 'openclaw')
             return 0
+        mark(UNMIGRATED, True, {'exit': 5, 'network_mounts': left})
+        systemctl('stop', 'openclaw')
         return 5
-    systemctl('stop', 'openclaw')
-    systemctl('mask', '--runtime', 'openclaw')
+    # The hold first, then the stop: a start between the two would otherwise go through. No doctor
+    # without it: the gateway could be started under it.
+    if not mark(HOLD, True):
+        print(json.dumps({'doctor_exit': None, 'seconds': 0, 'error': f'could not create {HOLD}'}))
+        return 6
     try:
-        code = run(home, user)
+        systemctl('stop', 'openclaw')
+        code, result = run(home, user)
+        if code == 0:
+            mark(UNMIGRATED, False)
+        elif not mark(UNMIGRATED, True, {'exit': code, 'pending': result.get('pending'), 'timed_out': result.get('timed_out')}):
+            # Nothing would keep the gateway from being started on the old database after this run:
+            # it is disabled at least (the watchdog looks after an enabled unit only).
+            systemctl('disable', 'openclaw')
     finally:
-        systemctl('unmask', '--runtime', 'openclaw')
+        mark(HOLD, False)
     if gateway and code == 0:
         # An Update that could not migrate left it disabled (openclaw-unmigrated.yml).
         systemctl('enable', 'openclaw')
@@ -245,8 +323,8 @@ def run(home, user):
     result = {'doctor_exit': proc.returncode, 'seconds': seconds, 'required': required, 'pending_before': before, 'pending': after, 'timed_out': timed_out}
     print(json.dumps(result))
     if timed_out:
-        return 4
-    return 3 if after else 0
+        return 4, result
+    return (3 if after else 0), result
 
 
 if __name__ == '__main__':

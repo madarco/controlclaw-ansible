@@ -294,11 +294,62 @@
   changed_when: false
   failed_when: false
 
+- name: Install the OpenClaw migration runner
+  ansible.builtin.copy:
+    src: cc-openclaw-migrate
+    dest: /usr/local/bin/cc-openclaw-migrate
+    owner: root
+    group: root
+    mode: '0755'
+
+# No start of the gateway goes through while cc-openclaw-migrate holds it: during doctor (a marker in
+# /run) and after a migration that did not finish (a marker in the state folder, kept across a reboot).
+# A condition, so a start by the vm-agent's watchdog, its restarts, the console's Start or a boot is
+# skipped and the unit stays inactive. Not `systemctl mask --runtime`: its link in /run loses to the
+# unit file in /etc/systemd/system, and the unit starts anyway (checked on systemd 255).
+- name: Create the gateway unit's drop-in folder
+  ansible.builtin.file:
+    path: /etc/systemd/system/openclaw.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Hold the gateway while its databases are being migrated
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/openclaw.service.d/cc-hold.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Written by the controlclaw role. cc-openclaw-migrate creates these while a migration runs or
+      # is owed; the gateway would refuse its database at every start (T-oc114).
+      [Unit]
+      ConditionPathExists=!/run/controlclaw-openclaw-migrating
+      ConditionPathExists=!/opt/controlclaw/state/openclaw-unmigrated
+  register: openclaw_hold_dropin
+
+- name: Load the gateway's hold
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: openclaw_hold_dropin is changed
+
+# From the databases themselves: an Update after one whose migration failed installs nothing new and
+# finds no message from a gateway that was never started, but the databases are still behind (or the
+# last run left its marker).
+- name: Look for an agent database still behind the installed OpenClaw
+  ansible.builtin.command:
+    argv: [/usr/local/bin/cc-openclaw-migrate, --check, "{{ controlclaw_home }}"]
+  register: openclaw_migration_owed
+  changed_when: false
+  failed_when: false
+
 - name: Decide whether OpenClaw's state needs migrating
   ansible.builtin.set_fact:
     openclaw_migrate: >-
       {{ (openclaw_upgrading | bool and openclaw_npm_install is changed) or
-         (openclaw_migration_pending.stdout | default('0') | int > 0) }}
+         (openclaw_migration_pending.stdout | default('0') | int > 0) or
+         openclaw_migration_owed.rc | default(0) == 3 }}
 
 - name: Stop the gateway for the state migration
   ansible.builtin.systemd:
@@ -323,14 +374,6 @@
       done
   register: openclaw_home_private
   changed_when: openclaw_home_private.stdout | length > 0
-
-- name: Install the OpenClaw migration runner
-  ansible.builtin.copy:
-    src: cc-openclaw-migrate
-    dest: /usr/local/bin/cc-openclaw-migrate
-    owner: root
-    group: root
-    mode: '0755'
 
 # `--non-interactive` applies the safe migrations only. It also checks the installed plugins
 # against the new build, which is npm traffic, hence the firewall's CA (the runner passes it):
@@ -1020,7 +1063,7 @@
         if curl -fsS -m 5 -o /dev/null http://127.0.0.1:{{ openclaw_gateway_port | int }}/readyz; then exit 0; fi
         sleep 5
       done
-      journalctl -u openclaw --since "-5 min" --no-pager -o cat | grep -E 'doctor --fix|schema version|Error|ERROR' | tail -3
+      journalctl -u openclaw --since "-5 min" --no-pager -o cat | grep -E 'doctor --fix|schema version|Error|ERROR' | tail -3 >&2
       exit 1
   register: openclaw_upgrade_ready
   changed_when: false
