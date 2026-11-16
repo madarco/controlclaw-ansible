@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Narrow root broker. All CLI execution is in a bounded ccdoctor systemd unit."""
 import fcntl, ipaddress, json, math, os, pwd, re, stat, subprocess, sys, time
 from pathlib import Path

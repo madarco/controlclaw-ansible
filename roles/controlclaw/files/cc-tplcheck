@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """The one tool of a Final check's coding agent: read-only questions about the agent under test.
 
 No privilege of its own. It posts `{verb, arg}` to the mitm-agent with this session's token, over

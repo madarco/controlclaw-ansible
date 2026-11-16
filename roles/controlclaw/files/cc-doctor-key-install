@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Root owns both the pin and authorized_keys. No caller-chosen paths or source IP."""
 import base64, ipaddress, json, os, re, subprocess, sys, tempfile
 from pathlib import Path

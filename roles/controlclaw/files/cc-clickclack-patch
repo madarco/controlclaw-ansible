@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Resolve the ClickClack release to install and lay its binary down, verified.
 
 The Ansible pin (`clickclack_version` + per-architecture sha256 in defaults/main.yml) fixes the

@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Write ControlClaw's instructions to the agent: the whole text on stdin, empty to remove them (T-oc114).
 
   sudo cc-instructions < text

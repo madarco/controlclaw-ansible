@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Establish Doctor trust from root provisioning records, never service-owned vars."""
 import base64
 import ipaddress

@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """What a Firewall Doctor session's coding agent runs to look at and repair the firewall.
 
 No privilege of its own: it posts the command to the mitm-agent on loopback with this session's

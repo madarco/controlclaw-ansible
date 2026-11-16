@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Firewall logs (controlclaw apps/saas/docs/features/firewall-logs.md): the one root helper the
 mitm-agent may run to read this box's own service journals and its last update run.
 

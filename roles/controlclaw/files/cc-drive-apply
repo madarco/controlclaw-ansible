@@ -3,8 +3,10 @@
 #
 # Takes NO arguments, on purpose, exactly like cc-reprovision: the caller — the vm-agent, over a
 # request signed by the org firewall with purpose "drive" — gets to say "apply", never "apply this".
-# What to mount is read from DESIRED below, which the vm-agent writes only after verifying that
-# signature, and which the agent user cannot write (root:controlclaw 0750 directory).
+# What to mount is read from DESIRED below, which the vm-agent writes after verifying that signature.
+# It is in /opt/controlclaw/state, which the box user owns, and that user is also the agent's: treat
+# every byte of it as the agent's. Each field is checked here against a fixed shape before it is used
+# (the folder names, ids, modes and slugs again in bash, where they become paths and unit names).
 #
 # The desired state is the WHOLE mount set for this box, so this script is a reconciler and not a
 # command: anything mounted that is not in the set is taken down. That is what makes a removal, a
@@ -14,6 +16,9 @@
 # generated; the real Google token lives on the firewall and is swapped in by the proxy on
 # www.googleapis.com. `grep -r` over this whole tree finds no credential.
 set -uo pipefail
+# Run as root through sudo from any folder the caller likes: nothing here may read a file from there
+# (Python puts the working folder first on its import path; every inline Python here is -I as well).
+cd /
 
 DESIRED=/opt/controlclaw/state/drive.json
 STATE=/opt/controlclaw/state/drive-mounts.json
@@ -60,7 +65,7 @@ drain_mount() {
   [ -n "$port" ] || return 0
   while :; do
     queued="$(curl -s -m 2 -X POST "http://127.0.0.1:$port/vfs/stats" |
-      python3 -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; print(d["uploadsQueued"] + d["uploadsInProgress"])' 2>/dev/null)"
+      python3 -I -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; print(d["uploadsQueued"] + d["uploadsInProgress"])' 2>/dev/null)"
     if [ -z "$queued" ]; then
       # Not answering. If it had something queued a moment ago, that is what was lost.
       [ "$last" -gt 0 ] && UNSAVED+=("$name"$'\t'"$last")
@@ -93,7 +98,7 @@ write_state() {
   local j
   for j in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do pairs+=("${WANTED_NAMES[$j]}"$'\t'"${WANTED_SLUGS[$j]}"); done
   # `--` separates the mount pairs from the unsaved pairs; both are name<TAB>value.
-  ( python3 - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
+  ( python3 -I - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
     ${pairs+"${pairs[@]}"} -- ${UNSAVED+"${UNSAVED[@]}"} <<'PY'
 import json, os, subprocess, sys
 
@@ -229,14 +234,21 @@ fi
 PARSED="$(mktemp)"
 PARSE_ERR="$(mktemp)"
 trap 'rm -f "$PARSED" "$PARSE_ERR"' EXIT
-python3 - "$DESIRED" >"$PARSED" 2>"$PARSE_ERR" <<'PY'
-import hashlib, json, re, sys
+python3 -I - "$DESIRED" >"$PARSED" 2>"$PARSE_ERR" <<'PY'
+import hashlib, json, os, re, stat, sys
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
 
-with open(sys.argv[1]) as fh:
-    d = json.load(fh)
+# Not through a link, not a FIFO or a device that would block or never end: a regular file, read once.
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
+    sys.exit("the mount set is not a regular file of a sane size")
+with os.fdopen(fd, "rb") as fh:
+    d = json.loads(fh.read(1_000_001))
+if not isinstance(d, dict):
+    sys.exit("the mount set is not an object")
 
 placeholder = d.get("placeholder") or ""
 scope = d.get("scope") or "https://www.googleapis.com/auth/drive"
@@ -250,6 +262,10 @@ skip_gdocs = defaults.get("skipGdocs") is not False
 cache_max = defaults.get("vfsCacheMaxSize") or "2G"
 cache_min_free = defaults.get("vfsCacheMinFreeSpace") or "4G"
 
+# The scopes the firewall asks Google for; anything else, a newline in it say, is refused.
+if scope not in ("https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/drive.readonly",
+                 "https://www.googleapis.com/auth/drive.metadata.readonly"):
+    sys.exit("the scope is not one the firewall uses")
 if not re.fullmatch(r"CC-DRIVE-[0-9a-f]{8,64}", placeholder):
     sys.exit("the placeholder is not the shape the firewall generates")
 for value, label in ((export, "export formats"), (cache_max, "cache size"), (cache_min_free, "free space")):
@@ -258,7 +274,12 @@ for value, label in ((export, "export formats"), (cache_max, "cache size"), (cac
 
 seen = set()
 out = []
-for m in d.get("mounts") or []:
+mounts = d.get("mounts") or []
+if not isinstance(mounts, list):
+    sys.exit("the mounts are not a list")
+for m in mounts:
+    if not isinstance(m, dict):
+        sys.exit("a mount is not an object")
     name = m.get("name") or ""
     folder = m.get("folderId") or ""
     mode = m.get("mode") or "ro"
@@ -320,9 +341,18 @@ for line in ${DESIRED_LINES+"${DESIRED_LINES[@]}"}; do
     SKIP_GDOCS) SKIP_GDOCS="$a" ;;
     CACHE_MAX) CACHE_MAX="$a" ;;
     CACHE_MIN_FREE) CACHE_MIN_FREE="$a" ;;
-    MOUNT) WANTED_NAMES+=("$a"); WANTED_IDS+=("$b"); WANTED_MODES+=("$c"); WANTED_SLUGS+=("$d") ;;
+    MOUNT)
+      # Again here, where they become paths and unit names: whatever the parse above let through,
+      # nothing else reaches `install`, `rm` or systemctl.
+      [[ "$a" =~ ^[A-Za-z0-9][A-Za-z0-9\ _-]{0,39}$ ]] && [[ "$a" != *" " ]] || die "refusing a folder name"
+      [[ "$b" =~ ^[A-Za-z0-9_-]{10,200}$ ]] || die "refusing a folder id"
+      [[ "$c" =~ ^(ro|rw)$ ]] || die "refusing a mode"
+      [[ "$d" =~ ^[A-Za-z0-9_]{1,60}$ ]] || die "refusing a unit name"
+      WANTED_NAMES+=("$a"); WANTED_IDS+=("$b"); WANTED_MODES+=("$c"); WANTED_SLUGS+=("$d") ;;
+    *) die "the parsed mount set has a line it should not have" ;;
   esac
 done
+[[ "$CONNECTED" =~ ^[01]$ ]] && [[ "$SKIP_GDOCS" =~ ^[01]$ ]] || die "the parsed mount set is not what the parse writes"
 
 # --- the config folder, pinned -----------------------------------------------------------------
 # DRIVE_DIR is root's (0750 root:controlclaw), but it is inside /opt/controlclaw, which the box user

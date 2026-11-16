@@ -139,6 +139,13 @@ class Migrate(unittest.TestCase):
         self.run_it('sleep 3; ' + MIGRATE, CC_UPDATE_STATE=str(state_dir / 'update.json'))
         self.assertEqual(victim.read_text(), 'keep')
 
+    def test_a_fifo_in_place_of_the_config_does_not_block(self):
+        config = self.home / '.openclaw/openclaw.json'
+        config.unlink()
+        os.mkfifo(config)
+        code, out = self.run_it('exit 0', '--check')
+        self.assertEqual(code, 3, 'main is still checked at its default place')
+
     def test_check_says_whether_a_migration_is_owed(self):
         code, out = self.run_it('exit 0', '--check')
         self.assertEqual(code, 3)

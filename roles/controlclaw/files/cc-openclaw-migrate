@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Run OpenClaw's state migration (`openclaw doctor --fix`) for as long as it takes, say how far it is,
 and tell whether the agent databases are now at the schema the installed OpenClaw needs (T-oc114).
 
@@ -157,15 +157,38 @@ def scan_versions(root):
     return found
 
 
+def read_regular(path, limit, follow=True):
+    """A regular file's bytes, at most `limit`; None for anything else. The box user owns these paths:
+    a FIFO or a device in a file's place must not block or never end this root process."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | (0 if follow else os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+            return None
+        with os.fdopen(fd, 'rb') as f:
+            fd = None
+            return f.read(limit + 1)[:limit]
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def configured_agent_databases(home):
     """The agent databases the gateway admits: one per configured agent, as OpenClaw places them.
     A leftover agents/<id>/ the config does not name is skipped by the gateway too ("not a configured
     target"), so it does not count here."""
     state = os.path.join(home, '.openclaw')
+    raw = read_regular(os.path.join(state, 'openclaw.json'), 10_000_000)
     try:
-        with open(os.path.join(state, 'openclaw.json')) as f:
-            agents = (json.load(f) or {}).get('agents') or {}
-    except (OSError, ValueError):
+        config = json.loads(raw) if raw is not None else {}
+        agents = (config.get('agents') or {}) if isinstance(config, dict) else {}
+    except ValueError:
+        agents = {}
+    if not isinstance(agents, dict):
         agents = {}
     dirs = {}
     entries = agents.get('entries')
@@ -238,10 +261,10 @@ def pending(home, required, user=None):
 
 def say(detail):
     """A fresh detail and time in the Update's state file, only while an Update is running."""
+    raw = read_regular(STATE, 1_000_000, follow=False)
     try:
-        with os.fdopen(os.open(STATE, os.O_RDONLY | os.O_NOFOLLOW)) as f:
-            current = json.load(f)
-    except (OSError, ValueError):
+        current = json.loads(raw) if raw is not None else None
+    except ValueError:
         return
     if not isinstance(current, dict) or current.get('phase') not in ('resolving', 'installing', 'running'):
         return

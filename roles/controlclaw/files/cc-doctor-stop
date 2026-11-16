@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 import fcntl, json, os, re, shutil, subprocess, sys
 from pathlib import Path
 if os.geteuid()==0 and sys.argv[1:]==['--all']:

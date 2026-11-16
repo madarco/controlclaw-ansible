@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Write stdin to <file> as the owner of its folder (T-oc114).
 
   cc-write-owned <file>
@@ -8,7 +8,7 @@ inside /opt/controlclaw, which is the box user's too): cc-reprovision, cc-drive-
 cc-openclaw-migrate. The box user can put a link in place of that folder or of any file in it at any
 moment, so nothing here goes by path twice: the folder is opened once without following a link, the
 process takes the folder owner's identity, and the file is made under a new name and renamed into
-place relative to that open folder. A link at the file's name is replaced, never written through.
+place relative to that open folder. A folder of root's is used only under a parent of root's. A link at the file's name is replaced, never written through.
 """
 import os
 import pwd
@@ -31,6 +31,16 @@ def main():
         print(f'cc-write-owned: {folder}: {e.strerror} (a link is not followed)', file=sys.stderr)
         return 1
     owner = os.fstat(dfd).st_uid
+    # A folder of root's counts as root's only under a parent of root's: the box user can rename a
+    # folder of root's out of its own /opt/controlclaw (drive/, say) and give it the name this was
+    # asked to write in, to have root write there.
+    if owner == 0:
+        pfd = os.open('..', os.O_RDONLY | os.O_DIRECTORY, dir_fd=dfd)
+        parent = os.fstat(pfd).st_uid
+        os.close(pfd)
+        if parent != 0:
+            print(f'cc-write-owned: {folder} is root\'s but its parent is not; not writing there', file=sys.stderr)
+            return 1
     if owner != os.geteuid():
         if os.geteuid() != 0:
             print(f'cc-write-owned: {folder} is not this user\'s', file=sys.stderr)

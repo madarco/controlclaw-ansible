@@ -15,6 +15,9 @@
 # Every subcommand is small and does one thing, because this runs as root behind a sudoers line and
 # is what stands between a customer's data and a box that will not boot.
 set -euo pipefail
+# Run as root, from any folder the caller likes (sudo): nothing may be read from there. Every
+# inline Python is -I as well (no working folder on its import path).
+cd /
 
 IMG=${CC_SECURE_IMG:-/var/lib/controlclaw/secure.img}
 SECURE=${CC_SECURE_MOUNT:-/opt/controlclaw/secure}
@@ -346,7 +349,7 @@ bindings_read() { [ -s "$BINDINGS" ] && cat "$BINDINGS" || echo '{}'; }
 bindings_write() {
   local slot=$1 url=$2 thp=$3 action=$4
   mkdir -p "$(dirname "$BINDINGS")"
-  bindings_read | SLOT="$slot" URL="$url" THP="$thp" ACTION="$action" python3 -c '
+  bindings_read | SLOT="$slot" URL="$url" THP="$thp" ACTION="$action" python3 -I -c '
 import json, os, sys
 m = json.load(sys.stdin)
 slot = os.environ["SLOT"]
@@ -367,14 +370,14 @@ clevis_slots() {
 # Every keyslot in the LUKS header, one number per line. Not `clevis luks list`: that shows tokens,
 # and a keyslot can exist without one.
 luks_keyslots() {
-  cryptsetup luksDump --dump-json-metadata "$1" | python3 -c '
+  cryptsetup luksDump --dump-json-metadata "$1" | python3 -I -c '
 import json, sys
 print("\n".join(sorted(json.load(sys.stdin).get("keyslots", {}), key=int)))'
 }
 
 # The keyslots some token names, one per line.
 luks_token_keyslots() {
-  cryptsetup luksDump --dump-json-metadata "$1" | python3 -c '
+  cryptsetup luksDump --dump-json-metadata "$1" | python3 -I -c '
 import json, sys
 slots = set()
 for t in json.load(sys.stdin).get("tokens", {}).values():
@@ -606,7 +609,7 @@ bind_interrupted() {
 finished_unrecorded_slot() {
   local loop=$1 url=$2 slot
   for slot in $(clevis_slots "$loop" | awk -F'\t' -v u="$url" '$2 == u {print $1}'); do
-    if [ -z "$(bindings_read | SLOT="$slot" python3 -c 'import json,os,sys; print(json.load(sys.stdin).get(os.environ["SLOT"],{}).get("url",""))')" ]; then
+    if [ -z "$(bindings_read | SLOT="$slot" python3 -I -c 'import json,os,sys; print(json.load(sys.stdin).get(os.environ["SLOT"],{}).get("url",""))')" ]; then
       echo "$slot"; return 0
     fi
   done
@@ -632,7 +635,7 @@ cmd_bind() {
   local stale pinned
   stale=$(clevis_slots "$loop" | awk -F'\t' -v u="$url" '$2 == u {print $1; exit}')
   if [ -n "$stale" ]; then
-    pinned=$(bindings_read | SLOT="$stale" python3 -c 'import json,os,sys; print(json.load(sys.stdin).get(os.environ["SLOT"],{}).get("thp",""))')
+    pinned=$(bindings_read | SLOT="$stale" python3 -I -c 'import json,os,sys; print(json.load(sys.stdin).get(os.environ["SLOT"],{}).get("thp",""))')
     if [ "$pinned" = "$thp" ]; then log "already bound to $url with that key"; return 0; fi
   fi
 
@@ -701,7 +704,7 @@ cmd_unbind() {
   local loop slot; loop=$(loopdev)
 
   slot=$(clevis_slots "$loop" | awk -F'\t' -v u="$what" '$2 == u {print $1; exit}')
-  [ -n "$slot" ] || slot=$(bindings_read | WHAT="$what" python3 -c '
+  [ -n "$slot" ] || slot=$(bindings_read | WHAT="$what" python3 -I -c '
 import json, os, sys
 m = json.load(sys.stdin)
 w = os.environ["WHAT"]
@@ -728,7 +731,7 @@ print(next((s for s, v in m.items() if v.get("thp") == w or v.get("url") == w), 
 cmd_list() {
   local loop; loop=$(loopdev)
   local recorded; recorded=$(bindings_read)
-  clevis_slots "$loop" | RECORDED="$recorded" python3 -c '
+  clevis_slots "$loop" | RECORDED="$recorded" python3 -I -c '
 import json, os, sys
 rec = json.loads(os.environ["RECORDED"])
 for line in sys.stdin:
@@ -777,13 +780,13 @@ cmd_rekey() {
 # key; a failure there is repeated by the next call, which finds the blob current and only writes
 # the file. Prints one JSON line: {"to":"sha256:…","changed":true|false}.
 recovery_key_tag() {
-  python3 -c 'import base64,hashlib,sys
+  python3 -I -c 'import base64,hashlib,sys
 raw=base64.b64decode(sys.argv[1],validate=True)
 assert len(raw)==32
 print("sha256:"+hashlib.sha256(raw).digest()[:8].hex())' "$1" 2>/dev/null
 }
 sealed_tag() {
-  python3 -c 'import json,re,sys
+  python3 -I -c 'import json,re,sys
 t=json.load(open(sys.argv[1])).get("to")
 print(t if isinstance(t,str) and re.fullmatch("sha256:[0-9a-f]{16}",t) else "")' "$1" 2>/dev/null
 }
@@ -848,7 +851,7 @@ cmd_size() {
   fi
   IMG_BYTES=$img_bytes IMG_ALLOC=$img_alloc DISK_TOTAL=$disk_total DISK_USED=$disk_used MOUNTED=$mounted \
   FS_BYTES=$fs_bytes FS_USED=$fs_used FS_FREE=$fs_free DM_BYTES=$dm_bytes FS_DEV_BYTES=$(fs_device_bytes) \
-  RESERVE_GB=$RESERVE_GB python3 -c '
+  RESERVE_GB=$RESERVE_GB python3 -I -c '
 import json, os
 e = lambda k: int(os.environ[k])
 G = 2**30
@@ -907,9 +910,9 @@ cmd_grow() {
   img_bytes=$(stat -c %s "$IMG")
   # Each of these would end the script without a word under `set -e`.
   info=$(cmd_size) || die "could not read the container's sizes; nothing was changed"
-  max_gb=$(printf '%s' "$info" | python3 -c 'import json,sys; print(json.load(sys.stdin)["maxGb"])') \
+  max_gb=$(printf '%s' "$info" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["maxGb"])') \
     || die "could not read the container's sizes; nothing was changed"
-  pending=$(printf '%s' "$info" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("pending", False)).lower())') \
+  pending=$(printf '%s' "$info" | python3 -I -c 'import json,sys; print(str(json.load(sys.stdin).get("pending", False)).lower())') \
     || die "could not read the container's sizes; nothing was changed"
 
   if [ "$target" -lt "$img_bytes" ]; then

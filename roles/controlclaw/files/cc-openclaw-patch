@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Resolve one stable OpenClaw month and verify its archive before installation.
 
   cc-openclaw-patch <pin> <pin sha512> <installed> <auto true|false> <destination> [<meet patch> [<state file>]]

@@ -91,6 +91,9 @@
 # 0750 root:controlclaw — the agent may traverse to read nothing in particular, and may not write.
 # A mount's config names the folder the agent is allowed to see; letting the agent rewrite it would
 # let a compromised box point a mount at the rest of the Drive the token can reach.
+#
+# `follow: false`: /opt/controlclaw is the box user's, who could rename this folder away and put a link
+# in its place; root must not chown and chmod whatever that points to. A link there fails the task.
 - name: Drive folders | Create the mount config and cache directory
   ansible.builtin.file:
     path: "{{ item }}"
@@ -98,6 +101,7 @@
     owner: root
     group: "{{ controlclaw_user }}"
     mode: '0750'
+    follow: false
   loop:
     - "{{ drive_state_dir }}"
     - "{{ drive_state_dir }}/cache"
@@ -261,10 +265,12 @@
         return 1
       }
       # By content: a rewrite within the same second and of the same size (read-only to read-write) is
-      # a change too.
-      before=$(sha256sum "$desired" 2>/dev/null)
+      # a change too. Read as the box user, whose file it is, and for at most 10 s: a FIFO or a device
+      # in its place must not hang the Update.
+      digest() { timeout 10 runuser -u {{ controlclaw_user | quote }} -- sha256sum -- "$desired" 2>/dev/null; }
+      before=$(digest)
       apply || exit $?
-      [ "$(sha256sum "$desired" 2>/dev/null)" = "$before" ] || apply
+      [ "$(digest)" = "$before" ] || apply
   when: drive_legacy.stdout | trim | length > 0
   register: drive_moved
   changed_when: true

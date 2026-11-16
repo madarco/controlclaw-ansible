@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """One bounded tmux attachment. stdin is JSON input/resize; stdout is the terminal stream."""
 import fcntl, json, os, pty, re, selectors, signal, struct, subprocess, sys, termios, time, tty
 from pathlib import Path
