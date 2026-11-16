@@ -570,7 +570,9 @@ doctor_cli_pins:
 # Automatic updates stay within these package lines.
 docker_major: "29"
 containerd_major: "2"
-openclaw_auto_patch: true
+# Off since 1.47.1: an update installs exactly openclaw_version. OpenClaw 2026.11.4 (published after
+# 1.47.0 was tested) left agents updated from 2026.9.x crash-looping on an unmigrated database (T-201).
+openclaw_auto_patch: false
 
 # Team chat on the firewall (tasks/teamchat.yml, controlclaw apps/saas/docs/features/team-chat.md).
 # ClickClack (github.com/openclaw/clickclack, MIT), pinned by version and by the sha256 of each
