@@ -8,7 +8,7 @@
 # tab (cc-openclaw-migrate --gateway, which removes the hold and starts it once the databases are current)
 # finishes the migration.
 
-# Stopped and disabled. The runner left /opt/controlclaw/state/openclaw-unmigrated, which the unit's
+# Stopped and disabled. The runner left /var/lib/controlclaw-openclaw/unmigrated, which the unit's
 # cc-hold.conf reads: a start from the vm-agent (its watchdog, a restart, the console's Start) or a
 # boot is skipped until a run brings every database up. Written here too, for a runner that died
 # before it could. The next Update finds the migration owed (cc-openclaw-migrate --check), runs it,
@@ -16,8 +16,8 @@
 - name: Keep the gateway stopped on an unmigrated database
   ansible.builtin.shell:
     cmd: >-
-      mkdir -p /opt/controlclaw/state;
-      test -e /opt/controlclaw/state/openclaw-unmigrated || echo '{}' > /opt/controlclaw/state/openclaw-unmigrated;
+      install -d -o root -g root -m 0700 /var/lib/controlclaw-openclaw;
+      test -L /var/lib/controlclaw-openclaw || test -e /var/lib/controlclaw-openclaw/unmigrated || echo '{}' > /var/lib/controlclaw-openclaw/unmigrated;
       systemctl stop openclaw; systemctl disable openclaw
   changed_when: true
   failed_when: false

@@ -56,14 +56,18 @@ except (OSError, ValueError):
 failed = [r.get("path", "?") for r in rows if not r.get("pass") or r.get("after") != pin]
 if not rows or failed:
     sys.exit(f"release.sh: the upgrade test in {record} did not pass to {pin}: {', '.join(failed) or 'no paths'}")
-# The test is of one candidate: the roles/ tree the boxes were updated to has to be this one's.
-got = subprocess.run(["git", "rev-parse", "HEAD:roles"], capture_output=True, text=True)
-if got.returncode != 0:
-    sys.exit(f"release.sh: cannot read this commit's roles/ tree: {got.stderr.strip()}")
-roles = got.stdout.strip()
-other = [r.get("path", "?") for r in rows if r.get("roles_tree") != roles]
+# The test is of one candidate: everything a box pulls (the roles, playbook.yml, playbooks/,
+# ansible.cfg, requirements.yml…) has to be what the boxes were updated to. Left out: releases.json and
+# this record, which the release adds after the test, and tests/. The same command as
+# apps/saas/scripts/upgrade-matrix.sh runs on each box's checkout.
+TREE = "git ls-tree -r HEAD | grep -vE $'\\t(releases\\.json$|tests/|openclaw-upgrade-tests/)' | sha256sum | cut -d' ' -f1"
+got = subprocess.run(["bash", "-c", "set -o pipefail; " + TREE], capture_output=True, text=True)
+if got.returncode != 0 or not got.stdout.strip():
+    sys.exit(f"release.sh: cannot read this commit's tree: {got.stderr.strip()}")
+tree = got.stdout.strip()
+other = [r.get("path", "?") for r in rows if r.get("tree") != tree]
 if other:
-    sys.exit(f"release.sh: the upgrade test in {record} was of other roles than this commit's ({', '.join(other)}): run it again on this commit")
+    sys.exit(f"release.sh: the upgrade test in {record} was of another tree than this commit's ({', '.join(other)}): run it again on this commit")
 print(f"OpenClaw {pin}: upgrade tested from " + ", ".join(r["path"] for r in rows))
 PY
 fi

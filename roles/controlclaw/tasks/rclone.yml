@@ -101,20 +101,22 @@
   loop:
     - "{{ drive_state_dir }}"
     - "{{ drive_state_dir }}/cache"
-    # Where cc-drive-apply puts anything it found sitting in a mountpoint before mounting over it.
-    - "{{ drive_state_dir }}/stranded"
 
 # Owned by the agent: fusermount3 refuses a mountpoint its caller cannot write, so a root-owned
 # mount root would mean no mount at all. The hazard that leaves — the agent writing into an
 # unmounted directory and having those writes shadowed by a later mount — is handled in
-# cc-drive-apply, which moves anything it finds into `stranded/` rather than mounting over it.
+# cc-drive-apply, which moves anything it finds into ~/drive-stranded/ rather than mounting over it.
+#
+# Made as the agent, in its home, never by root: a link the agent put at that path would otherwise make
+# root create or chown whatever it points to (`follow: false` stops at the link and fails the task).
 - name: Drive folders | Create the mount root
   ansible.builtin.file:
     path: "{{ drive_mount_root }}"
     state: directory
-    owner: "{{ controlclaw_user }}"
-    group: "{{ controlclaw_user }}"
     mode: '0755'
+    follow: false
+  become: true
+  become_user: "{{ controlclaw_user }}"
 
 # One target so the mounts can be ordered against OpenClaw as a group, started and stopped as a
 # group, and enumerated without parsing unit names.
@@ -249,9 +251,11 @@
         echo "a Drive reconcile from the vm-agent was still running after 5 minutes" >&2
         return 1
       }
-      before=$(stat -c %Y.%s "$desired" 2>/dev/null)
+      # By content: a rewrite within the same second and of the same size (read-only to read-write) is
+      # a change too.
+      before=$(sha256sum "$desired" 2>/dev/null)
       apply || exit $?
-      [ "$(stat -c %Y.%s "$desired" 2>/dev/null)" = "$before" ] || apply
+      [ "$(sha256sum "$desired" 2>/dev/null)" = "$before" ] || apply
   when: drive_legacy.stdout | trim | length > 0
   register: drive_moved
   changed_when: true

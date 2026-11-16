@@ -26,7 +26,7 @@ restarts or a person pressing Start can do that. Nor after a migration that did 
 gateway would refuse the database every two seconds. The role's drop-in on openclaw.service
 (cc-hold.conf) skips every start while either marker below exists: HOLD for the run (in /run, gone at
 the next boot whatever happens), UNMIGRATED while a database is behind (kept across a reboot, removed
-by the run that brings every database up). `systemctl mask --runtime` does not do this: its link in
+by the run that brings every database up; in /var/lib/controlclaw-openclaw, root's alone). `systemctl mask --runtime` does not do this: its link in
 /run loses to the unit file in /etc/systemd/system, and a start still starts it (systemd 255).
 
 Doctor is not started while a network or FUSE mount is under the state folder. From 2026.11.3 its
@@ -45,10 +45,13 @@ behind or an earlier run left UNMIGRATED, else 0.
 import glob
 import json
 import os
+import pwd
 import re
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 OPENCLAW = os.environ.get('CC_OPENCLAW_DIR', '/usr/lib/node_modules/openclaw')
@@ -59,8 +62,71 @@ LIMIT = int(os.environ.get('CC_MIGRATE_LIMIT_S', str(6 * 3600)))
 EVERY = int(os.environ.get('CC_MIGRATE_EVERY_S', '30'))
 DOCTOR = os.environ.get('CC_MIGRATE_DOCTOR')  # tests: a command line to run instead of doctor
 HOLD = os.environ.get('CC_MIGRATE_HOLD', '/run/controlclaw-openclaw-migrating')
-UNMIGRATED = os.environ.get('CC_MIGRATE_UNMIGRATED', '/opt/controlclaw/state/openclaw-unmigrated')
-CACHE = os.environ.get('CC_MIGRATE_CACHE', '/opt/controlclaw/state/openclaw-schema.json')
+# Root's alone (0700), on the plain disk. Not /opt/controlclaw/state: the box user owns
+# /opt/controlclaw and can put a link in place of any folder or file in it, and a root write through
+# that link lands wherever it points. What is written here holds no path and nothing of the agent's.
+PRIVATE = os.environ.get('CC_MIGRATE_DIR', '/var/lib/controlclaw-openclaw')
+UNMIGRATED = os.path.join(PRIVATE, 'unmigrated')
+CACHE = os.path.join(PRIVATE, 'schema.json')
+
+
+def private_dir():
+    """PRIVATE, made if missing; None when it is not a folder of this process's own (a link, say)."""
+    try:
+        os.makedirs(PRIVATE, mode=0o700, exist_ok=True)
+        st = os.lstat(PRIVATE)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+        return None
+    return PRIVATE
+
+
+def write_private(path, text):
+    """`text` to a file of PRIVATE, through a temporary file of its own there and a rename."""
+    folder = private_dir()
+    if folder is None or os.path.dirname(path) != folder:
+        raise OSError(f'{PRIVATE} is not a folder of root\'s')
+    fd, tmp = tempfile.mkstemp(dir=folder)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+# Writes the Update's state file as the owner of its folder: a temporary file of its own there, then a
+# rename, which replaces a link instead of writing through it.
+WRITE_AS_OWNER = '''import os, sys, tempfile
+path = sys.argv[1]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd, 'w') as f:
+    f.write(sys.stdin.read())
+os.chmod(tmp, 0o644)
+os.replace(tmp, path)
+'''
+
+
+def write_as_owner(path, text):
+    """`text` to `path` in a folder another user may own (the box user's /opt/controlclaw/state), as
+    that user, so root never writes there. Nothing when the folder is a link."""
+    folder = os.path.dirname(path)
+    try:
+        st = os.lstat(folder)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode):
+        return False
+    if st.st_uid == os.geteuid():
+        argv = [sys.executable, '-c', WRITE_AS_OWNER, path]
+    else:
+        argv = ['runuser', '-u', pwd.getpwuid(st.st_uid).pw_name, '--', '/usr/bin/python3', '-c', WRITE_AS_OWNER, path]
+    return subprocess.run(argv, input=text, text=True, capture_output=True).returncode == 0
 
 
 def required_versions(root):
@@ -84,9 +150,7 @@ def required_versions(root):
     found = scan_versions(root)
     if installed and len(found) == 2:
         try:
-            with open(CACHE + '.tmp', 'w') as f:
-                json.dump({'openclaw': installed, 'required': found}, f)
-            os.replace(CACHE + '.tmp', CACHE)
+            write_private(CACHE, json.dumps({'openclaw': installed, 'required': found}))
         except OSError:
             pass
     return found
@@ -170,22 +234,14 @@ def pending(home, required):
 def say(detail):
     """A fresh detail and time in the Update's state file, only while an Update is running."""
     try:
-        with open(STATE) as f:
+        with os.fdopen(os.open(STATE, os.O_RDONLY | os.O_NOFOLLOW)) as f:
             current = json.load(f)
     except (OSError, ValueError):
         return
-    if current.get('phase') not in ('resolving', 'installing', 'running'):
+    if not isinstance(current, dict) or current.get('phase') not in ('resolving', 'installing', 'running'):
         return
     current.update(detail=detail, at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
-    tmp = STATE + '.migrate'
-    try:
-        with open(tmp, 'w') as f:
-            json.dump(current, f)
-            f.write('\n')
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, STATE)
-    except OSError:
-        pass
+    write_as_owner(STATE, json.dumps(current) + '\n')
 
 
 NETWORK_FS = re.compile(r'^(fuse(\..*)?|fuseblk|nfs4?|cifs|smb3?|sshfs|9p|davfs|ceph|glusterfs|afs)$')
@@ -215,12 +271,16 @@ def systemctl(*args):
 
 
 def mark(path, on, why=None):
-    """Create or remove a marker the gateway's start condition reads. False when that failed."""
+    """Create or remove a marker the gateway's start condition reads. False when that failed. HOLD is
+    in /run and UNMIGRATED in PRIVATE, both root's; neither is opened through a link."""
     try:
-        if on:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w') as f:
-                f.write((json.dumps(why) if why is not None else '') + '\n')
+        text = (json.dumps(why) if why is not None else '') + '\n'
+        if on and path == UNMIGRATED:
+            write_private(path, text)
+        elif on:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, 'w') as f:
+                f.write(text)
         else:
             os.unlink(path)
     except FileNotFoundError:
@@ -259,7 +319,7 @@ def main():
             if gateway:
                 systemctl('start', 'openclaw')
             return 0
-        mark(UNMIGRATED, True, {'exit': 5, 'network_mounts': left})
+        mark(UNMIGRATED, True, {'exit': 5, 'network_mounts': len(left)})
         systemctl('stop', 'openclaw')
         return 5
     # The hold first, then the stop: a start between the two would otherwise go through. No doctor
@@ -272,7 +332,7 @@ def main():
         code, result = run(home, user)
         if code == 0:
             mark(UNMIGRATED, False)
-        elif not mark(UNMIGRATED, True, {'exit': code, 'pending': result.get('pending'), 'timed_out': result.get('timed_out')}):
+        elif not mark(UNMIGRATED, True, {'exit': code, 'pending': len(result.get('pending') or []), 'timed_out': result.get('timed_out')}):
             # Nothing would keep the gateway from being started on the old database after this run:
             # it is disabled at least (the watchdog looks after an enabled unit only).
             systemctl('disable', 'openclaw')

@@ -18,7 +18,9 @@ set -uo pipefail
 DESIRED=/opt/controlclaw/state/drive.json
 STATE=/opt/controlclaw/state/drive-mounts.json
 DRIVE_DIR=/opt/controlclaw/drive
-STRANDED="$DRIVE_DIR/stranded"
+# Where anything found in a mountpoint before mounting over it goes: the agent's own, in its home,
+# moved there as the agent (root does not write in the agent's home, where a link could be waiting).
+STRANDED="/home/controlclaw/drive-stranded"
 RC_BASE_PORT=5700
 USER_NAME=controlclaw
 # Outside OpenClaw's state folder since T-oc114: OpenClaw's doctor opens every file under it (its
@@ -91,7 +93,7 @@ write_state() {
   local j
   for j in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do pairs+=("${WANTED_NAMES[$j]}"$'\t'"${WANTED_SLUGS[$j]}"); done
   # `--` separates the mount pairs from the unsaved pairs; both are name<TAB>value.
-  python3 - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
+  ( python3 - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
     ${pairs+"${pairs[@]}"} -- ${UNSAVED+"${UNSAVED[@]}"} <<'PY'
 import json, os, subprocess, sys
 
@@ -143,12 +145,25 @@ for i, pair in enumerate(pairs):
 
 out = {"status": status, "detail": detail, "connected": connected == "1", "unsaved": unsaved, "mounts": mounts,
        "at": subprocess.run(["date", "-u", "+%FT%TZ"], capture_output=True, text=True).stdout.strip()}
-tmp = state + ".tmp"
-with open(tmp, "w") as fh:
-    json.dump(out, fh, indent=2)
-os.replace(tmp, state)
+json.dump(out, sys.stdout, indent=2)
 PY
-  chmod 0644 "$STATE" 2>/dev/null
+  ) | write_owned "$STATE"
+}
+
+# A file in a folder the box user may own (/opt/controlclaw/state, inside /opt/controlclaw, which is
+# the box user's too), written as that folder's owner through a temporary file of its own and a
+# rename: root never writes there, where a link could be waiting. Nothing when the folder is a link.
+write_owned() {
+  local file="$1" dir owner
+  dir=$(dirname "$file")
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  owner=$(stat -c %U "$dir")
+  if [ "$owner" = root ]; then
+    local tmp
+    tmp=$(mktemp "$file.XXXXXX") && cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$file"
+  else
+    runuser -u "$owner" -- sh -c 't=$(mktemp "$1.XXXXXX") && cat > "$t" && chmod 0644 "$t" && mv -f "$t" "$1"' sh "$file"
+  fi
 }
 
 die() { log "FAILED: $1"; write_state "failed" "$1"; exit 1; }
@@ -164,6 +179,17 @@ die() { log "FAILED: $1"; write_state "failed" "$1"; exit 1; }
 # changes or releases them runs as the agent (runuser): a link swapped in cannot make root remove or
 # unmount anything else. The mounts are the agent's own too (cc-drive@ runs as it).
 as_agent() { runuser -u "$USER_NAME" -- "$@"; }
+# The mount root and the mount folders are the agent's (fusermount3 needs that), in its home: made as
+# the agent, never by root, so a link the agent put in their place cannot make root create or chown
+# anything else. A link is refused.
+make_mount_root() {
+  if [ -L "$MOUNT_ROOT" ]; then log "FAILED: $MOUNT_ROOT is a link; not using it"; return 1; fi
+  as_agent mkdir -p -m 0755 -- "$MOUNT_ROOT" && as_agent chmod 0755 -- "$MOUNT_ROOT"
+}
+make_mount_point() {
+  if [ -L "$MOUNT_ROOT" ] || [ -L "$1" ]; then log "FAILED: $1 is a link; not mounting there"; return 1; fi
+  as_agent mkdir -p -m 0755 -- "$1" && as_agent chmod 0755 -- "$1"
+}
 release_mount() { as_agent /usr/bin/fusermount3 -uz -- "$1" 2>/dev/null || log "could not release $1"; }
 legacy_mounts() {
   awk -v root="$LEGACY_ROOT" '{ p = $5; gsub(/\\040/, " ", p); if (index(p, root "/") == 1) print p }' /proc/self/mountinfo | sort -r
@@ -193,7 +219,7 @@ relocate_legacy() {
 
 # A box with no Drive set (the role runs this on every Update): only the old folder in the workspace.
 if [ ! -r "$DESIRED" ]; then
-  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0755 "$MOUNT_ROOT"
+  make_mount_root || exit 1
   relocate_legacy
   exit 0
 fi
@@ -448,13 +474,17 @@ EOF
   if is_mounted "$MOUNT_ROOT/$name"; then
     : # already mounted, and a mounted directory is rclone's to own
   else
-    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0755 "$MOUNT_ROOT/$name"
+    make_mount_point "$MOUNT_ROOT/$name" || continue
   fi
-  if ! is_mounted "$MOUNT_ROOT/$name" && [ -n "$(ls -A -- "$MOUNT_ROOT/$name" 2>/dev/null)" ]; then
+  if ! is_mounted "$MOUNT_ROOT/$name" && [ -n "$(as_agent ls -A -- "$MOUNT_ROOT/$name" 2>/dev/null)" ]; then
     aside="$STRANDED/$esc-$(date -u +%Y%m%dT%H%M%SZ)"
-    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$aside"
-    mv -- "$MOUNT_ROOT/$name"/* "$MOUNT_ROOT/$name"/.[!.]* "$aside"/ 2>/dev/null
-    log "WARNING: $name had files in it before mounting; moved to $aside"
+    if [ -L "$STRANDED" ]; then
+      log "WARNING: $name had files in it before mounting; $STRANDED is a link, so they were left"
+    else
+      as_agent mkdir -p -m 0700 -- "$aside"
+      as_agent sh -c 'mv -- "$1"/* "$1"/.[!.]* "$2"/ 2>/dev/null' sh "$MOUNT_ROOT/$name" "$aside"
+      log "WARNING: $name had files in it before mounting; moved to $aside"
+    fi
   fi
 done
 

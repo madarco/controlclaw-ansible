@@ -9,10 +9,10 @@ outside /opt/controlclaw (the box user owns that folder). The role's cc-instruct
 every run of the agent. On an encrypted disk the folder is a bind of the container, and nothing is
 written while it is not mounted (the owner's orders are not written on the plain disk).
 
-The text has to be what the vm-agent writes: `# ControlClaw`, one short paragraph, and ControlClaw's
-sections (`drive`, `meetings`) and nothing else, at most as long as the plugin reads. The box user can
-run this too (it shares the vm-agent's user), so it can change the sections' text; only a vm-agent on a
-user of its own would close that.
+The text has to be what the vm-agent writes: exactly its header, then ControlClaw's sections (`drive`,
+`meetings`) and nothing else, at most as long as the plugin reads. The box user can run this too (it
+shares the vm-agent's user), so it can change the sections' text, and the vm-agent's next write puts
+its own back; only a vm-agent on a user of its own would close that.
 """
 import fcntl
 import os
@@ -24,6 +24,8 @@ import tempfile
 FILE = os.environ.get('CC_INSTRUCTIONS_FILE', '/var/lib/controlclaw-instructions/AGENTS.md')
 IN_CONTAINER = os.environ.get('CC_INSTRUCTIONS_MARKER', '/etc/controlclaw/instructions-in-container')
 MAX_CHARS = 20_000  # what the plugin adds to a run
+# The vm-agent's HEADER (platform/controlclaw_agents.rs), byte for byte.
+HEADER = "# ControlClaw\n\nControlClaw writes these instructions for this agent from the console's settings. Change them in the console.\n"
 SECTION = re.compile(r'<!-- controlclaw:(drive|meetings):start -->.*?<!-- controlclaw:\1:end -->', re.S)
 
 
@@ -33,10 +35,8 @@ def refuse(why):
 
 
 def shape_ok(text):
-    if not text.startswith('# ControlClaw\n'):
-        return False
-    rest = SECTION.sub('', text[len('# ControlClaw\n'):])
-    return '<!--' not in rest and len(rest.strip()) <= 400
+    """The header, then sections separated by blank lines: no text of anyone else's between them."""
+    return text.startswith(HEADER) and SECTION.sub('', text[len(HEADER):]).strip() == ''
 
 
 def main():

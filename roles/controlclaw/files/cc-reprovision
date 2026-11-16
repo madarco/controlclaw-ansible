@@ -23,11 +23,27 @@ MIN_AGE_HOURS=24
 
 # The state file is what the console shows. Written at every step, world-readable (it holds no
 # secret: a phase, an exit code and a task name).
+#
+# As the owner of its folder, through a temporary file of its own and a rename. On an agent that
+# folder is the box user's, inside /opt/controlclaw, which the box user owns too: a fixed temporary
+# name, or the state file, could be a link there, and a root write would go wherever it points.
+write_owned() {
+  local file="$1" dir owner
+  dir=$(dirname "$file")
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  owner=$(stat -c %U "$dir")
+  if [ "$owner" = root ]; then
+    local tmp
+    tmp=$(mktemp "$file.XXXXXX") && cat > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$file"
+  else
+    runuser -u "$owner" -- sh -c 't=$(mktemp "$1.XXXXXX") && cat > "$t" && chmod 0644 "$t" && mv -f "$t" "$1"' sh "$file"
+  fi
+}
 say() {
   local phase="$1" detail="${2:-}"
   printf '{"phase":%s,"detail":%s,"ref":%s,"at":%s,"reboot":%s}\n' \
     "$(json "$phase")" "$(json "$detail")" "$(json "${REF:-}")" "$(json "$(date -u +%FT%TZ)")" "${REBOOT:-false}" \
-    > "$STATE".tmp && mv "$STATE".tmp "$STATE"
+    | write_owned "$STATE"
   logger -t cc-reprovision "$phase${detail:+: $detail}"
 }
 
@@ -89,7 +105,8 @@ case "$ROLE" in
   *) die "box role $ROLE does not update in place" ;;
 esac
 
-mkdir -p "$(dirname "$STATE")"
+# Only when there is nothing there: never through a link the box user put in its place.
+[ -e "$(dirname "$STATE")" ] || [ -L "$(dirname "$STATE")" ] || mkdir -p "$(dirname "$STATE")"
 say resolving
 if [ "${CC_UPDATE_MODE:-}" = auto ]; then
   [[ "${CC_UPDATE_DEADLINE:-}" =~ ^[0-9]{1,10}$ ]] || die "missing automatic update deadline"
@@ -305,7 +322,7 @@ say running "ansible-pull ${REF:0:12}"
 START=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
 # Saved for the Firewall Logs page (files/cc-fw-logs run), which shows this run and not the ones
 # before it. World-readable like the state file: a byte offset.
-echo "$START" > "$(dirname "$STATE")/update-log-start.tmp" && mv "$(dirname "$STATE")/update-log-start.tmp" "$(dirname "$STATE")/update-log-start"
+echo "$START" | write_owned "$(dirname "$STATE")/update-log-start"
 ansible-pull $FULL -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
 rc=$?
 

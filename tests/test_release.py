@@ -22,6 +22,10 @@ def version_reader():
     return task['ansible.builtin.command']['argv'][2]
 
 
+# release.sh's tree, the same command.
+TREE = "git ls-tree -r HEAD | grep -vE $'\\t(releases\\.json$|tests/|openclaw-upgrade-tests/)' | sha256sum | cut -d' ' -f1"
+
+
 class ReleaseTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -73,9 +77,10 @@ class ReleaseTest(unittest.TestCase):
         d.mkdir(parents=True, exist_ok=True)
         (d / 'main.yml').write_text(f'openclaw_version: "{pin}"\nopenclaw_auto_patch: {auto}\n')
         if record is not None:
-            git(self.dir, 'add', 'roles')
-            roles = git(self.dir, 'rev-parse', git(self.dir, 'write-tree') + ':roles')
-            record = [{'roles_tree': roles, **r} for r in record]
+            git(self.dir, 'add', '-A')
+            git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'candidate')
+            tree = subprocess.run(['bash', '-c', TREE], cwd=self.dir, capture_output=True, text=True, check=True).stdout.strip()
+            record = [{'tree': tree, **r} for r in record]
             (self.dir / 'openclaw-upgrade-tests').mkdir(exist_ok=True)
             (self.dir / f'openclaw-upgrade-tests/{pin}.json').write_text(json.dumps(record))
         git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.')
@@ -113,11 +118,18 @@ class ReleaseTest(unittest.TestCase):
                 self.assertNotEqual(r.returncode, 0)
                 self.assertIn('did not pass to 2026.11.3', r.stderr)
 
-    def test_refuses_a_test_of_other_roles(self):
-        self.with_openclaw(record=[{**self.PASSED[0], 'roles_tree': 'f' * 40}])
+    def test_refuses_a_test_of_another_tree(self):
+        self.with_openclaw(record=[{**self.PASSED[0], 'tree': 'f' * 64}])
         r = self.release('99.0.0', 'x')
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn('other roles than this commit', r.stderr)
+        self.assertIn('another tree than this commit', r.stderr)
+
+    def test_the_tree_covers_more_than_the_roles(self):
+        self.with_openclaw(record=self.PASSED)
+        (self.dir / 'playbook.yml').write_text('changed\n')
+        git(self.dir, 'add', '-A')
+        git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'after the test')
+        self.assertIn('another tree than this commit', self.release('99.0.0', 'x').stderr)
 
     def test_refuses_a_rust_pin_without_controlclaw_agents(self):
         role = self.dir / 'roles/controlclaw'

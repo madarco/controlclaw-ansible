@@ -307,6 +307,17 @@
 # A condition, so a start by the vm-agent's watchdog, its restarts, the console's Start or a boot is
 # skipped and the unit stays inactive. Not `systemctl mask --runtime`: its link in /run loses to the
 # unit file in /etc/systemd/system, and the unit starts anyway (checked on systemd 255).
+# Where cc-openclaw-migrate keeps what root alone may write: the unmigrated marker the hold reads, the
+# schema versions it read from the build. Not /opt/controlclaw/state: the box user owns /opt/controlclaw
+# and could put a link there for root to write through.
+- name: Create the migration runner's own folder
+  ansible.builtin.file:
+    path: /var/lib/controlclaw-openclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
 - name: Create the gateway unit's drop-in folder
   ansible.builtin.file:
     path: /etc/systemd/system/openclaw.service.d
@@ -326,7 +337,7 @@
       # is owed; the gateway would refuse its database at every start (T-oc114).
       [Unit]
       ConditionPathExists=!/run/controlclaw-openclaw-migrating
-      ConditionPathExists=!/opt/controlclaw/state/openclaw-unmigrated
+      ConditionPathExists=!/var/lib/controlclaw-openclaw/unmigrated
   register: openclaw_hold_dropin
 
 - name: Load the gateway's hold
@@ -369,7 +380,9 @@
     cmd: |
       for d in {{ controlclaw_home | quote }} {{ (controlclaw_home ~ '/.cache') | quote }} {{ (controlclaw_home ~ '/.cache/openclaw') | quote }} {{ (controlclaw_home ~ '/.openclaw') | quote }}; do
         if [ -d "$d" ] && [ ! -L "$d" ] && [ -n "$(find "$d" -maxdepth 0 -perm /022)" ]; then
-          chmod go-w "$d" && echo "$d"
+          # As the box user, who owns them: a link swapped in after the test cannot make root change
+          # anything else.
+          runuser -u {{ controlclaw_user | quote }} -- chmod go-w -- "$d" && echo "$d"
         fi
       done
   register: openclaw_home_private
@@ -991,14 +1004,21 @@
 
 # Their name and place on the builds before they moved out of the workspace (never released; only
 # test boxes have them).
-- name: Remove the old workspace context plugin and its file in the workspace
+- name: Remove the old workspace context plugin
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
   loop:
     - /opt/controlclaw/workspace-context
     - /opt/controlclaw/workspace-context-config.py
-    - "{{ controlclaw_home }}/.openclaw/workspace/controlclaw/AGENTS.md"
+
+# As the agent: the path is in its workspace, where a link could make root delete something else.
+- name: Remove the old instructions file from the workspace
+  ansible.builtin.file:
+    path: "{{ controlclaw_home }}/.openclaw/workspace/controlclaw/AGENTS.md"
+    state: absent
+  become: true
+  become_user: "{{ controlclaw_user }}"
 
 - name: Include the web-search provider setup
   ansible.builtin.include_tasks: openclaw-search.yml

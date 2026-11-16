@@ -54,8 +54,7 @@ class Migrate(unittest.TestCase):
                     'CC_UPDATE_STATE': str(self.state_file), 'CC_MITM_CA': str(self.tmp / 'none'),
                     'CC_MIGRATE_LOG': str(self.tmp / 'migrate.log'), 'CC_SYSTEMCTL': str(systemctl),
                     'CC_MOUNTINFO': str(self.mountinfo),
-                    'CC_MIGRATE_HOLD': str(self.tmp / 'hold'), 'CC_MIGRATE_UNMIGRATED': str(self.tmp / 'state/unmigrated'),
-                    'CC_MIGRATE_CACHE': str(self.tmp / 'schema.json'),
+                    'CC_MIGRATE_HOLD': str(self.tmp / 'hold'), 'CC_MIGRATE_DIR': str(self.tmp / 'private'),
                     'CC_MIGRATE_EVERY_S': '1'}
 
     def run_it(self, doctor, *args, **env):
@@ -86,14 +85,14 @@ class Migrate(unittest.TestCase):
         self.run_it(f'test -e {hold} && cat {self.calls} > {seen}; ' + MIGRATE)
         self.assertEqual(seen.read_text().splitlines(), ['stop openclaw'], 'held, then stopped, while doctor runs')
         self.assertFalse(hold.exists(), 'the hold is gone after the run')
-        self.assertFalse((self.tmp / 'state/unmigrated').exists())
+        self.assertFalse((self.tmp / 'private/unmigrated').exists())
 
     def test_the_ceiling_stops_doctor_and_keeps_the_gateway_from_starting(self):
         code, out = self.run_it('sleep 30', CC_MIGRATE_LIMIT_S='2')
         self.assertEqual(code, 4)
         self.assertTrue(out['timed_out'])
         self.assertFalse((self.tmp / 'hold').exists())
-        self.assertEqual(json.loads((self.tmp / 'state/unmigrated').read_text())['exit'], 4)
+        self.assertEqual(json.loads((self.tmp / 'private/unmigrated').read_text())['exit'], 4)
 
     def test_no_doctor_without_the_hold(self):
         ran = self.tmp / 'ran'
@@ -106,12 +105,38 @@ class Migrate(unittest.TestCase):
     def test_the_required_versions_are_kept_per_installed_openclaw(self):
         (self.tmp / 'openclaw/package.json').write_text('{"version": "2026.11.4"}')
         self.assertEqual(self.run_it('exit 0', '--check')[0], 3)
-        self.assertEqual(json.loads((self.tmp / 'schema.json').read_text()), {'openclaw': '2026.11.4', 'required': {'agent': 27, 'state': 22}})
+        self.assertEqual(json.loads((self.tmp / 'private/schema.json').read_text()), {'openclaw': '2026.11.4', 'required': {'agent': 27, 'state': 22}})
         # Read from the cache while the version is the same, not from the build.
         (self.tmp / 'openclaw/dist/contract.mjs').write_text('')
         self.assertEqual(self.run_it('exit 0', '--check')[0], 3)
         (self.tmp / 'openclaw/package.json').write_text('{"version": "2026.11.5"}')
         self.assertEqual(self.run_it('exit 0', '--check')[0], 0, 'a new build is read again (here: says nothing)')
+
+    def test_no_root_write_through_a_link_in_the_box_users_folders(self):
+        # The state file's folder replaced by a link: nothing is written through it.
+        target = self.tmp / 'elsewhere'
+        target.mkdir()
+        # The private folder a link: no marker or cache is written through it.
+        (self.tmp / 'private').symlink_to(target)
+        self.assertEqual(self.run_it('exit 1')[0], 3)
+        self.assertEqual(list(target.iterdir()), [])
+        (self.tmp / 'private').unlink()
+        state_dir = self.tmp / 'state'
+        state_dir.mkdir()
+        (state_dir / 'update.json').write_text(json.dumps({'phase': 'running', 'detail': 'x', 'at': '2026-01-01T00:00:00Z'}))
+        state_dir.rename(self.tmp / 'state.real')
+        state_dir.symlink_to(target)
+        self.run_it('sleep 3; ' + MIGRATE, CC_UPDATE_STATE=str(state_dir / 'update.json'))
+        self.assertEqual(list(target.iterdir()), [])
+        # The state file itself a link: replaced, never written through.
+        state_dir.unlink()
+        (self.tmp / 'state.real').rename(state_dir)
+        victim = self.tmp / 'victim'
+        victim.write_text('keep')
+        (state_dir / 'update.json').unlink()
+        (state_dir / 'update.json').symlink_to(victim)
+        self.run_it('sleep 3; ' + MIGRATE, CC_UPDATE_STATE=str(state_dir / 'update.json'))
+        self.assertEqual(victim.read_text(), 'keep')
 
     def test_check_says_whether_a_migration_is_owed(self):
         code, out = self.run_it('exit 0', '--check')
@@ -123,7 +148,7 @@ class Migrate(unittest.TestCase):
 
     def test_a_failed_run_is_owed_until_a_run_brings_the_databases_up(self):
         self.assertEqual(self.run_it('exit 1')[0], 3)
-        unmigrated = self.tmp / 'state/unmigrated'
+        unmigrated = self.tmp / 'private/unmigrated'
         self.assertTrue(unmigrated.exists())
         # Migrated by hand since: still owed until a run has checked, which then clears it.
         subprocess.run(['/bin/sh', '-c', MIGRATE], env={**self.env}, check=True)
@@ -142,7 +167,7 @@ class Migrate(unittest.TestCase):
         self.assertEqual(out['network_mounts'], [str(point)])
         self.assertFalse(ran.exists())
         self.assertEqual(self.systemctl_calls(), ['stop openclaw'])
-        self.assertEqual(json.loads((self.tmp / 'state/unmigrated').read_text())['exit'], 5)
+        self.assertEqual(json.loads((self.tmp / 'private/unmigrated').read_text())['exit'], 5)
 
     def test_a_network_mount_with_nothing_to_migrate_is_not_a_failure(self):
         for db, v in (('agents/main/agent/openclaw-agent.sqlite', 27), ('state/openclaw.sqlite', 22)):
