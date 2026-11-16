@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Load the cc-instructions plugin (files/cc-instructions-plugin) in OpenClaw's config. Idempotent.
 
-It adds ControlClaw's instructions (/var/lib/controlclaw/instructions/AGENTS.md, which the vm-agent
+It adds ControlClaw's instructions (/var/lib/controlclaw-instructions/AGENTS.md, which the vm-agent
 writes through cc-instructions: the Drive folders, the meeting orders) to the system context of every
 run. Its before_prompt_build hook only runs for a plugin from outside OpenClaw's bundle when
 hooks.allowConversationAccess is set (OpenClaw 2026.11); the plugin reads one file and changes nothing

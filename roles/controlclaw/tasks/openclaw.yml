@@ -915,14 +915,31 @@
 # web_search: install the search plugins and name a provider. Before the unit is created, so a
 # first provision starts the gateway with both already in place rather than restarting it.
 # ControlClaw's instructions to the agent (where the Google Drive folders are mounted, the owner's
-# meeting orders): /var/lib/controlclaw/instructions/AGENTS.md, root's, written by the vm-agent through
+# meeting orders): /var/lib/controlclaw-instructions/AGENTS.md, root's, written by the vm-agent through
 # cc-instructions, and added to every run by the cc-instructions plugin (T-oc114). Outside the
 # workspace, where the agent's file tools, Files, a template or a restore could change them and where
 # OpenClaw's doctor reads every file; outside /opt/controlclaw, which the box user owns. The plugin is
-# root's for the same reason. The user's own AGENTS.md is left to the user.
+# root's for the same reason. On an encrypted disk the folder is the `instructions` bind of the
+# container (main.yml makes its mount point), so the owner's orders are not on the plain disk. The
+# user's own AGENTS.md is left to the user.
+- name: Say whether the instructions are inside the encrypted part
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/instructions-in-container
+    content: "ControlClaw's instructions to this agent are in the encrypted part of its disk, mounted at /var/lib/controlclaw-instructions.\n"
+    owner: root
+    group: root
+    mode: '0644'
+  when: instructions_in_container | bool
+
+- name: No instructions marker on an agent whose disk is not encrypted
+  ansible.builtin.file:
+    path: /etc/controlclaw/instructions-in-container
+    state: absent
+  when: not (instructions_in_container | bool)
+
 - name: Create the folder for ControlClaw's instructions
   ansible.builtin.file:
-    path: /var/lib/controlclaw/instructions
+    path: /var/lib/controlclaw-instructions
     state: directory
     owner: root
     group: root
@@ -972,14 +989,16 @@
     msg: "cc-instructions not added to openclaw.json: {{ instructions_plugin_configured.stderr | default('') | trim | truncate(300) }}"
   when: instructions_plugin_configured.rc | default(0) != 0
 
-# Its name and place on the builds before T-oc114 moved it (never released).
-- name: Remove the old workspace context plugin
+# Their name and place on the builds before they moved out of the workspace (never released; only
+# test boxes have them).
+- name: Remove the old workspace context plugin and its file in the workspace
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
   loop:
     - /opt/controlclaw/workspace-context
     - /opt/controlclaw/workspace-context-config.py
+    - "{{ controlclaw_home }}/.openclaw/workspace/controlclaw/AGENTS.md"
 
 - name: Include the web-search provider setup
   ansible.builtin.include_tasks: openclaw-search.yml

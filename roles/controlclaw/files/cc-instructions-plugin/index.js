@@ -1,6 +1,6 @@
 // ControlClaw's instructions to the agent, added to every run's system context (T-oc114).
 //
-// The vm-agent keeps them in /var/lib/controlclaw/instructions/AGENTS.md through the root helper
+// The vm-agent keeps them in /var/lib/controlclaw-instructions/AGENTS.md through the root helper
 // cc-instructions: where the Google Drive folders are mounted and the owner's standing orders for
 // meetings. Outside the workspace: the agent's file tools, the Files page, a template or a restore
 // cannot change them there, and OpenClaw's doctor does not read them. The user's own AGENTS.md is left
@@ -13,12 +13,13 @@
 import fs from "node:fs";
 
 const MAX_CHARS = 20_000;
-export const FILE = "/var/lib/controlclaw/instructions/AGENTS.md";
+export const FILE = "/var/lib/controlclaw-instructions/AGENTS.md";
 
 let cached = { file: "", mtimeMs: -1, size: -1, text: "" };
 
 /** The file's text, read again only when it changed. Empty when there is none. Never throws. */
-export function readInstructions(file = process.env.CC_INSTRUCTIONS_FILE || FILE) {
+// Only this path: not one the box user could name (through the gateway's environment, say).
+export function readInstructions(file = FILE) {
   try {
     const st = fs.statSync(file);
     if (!st.isFile()) return "";

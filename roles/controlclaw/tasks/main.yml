@@ -206,6 +206,29 @@
     mode: '0755'
   when: box_role == 'openclaw'
 
+# The same for ControlClaw's instructions to the agent (the `instructions` bind; openclaw.yml).
+- name: Instructions | Read what is at the instructions folder's place
+  ansible.builtin.stat:
+    path: /var/lib/controlclaw-instructions
+    follow: false
+  register: instructions_place
+  when: box_role == 'openclaw'
+
+- name: Instructions | Take away what is there and is not a folder
+  ansible.builtin.file:
+    path: /var/lib/controlclaw-instructions
+    state: absent
+  when: box_role == 'openclaw' and instructions_place.stat.exists and not instructions_place.stat.isdir
+
+- name: Instructions | The place the instructions folder is mounted on, root's
+  ansible.builtin.file:
+    path: /var/lib/controlclaw-instructions
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: box_role == 'openclaw'
+
 - name: Include disk encryption (LUKS opened by the org's own boxes)
   ansible.builtin.include_tasks: disk-encryption.yml
   when:

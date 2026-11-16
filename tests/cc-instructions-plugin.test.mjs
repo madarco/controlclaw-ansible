@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import plugin, { FILE, readInstructions, promptContext } from '../roles/controlclaw/files/cc-instructions-plugin/index.js';
 
 test('the file is the root-owned one outside the workspace', () => {
-  assert.equal(FILE, '/var/lib/controlclaw/instructions/AGENTS.md');
+  assert.equal(FILE, '/var/lib/controlclaw-instructions/AGENTS.md');
 });
 
 test('no file, an empty file: nothing is added to the run', () => {
