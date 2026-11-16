@@ -32,6 +32,34 @@ if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
   exit 1
 fi
 
+# The OpenClaw this release installs has to have been upgraded to, on real boxes, from every version
+# customers run (controlclaw apps/saas/scripts/upgrade-matrix.sh), and nothing newer may reach a box
+# by itself: OpenClaw 2026.11.4 came out after 1.47.0 was tested, auto-patch installed it, and agents
+# updated from 2026.9.x stopped (T-oc114). The matrix's results.json goes in
+# openclaw-upgrade-tests/<version>.json, committed before this runs.
+defaults=roles/controlclaw/defaults/main.yml
+if [ -f "$defaults" ]; then
+  python3 - "$defaults" <<'PY' || exit 1
+import json, re, sys
+text = open(sys.argv[1]).read()
+def var(name):
+    m = re.search(rf'^{name}:\s*"?([^"\s#]+)"?', text, re.M)
+    return m.group(1) if m else None
+pin, auto = var("openclaw_version"), var("openclaw_auto_patch")
+if auto is None or auto.lower() != "false":
+    sys.exit("release.sh: openclaw_auto_patch is on; a release installs exactly the OpenClaw it was tested with (T-oc114)")
+record = f"openclaw-upgrade-tests/{pin}.json"
+try:
+    rows = json.load(open(record))
+except (OSError, ValueError):
+    sys.exit(f"release.sh: no upgrade test for OpenClaw {pin}: run apps/saas/scripts/upgrade-matrix.sh and commit its results.json as {record}")
+failed = [r.get("path", "?") for r in rows if not r.get("pass") or r.get("after") != pin]
+if not rows or failed:
+    sys.exit(f"release.sh: the upgrade test in {record} did not pass to {pin}: {', '.join(failed) or 'no paths'}")
+print(f"OpenClaw {pin}: upgrade tested from " + ", ".join(r["path"] for r in rows))
+PY
+fi
+
 python3 - "$version" "$(date -u +%F)" "$@" <<'PY'
 import json, re, sys
 

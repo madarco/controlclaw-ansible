@@ -1,0 +1,33 @@
+---
+# Included by openclaw.yml when cc-openclaw-migrate did not leave every configured agent database at
+# the schema the installed OpenClaw needs (exit 3), stopped at its ceiling (exit 4), or found a
+# network mount under the state folder and did not start doctor (exit 5). The gateway is not started
+# on such a database: it would refuse it every two seconds (T-oc114). It stays stopped, the Update
+# fails and says why, the console's problem email tells the owner, and the next Update or the Doctor
+# tab (cc-openclaw-migrate --gateway, which unmasks it and starts it once the databases are current)
+# finishes the migration.
+
+# Stopped, disabled and masked until the next boot: the vm-agent watchdog starts an enabled unit
+# that has been down for five minutes "not by the console", and a disabled one is not started at
+# boot. The next Update that migrates enables it again ("Enable and start the openclaw service").
+- name: Keep the gateway stopped on an unmigrated database
+  ansible.builtin.shell:
+    cmd: systemctl stop openclaw; systemctl disable openclaw; systemctl mask --runtime openclaw
+  changed_when: true
+  failed_when: false
+
+# main.yml's rescue starts the gateway after a failed OpenClaw step; not on a database this OpenClaw
+# refuses.
+- name: Remember to leave the gateway stopped
+  ansible.builtin.set_fact:
+    openclaw_keep_stopped: true
+
+- name: OpenClaw's state migration did not finish
+  ansible.builtin.fail:
+    msg: >-
+      {% set r = (openclaw_migration_result.stdout | default('{}') | from_json) if (openclaw_migration_result.stdout | default('')).startswith('{') else {} %}
+      OpenClaw {{ openclaw_resolved_version }} could not move this agent's data to its new format
+      {% if r.timed_out | default(false) %}within {{ ((r.seconds | default(0)) / 3600) | round(1) }} h
+      {%- elif r.network_mounts | default([]) %}: a network folder is mounted inside OpenClaw's state ({{ r.network_mounts | join(', ') }}), and doctor would read every file in it
+      {%- else %} (doctor exited {{ r.doctor_exit | default(openclaw_migration_result.rc | default('?')) }} after {{ ((r.seconds | default(0)) / 60) | round | int }} min; still behind: {{ r.pending | default([]) | map(attribute='path') | map('basename') | join(', ') }}){% endif %}.
+      The agent is stopped until the migration finishes: run Update again, or the Doctor tab.

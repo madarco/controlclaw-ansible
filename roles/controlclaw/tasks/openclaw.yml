@@ -307,30 +307,68 @@
   when: openclaw_migrate | bool
   failed_when: false
 
+# OpenClaw 2026.11.4 refuses a temp root under a folder that group or others can write (no sticky
+# bit): `~/.cache/openclaw` first, then `~/.openclaw/tmp`. With one refused it warns on every start
+# (a `.cache` left 0775 on older boxes); with both refused doctor cannot take the state over and exits
+# 1 without migrating anything (T-oc114). The box user's home and its cache are this user's own;
+# nobody else writes there.
+- name: Keep the box user's home and cache closed to group and others
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      for d in {{ controlclaw_home | quote }} {{ (controlclaw_home ~ '/.cache') | quote }} {{ (controlclaw_home ~ '/.cache/openclaw') | quote }} {{ (controlclaw_home ~ '/.openclaw') | quote }}; do
+        if [ -d "$d" ] && [ ! -L "$d" ] && [ -n "$(find "$d" -maxdepth 0 -perm /022)" ]; then
+          chmod go-w "$d" && echo "$d"
+        fi
+      done
+  register: openclaw_home_private
+  changed_when: openclaw_home_private.stdout | length > 0
+
+- name: Install the OpenClaw migration runner
+  ansible.builtin.copy:
+    src: cc-openclaw-migrate
+    dest: /usr/local/bin/cc-openclaw-migrate
+    owner: root
+    group: root
+    mode: '0755'
+
 # `--non-interactive` applies the safe migrations only. It also checks the installed plugins
-# against the new build, which is npm traffic, hence the node environment: without the firewall's
-# CA every lookup waits out npm's timeout and the run takes minutes instead of seconds.
+# against the new build, which is npm traffic, hence the firewall's CA (the runner passes it):
+# without it every lookup waits out npm's timeout and the run takes minutes instead of seconds.
+#
+# As long as it takes (files/cc-openclaw-migrate). A migration of a large agent database is slow:
+# 120 MB of sessions on a 2-vCPU box ran past the 900 s this step used to allow, was killed halfway,
+# and the gateway then refused the database at every start (T-oc114). The runner refreshes the
+# Update's state file every 30 s, so the console shows it and does not call the Update failed, and it
+# answers 0 only when every configured agent database is at the schema the installed OpenClaw needs.
 - name: Migrate OpenClaw's state (openclaw doctor --fix)
   ansible.builtin.command:
-    cmd: timeout 900 openclaw doctor --fix --non-interactive
-    chdir: "{{ controlclaw_home }}"
-  become: true
-  become_user: "{{ controlclaw_user }}"
-  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+    argv: [/usr/local/bin/cc-openclaw-migrate, "{{ controlclaw_home }}", "{{ controlclaw_user }}"]
   register: openclaw_doctor
   when: openclaw_migrate | bool
   changed_when: true
-  # A failed repair must not stop the play before the handlers: the gateway would then stay
-  # stopped, which is worse than what it had. The warning below says so, and the unit is started
-  # either way.
   failed_when: false
+  # The runner has its own ceiling (6 h); this is Ansible's, a little above it.
+  async: 22000
+  poll: 30
   notify: restart openclaw
 
-- name: Warn when the OpenClaw state migration failed
+# Doctor's exit code does not say whether the migration happened. From 2026.11.4 it exits 1 after
+# a migration that worked, because it then tries to restart the gateway and cannot restart our system
+# unit ("could not complete Gateway restoration"); and an exit 0 has never meant the gateway starts.
+# What does is the gateway answering /readyz, which the check at the end of this file waits for.
+- name: Say how the OpenClaw state migration ended
   ansible.builtin.debug:
-    msg: >-
-      openclaw doctor --fix exited {{ openclaw_doctor.rc }}; the gateway may refuse to start.
-      {{ (openclaw_doctor.stderr | default('') ~ ' ' ~ openclaw_doctor.stdout | default('')) | trim | truncate(600) }}
+    msg: "{{ openclaw_doctor.stdout | default('') | trim | truncate(800) }}"
+  when: openclaw_migrate | bool
+
+# A database still below the new schema is one the new gateway refuses at every start. It is not
+# started on it: the gateway stays stopped (no rollback, by decision), the Update fails and says why,
+# and the next Update or the Doctor tab finishes the migration.
+- name: Stop when an agent database is still not migrated
+  ansible.builtin.include_tasks: openclaw-unmigrated.yml
+  vars:
+    openclaw_migration_result: "{{ openclaw_doctor }}"
   when: openclaw_migrate | bool and openclaw_doctor.rc | default(0) != 0
 
 # OpenClaw's own plugins from npm (@openclaw/codex, which `doctor --fix` installs for an OpenAI
@@ -419,15 +457,20 @@
 # A plugin's own state migrations run in Doctor, with the new plugin's code (openclaw#165049).
 - name: Migrate the moved plugins' state (openclaw doctor --fix)
   ansible.builtin.command:
-    cmd: timeout 900 openclaw doctor --fix --non-interactive
-    chdir: "{{ controlclaw_home }}"
-  become: true
-  become_user: "{{ controlclaw_user }}"
-  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+    argv: [/usr/local/bin/cc-openclaw-migrate, "{{ controlclaw_home }}", "{{ controlclaw_user }}"]
+  register: openclaw_plugins_doctor
   when: openclaw_plugins_updated is changed
   changed_when: true
   failed_when: false
+  async: 22000
+  poll: 30
   notify: restart openclaw
+
+- name: Stop when an agent database is still not migrated (after the plugins)
+  ansible.builtin.include_tasks: openclaw-unmigrated.yml
+  vars:
+    openclaw_migration_result: "{{ openclaw_plugins_doctor }}"
+  when: openclaw_plugins_updated is changed and openclaw_plugins_doctor.rc | default(0) != 0
 
 # The plan and the agent-https doc both assume /usr/bin/openclaw. NodeSource sets npm's prefix
 # to /usr so that holds, but assert it rather than baking an unverified path into ExecStart.
@@ -828,6 +871,43 @@
 
 # web_search: install the search plugins and name a provider. Before the unit is created, so a
 # first provision starts the gateway with both already in place rather than restarting it.
+# What ControlClaw tells the agent about its box: controlclaw/AGENTS.md in the workspace, which the
+# vm-agent writes (where the Google Drive folders are mounted, the owner's meeting orders), added to
+# every turn by this plugin on every harness (T-oc114). The user's own AGENTS.md is left to the user.
+- name: Install the ControlClaw workspace context plugin
+  ansible.builtin.copy:
+    src: workspace-context/
+    dest: /opt/controlclaw/workspace-context/
+    owner: root
+    group: root
+    mode: '0755'
+  notify: restart openclaw
+
+- name: Install the workspace context plugin's config helper
+  ansible.builtin.copy:
+    src: workspace-context-config.py
+    dest: /opt/controlclaw/workspace-context-config.py
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Load the workspace context plugin
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, /opt/controlclaw/workspace-context-config.py, "{{ controlclaw_home }}/.openclaw/openclaw.json"]
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: workspace_context_configured
+  changed_when: "'changed' in workspace_context_configured.stdout"
+  # The agent runs without it (it only loses the Drive paths and meeting orders from its context):
+  # a config this cannot read must not fail every Update from here on.
+  failed_when: false
+  notify: restart openclaw
+
+- name: Warn when the workspace context plugin could not be loaded
+  ansible.builtin.debug:
+    msg: "cc-workspace-context not added to openclaw.json: {{ workspace_context_configured.stderr | default('') | trim | truncate(300) }}"
+  when: workspace_context_configured.rc | default(0) != 0
+
 - name: Include the web-search provider setup
   ansible.builtin.include_tasks: openclaw-search.yml
 
@@ -912,3 +992,37 @@
     enabled: true
   when: not ci_test
 
+# An upgrade or a migration is finished when OpenClaw answers, not when npm and doctor exited.
+# OpenClaw 2026.11.4's doctor was killed before it migrated a 2026.9.x agent database, the play went
+# on, and the gateway then exited 78 ("run openclaw doctor --fix to migrate") every two seconds for
+# hours (T-oc114). The migration step above now stops the run when a database is still behind; this
+# checks the rest: after an upgrade or a migration the gateway is started now, with everything above
+# in place, and has to answer /readyz, or the Update fails and says so. No rollback: the owner gets
+# the problem email, and the next Update or the Doctor tab picks it up. The handler restarts it once
+# more at the end of the play; that costs a few seconds.
+- name: Decide whether the gateway has to prove it started
+  ansible.builtin.set_fact:
+    openclaw_must_answer: "{{ (openclaw_upgrading | bool or openclaw_migrate | bool) and not ci_test }}"
+
+- name: Start OpenClaw after the upgrade
+  ansible.builtin.systemd:
+    name: openclaw
+    state: restarted
+  when: openclaw_must_answer | bool
+
+# /readyz answers 200 only once the gateway has admitted its databases and is serving. A first start
+# after a migration takes 15-60 s; five minutes is for a slow box with many plugins, not a normal one.
+- name: Wait for OpenClaw to answer after the upgrade
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      for _ in $(seq 1 60); do
+        if curl -fsS -m 5 -o /dev/null http://127.0.0.1:{{ openclaw_gateway_port | int }}/readyz; then exit 0; fi
+        sleep 5
+      done
+      journalctl -u openclaw --since "-5 min" --no-pager -o cat | grep -E 'doctor --fix|schema version|Error|ERROR' | tail -3
+      exit 1
+  register: openclaw_upgrade_ready
+  changed_when: false
+  when: openclaw_must_answer | bool
+  failed_when: openclaw_upgrade_ready.rc | default(0) != 0

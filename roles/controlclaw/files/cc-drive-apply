@@ -21,7 +21,13 @@ DRIVE_DIR=/opt/controlclaw/drive
 STRANDED="$DRIVE_DIR/stranded"
 RC_BASE_PORT=5700
 USER_NAME=controlclaw
-MOUNT_ROOT="/home/$USER_NAME/.openclaw/workspace/Drive"
+# Outside OpenClaw's state folder since T-oc114: OpenClaw's doctor opens every file under it (its
+# pre-repair capture), and each file of a Drive folder mounted in the workspace was a download; a
+# migration then ran for hours. The agent is told the paths in its AGENTS.md (the vm-agent's Drive
+# block), not by a folder in its workspace.
+MOUNT_ROOT="/home/$USER_NAME/drive"
+# Where the folders used to be. Emptied and removed once their mounts have moved (relocate_legacy).
+LEGACY_ROOT="/home/$USER_NAME/.openclaw/workspace/Drive"
 # How long to let mounts finish uploading what they have not written back yet, before they are
 # stopped. A budget for the WHOLE run, not per mount: eight departing folders at a minute each is
 # eight minutes of a reconcile the console is waiting on, and the second folder's writes are not
@@ -146,6 +152,45 @@ PY
 }
 
 die() { log "FAILED: $1"; write_state "failed" "$1"; exit 1; }
+
+# The folder the mounts used to be in, inside the workspace, once nothing is mounted there any more:
+# its empty mountpoints go, anything else in it is moved to stranded/ (written while a folder was not
+# mounted, and never in Drive), and the folder goes. A mount still there (one that did not stop) is
+# released first. Nothing is linked in its place: the agent finds the folders in its AGENTS.md.
+legacy_mounts() {
+  awk -v root="$LEGACY_ROOT" '{ p = $5; gsub(/\\040/, " ", p); if (index(p, root "/") == 1) print p }' /proc/self/mountinfo | sort -r
+}
+relocate_legacy() {
+  [ -d "$LEGACY_ROOT" ] && [ ! -L "$LEGACY_ROOT" ] || return 0
+  local point aside="" entry
+  while read -r point; do
+    [ -n "$point" ] || continue
+    log "releasing $point, still mounted in the workspace"
+    /usr/bin/fusermount3 -uz "$point" 2>/dev/null || umount -l "$point" 2>/dev/null
+  done < <(legacy_mounts)
+  if [ -n "$(legacy_mounts)" ]; then
+    log "WARNING: $LEGACY_ROOT still has a mount in it; left in place"
+    return 0
+  fi
+  for entry in "$LEGACY_ROOT"/* "$LEGACY_ROOT"/.[!.]*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    if [ -d "$entry" ] && [ ! -L "$entry" ] && rmdir -- "$entry" 2>/dev/null; then
+      continue
+    fi
+    aside="${aside:-$STRANDED/workspace-Drive-$(date -u +%Y%m%dT%H%M%SZ)}"
+    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$aside"
+    mv -- "$entry" "$aside"/ && log "WARNING: $entry was in the old Drive folder of the workspace; moved to $aside"
+  done
+  rmdir -- "$LEGACY_ROOT" 2>/dev/null && log "removed $LEGACY_ROOT: the Drive folders are in $MOUNT_ROOT"
+  return 0
+}
+
+# A box with no Drive set (the role runs this on every Update): only the old folder in the workspace.
+if [ ! -r "$DESIRED" ]; then
+  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0755 "$MOUNT_ROOT"
+  relocate_legacy
+  exit 0
+fi
 
 [ -r "$DESIRED" ] || die "no $DESIRED to apply"
 
@@ -273,18 +318,20 @@ for esc in ${RUNNING+"${RUNNING[@]}"}; do
   name="$(sed -n 's|^CC_DRIVE_MOUNTPOINT=.*/||p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
   name="${name:-$esc}"
   log "taking down $name: it is not in the mount set any more"
+  point="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+  point="${point:-$MOUNT_ROOT/$name}"
 
   # Give whatever has not been written back to Drive a chance to finish. Reading the port out of
   # the env file rather than recomputing it: the allocation belongs to whoever wrote that file.
   drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
 
   systemctl disable --now "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
-  is_mounted "$MOUNT_ROOT/$name" && umount -l "$MOUNT_ROOT/$name" 2>/dev/null
+  is_mounted "$point" && umount -l "$point" 2>/dev/null
   rm -f "$DRIVE_DIR/$esc.env" "$DRIVE_DIR/$esc.conf"
   rm -rf -- "$DRIVE_DIR/cache/$esc"
   # Only if it is empty: a non-empty directory here is the agent's own writes, and losing those
   # silently while removing a folder somebody unshared is not a trade anyone agreed to.
-  rmdir -- "$MOUNT_ROOT/$name" 2>/dev/null || log "$MOUNT_ROOT/$name is not empty; left in place"
+  rmdir -- "$point" 2>/dev/null || log "$point is not empty; left in place"
 done
 
 # --- sweep anything on disk that is not in the set ------------------------------------------
@@ -345,6 +392,15 @@ EOF
   # in the cache with no way out. Repointing at a different Drive folder is already a takedown,
   # because the slug carries a hash of the folder id.
   if [ -f "$DRIVE_DIR/$esc.env" ]; then
+    was_at="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+    # A mount that is moving (out of the workspace, T-oc114): what it has queued goes up first, then
+    # it is stopped and its old mountpoint released, so the start below mounts it at the new place.
+    if [ -n "$was_at" ] && [ "$was_at" != "$MOUNT_ROOT/$name" ]; then
+      log "$name moves from $was_at to $MOUNT_ROOT/$name"
+      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+      systemctl stop "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
+      is_mounted "$was_at" && { /usr/bin/fusermount3 -uz "$was_at" 2>/dev/null || umount -l "$was_at" 2>/dev/null; }
+    fi
     was_ro="$(sed -n 's/^CC_DRIVE_READONLY=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
     if [ "$mode" = "ro" ] && [ -z "$was_ro" ]; then
       log "$name is becoming read-only; letting it finish what it has queued first"
@@ -420,6 +476,8 @@ for idx in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do
 done
 
 [ "$CONNECTED" = "1" ] || log "the organization has no working Google connection; ${#stopped[@]} folder(s) left unmounted"
+
+relocate_legacy
 
 # --- report ---------------------------------------------------------------------------------
 

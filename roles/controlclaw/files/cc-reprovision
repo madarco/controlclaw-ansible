@@ -255,7 +255,20 @@ failure_detail() {
   local log="$1" start="$2" rc="$3" task reason
   task=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | grep -a '^TASK \[' | tail -1 | sed -E 's/^TASK \[(.*)\].*/\1/')
   if [ -n "$task" ]; then
-    printf 'ansible-pull exited %s at: %s' "$rc" "$task"
+    # The failed task's own message too, when one was written for people: the role's OpenClaw step
+    # says which OpenClaw could not migrate or did not start, and why (T-oc114). Not Ansible's generic
+    # "non-zero return code", which says nothing a customer can use.
+    reason=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | grep -a '^fatal: ' | tail -1 | python3 -c '
+import json, sys
+line = sys.stdin.read()
+try:
+    msg = json.loads(line[line.index("{"):]).get("msg", "")
+except ValueError:
+    msg = ""
+msg = " ".join(str(msg).split())
+print("" if msg in ("", "non-zero return code") else msg[:400])
+')
+    printf 'ansible-pull exited %s at: %s%s' "$rc" "$task" "${reason:+: $reason}"
     return
   fi
   reason=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | python3 -c '

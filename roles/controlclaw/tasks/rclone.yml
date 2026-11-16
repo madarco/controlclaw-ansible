@@ -108,7 +108,7 @@
 # mount root would mean no mount at all. The hazard that leaves — the agent writing into an
 # unmounted directory and having those writes shadowed by a later mount — is handled in
 # cc-drive-apply, which moves anything it finds into `stranded/` rather than mounting over it.
-- name: Drive folders | Create the mount root inside the workspace
+- name: Drive folders | Create the mount root
   ansible.builtin.file:
     path: "{{ drive_mount_root }}"
     state: directory
@@ -208,3 +208,32 @@
     owner: root
     group: root
     mode: '0755'
+
+# Boxes from before T-oc114 have their folders mounted in the workspace (Drive/<name>). The reconcile
+# moves each mount to the new root and removes the old folder; it is run here, on the Update, before
+# openclaw.yml's migration, whose doctor would otherwise open every file in them. Only when there is
+# something to move: the old folder, or a mount still pointing into the workspace.
+- name: Drive folders | Look for folders still in the workspace
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      test -d {{ drive_legacy_mount_root | quote }} && echo legacy;
+      grep -ls '^CC_DRIVE_MOUNTPOINT={{ drive_legacy_mount_root }}/' {{ drive_state_dir | quote }}/*.env 2>/dev/null | head -1;
+      true
+  register: drive_legacy
+  changed_when: false
+
+- name: Drive folders | Move them out of the workspace
+  ansible.builtin.command:
+    argv: [/usr/local/bin/cc-drive-apply]
+  when: drive_legacy.stdout | trim | length > 0
+  register: drive_moved
+  changed_when: true
+  # A Drive folder that cannot be moved must not stop the Update: the migration's own check refuses
+  # to run doctor while a network mount is in the state folder, and says so.
+  failed_when: false
+
+- name: Drive folders | Say what the move did
+  ansible.builtin.debug:
+    msg: "{{ (drive_moved.stderr | default('') | trim) or 'moved' }}"
+  when: drive_moved is changed

@@ -77,6 +77,14 @@ class FailureDetail(unittest.TestCase):
     def test_a_failed_task_names_the_task_of_this_run(self):
         self.assertEqual(detail(PROVISIONING, TASK_FAILED, 2), 'ansible-pull exited 2 at: controlclaw : Install OpenClaw globally from npm')
 
+    def test_a_message_written_for_people_comes_with_the_task(self):
+        run = TASK_FAILED.replace('Install OpenClaw globally from npm', 'OpenClaw step failed (the gateway was started again)').replace(
+            '"msg": "non-zero return code"',
+            '"msg": "OpenClaw did not start after the upgrade:   OpenClaw 2026.11.4 did not start. put back OpenClaw 2026.9.37"')
+        self.assertEqual(detail(PROVISIONING, run, 2),
+                         'ansible-pull exited 2 at: controlclaw : OpenClaw step failed (the gateway was started again): '
+                         'OpenClaw did not start after the upgrade: OpenClaw 2026.11.4 did not start. put back OpenClaw 2026.9.37')
+
     def test_an_earlier_failed_run_is_not_reported_again(self):
         self.assertEqual(detail(PROVISIONING + TASK_FAILED, FETCH_FAILED)[:26], 'could not fetch the update')
 

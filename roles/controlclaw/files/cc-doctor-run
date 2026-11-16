@@ -125,9 +125,16 @@ Inspect: systemctl status openclaw.service controlclaw-agent; journalctl -u open
 Inspect egress units and /opt/controlclaw/keys/mitm_box_private_ip when network requests fail.
 Check disk encryption mounts before touching /opt/controlclaw or the agent home; never write into
 an unmounted encrypted directory. Do not change enrollment, firewall pins or doctor authorized_keys.
-Before config repairs, back up the config. If doctor is needed, first stop openclaw.service, then run
-sudo -u controlclaw -H env NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/controlclaw-mitm.crt openclaw doctor --fix --non-interactive.
-Start openclaw.service afterwards and verify it stays active and its gateway answers; inspect its journal.
+Before config repairs, back up the config. If doctor is needed, run sudo cc-openclaw-migrate --gateway
+/home/controlclaw: it holds openclaw.service stopped, runs openclaw doctor --fix for as long as it takes
+(a large database can take an hour; do not stop it), and starts openclaw.service only when every agent
+database is current. Its last line says what happened; doctor's own exit code is not the verdict. On an
+agent without cc-openclaw-migrate: sudo systemctl stop openclaw.service and sudo systemctl mask --runtime
+openclaw.service; if findmnt shows Drive folders under /home/controlclaw/.openclaw/workspace/Drive, stop
+cc-drive.target too (doctor opens every file under the workspace, and each one in a Drive folder is a
+download); run sudo -u controlclaw -H env NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/controlclaw-mitm.crt
+openclaw doctor --fix --non-interactive with no time limit; then unmask, start cc-drive.target and
+openclaw.service. Verify openclaw.service stays active and its gateway answers; inspect its journal.
 Never run offline database maintenance with the gateway running. Do not update or reinstall unless needed.
 Only this named agent is authorized for repair. Explain the cause, repairs and remaining problems.
 '''

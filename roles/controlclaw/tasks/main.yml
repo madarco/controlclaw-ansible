@@ -303,7 +303,8 @@
         # Enabled too: a first run that fails here has not enabled it yet, and the vm-agent watchdog
         # looks after an enabled unit only.
         enabled: true
-      when: openclaw_unit_after_failure.stat.exists and not ci_test
+      # Not on an agent database the installed OpenClaw refuses (openclaw-unmigrated.yml).
+      when: openclaw_unit_after_failure.stat.exists and not ci_test and not openclaw_keep_stopped | default(false) | bool
       failed_when: false
 
     - name: OpenClaw step failed (the gateway was started again)
