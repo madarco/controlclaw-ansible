@@ -182,7 +182,8 @@ def configured_agent_databases(home):
     A leftover agents/<id>/ the config does not name is skipped by the gateway too ("not a configured
     target"), so it does not count here."""
     state = os.path.join(home, '.openclaw')
-    raw = read_regular(os.path.join(state, 'openclaw.json'), 10_000_000)
+    # Not through a link: opening a device (a watchdog, a serial line) has effects of its own.
+    raw = read_regular(os.path.join(state, 'openclaw.json'), 10_000_000, follow=False)
     try:
         config = json.loads(raw) if raw is not None else {}
         agents = (config.get('agents') or {}) if isinstance(config, dict) else {}

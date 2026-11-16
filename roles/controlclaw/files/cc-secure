@@ -174,6 +174,13 @@ MOUNT_OPTIONAL_FAILED=3
 # and leaves the rest to the caller.
 bind_entry() {
   local sub=$1 dst=$2 owner=$3 mode=$4 src="$SECURE/$1"
+  # The targets are in folders the box user owns (/opt/controlclaw, its home), where it could have put
+  # a link while the container was not mounted: `mount --bind` follows one, and would put the box
+  # user's folder over /etc/systemd/system, say. Nothing is made or mounted on a path with a link in it.
+  if [ "$(realpath -m -- "$dst")" != "$dst" ] || [ "$(realpath -m -- "$src")" != "$src" ]; then
+    log "ERROR: $dst or $src has a link in it; not mounting"
+    return 1
+  fi
   mkdir -p "$src" "$dst" || return 1
   chown "${owner:-root}:${owner:-root}" "$src" || return 1
   chmod "${mode:-0750}" "$src" || return 1

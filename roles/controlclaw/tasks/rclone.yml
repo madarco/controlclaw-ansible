@@ -93,7 +93,19 @@
 # let a compromised box point a mount at the rest of the Drive the token can reach.
 #
 # `follow: false`: /opt/controlclaw is the box user's, who could rename this folder away and put a link
-# in its place; root must not chown and chmod whatever that points to. A link there fails the task.
+# in its place; root must not chown and chmod whatever that points to. A link there stops the play
+# here, before the cache folder is made through it.
+- name: Drive folders | Read what is at the mount config folder's place
+  ansible.builtin.stat:
+    path: "{{ drive_state_dir }}"
+    follow: false
+  register: drive_state_place
+
+- name: Drive folders | Refuse a link in place of the mount config folder
+  ansible.builtin.fail:
+    msg: "{{ drive_state_dir }} is a link; not making the Drive folders' config through it"
+  when: drive_state_place.stat.islnk | default(false)
+
 - name: Drive folders | Create the mount config and cache directory
   ansible.builtin.file:
     path: "{{ item }}"
@@ -240,6 +252,10 @@
       true
   register: drive_legacy
   changed_when: false
+  # For at most 30 s: the files it reads are in folders the box user owns, where a FIFO would block.
+  # Given up, it finds nothing to move, and the Update goes on.
+  timeout: 30
+  failed_when: false
 
 # As the same unit the vm-agent starts it in (systemd-run --unit=cc-drive-apply), so the two never
 # reconcile at once: while one from the vm-agent runs, the name is taken and this waits for it. The
@@ -271,7 +287,7 @@
       before=$(digest)
       apply || exit $?
       [ "$(digest)" = "$before" ] || apply
-  when: drive_legacy.stdout | trim | length > 0
+  when: drive_legacy.stdout | default('') | trim | length > 0
   register: drive_moved
   changed_when: true
   # A Drive folder that cannot be moved must not stop the Update: the migration's own check refuses

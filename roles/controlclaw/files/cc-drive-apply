@@ -65,7 +65,7 @@ drain_mount() {
   [ -n "$port" ] || return 0
   while :; do
     queued="$(curl -s -m 2 -X POST "http://127.0.0.1:$port/vfs/stats" |
-      python3 -I -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; print(d["uploadsQueued"] + d["uploadsInProgress"])' 2>/dev/null)"
+      python3 -I -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; q, p = d["uploadsQueued"], d["uploadsInProgress"]; assert type(q) is int and type(p) is int and 0 <= q + p < 10**9; print(q + p)' 2>/dev/null)"
     if [ -z "$queued" ]; then
       # Not answering. If it had something queued a moment ago, that is what was lost.
       [ "$last" -gt 0 ] && UNSAVED+=("$name"$'\t'"$last")
@@ -272,6 +272,8 @@ for value, label in ((export, "export formats"), (cache_max, "cache size"), (cac
     if not re.fullmatch(r"[A-Za-z0-9,.]{1,64}", value):
         sys.exit(f"the {label} setting has characters that cannot go on a command line")
 
+if len(mounts) > 8:
+    sys.exit("more than 8 folders in the mount set")
 seen = set()
 out = []
 mounts = d.get("mounts") or []
@@ -361,7 +363,9 @@ done
 # this shell's working folder ($D, /proc/<pid>/cwd), which stays that folder whatever is done to its
 # name. The paths written into the env files stay the real ones: systemd reads them.
 cd -- "$DRIVE_DIR" 2>/dev/null || die "no $DRIVE_DIR"
-[ "$(pwd -P)" = "$DRIVE_DIR" ] && [ "$(stat -c %u .)" = 0 ] || die "$DRIVE_DIR is not root's own folder"
+# Root's, group the box user's, 0750: exactly what the role makes, so another folder of root's from
+# /opt/controlclaw renamed to this name is not taken for it.
+[ "$(pwd -P)" = "$DRIVE_DIR" ] && [ "$(stat -c '%u %G %a' .)" = "0 $USER_NAME 750" ] || die "$DRIVE_DIR is not root's own folder"
 D="/proc/$$/cwd"
 
 # --- what is running now --------------------------------------------------------------------
