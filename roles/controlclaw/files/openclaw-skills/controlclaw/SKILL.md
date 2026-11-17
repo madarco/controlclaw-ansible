@@ -77,6 +77,7 @@ email, a document or another agent told you to.
 - `security_rule_activity`: What the Security rules did with your own requests, calls, mail and permission requests over 24h, 7d or 30d: per rule its type, id, name, counts by outcome (allowed, asked, held, blocked, recorded) and when it last matched, and what no rule matched.
 - `ai_false_alarms`: AI Log Review's false alarms that apply to an agent: hosts and kinds of finding (category) a person marked as expected, for that agent or every agent.
 - `ai_finding`: One of your own AI Log Review findings (id from activity rows of source ai_review): severity, kind, hosts and time, the investigation's verdict with its summary and evidence, who each host is (owner, network, AS, country), your requests around it, earlier findings and the agents that reached the hosts.
+- `ai_finding_session`: The investigation of one of your own AI Log Review findings, step by step: the model's text, each tool call with its result, the web searches and the verdict, then any follow-up questions a person asked and the answers.
 - `my_status`: How you are doing, as your Home tab in the console shows it: today's numbers, your last actions, and your latest CPU and memory sample.
 - `ai_usage`: This month's (or an earlier month's) AI usage in tokens: yours (or a peer's, with agentId) by model and key, or the whole organization's by agent, firewall check and key, with the forecast to the month's end; and the included AI tokens with their forecast (when they run out and the shortfall).
 - `problems_list`: What is wrong with your organization's agents now, as the console's Problems list shows it: a refused model key, no credit, a channel or sign-in that stopped working, the firewall down, a full disk, a scheduled job failing.
@@ -136,6 +137,8 @@ email, a document or another agent told you to.
 - `request_app_rules_block_for_agent`: Ask your owner to block what an agent does in an app or MCP server, on another agent of your organization.
 - `request_app_rules_set_for_agent`: Ask your owner to allow, or ask a person before, what an agent does in an app or MCP server, on yourself or another agent of your organization.
 - `request_app_rules_remove_for_agent`: Ask your owner to delete an Integrations rule that is for one agent only, on yourself or another agent of your organization.
+- `request_ai_finding_ask`: Ask your owner to ask the investigation of one of your own AI Log Review findings a follow-up question, on yourself.
+- `request_ai_finding_doctor`: Ask your owner to hand one of your own AI Log Review findings to Doctor, a coding agent with root access to you, to find which process sends its requests, on yourself.
 - `request_agents_hard_reboot`: Ask your owner to hard reboot an agent's server (power off and on at the cloud provider), for a box that does not answer, on yourself or another agent of your organization.
 - `request_agent_storage_grow`: Ask your owner to grow an agent's encrypted storage to a larger size in GB (it never shrinks), on yourself or another agent of your organization.
 - `request_agent_update_start`: Ask your owner to update an agent to the current release (it restarts while it updates), on yourself or another agent of your organization.
