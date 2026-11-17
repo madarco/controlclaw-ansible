@@ -272,13 +272,13 @@ for value, label in ((export, "export formats"), (cache_max, "cache size"), (cac
     if not re.fullmatch(r"[A-Za-z0-9,.]{1,64}", value):
         sys.exit(f"the {label} setting has characters that cannot go on a command line")
 
-if len(mounts) > 8:
-    sys.exit("more than 8 folders in the mount set")
 seen = set()
 out = []
 mounts = d.get("mounts") or []
 if not isinstance(mounts, list):
     sys.exit("the mounts are not a list")
+if len(mounts) > 8:
+    sys.exit("more than 8 folders in the mount set")
 for m in mounts:
     if not isinstance(m, dict):
         sys.exit("a mount is not an object")
