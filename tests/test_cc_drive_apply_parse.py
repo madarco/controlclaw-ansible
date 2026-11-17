@@ -47,6 +47,7 @@ class Parse(unittest.TestCase):
     def test_not_an_object_a_link_or_a_fifo(self):
         self.assertEqual(self.parse([]).returncode, 1)
         (self.dir / 'real.json').write_text(json.dumps(GOOD))
+        (self.dir / 'drive.json').unlink()
         (self.dir / 'drive.json').symlink_to(self.dir / 'real.json')
         self.assertEqual(self.parse(None).returncode, 1, 'not through a link')
         (self.dir / 'drive.json').unlink()
