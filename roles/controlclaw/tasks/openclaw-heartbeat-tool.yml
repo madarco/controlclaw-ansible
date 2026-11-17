@@ -1,0 +1,99 @@
+---
+# heartbeat_respond only for agents whose heartbeat can accept it (controlclaw heartbeat-report.md).
+#
+# OpenClaw 2026.11.x offers the tool on every turn of a heartbeat-enabled agent but accepts a call
+# only when the heartbeat runs in tool mode (a Codex main model, or messages.visibleReplies
+# "message_tool"). Every other agent (Claude, Kimi, an OpenAI-compatible gateway) sees it, calls it,
+# is refused with "heartbeat_respond is only accepted during a heartbeat run", and the chat gets
+# "⚠️ Heartbeat Respond failed" (about one heartbeat in five on 2026.11.3 and 2026.11.4). So those
+# agents get the tool in tools.deny, and a tool-mode agent loses the entry: its heartbeat replies
+# only through the tool, and a real alert would be lost without it.
+#
+# cc-heartbeat-tool decides from openclaw.json the way OpenClaw does and prints the list; only the
+# heartbeat_respond entry moves, anything else in tools.deny stays. The write is `openclaw config
+# set` (a template, a model change or a person may have changed the config since the last run, and
+# this run puts it right). OpenClaw applies it without a restart. 2026.11.5 has no such tool and
+# accepts the entry without a warning, so nothing here depends on the version.
+#
+# NOTHING HERE FAILS THE PLAY, as with web search: a box with the warning is better than a box that
+# did not update.
+- name: Install the heartbeat tool check
+  ansible.builtin.copy:
+    src: cc-heartbeat-tool
+    dest: /usr/local/bin/cc-heartbeat-tool
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Decide whether this agent's heartbeat can use heartbeat_respond
+  ansible.builtin.command:
+    argv: [/usr/local/bin/cc-heartbeat-tool, "{{ controlclaw_home }}/.openclaw/openclaw.json"]
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: openclaw_heartbeat_tool
+  changed_when: false
+  failed_when: false
+
+- name: Read the heartbeat tool decision
+  ansible.builtin.set_fact:
+    openclaw_heartbeat_tool_plan: "{{ openclaw_heartbeat_tool.stdout | from_json }}"
+  when: openclaw_heartbeat_tool.rc == 0 and (openclaw_heartbeat_tool.stdout | default('')).startswith('{')
+
+- name: Say what the heartbeat tool check decided
+  ansible.builtin.debug:
+    msg: >-
+      heartbeat_respond: {{ 'kept (tool mode)' if openclaw_heartbeat_tool_plan.toolMode else 'denied' }}
+      ({{ openclaw_heartbeat_tool_plan.reason }}); tools.deny {{ 'changes' if openclaw_heartbeat_tool_plan.changed else 'is already right' }}.
+  when: openclaw_heartbeat_tool_plan is defined and openclaw_heartbeat_tool_plan.toolMode is not none
+
+- name: Write tools.deny for the heartbeat tool
+  ansible.builtin.command:
+    argv: [/usr/bin/openclaw, config, set, tools.deny, "{{ openclaw_heartbeat_tool_plan.deny | to_json }}", --strict-json]
+    chdir: "{{ controlclaw_home }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  when:
+    - openclaw_heartbeat_tool_plan is defined
+    - openclaw_heartbeat_tool_plan.changed | bool
+    - openclaw_heartbeat_tool_plan.deny is not none
+  register: openclaw_heartbeat_tool_set
+  # The vm-agent may be writing the config at the same moment (a model, a channel): OpenClaw then
+  # refuses this write as changed meanwhile, and a second try a few seconds later goes through.
+  until: openclaw_heartbeat_tool_set.rc == 0
+  retries: 3
+  delay: 5
+  changed_when: openclaw_heartbeat_tool_set.rc == 0
+  failed_when: false
+
+# The entry was the only one: back to unset, as the box was before.
+- name: Unset tools.deny when only the heartbeat entry was in it
+  ansible.builtin.command:
+    argv: [/usr/bin/openclaw, config, unset, tools.deny]
+    chdir: "{{ controlclaw_home }}"
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  environment: "{{ controlclaw_node_env | combine({'HOME': controlclaw_home}) }}"
+  when:
+    - openclaw_heartbeat_tool_plan is defined
+    - openclaw_heartbeat_tool_plan.changed | bool
+    - openclaw_heartbeat_tool_plan.deny is none
+  register: openclaw_heartbeat_tool_unset
+  # The vm-agent may be writing the config at the same moment (a model, a channel): OpenClaw then
+  # refuses this write as changed meanwhile, and a second try a few seconds later goes through.
+  until: openclaw_heartbeat_tool_unset.rc == 0
+  retries: 3
+  delay: 5
+  changed_when: openclaw_heartbeat_tool_unset.rc == 0
+  failed_when: false
+
+- name: Warn when tools.deny could not be written
+  ansible.builtin.debug:
+    msg: >-
+      Could not write tools.deny for heartbeat_respond (rc={{ item.rc }}):
+      {{ (item.stderr | default('') ~ ' ' ~ item.stdout | default('')) | trim | truncate(300) }}.
+      Heartbeats on this agent may still post "Heartbeat Respond failed", or keep a deny they no longer need.
+  loop: "{{ [openclaw_heartbeat_tool_set, openclaw_heartbeat_tool_unset] }}"
+  loop_control:
+    label: "{{ item.cmd | default(['skipped']) | join(' ') }}"
+  when: item.rc | default(0) != 0

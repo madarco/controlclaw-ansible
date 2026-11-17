@@ -1,0 +1,179 @@
+#!/usr/bin/python3 -I
+"""Keep OpenClaw's heartbeat_respond tool away from agents whose heartbeat cannot accept it.
+
+  cc-heartbeat-tool <openclaw.json>
+
+Prints one JSON line: {"toolMode": bool, "deny": [...] | null, "changed": bool, "reason": "..."}.
+`deny` is the tools.deny list the box should have (null: tools.deny unset). Nothing is
+written here; the role writes it with `openclaw config set`, a merge into the config.
+
+Why (controlclaw heartbeat-report.md, 2026-11-17): OpenClaw 2026.11.x offers heartbeat_respond on
+every turn of a heartbeat-enabled agent, but accepts a call only when the heartbeat runs in tool
+mode (shouldUseHeartbeatResponseToolPrompt: the Codex runtime, or messages.visibleReplies
+"message_tool"). A Claude agent sees the tool, calls it, gets "heartbeat_respond is only accepted
+during a heartbeat run", and the chat gets "Heartbeat Respond failed". Denying the tool to those
+agents stops it. A tool-mode agent must keep it: its heartbeat replies only through the tool
+(sourceReplyDeliveryMode message_tool_only), so without it a real alert could be lost.
+
+Tool mode is decided the way OpenClaw decides it, from the config alone:
+  1. messages.visibleReplies "message_tool" is tool mode, "automatic" is not.
+  2. Otherwise the runtime of the model the heartbeat runs on (heartbeat.model, else the main
+     agent's model, else agents.defaults.model): model-scoped agentRuntime (the provider's model
+     entry, the agent's then the defaults' models["provider/model"], then "provider/*"), then
+     models.providers.<provider>.agentRuntime. "codex" is tool mode, any other concrete id is not.
+  3. With no explicit runtime ("auto"), only an openai (or codex) model on OpenAI's own route can
+     run on Codex: not with the codex plugin disabled, the completions adapter, a custom base URL,
+     or an authored request override (on the provider or on its model entry). When it can, the agent is treated as tool mode. A wrong
+     "tool mode" leaves today's warning in place; a wrong "plain mode" could drop a real alert.
+Only the heartbeat_respond entry is ever added or removed; anything else in tools.deny stays. With
+no main model yet (a new box: the model is bound after the role ran) nothing is decided.
+"""
+import json
+import sys
+
+TOOL = 'heartbeat_respond'
+CODEX_PROVIDERS = {'openai', 'codex'}
+OFFICIAL_BASE_URLS = {'https://api.openai.com/v1', 'https://api.openai.com', 'https://chatgpt.com/backend-api/codex'}
+
+
+def obj(value):
+    return value if isinstance(value, dict) else {}
+
+
+def text(value):
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def main_agent(cfg):
+    """The main agent's own entry (agents.entries.main, or the default one in agents.list), or {}."""
+    agents = obj(cfg.get('agents'))
+    entries = agents.get('entries')
+    if isinstance(entries, dict):
+        return obj(entries.get('main'))
+    for entry in agents.get('list') if isinstance(agents.get('list'), list) else []:
+        if isinstance(entry, dict) and (entry.get('id') == 'main' or entry.get('default') is True):
+            return entry
+    return {}
+
+
+def model_ref(value):
+    ref = text(value) if isinstance(value, str) else text(obj(value).get('primary'))
+    return ref.split('@', 1)[0] if ref else None
+
+
+def main_model(cfg):
+    """The model the main agent's heartbeat runs on (`provider/model`, no auth profile).
+
+    resolveHeartbeatModelRef: the heartbeat's own model first, then the agent's, then the defaults.
+    """
+    agent = main_agent(cfg)
+    defaults = obj(obj(cfg.get('agents')).get('defaults'))
+    for value in (obj(agent.get('heartbeat')).get('model'), obj(defaults.get('heartbeat')).get('model'), agent.get('model'), defaults.get('model')):
+        ref = model_ref(value)
+        if ref:
+            return ref
+    return None
+
+
+def runtime_id(policy):
+    rid = text(obj(policy).get('id')) if isinstance(policy, dict) else text(policy)
+    rid = rid.lower() if rid else None
+    return None if rid in (None, 'auto', 'default') else rid
+
+
+def split(ref):
+    provider, _, model_id = ref.partition('/')
+    return provider.lower(), model_id
+
+
+def provider_block(cfg, provider):
+    for key, block in obj(obj(cfg.get('models')).get('providers')).items():
+        if isinstance(key, str) and key.lower() == provider:
+            return obj(block)
+    return {}
+
+
+def model_entry(block, provider, model_id):
+    for entry in block.get('models') or []:
+        if isinstance(entry, dict) and isinstance(entry.get('id'), str) and entry['id'].lower() in (model_id.lower(), f'{provider}/{model_id}'.lower()):
+            return entry
+    return {}
+
+
+def explicit_runtime(cfg, ref):
+    provider, model_id = split(ref)
+    block = provider_block(cfg, provider)
+    rid = runtime_id(model_entry(block, provider, model_id).get('agentRuntime'))
+    if rid:
+        return rid
+    for models in (obj(main_agent(cfg).get('models')), obj(obj(obj(cfg.get('agents')).get('defaults')).get('models'))):
+        lowered = {k.lower(): v for k, v in models.items() if isinstance(k, str)}
+        for key in (f'{provider}/{model_id}'.lower(), f'{provider}/*'):
+            rid = runtime_id(obj(lowered.get(key)).get('agentRuntime'))
+            if rid:
+                return rid
+    return runtime_id(block.get('agentRuntime'))
+
+
+def off_codex_route(route):
+    base = text(route.get('baseUrl'))
+    return route.get('api') == 'openai-completions' or bool(base and base.rstrip('/') not in OFFICIAL_BASE_URLS) or 'request' in route
+
+
+def tool_mode(cfg):
+    """(tool mode?, why) for the main agent's heartbeat, read from openclaw.json."""
+    visible = obj(cfg.get('messages')).get('visibleReplies')
+    if visible == 'message_tool':
+        return True, 'messages.visibleReplies is message_tool'
+    if visible == 'automatic':
+        return False, 'messages.visibleReplies is automatic'
+    ref = main_model(cfg)
+    if not ref:
+        return None, 'no main model yet'
+    rid = explicit_runtime(cfg, ref)
+    if rid:
+        return rid == 'codex', f'{ref} runs on the {rid} runtime'
+    provider, model_id = split(ref)
+    if provider not in CODEX_PROVIDERS:
+        return False, f'{ref} cannot run on Codex'
+    if obj(obj(obj(cfg.get('plugins')).get('entries')).get('codex')).get('enabled') is False:
+        return False, 'the codex plugin is disabled'
+    block = provider_block(cfg, provider)
+    if off_codex_route(block) or off_codex_route(model_entry(block, provider, model_id)):
+        return False, f'{ref} is on a route Codex does not take'
+    return True, f'{ref} may run on Codex'
+
+
+def wanted_deny(cfg, tool):
+    current = obj(cfg.get('tools')).get('deny')
+    have = [x for x in current if isinstance(x, str)] if isinstance(current, list) else []
+    if tool:
+        want = [x for x in have if x != TOOL]
+    else:
+        want = have if TOOL in have else have + [TOOL]
+    # An empty list goes back to unset, as it was before the entry was added.
+    if not want:
+        return None, current is not None
+    return want, want != current
+
+
+def main():
+    try:
+        with open(sys.argv[1], encoding='utf-8') as fh:
+            cfg = json.load(fh)
+        if not isinstance(cfg, dict):
+            raise ValueError('not an object')
+    except (OSError, ValueError, IndexError) as error:
+        print(json.dumps({'toolMode': None, 'deny': None, 'changed': False, 'reason': f'config not read: {error}'[:200]}))
+        return
+    tool, reason = tool_mode(cfg)
+    if tool is None:
+        # A new box: the model is bound after the role ran. The next Update or nightly run decides.
+        print(json.dumps({'toolMode': None, 'deny': None, 'changed': False, 'reason': reason}))
+        return
+    deny, changed = wanted_deny(cfg, tool)
+    print(json.dumps({'toolMode': tool, 'deny': deny, 'changed': changed, 'reason': reason}))
+
+
+if __name__ == '__main__':
+    main()

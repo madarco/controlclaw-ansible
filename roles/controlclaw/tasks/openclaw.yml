@@ -1023,6 +1023,10 @@
 - name: Include the web-search provider setup
   ansible.builtin.include_tasks: openclaw-search.yml
 
+# Before Meet: a Meet step that fails ends the play, and this one should still have run.
+- name: Include the heartbeat tool policy (tools.deny for agents not in tool mode)
+  ansible.builtin.include_tasks: openclaw-heartbeat-tool.yml
+
 - name: Include AgentMail email plugin
   ansible.builtin.include_tasks: openclaw-agentmail.yml
 
