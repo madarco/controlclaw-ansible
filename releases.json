@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.48.0",
+    "date": "2026-11-17",
+    "changes": [
+      "Updating an agent to a new OpenClaw now waits for its conversations to be moved over, however long that takes, instead of stopping it halfway.",
+      "Google Drive folders are mounted outside the agent's workspace, and the agent is told where to find them."
+    ]
+  },
+  {
     "version": "1.47.1",
     "date": "2026-11-16",
     "changes": [
