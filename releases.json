@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.48.1",
+    "date": "2026-11-17",
+    "changes": [
+      "Agents on Claude and other non-ChatGPT models no longer post \"Heartbeat Respond failed\" in their chat after a check-in."
+    ]
+  },
+  {
     "version": "1.48.0",
     "date": "2026-11-17",
     "changes": [
