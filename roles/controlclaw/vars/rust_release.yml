@@ -1,12 +1,12 @@
-# Made by rust/scripts/build-release.sh 1.8.0 from controlclaw d76a7522fd256378743d3a16136bf977113313d2. Do not edit by hand.
+# Made by rust/scripts/build-release.sh 1.8.1 from controlclaw 4cd2f5f989016daf5846a800450042b3794a3f46. Do not edit by hand.
 cc_rust_release:
-  version: "1.8.0"
-  commit: "d76a7522fd256378743d3a16136bf977113313d2"
-  base_url: "https://github.com/madarco/controlclaw-ansible/releases/download/rust-v1.8.0"
+  version: "1.8.1"
+  commit: "4cd2f5f989016daf5846a800450042b3794a3f46"
+  base_url: "https://github.com/madarco/controlclaw-ansible/releases/download/rust-v1.8.1"
   binaries:
-    vm-agent: { asset: "vm-agent-x86_64-linux-musl", sha256: "7b80334a7931106a0cba7ee0a74ef9c0b232386b532a902e1d7abfb2724b10c7" }
-    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "31d93144077242e55e3bea176c5458911a01dc5ff1b014e9007d398ae6e4729d" }
-    cc-proxy: { asset: "cc-proxy-x86_64-linux-musl", sha256: "d2e1a264ecf7140d2dfa2d0f45cbb7fe90d9554bce6e61c0ae940213f3f3a891" }
+    vm-agent: { asset: "vm-agent-x86_64-linux-musl", sha256: "46708808438ebe7d3f462efc95b27971c5a297a058167d27f478ab861f118a11" }
+    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "324b751fc6e37216cf90273c2d02bac7a35c6bdfa711e828b87615436caa48a2" }
+    cc-proxy: { asset: "cc-proxy-x86_64-linux-musl", sha256: "ca2cc8afc8be021160d2c64faec56cd3247c436071568a965427dba4c255fbb1" }
     cc-migrate: { asset: "cc-migrate-x86_64-linux-musl", sha256: "195afe3a4bc2665b78dced52da6422c98366300bd44eb697b87bf9e99ac56084" }
   ui:
     app.css: { asset: "mitm-agent-ui-app.css", sha256: "e9b3248a2634b7abda68585a956cba011f266e788378195ae640c7c5782819ae" }
@@ -17,7 +17,7 @@ cc_rust_release:
     panel.css: { asset: "mitm-agent-ui-panel.css", sha256: "89c39efddf090999688b97f34d93d5badbc9986cea23c80176763daae9cd37e1" }
     connector-icons.pack: { asset: "mitm-agent-ui-connector-icons.pack", sha256: "a2893c845676cf4823bf60259e9d675b56a076262858cbd6fa5121a97c0daa21" }
   binaries_aarch64:
-    vm-agent: { asset: "vm-agent-aarch64-linux-musl", sha256: "1911b6c96ea75f6719ddb42517208de53acdaf1916c91b8c05a4bc1481f757f3" }
-    mitm-agent: { asset: "mitm-agent-aarch64-linux-musl", sha256: "4274b8df7862b5d0765de3a1ebcbcd5847b48eb0df1ee0215945adc8dda360fb" }
-    cc-proxy: { asset: "cc-proxy-aarch64-linux-musl", sha256: "0767ffd0fe84f5082173419ba75d5fbda3eabc1744613dbb6f293c6da466978a" }
+    vm-agent: { asset: "vm-agent-aarch64-linux-musl", sha256: "611e2c1484050f9a48bb915cc790e93284f0f5d5b702b9377d72f94b9845f9f7" }
+    mitm-agent: { asset: "mitm-agent-aarch64-linux-musl", sha256: "8131ae09d868be42c69c796db8d56811e4060ea5b4bde250059ac77d3ac0ee7d" }
+    cc-proxy: { asset: "cc-proxy-aarch64-linux-musl", sha256: "dbf8c80258adedf900f5208d2dd48a866a4089fc1d3e28f4c4d6da097ed6e955" }
     cc-migrate: { asset: "cc-migrate-aarch64-linux-musl", sha256: "b952eb0d79548fbcc47ee363a8dcf85d96333eb6a4eacf9165669d9aa79d64c9" }
