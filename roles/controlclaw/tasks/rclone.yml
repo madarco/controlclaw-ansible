@@ -91,6 +91,21 @@
 # 0750 root:controlclaw — the agent may traverse to read nothing in particular, and may not write.
 # A mount's config names the folder the agent is allowed to see; letting the agent rewrite it would
 # let a compromised box point a mount at the rest of the Drive the token can reach.
+#
+# `follow: false`: /opt/controlclaw is the box user's, who could rename this folder away and put a link
+# in its place; root must not chown and chmod whatever that points to. A link there stops the play
+# here, before the cache folder is made through it.
+- name: Drive folders | Read what is at the mount config folder's place
+  ansible.builtin.stat:
+    path: "{{ drive_state_dir }}"
+    follow: false
+  register: drive_state_place
+
+- name: Drive folders | Refuse a link in place of the mount config folder
+  ansible.builtin.fail:
+    msg: "{{ drive_state_dir }} is a link; not making the Drive folders' config through it"
+  when: drive_state_place.stat.islnk | default(false)
+
 - name: Drive folders | Create the mount config and cache directory
   ansible.builtin.file:
     path: "{{ item }}"
@@ -98,23 +113,35 @@
     owner: root
     group: "{{ controlclaw_user }}"
     mode: '0750'
+    follow: false
   loop:
     - "{{ drive_state_dir }}"
     - "{{ drive_state_dir }}/cache"
-    # Where cc-drive-apply puts anything it found sitting in a mountpoint before mounting over it.
-    - "{{ drive_state_dir }}/stranded"
 
 # Owned by the agent: fusermount3 refuses a mountpoint its caller cannot write, so a root-owned
 # mount root would mean no mount at all. The hazard that leaves — the agent writing into an
 # unmounted directory and having those writes shadowed by a later mount — is handled in
-# cc-drive-apply, which moves anything it finds into `stranded/` rather than mounting over it.
-- name: Drive folders | Create the mount root inside the workspace
+# cc-drive-apply, which moves anything it finds into ~/drive-stranded/ rather than mounting over it.
+#
+# Made as the agent, in its home, never by root: a link the agent put at that path would otherwise make
+# root create or chown whatever it points to (`follow: false` stops at the link and fails the task).
+- name: Drive folders | Create the mount root
   ansible.builtin.file:
     path: "{{ drive_mount_root }}"
     state: directory
-    owner: "{{ controlclaw_user }}"
-    group: "{{ controlclaw_user }}"
     mode: '0755'
+    follow: false
+  become: true
+  become_user: "{{ controlclaw_user }}"
+  register: drive_mount_root_made
+  # Something else at that path (a link the agent made, say) must not stop every Update from here on:
+  # the Drive folders are not mounted (cc-drive-apply refuses the same path and says so), the rest goes on.
+  failed_when: false
+
+- name: Drive folders | Say why the mount root could not be made
+  ansible.builtin.debug:
+    msg: "{{ drive_mount_root }}: {{ drive_mount_root_made.msg | default('') | truncate(300) }}; the Drive folders are not mounted until it is a folder of the agent's"
+  when: (drive_mount_root_made.state | default('')) != 'directory'
 
 # One target so the mounts can be ordered against OpenClaw as a group, started and stopped as a
 # group, and enumerated without parsing unit names.
@@ -208,3 +235,66 @@
     owner: root
     group: root
     mode: '0755'
+
+# Boxes from before T-oc114 have their folders mounted in the workspace (Drive/<name>). The reconcile
+# moves each mount to the new root and removes the old folder; it is run here, on the Update, before
+# openclaw.yml's migration, whose doctor would otherwise open every file in them. Only when there is
+# something to move: a mount or a mount's config still pointing into the workspace, or an old folder
+# with no file in it (the role made one on every box). One with the agent's own files in it is left.
+- name: Drive folders | Look for folders still in the workspace
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: >-
+      findmnt -rno TARGET | grep -qF {{ (drive_legacy_mount_root ~ '/') | quote }} && echo mounted;
+      grep -ls '^CC_DRIVE_MOUNTPOINT={{ drive_legacy_mount_root }}/' {{ drive_state_dir | quote }}/*.env 2>/dev/null | head -1;
+      test -d {{ drive_legacy_mount_root | quote }} && ! test -L {{ drive_legacy_mount_root | quote }}
+      && test -z "$(find {{ drive_legacy_mount_root | quote }} -mindepth 1 ! -type d -print -quit 2>/dev/null)" && echo empty;
+      true
+  register: drive_legacy
+  changed_when: false
+  # For at most 30 s: the files it reads are in folders the box user owns, where a FIFO would block.
+  # Given up, it finds nothing to move, and the Update goes on.
+  timeout: 30
+  failed_when: false
+
+# As the same unit the vm-agent starts it in (systemd-run --unit=cc-drive-apply), so the two never
+# reconcile at once: while one from the vm-agent runs, the name is taken and this waits for it. The
+# vm-agent's own start is refused while this one runs, and it counts on the run in flight to apply
+# what it just wrote: so a drive.json written during this run gets one more.
+- name: Drive folders | Move them out of the workspace
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      # cc-drive-apply's DESIRED, which the vm-agent writes before it starts a run.
+      desired=/opt/controlclaw/state/drive.json
+      apply() {
+        for _ in $(seq 1 60); do
+          if ! systemctl is-active --quiet cc-drive-apply.service; then
+            systemctl reset-failed cc-drive-apply.service 2>/dev/null
+            systemd-run --unit=cc-drive-apply --wait --collect --pipe --quiet /usr/local/bin/cc-drive-apply </dev/null && return 0
+            rc=$?
+            systemctl is-active --quiet cc-drive-apply.service || return $rc
+          fi
+          sleep 5
+        done
+        echo "a Drive reconcile from the vm-agent was still running after 5 minutes" >&2
+        return 1
+      }
+      # By content: a rewrite within the same second and of the same size (read-only to read-write) is
+      # a change too. Read as the box user, whose file it is, and for at most 10 s: a FIFO or a device
+      # in its place must not hang the Update.
+      digest() { timeout 10 runuser -u {{ controlclaw_user | quote }} -- sha256sum -- "$desired" 2>/dev/null; }
+      before=$(digest)
+      apply || exit $?
+      [ "$(digest)" = "$before" ] || apply
+  when: drive_legacy.stdout | default('') | trim | length > 0
+  register: drive_moved
+  changed_when: true
+  # A Drive folder that cannot be moved must not stop the Update: the migration's own check refuses
+  # to run doctor while a network mount is in the state folder, and says so.
+  failed_when: false
+
+- name: Drive folders | Say what the move did
+  ansible.builtin.debug:
+    msg: "{{ (drive_moved.stderr | default('') | trim) or 'moved' }}"
+  when: drive_moved is changed

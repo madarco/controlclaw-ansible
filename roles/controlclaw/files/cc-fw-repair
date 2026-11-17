@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Firewall Doctor's repair actions (controlclaw docs/plans/doctor-rescue.md, Phase 2): the one root
 helper the mitm-agent runs on behalf of a confirmed Firewall Doctor session.
 

@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Runs without privilege inside the session unit; tmux and CLI share its cgroup."""
 import json, os, re, shlex, socket as sockets, subprocess, sys, threading, time
 from pathlib import Path

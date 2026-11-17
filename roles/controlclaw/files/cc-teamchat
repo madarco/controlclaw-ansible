@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 """Team chat (ClickClack) on the firewall: the one root helper the mitm-agent may run.
 
 Granted by one sudoers line (tasks/teamchat.yml). Every argument is checked against a narrow pattern

@@ -1,0 +1,423 @@
+#!/usr/bin/python3 -I
+"""Run OpenClaw's state migration (`openclaw doctor --fix`) for as long as it takes, say how far it is,
+and tell whether the agent databases are now at the schema the installed OpenClaw needs (T-oc114).
+
+  cc-openclaw-migrate [--gateway] <home> [<user>]
+  cc-openclaw-migrate --check <home>
+
+The gateway is stopped and held stopped for the run. --gateway: start it afterwards, only when every
+database is current (for a person or the Doctor session; the role starts it itself). --check: run
+nothing, say whether a migration is still owed (exit 3) or not (0); the role asks it on every Update,
+so an Update after a failed one finishes the migration even though nothing new is installed.
+
+A migration of a large agent database is slow: 120 MB of sessions on a 2-vCPU box took longer than
+the 900 s the role used to give it, the run was killed halfway, and the gateway then refused the
+database at every start. So there is no short limit here, only a ceiling for a run that hangs
+(CC_MIGRATE_LIMIT_S, default 6 h). Every 30 s the Update's state file gets a fresh detail and time,
+so the console shows the migration and does not call a silent Update failed after 45 minutes.
+
+Doctor's exit code is not the verdict: from 2026.11.4 it exits 1 after a migration that worked,
+because it cannot restart our system unit. The verdict is the databases' own schema version against
+the one the installed OpenClaw declares (OPENCLAW_AGENT_SCHEMA_VERSION in its build).
+
+Nothing may start the gateway while doctor runs: 11.4's doctor refuses maintenance when the
+gateway it is working on comes back (service-ownership-unverified), and the vm-agent's watchdog, its
+restarts or a person pressing Start can do that. Nor after a migration that did not finish: the
+gateway would refuse the database every two seconds. The role's drop-in on openclaw.service
+(cc-hold.conf) skips every start while either marker below exists: HOLD for the run (in /run, gone at
+the next boot whatever happens), UNMIGRATED while a database is behind (kept across a reboot, removed
+by the run that brings every database up; in /var/lib/controlclaw-openclaw, root's alone). `systemctl mask --runtime` does not do this: its link in
+/run loses to the unit file in /etc/systemd/system, and a start still starts it (systemd 255).
+
+Doctor is not started while a network or FUSE mount is under the state folder. From 2026.11.3 its
+pre-repair capture walks the whole state folder, the workspace included, and opens every file to read
+its first 16 bytes; on an agent whose Google Drive folders were mounted in the workspace each open
+was a download, and doctor ran for hours (family, 2026-11-16). Drive folders are mounted outside it
+now (/home/controlclaw/drive); the agent is told where in ControlClaw's instructions
+(cc-instructions).
+
+Prints one JSON line and exits 0 when every configured agent database is current, 3 when one is not
+(the gateway would refuse it: do not start it), 4 when doctor hit the ceiling, 5 when a network
+mount is under the state folder (doctor not run), 6 when the gateway could not be held (doctor not
+run), 2 on bad use. With --check: 3 when a database is
+behind or an earlier run left UNMIGRATED, else 0.
+"""
+import glob
+import json
+import os
+import pwd
+import re
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+OPENCLAW = os.environ.get('CC_OPENCLAW_DIR', '/usr/lib/node_modules/openclaw')
+STATE = os.environ.get('CC_UPDATE_STATE', '/opt/controlclaw/state/update.json')
+CA = os.environ.get('CC_MITM_CA', '/usr/local/share/ca-certificates/controlclaw-mitm.crt')
+LOG = os.environ.get('CC_MIGRATE_LOG', '/var/log/controlclaw-openclaw-migrate.log')
+LIMIT = int(os.environ.get('CC_MIGRATE_LIMIT_S', str(6 * 3600)))
+EVERY = int(os.environ.get('CC_MIGRATE_EVERY_S', '30'))
+DOCTOR = os.environ.get('CC_MIGRATE_DOCTOR')  # tests: a command line to run instead of doctor
+HOLD = os.environ.get('CC_MIGRATE_HOLD', '/run/controlclaw-openclaw-migrating')
+# Root's alone (0700), on the plain disk. Not /opt/controlclaw/state: the box user owns
+# /opt/controlclaw and can put a link in place of any folder or file in it, and a root write through
+# that link lands wherever it points. What is written here holds no path and nothing of the agent's.
+PRIVATE = os.environ.get('CC_MIGRATE_DIR', '/var/lib/controlclaw-openclaw')
+UNMIGRATED = os.path.join(PRIVATE, 'unmigrated')
+CACHE = os.path.join(PRIVATE, 'schema.json')
+
+
+def private_dir():
+    """PRIVATE, made if missing; None when it is not a folder of this process's own (a link, say)."""
+    try:
+        os.makedirs(PRIVATE, mode=0o700, exist_ok=True)
+        st = os.lstat(PRIVATE)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+        return None
+    return PRIVATE
+
+
+def write_private(path, text):
+    """`text` to a file of PRIVATE, through a temporary file of its own there and a rename."""
+    folder = private_dir()
+    if folder is None or os.path.dirname(path) != folder:
+        raise OSError(f'{PRIVATE} is not a folder of root\'s')
+    fd, tmp = tempfile.mkstemp(dir=folder)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+USER = 'controlclaw'
+WRITE_OWNED = os.environ.get('CC_WRITE_OWNED', '/usr/local/lib/controlclaw/cc-write-owned')
+
+
+def write_as_owner(path, text):
+    """`text` to `path` in a folder another user may own (the box user's /opt/controlclaw/state), by
+    cc-write-owned: as that folder's owner, relative to the folder opened once, never through a link."""
+    try:
+        return subprocess.run([WRITE_OWNED, path], input=text, text=True, capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def required_versions(root):
+    """The schema versions the installed OpenClaw needs, read from its build: {'agent': 27, 'state': 22}.
+    Empty when the build does not say (renamed or inlined constants): nothing is judged here, and the
+    role's /readyz check after the start is what catches a database the gateway refuses. Kept per
+    installed version (CACHE), since the role asks on every Update and the build is tens of MB."""
+    try:
+        with open(os.path.join(root, 'package.json')) as f:
+            installed = json.load(f).get('version')
+    except (OSError, ValueError):
+        installed = None
+    if installed:
+        try:
+            with open(CACHE) as f:
+                cached = json.load(f)
+            if cached.get('openclaw') == installed and isinstance(cached.get('required'), dict):
+                return cached['required']
+        except (OSError, ValueError):
+            pass
+    found = scan_versions(root)
+    if installed and len(found) == 2:
+        try:
+            write_private(CACHE, json.dumps({'openclaw': installed, 'required': found}))
+        except OSError:
+            pass
+    return found
+
+
+def scan_versions(root):
+    found = {}
+    for path in glob.glob(os.path.join(root, 'dist', '**', '*.mjs'), recursive=True) + glob.glob(os.path.join(root, 'dist', '**', '*.js'), recursive=True):
+        try:
+            with open(path, encoding='utf-8', errors='replace') as f:
+                text = f.read()
+        except OSError:
+            continue
+        for kind, name in (('agent', 'OPENCLAW_AGENT_SCHEMA_VERSION'), ('state', 'OPENCLAW_STATE_SCHEMA_VERSION')):
+            m = re.search(name + r'\s*=\s*(\d+)', text)
+            if m:
+                found[kind] = max(found.get(kind, 0), int(m.group(1)))
+        if len(found) == 2:
+            break
+    return found
+
+
+def read_regular(path, limit, follow=True):
+    """A regular file's bytes, at most `limit`; None for anything else. The box user owns these paths:
+    a FIFO or a device in a file's place must not block or never end this root process."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | (0 if follow else os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+            return None
+        with os.fdopen(fd, 'rb') as f:
+            fd = None
+            return f.read(limit + 1)[:limit]
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def configured_agent_databases(home):
+    """The agent databases the gateway admits: one per configured agent, as OpenClaw places them.
+    A leftover agents/<id>/ the config does not name is skipped by the gateway too ("not a configured
+    target"), so it does not count here."""
+    state = os.path.join(home, '.openclaw')
+    # Not through a link: opening a device (a watchdog, a serial line) has effects of its own.
+    raw = read_regular(os.path.join(state, 'openclaw.json'), 10_000_000, follow=False)
+    try:
+        config = json.loads(raw) if raw is not None else {}
+        agents = (config.get('agents') or {}) if isinstance(config, dict) else {}
+    except ValueError:
+        agents = {}
+    if not isinstance(agents, dict):
+        agents = {}
+    dirs = {}
+    entries = agents.get('entries')
+    if isinstance(entries, dict):
+        for agent_id, entry in entries.items():
+            dirs[agent_id] = (entry or {}).get('agentDir') if isinstance(entry, dict) else None
+    listed = agents.get('list')
+    if isinstance(listed, list):
+        for entry in listed:
+            if isinstance(entry, dict) and entry.get('id'):
+                dirs.setdefault(entry['id'], entry.get('agentDir'))
+    dirs.setdefault('main', None)
+    paths = []
+    for agent_id, agent_dir in sorted(dirs.items()):
+        agent_dir = agent_dir or os.path.join(state, 'agents', agent_id, 'agent')
+        path = os.path.join(os.path.expanduser(agent_dir), 'openclaw-agent.sqlite')
+        if os.path.exists(path):
+            paths.append(path)
+    return paths
+
+
+# The schema versions of the given databases, as JSON, read by the box user: the paths come from
+# the agent's own config and folders, so root does not open them (a link, or a file made to attack
+# SQLite's parser, and SQLite creates a -shm file next to a WAL database).
+VERSIONS = '''import json, sqlite3, sys
+out = {}
+for path in json.load(sys.stdin):
+    try:
+        con = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=30)
+        try:
+            out[path] = con.execute('pragma user_version').fetchone()[0]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        out[path] = None
+print(json.dumps(out))
+'''
+
+
+def user_versions(paths, user):
+    """{path: schema version or None}, read as `user` when this runs as root."""
+    if not paths:
+        return {}
+    argv = [sys.executable, '-c', VERSIONS]
+    if os.geteuid() == 0 and user and user != 'root':
+        argv = ['runuser', '-u', user, '--', '/usr/bin/python3', '-c', VERSIONS]
+    try:
+        r = subprocess.run(argv, input=json.dumps(paths), text=True, capture_output=True, timeout=120)
+        return json.loads(r.stdout) if r.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {}
+
+
+def pending(home, required, user=None):
+    out = []
+    agents = configured_agent_databases(home) if 'agent' in required else []
+    state_db = os.path.join(home, '.openclaw', 'state', 'openclaw.sqlite')
+    states = [state_db] if 'state' in required and os.path.exists(state_db) else []
+    versions = user_versions(agents + states, user or USER)
+    for path in agents:
+        v = versions.get(path)
+        if v is not None and v < required['agent']:
+            out.append({'path': path, 'version': v, 'needs': required['agent']})
+    for path in states:
+        v = versions.get(path)
+        if v is not None and v < required['state']:
+            out.append({'path': path, 'version': v, 'needs': required['state']})
+    return out
+
+
+def say(detail):
+    """A fresh detail and time in the Update's state file, only while an Update is running."""
+    raw = read_regular(STATE, 1_000_000, follow=False)
+    try:
+        current = json.loads(raw) if raw is not None else None
+    except ValueError:
+        return
+    if not isinstance(current, dict) or current.get('phase') not in ('resolving', 'installing', 'running'):
+        return
+    current.update(detail=detail, at=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
+    write_as_owner(STATE, json.dumps(current) + '\n')
+
+
+NETWORK_FS = re.compile(r'^(fuse(\..*)?|fuseblk|nfs4?|cifs|smb3?|sshfs|9p|davfs|ceph|glusterfs|afs)$')
+SYSTEMCTL = os.environ.get('CC_SYSTEMCTL', 'systemctl')
+MOUNTINFO = os.environ.get('CC_MOUNTINFO', '/proc/self/mountinfo')
+
+
+def network_mounts_under(roots):
+    """Network and FUSE mount points at or below any of `roots`, deepest first."""
+    roots = [os.path.realpath(r) for r in roots]
+    found = []
+    try:
+        with open(MOUNTINFO) as f:
+            for line in f:
+                left, _, right = line.partition(' - ')
+                point = left.split()[4].encode().decode('unicode_escape')
+                fstype = right.split()[0] if right else ''
+                if NETWORK_FS.match(fstype) and any(point == r or point.startswith(r + '/') for r in roots):
+                    found.append(point)
+    except OSError:
+        pass
+    return sorted(set(found), key=len, reverse=True)
+
+
+def systemctl(*args):
+    return subprocess.run([SYSTEMCTL, *args], capture_output=True, text=True)
+
+
+def mark(path, on, why=None):
+    """Create or remove a marker the gateway's start condition reads. False when that failed. HOLD is
+    in /run and UNMIGRATED in PRIVATE, both root's; neither is opened through a link."""
+    try:
+        text = (json.dumps(why) if why is not None else '') + '\n'
+        if on and path == UNMIGRATED:
+            write_private(path, text)
+        elif on:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, 'w') as f:
+                f.write(text)
+        else:
+            os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f'cc-openclaw-migrate: {path}: {e}', file=sys.stderr)
+        return False
+    return True
+
+
+def check(home):
+    behind = pending(home, required_versions(OPENCLAW))
+    owed = bool(behind) or os.path.exists(UNMIGRATED)
+    print(json.dumps({'pending': behind, 'unmigrated_marker': os.path.exists(UNMIGRATED)}))
+    return 3 if owed else 0
+
+
+def main():
+    flags = {a for a in sys.argv[1:] if a.startswith('--')}
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    if not args or flags - {'--gateway', '--check'}:
+        print('usage: cc-openclaw-migrate [--gateway] <home> [<user>] | --check <home>', file=sys.stderr)
+        return 2
+    home = args[0]
+    if '--check' in flags:
+        return check(home)
+    gateway = '--gateway' in flags
+    user = args[1] if len(args) > 1 else 'controlclaw'
+    global USER
+    USER = user
+    left = network_mounts_under([os.path.join(home, '.openclaw')])
+    if left:
+        behind = pending(home, required_versions(OPENCLAW))
+        print(json.dumps({'doctor_exit': None, 'seconds': 0, 'network_mounts': left, 'pending': behind}))
+        # Nothing to migrate: doctor is skipped, and the gateway starts as it would have.
+        if not behind:
+            mark(UNMIGRATED, False)
+            if gateway:
+                systemctl('start', 'openclaw')
+            return 0
+        mark(UNMIGRATED, True, {'exit': 5, 'network_mounts': len(left)})
+        systemctl('stop', 'openclaw')
+        return 5
+    # The hold first, then the stop: a start between the two would otherwise go through. No doctor
+    # without it: the gateway could be started under it.
+    if not mark(HOLD, True):
+        print(json.dumps({'doctor_exit': None, 'seconds': 0, 'error': f'could not create {HOLD}'}))
+        return 6
+    try:
+        systemctl('stop', 'openclaw')
+        code, result = run(home, user)
+        if code == 0:
+            mark(UNMIGRATED, False)
+        elif not mark(UNMIGRATED, True, {'exit': code, 'pending': len(result.get('pending') or []), 'timed_out': result.get('timed_out')}):
+            # Nothing would keep the gateway from being started on the old database after this run:
+            # it is disabled at least (the watchdog looks after an enabled unit only).
+            systemctl('disable', 'openclaw')
+    finally:
+        mark(HOLD, False)
+    if gateway and code == 0:
+        # An Update that could not migrate left it disabled (openclaw-unmigrated.yml).
+        systemctl('enable', 'openclaw')
+        systemctl('start', 'openclaw')
+    return code
+
+
+def run(home, user):
+    required = required_versions(OPENCLAW)
+    before = pending(home, required)
+    env = {'HOME': home, 'PATH': '/usr/bin:/bin:/usr/local/bin'}
+    if os.path.exists(CA):
+        env['NODE_EXTRA_CA_CERTS'] = CA
+    if DOCTOR:
+        argv = ['/bin/sh', '-c', DOCTOR]
+    else:
+        argv = ['sudo', '-u', user, '-H', 'env'] + [f'{k}={v}' for k, v in env.items()] + ['/usr/bin/openclaw', 'doctor', '--fix', '--non-interactive']
+    started = time.time()
+    with open(LOG, 'a') as log:
+        os.chmod(LOG, 0o600)
+        log.write(f'\n=== {time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())} openclaw doctor --fix ({len(before)} database(s) to migrate)\n')
+        log.flush()
+        proc = subprocess.Popen(argv, cwd=home, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        timed_out = False
+        while True:
+            try:
+                proc.wait(timeout=EVERY)
+                break
+            except subprocess.TimeoutExpired:
+                minutes = int((time.time() - started) / 60)
+                if time.time() - started > LIMIT:
+                    timed_out = True
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=60)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                        proc.wait()
+                    break
+                say(f"Moving the agent's conversations to the new OpenClaw: {minutes} min so far" if before
+                    else f'Checking the agent with the new OpenClaw: {minutes} min so far')
+    seconds = round(time.time() - started)
+    after = pending(home, required)
+    result = {'doctor_exit': proc.returncode, 'seconds': seconds, 'required': required, 'pending_before': before, 'pending': after, 'timed_out': timed_out}
+    print(json.dumps(result))
+    if timed_out:
+        return 4, result
+    return (3 if after else 0), result
+
+
+if __name__ == '__main__':
+    sys.exit(main())

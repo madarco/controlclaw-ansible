@@ -12,6 +12,9 @@
 # On the firewall the restart is not the expensive part: the whole run is an org-wide outage,
 # because the org's agents reach the internet, DNS and the permission bridge only through this box.
 set -uo pipefail
+# Run as root, from any folder the caller likes (sudo): nothing may be read from there. Every
+# inline Python is -I as well (no working folder on its import path).
+cd /
 
 CONF=/etc/controlclaw/update.conf
 STATE=/opt/controlclaw/state/update.json
@@ -23,16 +26,28 @@ MIN_AGE_HOURS=24
 
 # The state file is what the console shows. Written at every step, world-readable (it holds no
 # secret: a phase, an exit code and a task name).
+#
+# A file in a folder the box user may own, written by cc-write-owned (as that folder's owner, relative
+# to the folder opened once, a link replaced and never followed). Nothing without it.
+write_owned() {
+  if [ -x /usr/local/lib/controlclaw/cc-write-owned ]; then
+    /usr/local/lib/controlclaw/cc-write-owned "$1"
+  else
+    cat >/dev/null
+    logger -t "$(basename "$0")" "not writing $1: cc-write-owned is not installed yet"
+    return 1
+  fi
+}
 say() {
   local phase="$1" detail="${2:-}"
   printf '{"phase":%s,"detail":%s,"ref":%s,"at":%s,"reboot":%s}\n' \
     "$(json "$phase")" "$(json "$detail")" "$(json "${REF:-}")" "$(json "$(date -u +%FT%TZ)")" "${REBOOT:-false}" \
-    > "$STATE".tmp && mv "$STATE".tmp "$STATE"
+    | write_owned "$STATE"
   logger -t cc-reprovision "$phase${detail:+: $detail}"
 }
 
 # Minimal JSON string escaping — enough for the phases and error lines we emit.
-json() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
+json() { printf '%s' "$1" | python3 -I -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 
 die() { say failed "$1"; exit 1; }
 
@@ -89,7 +104,8 @@ case "$ROLE" in
   *) die "box role $ROLE does not update in place" ;;
 esac
 
-mkdir -p "$(dirname "$STATE")"
+# Only when there is nothing there: never through a link the box user put in its place.
+[ -e "$(dirname "$STATE")" ] || [ -L "$(dirname "$STATE")" ] || mkdir -p "$(dirname "$STATE")"
 say resolving
 if [ "${CC_UPDATE_MODE:-}" = auto ]; then
   [[ "${CC_UPDATE_DEADLINE:-}" =~ ^[0-9]{1,10}$ ]] || die "missing automatic update deadline"
@@ -132,7 +148,7 @@ else
   until=$(date -u -d "-${MIN_AGE_HOURS} hours" +%FT%TZ 2>/dev/null) || die "cannot compute the cutoff"
   api="https://api.github.com/repos/${slug}/commits?until=${until}&per_page=1${ANSIBLE_BRANCH:+&sha=$ANSIBLE_BRANCH}"
   REF=$(curl -fsSL --max-time 30 -H 'Accept: application/vnd.github+json' "$api" \
-        | python3 -c 'import json,sys; c=json.load(sys.stdin); print(c[0]["sha"] if c else "")') \
+        | python3 -I -c 'import json,sys; c=json.load(sys.stdin); print(c[0]["sha"] if c else "")') \
     || die "could not reach GitHub to find a commit at least ${MIN_AGE_HOURS}h old"
   # Fail closed. No commit old enough, or no answer, means no update — never fall back to HEAD.
   [ -n "$REF" ] || die "no commit on ${ANSIBLE_BRANCH:-the default branch} is at least ${MIN_AGE_HOURS}h old yet"
@@ -151,24 +167,54 @@ fi
 # runs no Caddy, so demanding one there would make its update fail on the first check; one that has
 # a name must keep it, or caddy.yml stops Caddy on the update and the firewall's webhook and Open
 # routes go dark. It is read the same way as a brain's.
-read_key() { [ -r "$KEYS/$1" ] && tr -d '\n' < "$KEYS/$1"; }
-# A PEM goes back with its line breaks, re-folded: the role writes these straight back to the keys
-# dir, and OpenSSL cannot read a PEM that is all on one line. read_key used to flatten them, which
-# made an agent refuse its own firewall's CA after every update (T-88, real box 2026-09-30), and a
-# box updated then still holds the flat copy, so passing the file through unchanged is not enough.
-read_pem() {
-  [ -r "$KEYS/$1" ] || return 0
-  python3 -c '
-import re, sys, textwrap
-s = open(sys.argv[1]).read()
-m = re.search(r"-----BEGIN ([A-Z0-9 ]+)-----(.*?)-----END \1-----", s, re.S)
-if not m:
-    sys.stdout.write(s.strip())
-else:
-    body = "\n".join(textwrap.wrap(re.sub(r"\s+", "", m.group(2)), 64))
-    sys.stdout.write("-----BEGIN %s-----\n%s\n-----END %s-----" % (m.group(1), body, m.group(1)))
-' "$KEYS/$1"
+# The keys folder is the box user's (it owns /opt/controlclaw and the folder), and what is read here
+# goes into `ansible-pull -e`, which Ansible templates: a `{{ … }}` in a key would run as root. So a key
+# is read once, by a descriptor (the folder and the file opened without following a link, a regular
+# file, non-blocking, at most 64 KiB, for at most 5 s), and handed on only when it has the shape the
+# role wrote: a hostname, an id, an https URL, a private address, a PEM. Anything else reads as empty.
+key_read() {
+  timeout 5 python3 -I - "$KEYS" "$1" "$2" <<'PY'
+import os, re, stat, sys, textwrap
+
+folder, name, kind = sys.argv[1:]
+URL = r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/%-]*)?"
+SHAPES = {
+    "vm_id": r"[A-Za-z0-9_-]{1,64}",
+    "org_id": r"[A-Za-z0-9_-]{1,64}",
+    "vm_hostname": r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?",
+    "mitm_box_private_ip": r"[0-9]{1,3}(\.[0-9]{1,3}){3}",
+    "controlclaw_url": URL, "config_api_url": URL, "ready_api_url": URL, "register_api_url": URL,
 }
+try:
+    dfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+        sys.exit(0)
+    text = os.read(fd, 65537).decode("ascii")
+except (OSError, UnicodeDecodeError):
+    sys.exit(0)
+if kind == "pem":
+    # A PEM goes back with its line breaks, re-folded: the role writes these straight back to the keys
+    # dir, and OpenSSL cannot read a PEM that is all on one line. read_key used to flatten them, which
+    # made an agent refuse its own firewall's CA after every update (T-88, real box 2026-09-30), and a
+    # box updated then still holds the flat copy, so passing the file through unchanged is not enough.
+    m = re.fullmatch(r"\s*-----BEGIN ([A-Z0-9 ]{1,40})-----([A-Za-z0-9+/=\s]+)-----END \1-----\s*", text)
+    if m:
+        body = "\n".join(textwrap.wrap(re.sub(r"\s+", "", m.group(2)), 64))
+        sys.stdout.write("-----BEGIN %s-----\n%s\n-----END %s-----" % (m.group(1), body, m.group(1)))
+    else:
+        print(f"cc-reprovision: {name} is not a PEM; not used", file=sys.stderr)
+else:
+    value = text.replace("\n", "")
+    if re.fullmatch(SHAPES.get(name, r"(?!)"), value):
+        sys.stdout.write(value)
+    elif value:
+        print(f"cc-reprovision: {name} does not have the shape the role writes; not used", file=sys.stderr)
+PY
+}
+read_key() { key_read "$1" text; }
+read_pem() { key_read "$1" pem; }
 
 VM_ID=$(read_key vm_id)
 [ -n "$VM_ID" ] || die "this box has no vm_id on disk"
@@ -208,7 +254,7 @@ vars=$(BOX_ROLE="$ROLE" VM_ID="$VM_ID" VM_HOSTNAME="$VM_HOSTNAME" PROXY_IP="${PR
   MITM_IP="$(read_key mitm_box_private_ip)" MITM_PUB="$(read_pem mitm_pinned_pubkey.pem)" \
   ORG_ID="$ORG_ID" CONTROLCLAW_URL="$CONTROLCLAW_URL" \
   MITM_PRIVATE_SUBNET="${MITM_PRIVATE_SUBNET:-}" MITM_PUBLIC_IFACE="${MITM_PUBLIC_IFACE:-}" \
-  python3 -c '
+  python3 -I -c '
 import json, os
 role = os.environ["BOX_ROLE"]
 v = {"vm_id": os.environ["VM_ID"], "box_role": role}
@@ -255,10 +301,23 @@ failure_detail() {
   local log="$1" start="$2" rc="$3" task reason
   task=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | grep -a '^TASK \[' | tail -1 | sed -E 's/^TASK \[(.*)\].*/\1/')
   if [ -n "$task" ]; then
-    printf 'ansible-pull exited %s at: %s' "$rc" "$task"
+    # The failed task's own message too, when one was written for people: the role's OpenClaw step
+    # says which OpenClaw could not migrate or did not start, and why (T-oc114). Not Ansible's generic
+    # "non-zero return code", which says nothing a customer can use.
+    reason=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | grep -a '^fatal: ' | tail -1 | python3 -I -c '
+import json, sys
+line = sys.stdin.read()
+try:
+    msg = json.loads(line[line.index("{"):]).get("msg", "")
+except ValueError:
+    msg = ""
+msg = " ".join(str(msg).split())
+print("" if msg in ("", "non-zero return code") else msg[:400])
+')
+    printf 'ansible-pull exited %s at: %s%s' "$rc" "$task" "${reason:+: $reason}"
     return
   fi
-  reason=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | python3 -c '
+  reason=$(tail -c +"$((start + 1))" "$log" 2>/dev/null | python3 -I -c '
 import re, sys
 text = sys.stdin.read()
 m = re.search(r"\"msg\": \"((?:[^\"\\]|\\.)*)\"", text)
@@ -292,7 +351,7 @@ say running "ansible-pull ${REF:0:12}"
 START=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
 # Saved for the Firewall Logs page (files/cc-fw-logs run), which shows this run and not the ones
 # before it. World-readable like the state file: a byte offset.
-echo "$START" > "$(dirname "$STATE")/update-log-start.tmp" && mv "$(dirname "$STATE")/update-log-start.tmp" "$(dirname "$STATE")/update-log-start"
+echo "$START" | write_owned "$(dirname "$STATE")/update-log-start"
 ansible-pull $FULL -U "$ANSIBLE_REPO" -C "$REF" playbook.yml -e "$vars" >> "$LOG" 2>&1
 rc=$?
 

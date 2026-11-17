@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 import os, re, sys
 from pathlib import Path
 if os.geteuid()!=0 or len(sys.argv)!=2 or not re.fullmatch(r'[a-zA-Z0-9_-]{8,80}',sys.argv[1]): sys.exit(1)

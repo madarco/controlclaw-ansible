@@ -206,6 +206,29 @@
     mode: '0755'
   when: box_role == 'openclaw'
 
+# The same for ControlClaw's instructions to the agent (the `instructions` bind; openclaw.yml).
+- name: Instructions | Read what is at the instructions folder's place
+  ansible.builtin.stat:
+    path: /var/lib/controlclaw-instructions
+    follow: false
+  register: instructions_place
+  when: box_role == 'openclaw'
+
+- name: Instructions | Take away what is there and is not a folder
+  ansible.builtin.file:
+    path: /var/lib/controlclaw-instructions
+    state: absent
+  when: box_role == 'openclaw' and instructions_place.stat.exists and not instructions_place.stat.isdir
+
+- name: Instructions | The place the instructions folder is mounted on, root's
+  ansible.builtin.file:
+    path: /var/lib/controlclaw-instructions
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: box_role == 'openclaw'
+
 - name: Include disk encryption (LUKS opened by the org's own boxes)
   ansible.builtin.include_tasks: disk-encryption.yml
   when:
@@ -239,6 +262,25 @@
   when:
     - box_role in ['openclaw', 'gbrain']
     - mitm_box_private_ip | default('') | length > 0
+
+# How root's scripts write a file in a folder the box user owns (cc-reprovision, cc-drive-apply,
+# cc-openclaw-migrate): as that folder's owner, relative to the folder opened once. Before any of them
+# runs in this play.
+- name: Create the folder for ControlClaw's root programs
+  ansible.builtin.file:
+    path: /usr/local/lib/controlclaw
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install cc-write-owned
+  ansible.builtin.copy:
+    src: cc-write-owned
+    dest: /usr/local/lib/controlclaw/cc-write-owned
+    owner: root
+    group: root
+    mode: '0755'
 
 # Before the vm-agent: the agent may be handed a mount set the moment it comes up (the firewall
 # re-pushes on /ready), and `sudo cc-drive-apply` has to exist by then. Inert until that push.
@@ -303,10 +345,18 @@
         # Enabled too: a first run that fails here has not enabled it yet, and the vm-agent watchdog
         # looks after an enabled unit only.
         enabled: true
-      when: openclaw_unit_after_failure.stat.exists and not ci_test
+      # Not on an agent database the installed OpenClaw refuses (openclaw-unmigrated.yml).
+      when: openclaw_unit_after_failure.stat.exists and not ci_test and not openclaw_keep_stopped | default(false) | bool
       failed_when: false
 
     - name: OpenClaw step failed (the gateway was started again)
+      ansible.builtin.fail:
+        msg: >-
+          {{ ansible_failed_task.name | default('an OpenClaw task') }}:
+          {{ (ansible_failed_result.msg | default('') ~ ' ' ~ ansible_failed_result.stderr | default('')) | trim | truncate(400) }}
+      when: not openclaw_keep_stopped | default(false) | bool
+
+    - name: OpenClaw step failed (the gateway is kept stopped until its data is migrated)
       ansible.builtin.fail:
         msg: >-
           {{ ansible_failed_task.name | default('an OpenClaw task') }}:

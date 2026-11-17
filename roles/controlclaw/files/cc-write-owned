@@ -1,0 +1,69 @@
+#!/usr/bin/python3 -I
+"""Write stdin to <file> as the owner of its folder (T-oc114).
+
+  cc-write-owned <file>
+
+For root's scripts that keep a state file in a folder the box user owns (/opt/controlclaw/state,
+inside /opt/controlclaw, which is the box user's too): cc-reprovision, cc-drive-apply,
+cc-openclaw-migrate. The box user can put a link in place of that folder or of any file in it at any
+moment, so nothing here goes by path twice: the folder is opened once without following a link, the
+process takes the folder owner's identity, and the file is made under a new name and renamed into
+place relative to that open folder. A folder of root's is used only under a parent of root's. A link at the file's name is replaced, never written through.
+"""
+import os
+import pwd
+import secrets
+import sys
+
+
+def main():
+    if len(sys.argv) != 2:
+        print('usage: cc-write-owned <file> < text', file=sys.stderr)
+        return 2
+    folder, name = os.path.split(sys.argv[1])
+    if not folder or not name or name in ('.', '..'):
+        print('cc-write-owned: give a file in a folder', file=sys.stderr)
+        return 2
+    data = sys.stdin.buffer.read()
+    try:
+        dfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        print(f'cc-write-owned: {folder}: {e.strerror} (a link is not followed)', file=sys.stderr)
+        return 1
+    owner = os.fstat(dfd).st_uid
+    # A folder of root's counts as root's only under a parent of root's: the box user can rename a
+    # folder of root's out of its own /opt/controlclaw (drive/, say) and give it the name this was
+    # asked to write in, to have root write there.
+    if owner == 0:
+        pfd = os.open('..', os.O_RDONLY | os.O_DIRECTORY, dir_fd=dfd)
+        parent = os.fstat(pfd).st_uid
+        os.close(pfd)
+        if parent != 0:
+            print(f'cc-write-owned: {folder} is root\'s but its parent is not; not writing there', file=sys.stderr)
+            return 1
+    if owner != os.geteuid():
+        if os.geteuid() != 0:
+            print(f'cc-write-owned: {folder} is not this user\'s', file=sys.stderr)
+            return 1
+        user = pwd.getpwuid(owner)
+        os.setgroups([])
+        os.setgid(user.pw_gid)
+        os.setuid(user.pw_uid)
+    tmp = f'.{name}.{secrets.token_hex(6)}'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+            os.fchmod(f.fileno(), 0o644)
+        os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except FileNotFoundError:
+            pass
+        raise
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -231,9 +231,13 @@ gog_env_file: /opt/controlclaw/state/gog.env
 # agent must not be able to rewrite the config of its own mounts, and the cache must not show up in
 # the file explorer or in a workspace backup.
 drive_state_dir: /opt/controlclaw/drive
-# Where the folders appear. Inside OpenClaw's workspace, because that is the directory the agent
-# works in and the one the console's Files page opens on.
-drive_mount_root: "{{ controlclaw_home }}/.openclaw/workspace/Drive"
+# Where the folders appear. Outside OpenClaw's state folder since T-oc114 (it used to be the
+# workspace's Drive/): OpenClaw's doctor opens every file under that folder, and each file of a
+# mounted Drive folder was a download. The agent finds them through the block the vm-agent keeps in
+# its AGENTS.md; the console's Files page opens on the home folder, so they are under drive/ there.
+# cc-drive-apply has the same path; keep the two in step.
+drive_mount_root: "{{ controlclaw_home }}/drive"
+drive_legacy_mount_root: "{{ controlclaw_home }}/.openclaw/workspace/Drive"
 # First loopback port for a mount's rclone remote-control listener. One per mount, allocated in
 # order by cc-drive-apply; the vm-agent reads the allocation out of the state file it writes.
 drive_rc_base_port: 5700
@@ -459,7 +463,8 @@ luks_binds: >-
         'clickclack:/var/lib/clickclack:clickclack:0700'] if box_role == 'mitm' else [])
     + (['gbrain:' ~ gbrain_home ~ ':' ~ gbrain_user ~ ':0750',
         'postgresql:/var/lib/postgresql:postgres:0700'] if box_role == 'gbrain' else [])
-    + (['notes:/var/lib/controlclaw-notes:root:0755:optional'] if box_role == 'openclaw' else [])
+    + (['notes:/var/lib/controlclaw-notes:root:0755:optional',
+        'instructions:/var/lib/controlclaw-instructions:root:0755:optional'] if box_role == 'openclaw' else [])
   }}
 
 # An agent's shared notes (tasks/shared-notes.yml) are inside the container when the box has one:
@@ -471,6 +476,9 @@ luks_binds: >-
 # point a real folder before the container is mounted (tasks/main.yml, before disk-encryption.yml).
 # False in a CI run, which has no container even with disk_encryption on.
 shared_notes_in_container: "{{ (disk_encryption | bool) and box_role == 'openclaw' and not (ci_test | default(false) | bool) }}"
+# ControlClaw's instructions to the agent (tasks/openclaw.yml, T-oc114) the same way: the `instructions`
+# bind, optional, and cc-instructions refuses to write while the folder is not that mount.
+instructions_in_container: "{{ shared_notes_in_container }}"
 
 # The units that read a path inside the container, and therefore wait for it. Caddy and ssh are
 # deliberately absent: they are how a locked box is reached and fixed.

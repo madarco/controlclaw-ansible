@@ -1,0 +1,84 @@
+#!/usr/bin/python3 -I
+"""Write ControlClaw's instructions to the agent: the whole text on stdin, empty to remove them (T-oc114).
+
+  sudo cc-instructions < text
+
+The vm-agent calls this (through sudo, no arguments) because it runs as the box user, who must not be
+able to write the file itself: the file is root's, readable by everyone, outside the workspace and
+outside /opt/controlclaw (the box user owns that folder). The role's cc-instructions plugin adds it to
+every run of the agent. On an encrypted disk the folder is a bind of the container, and nothing is
+written while it is not mounted (the owner's orders are not written on the plain disk).
+
+The text has to be what the vm-agent writes: exactly its header, then ControlClaw's sections (`drive`,
+`meetings`) and nothing else, at most as long as the plugin reads. The box user can run this too (it
+shares the vm-agent's user), so it can change the sections' text: the vm-agent writes the Drive
+section again within 30 s, and a changed meetings section shows in the console as changed outside it.
+Only a vm-agent on a user of its own would close that.
+"""
+import fcntl
+import os
+import re
+import sys
+import tempfile
+
+# Only for tests: sudo resets the environment, so a caller through sudo cannot set it.
+FILE = os.environ.get('CC_INSTRUCTIONS_FILE', '/var/lib/controlclaw-instructions/AGENTS.md')
+IN_CONTAINER = os.environ.get('CC_INSTRUCTIONS_MARKER', '/etc/controlclaw/instructions-in-container')
+MAX_CHARS = 20_000  # what the plugin adds to a run
+# The vm-agent's HEADER (platform/controlclaw_agents.rs), byte for byte.
+HEADER = "# ControlClaw\n\nControlClaw writes these instructions for this agent from the console's settings. Change them in the console.\n"
+SECTION = re.compile(r'<!-- controlclaw:(drive|meetings):start -->.*?<!-- controlclaw:\1:end -->', re.S)
+
+
+def refuse(why):
+    print(f'cc-instructions: {why}', file=sys.stderr)
+    return 1
+
+
+def shape_ok(text):
+    """The header, then sections separated by blank lines: no text of anyone else's between them."""
+    return text.startswith(HEADER) and SECTION.sub('', text[len(HEADER):]).strip() == ''
+
+
+def main():
+    if len(sys.argv) > 1:
+        print('usage: cc-instructions < text', file=sys.stderr)
+        return 2
+    raw = sys.stdin.buffer.read(4 * MAX_CHARS + 1)
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        return refuse('not UTF-8')
+    if len(text) > MAX_CHARS:
+        return refuse(f'longer than {MAX_CHARS} characters')
+    folder = os.path.dirname(FILE)
+    if os.path.exists(IN_CONTAINER) and not os.path.ismount(folder):
+        return refuse(f'{folder} is not the encrypted folder (the disk is locked?); nothing written')
+    if text.strip() and ('\0' in text or not shape_ok(text)):
+        return refuse('not ControlClaw instructions')
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    with open(os.path.join(folder, '.lock'), 'w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if not text.strip():
+            try:
+                os.unlink(FILE)
+            except FileNotFoundError:
+                pass
+            return 0
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix='.AGENTS.md.')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(text)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

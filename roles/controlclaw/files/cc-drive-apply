@@ -3,8 +3,10 @@
 #
 # Takes NO arguments, on purpose, exactly like cc-reprovision: the caller — the vm-agent, over a
 # request signed by the org firewall with purpose "drive" — gets to say "apply", never "apply this".
-# What to mount is read from DESIRED below, which the vm-agent writes only after verifying that
-# signature, and which the agent user cannot write (root:controlclaw 0750 directory).
+# What to mount is read from DESIRED below, which the vm-agent writes after verifying that signature.
+# It is in /opt/controlclaw/state, which the box user owns, and that user is also the agent's: treat
+# every byte of it as the agent's. Each field is checked here against a fixed shape before it is used
+# (the folder names, ids, modes and slugs again in bash, where they become paths and unit names).
 #
 # The desired state is the WHOLE mount set for this box, so this script is a reconciler and not a
 # command: anything mounted that is not in the set is taken down. That is what makes a removal, a
@@ -14,14 +16,25 @@
 # generated; the real Google token lives on the firewall and is swapped in by the proxy on
 # www.googleapis.com. `grep -r` over this whole tree finds no credential.
 set -uo pipefail
+# Run as root through sudo from any folder the caller likes: nothing here may read a file from there
+# (Python puts the working folder first on its import path; every inline Python here is -I as well).
+cd /
 
 DESIRED=/opt/controlclaw/state/drive.json
 STATE=/opt/controlclaw/state/drive-mounts.json
 DRIVE_DIR=/opt/controlclaw/drive
-STRANDED="$DRIVE_DIR/stranded"
+# Where anything found in a mountpoint before mounting over it goes: the agent's own, in its home,
+# moved there as the agent (root does not write in the agent's home, where a link could be waiting).
+STRANDED="/home/controlclaw/drive-stranded"
 RC_BASE_PORT=5700
 USER_NAME=controlclaw
-MOUNT_ROOT="/home/$USER_NAME/.openclaw/workspace/Drive"
+# Outside OpenClaw's state folder since T-oc114: OpenClaw's doctor opens every file under it (its
+# pre-repair capture), and each file of a Drive folder mounted in the workspace was a download; a
+# migration then ran for hours. The agent is told the paths in its AGENTS.md (the vm-agent's Drive
+# block), not by a folder in its workspace.
+MOUNT_ROOT="/home/$USER_NAME/drive"
+# Where the folders used to be. Emptied and removed once their mounts have moved (relocate_legacy).
+LEGACY_ROOT="/home/$USER_NAME/.openclaw/workspace/Drive"
 # How long to let mounts finish uploading what they have not written back yet, before they are
 # stopped. A budget for the WHOLE run, not per mount: eight departing folders at a minute each is
 # eight minutes of a reconcile the console is waiting on, and the second folder's writes are not
@@ -52,7 +65,7 @@ drain_mount() {
   [ -n "$port" ] || return 0
   while :; do
     queued="$(curl -s -m 2 -X POST "http://127.0.0.1:$port/vfs/stats" |
-      python3 -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; print(d["uploadsQueued"] + d["uploadsInProgress"])' 2>/dev/null)"
+      python3 -I -c 'import json,sys; d=json.load(sys.stdin)["diskCache"]; q, p = d["uploadsQueued"], d["uploadsInProgress"]; assert type(q) is int and type(p) is int and 0 <= q + p < 10**9; print(q + p)' 2>/dev/null)"
     if [ -z "$queued" ]; then
       # Not answering. If it had something queued a moment ago, that is what was lost.
       [ "$last" -gt 0 ] && UNSAVED+=("$name"$'\t'"$last")
@@ -85,7 +98,7 @@ write_state() {
   local j
   for j in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do pairs+=("${WANTED_NAMES[$j]}"$'\t'"${WANTED_SLUGS[$j]}"); done
   # `--` separates the mount pairs from the unsaved pairs; both are name<TAB>value.
-  python3 - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
+  ( python3 -I - "$STATE" "$status" "$detail" "$MOUNT_ROOT" "$DRIVE_DIR" "$RC_BASE_PORT" "$CONNECTED" \
     ${pairs+"${pairs[@]}"} -- ${UNSAVED+"${UNSAVED[@]}"} <<'PY'
 import json, os, subprocess, sys
 
@@ -137,15 +150,80 @@ for i, pair in enumerate(pairs):
 
 out = {"status": status, "detail": detail, "connected": connected == "1", "unsaved": unsaved, "mounts": mounts,
        "at": subprocess.run(["date", "-u", "+%FT%TZ"], capture_output=True, text=True).stdout.strip()}
-tmp = state + ".tmp"
-with open(tmp, "w") as fh:
-    json.dump(out, fh, indent=2)
-os.replace(tmp, state)
+json.dump(out, sys.stdout, indent=2)
 PY
-  chmod 0644 "$STATE" 2>/dev/null
+  ) | write_owned "$STATE"
+}
+
+# A file in a folder the box user may own, written by cc-write-owned (as that folder's owner, relative
+# to the folder opened once, a link replaced and never followed). Nothing without it.
+write_owned() {
+  if [ -x /usr/local/lib/controlclaw/cc-write-owned ]; then
+    /usr/local/lib/controlclaw/cc-write-owned "$1"
+  else
+    cat >/dev/null
+    logger -t "$(basename "$0")" "not writing $1: cc-write-owned is not installed yet"
+    return 1
+  fi
 }
 
 die() { log "FAILED: $1"; write_state "failed" "$1"; exit 1; }
+
+# The folder the mounts used to be in, inside the workspace (before T-oc114). Once nothing is mounted
+# there any more, its empty folders go (the old mountpoints), and then the folder if it is empty.
+# Nothing with a file in it is touched: a plain workspace/Drive (the role created one on every box)
+# with the agent's own files, or a former mountpoint written into while it was not mounted, stays
+# where it is, in the workspace, in Files and in backups. Nothing is linked in its place: the agent
+# finds the folders in ControlClaw's instructions (cc-instructions).
+#
+# The mount folders are the agent's (it has to be able to write them for fusermount3), so what
+# changes or releases them runs as the agent (runuser): a link swapped in cannot make root remove or
+# unmount anything else. The mounts are the agent's own too (cc-drive@ runs as it).
+as_agent() { runuser -u "$USER_NAME" -- "$@"; }
+# The mount root and the mount folders are the agent's (fusermount3 needs that), in its home: made as
+# the agent, never by root, so a link the agent put in their place cannot make root create or chown
+# anything else. A link is refused.
+make_mount_root() {
+  if [ -L "$MOUNT_ROOT" ]; then log "FAILED: $MOUNT_ROOT is a link; not using it"; return 1; fi
+  as_agent mkdir -p -m 0755 -- "$MOUNT_ROOT" && as_agent chmod 0755 -- "$MOUNT_ROOT"
+}
+make_mount_point() {
+  if [ -L "$MOUNT_ROOT" ] || [ -L "$1" ]; then log "FAILED: $1 is a link; not mounting there"; return 1; fi
+  as_agent mkdir -p -m 0755 -- "$1" && as_agent chmod 0755 -- "$1"
+}
+release_mount() { as_agent /usr/bin/fusermount3 -uz -- "$1" 2>/dev/null || log "could not release $1"; }
+legacy_mounts() {
+  awk -v root="$LEGACY_ROOT" '{ p = $5; gsub(/\\040/, " ", p); if (index(p, root "/") == 1) print p }' /proc/self/mountinfo | sort -r
+}
+relocate_legacy() {
+  [ -d "$LEGACY_ROOT" ] && [ ! -L "$LEGACY_ROOT" ] || return 0
+  local point
+  while read -r point; do
+    [ -n "$point" ] || continue
+    log "releasing $point, still mounted in the workspace"
+    release_mount "$point"
+  done < <(legacy_mounts)
+  if [ -n "$(legacy_mounts)" ]; then
+    log "WARNING: $LEGACY_ROOT still has a mount in it; left in place"
+    return 0
+  fi
+  # -depth with -empty: a folder whose only contents are empty folders goes too. No -L: links are
+  # not followed.
+  as_agent find "$LEGACY_ROOT" -mindepth 1 -depth -type d -empty -delete 2>/dev/null
+  if as_agent rmdir -- "$LEGACY_ROOT" 2>/dev/null; then
+    log "removed $LEGACY_ROOT: the Drive folders are in $MOUNT_ROOT"
+  else
+    log "$LEGACY_ROOT has files in it (not Drive's); left in the workspace"
+  fi
+  return 0
+}
+
+# A box with no Drive set (the role runs this on every Update): only the old folder in the workspace.
+if [ ! -r "$DESIRED" ]; then
+  make_mount_root || exit 1
+  relocate_legacy
+  exit 0
+fi
 
 [ -r "$DESIRED" ] || die "no $DESIRED to apply"
 
@@ -156,14 +234,21 @@ die() { log "FAILED: $1"; write_state "failed" "$1"; exit 1; }
 PARSED="$(mktemp)"
 PARSE_ERR="$(mktemp)"
 trap 'rm -f "$PARSED" "$PARSE_ERR"' EXIT
-python3 - "$DESIRED" >"$PARSED" 2>"$PARSE_ERR" <<'PY'
-import hashlib, json, re, sys
+python3 -I - "$DESIRED" >"$PARSED" 2>"$PARSE_ERR" <<'PY'
+import hashlib, json, os, re, stat, sys
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,39}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
 
-with open(sys.argv[1]) as fh:
-    d = json.load(fh)
+# Not through a link, not a FIFO or a device that would block or never end: a regular file, read once.
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+st = os.fstat(fd)
+if not stat.S_ISREG(st.st_mode) or st.st_size > 1_000_000:
+    sys.exit("the mount set is not a regular file of a sane size")
+with os.fdopen(fd, "rb") as fh:
+    d = json.loads(fh.read(1_000_001))
+if not isinstance(d, dict):
+    sys.exit("the mount set is not an object")
 
 placeholder = d.get("placeholder") or ""
 scope = d.get("scope") or "https://www.googleapis.com/auth/drive"
@@ -177,6 +262,10 @@ skip_gdocs = defaults.get("skipGdocs") is not False
 cache_max = defaults.get("vfsCacheMaxSize") or "2G"
 cache_min_free = defaults.get("vfsCacheMinFreeSpace") or "4G"
 
+# The scopes the firewall asks Google for; anything else, a newline in it say, is refused.
+if scope not in ("https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/drive.readonly",
+                 "https://www.googleapis.com/auth/drive.metadata.readonly"):
+    sys.exit("the scope is not one the firewall uses")
 if not re.fullmatch(r"CC-DRIVE-[0-9a-f]{8,64}", placeholder):
     sys.exit("the placeholder is not the shape the firewall generates")
 for value, label in ((export, "export formats"), (cache_max, "cache size"), (cache_min_free, "free space")):
@@ -185,7 +274,14 @@ for value, label in ((export, "export formats"), (cache_max, "cache size"), (cac
 
 seen = set()
 out = []
-for m in d.get("mounts") or []:
+mounts = d.get("mounts") or []
+if not isinstance(mounts, list):
+    sys.exit("the mounts are not a list")
+if len(mounts) > 8:
+    sys.exit("more than 8 folders in the mount set")
+for m in mounts:
+    if not isinstance(m, dict):
+        sys.exit("a mount is not an object")
     name = m.get("name") or ""
     folder = m.get("folderId") or ""
     mode = m.get("mode") or "ro"
@@ -247,9 +343,30 @@ for line in ${DESIRED_LINES+"${DESIRED_LINES[@]}"}; do
     SKIP_GDOCS) SKIP_GDOCS="$a" ;;
     CACHE_MAX) CACHE_MAX="$a" ;;
     CACHE_MIN_FREE) CACHE_MIN_FREE="$a" ;;
-    MOUNT) WANTED_NAMES+=("$a"); WANTED_IDS+=("$b"); WANTED_MODES+=("$c"); WANTED_SLUGS+=("$d") ;;
+    MOUNT)
+      # Again here, where they become paths and unit names: whatever the parse above let through,
+      # nothing else reaches `install`, `rm` or systemctl.
+      [[ "$a" =~ ^[A-Za-z0-9][A-Za-z0-9\ _-]{0,39}$ ]] && [[ "$a" != *" " ]] || die "refusing a folder name"
+      [[ "$b" =~ ^[A-Za-z0-9_-]{10,200}$ ]] || die "refusing a folder id"
+      [[ "$c" =~ ^(ro|rw)$ ]] || die "refusing a mode"
+      [[ "$d" =~ ^[A-Za-z0-9_]{1,60}$ ]] || die "refusing a unit name"
+      WANTED_NAMES+=("$a"); WANTED_IDS+=("$b"); WANTED_MODES+=("$c"); WANTED_SLUGS+=("$d") ;;
+    *) die "the parsed mount set has a line it should not have" ;;
   esac
 done
+[[ "$CONNECTED" =~ ^[01]$ ]] && [[ "$SKIP_GDOCS" =~ ^[01]$ ]] || die "the parsed mount set is not what the parse writes"
+
+# --- the config folder, pinned -----------------------------------------------------------------
+# DRIVE_DIR is root's (0750 root:controlclaw), but it is inside /opt/controlclaw, which the box user
+# owns: the box user can rename it and put a link in its place at any moment. So it is entered once,
+# checked to be root's own folder and not a link, and from here on every file in it is reached through
+# this shell's working folder ($D, /proc/<pid>/cwd), which stays that folder whatever is done to its
+# name. The paths written into the env files stay the real ones: systemd reads them.
+cd -- "$DRIVE_DIR" 2>/dev/null || die "no $DRIVE_DIR"
+# Root's, group the box user's, 0750: exactly what the role makes, so another folder of root's from
+# /opt/controlclaw renamed to this name is not taken for it.
+[ "$(pwd -P)" = "$DRIVE_DIR" ] && [ "$(stat -c '%u %G %a' .)" = "0 $USER_NAME 750" ] || die "$DRIVE_DIR is not root's own folder"
+D="/proc/$$/cwd"
 
 # --- what is running now --------------------------------------------------------------------
 # By unit, not by what is in DRIVE_DIR: a config left behind by a crash is not a mount, and a mount
@@ -270,21 +387,23 @@ for esc in ${RUNNING+"${RUNNING[@]}"}; do
   is_wanted "$esc" && continue
   # The display name is not recoverable from the slug, so take it from the env file the last apply
   # wrote. Only for the log line; everything that matters is keyed by the slug.
-  name="$(sed -n 's|^CC_DRIVE_MOUNTPOINT=.*/||p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+  name="$(sed -n 's|^CC_DRIVE_MOUNTPOINT=.*/||p' "$D/$esc.env" 2>/dev/null)"
   name="${name:-$esc}"
   log "taking down $name: it is not in the mount set any more"
+  point="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$D/$esc.env" 2>/dev/null)"
+  point="${point:-$MOUNT_ROOT/$name}"
 
   # Give whatever has not been written back to Drive a chance to finish. Reading the port out of
   # the env file rather than recomputing it: the allocation belongs to whoever wrote that file.
-  drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+  drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$D/$esc.env" 2>/dev/null | tr -d '"')"
 
   systemctl disable --now "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
-  is_mounted "$MOUNT_ROOT/$name" && umount -l "$MOUNT_ROOT/$name" 2>/dev/null
-  rm -f "$DRIVE_DIR/$esc.env" "$DRIVE_DIR/$esc.conf"
-  rm -rf -- "$DRIVE_DIR/cache/$esc"
+  is_mounted "$point" && release_mount "$point"
+  rm -f "$D/$esc.env" "$D/$esc.conf"
+  rm -rf -- "$D/cache/$esc"
   # Only if it is empty: a non-empty directory here is the agent's own writes, and losing those
   # silently while removing a folder somebody unshared is not a trade anyone agreed to.
-  rmdir -- "$MOUNT_ROOT/$name" 2>/dev/null || log "$MOUNT_ROOT/$name is not empty; left in place"
+  as_agent rmdir -- "$point" 2>/dev/null || log "$point is not empty; left in place"
 done
 
 # --- sweep anything on disk that is not in the set ------------------------------------------
@@ -292,14 +411,14 @@ done
 # forgotten — an apply that died half way, or a box carrying files from an older layout — would
 # otherwise sit there forever, and its cache would keep holding disk. Reconciling means the disk
 # too, not only the units.
-for f in "$DRIVE_DIR"/*.conf "$DRIVE_DIR"/*.env; do
+for f in "$D"/*.conf "$D"/*.env; do
   [ -e "$f" ] || continue
   base="$(basename "$f")"
   is_wanted "${base%.*}" && continue
   log "removing $base: no mount in the set is called that"
   rm -f -- "$f"
 done
-for d in "$DRIVE_DIR"/cache/*; do
+for d in "$D"/cache/*; do
   [ -d "$d" ] || continue
   is_wanted "$(basename "$d")" && continue
   log "removing the cache of $(basename "$d"): it is not in the set"
@@ -323,8 +442,8 @@ for idx in "${!WANTED_NAMES[@]}"; do
   # vm-agent has turned egress on, and then simply retries.
   # The heredoc is deliberately UNQUOTED so $esc, $SCOPE and $folder expand. That also makes
   # backticks and $(...) inside it command substitution, including in the comments — no backticks.
-  install -o root -g "$USER_NAME" -m 0640 /dev/null "$DRIVE_DIR/$esc.conf.tmp"
-  cat > "$DRIVE_DIR/$esc.conf.tmp" <<EOF
+  install -o root -g "$USER_NAME" -m 0640 /dev/null "$D/$esc.conf.tmp"
+  cat > "$D/$esc.conf.tmp" <<EOF
 # Written by cc-drive-apply. Holds no credential: see the comment at the top of that script.
 [$esc]
 type = drive
@@ -337,22 +456,31 @@ scope = $SCOPE
 root_folder_id = $folder
 token = {"access_token":"unused","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"}
 EOF
-  mv -f "$DRIVE_DIR/$esc.conf.tmp" "$DRIVE_DIR/$esc.conf"
+  mv -f "$D/$esc.conf.tmp" "$D/$esc.conf"
 
   # A folder that keeps its slug but changes mode is restarted below, not taken down, so the
   # teardown loop never drained it. Going from read-write to read-only is the case that matters:
   # rclone will not upload through a --read-only mount, so anything still queued would be stranded
   # in the cache with no way out. Repointing at a different Drive folder is already a takedown,
   # because the slug carries a hash of the folder id.
-  if [ -f "$DRIVE_DIR/$esc.env" ]; then
-    was_ro="$(sed -n 's/^CC_DRIVE_READONLY=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null)"
+  if [ -f "$D/$esc.env" ]; then
+    was_at="$(sed -n 's/^CC_DRIVE_MOUNTPOINT=//p' "$D/$esc.env" 2>/dev/null)"
+    # A mount that is moving (out of the workspace, T-oc114): what it has queued goes up first, then
+    # it is stopped and its old mountpoint released, so the start below mounts it at the new place.
+    if [ -n "$was_at" ] && [ "$was_at" != "$MOUNT_ROOT/$name" ]; then
+      log "$name moves from $was_at to $MOUNT_ROOT/$name"
+      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$D/$esc.env" 2>/dev/null | tr -d '"')"
+      systemctl stop "cc-drive@$esc.service" >/dev/null 2>&1 || log "could not stop cc-drive@$esc cleanly"
+      is_mounted "$was_at" && release_mount "$was_at"
+    fi
+    was_ro="$(sed -n 's/^CC_DRIVE_READONLY=//p' "$D/$esc.env" 2>/dev/null)"
     if [ "$mode" = "ro" ] && [ -z "$was_ro" ]; then
       log "$name is becoming read-only; letting it finish what it has queued first"
-      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$DRIVE_DIR/$esc.env" 2>/dev/null | tr -d '"')"
+      drain_mount "$name" "$(sed -n 's/^CC_DRIVE_RC_PORT=//p' "$D/$esc.env" 2>/dev/null | tr -d '"')"
     fi
   fi
 
-  install -o root -g "$USER_NAME" -m 0640 /dev/null "$DRIVE_DIR/$esc.env.tmp"
+  install -o root -g "$USER_NAME" -m 0640 /dev/null "$D/$esc.env.tmp"
   {
     echo "# Written by cc-drive-apply. CC_DRIVE_PLACEHOLDER is not a secret: the org proxy swaps it"
     echo "# for the real Google token, which never reaches this box."
@@ -372,10 +500,10 @@ EOF
     # `echo --`: echo prints the `--`, and rclone reads that as "the positionals start here", which
     # turned --read-only into a third path argument and refused the mount (caught on a real box).
     echo "CC_DRIVE_READONLY=$([ "$mode" = "ro" ] && printf '%s' '--read-only')"
-  } > "$DRIVE_DIR/$esc.env.tmp"
-  mv -f "$DRIVE_DIR/$esc.env.tmp" "$DRIVE_DIR/$esc.env"
+  } > "$D/$esc.env.tmp"
+  mv -f "$D/$esc.env.tmp" "$D/$esc.env"
 
-  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$DRIVE_DIR/cache/$esc"
+  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$D/cache/$esc"
 
   # The mountpoint has to be writable by the agent or fusermount3 refuses it, which means the agent
   # can write into it while nothing is mounted. Anything found there is moved out of the way rather
@@ -386,13 +514,17 @@ EOF
   if is_mounted "$MOUNT_ROOT/$name"; then
     : # already mounted, and a mounted directory is rclone's to own
   else
-    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0755 "$MOUNT_ROOT/$name"
+    make_mount_point "$MOUNT_ROOT/$name" || continue
   fi
-  if ! is_mounted "$MOUNT_ROOT/$name" && [ -n "$(ls -A -- "$MOUNT_ROOT/$name" 2>/dev/null)" ]; then
+  if ! is_mounted "$MOUNT_ROOT/$name" && [ -n "$(as_agent ls -A -- "$MOUNT_ROOT/$name" 2>/dev/null)" ]; then
     aside="$STRANDED/$esc-$(date -u +%Y%m%dT%H%M%SZ)"
-    install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$aside"
-    mv -- "$MOUNT_ROOT/$name"/* "$MOUNT_ROOT/$name"/.[!.]* "$aside"/ 2>/dev/null
-    log "WARNING: $name had files in it before mounting; moved to $aside"
+    if [ -L "$STRANDED" ]; then
+      log "WARNING: $name had files in it before mounting; $STRANDED is a link, so they were left"
+    else
+      as_agent mkdir -p -m 0700 -- "$aside"
+      as_agent sh -c 'mv -- "$1"/* "$1"/.[!.]* "$2"/ 2>/dev/null' sh "$MOUNT_ROOT/$name" "$aside"
+      log "WARNING: $name had files in it before mounting; moved to $aside"
+    fi
   fi
 done
 
@@ -420,6 +552,8 @@ for idx in ${WANTED_SLUGS+"${!WANTED_SLUGS[@]}"}; do
 done
 
 [ "$CONNECTED" = "1" ] || log "the organization has no working Google connection; ${#stopped[@]} folder(s) left unmounted"
+
+relocate_legacy
 
 # --- report ---------------------------------------------------------------------------------
 

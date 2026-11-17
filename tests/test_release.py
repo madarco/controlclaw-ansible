@@ -22,6 +22,10 @@ def version_reader():
     return task['ansible.builtin.command']['argv'][2]
 
 
+# release.sh's tree, the same command.
+TREE = "git ls-tree -r HEAD | grep -vE $'\\t(releases\\.json$|tests/|openclaw-upgrade-tests/)' | sha256sum | cut -d' ' -f1"
+
+
 class ReleaseTest(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
@@ -66,6 +70,80 @@ class ReleaseTest(unittest.TestCase):
         self.assertNotEqual(self.release('1.1.0', ' ').returncode, 0)
         (self.dir / 'releases.json').write_text('[]\n')
         self.assertIn('uncommitted', self.release('1.1.0', 'x').stderr)
+
+    def with_openclaw(self, auto='false', record=None, pin='2026.11.3'):
+        """The role's defaults and, when given, the upgrade test record, committed."""
+        d = self.dir / 'roles/controlclaw/defaults'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / 'main.yml').write_text(f'openclaw_version: "{pin}"\nopenclaw_auto_patch: {auto}\n')
+        if record is not None:
+            git(self.dir, 'add', '-A')
+            git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'candidate')
+            tree = subprocess.run(['bash', '-c', TREE], cwd=self.dir, capture_output=True, text=True, check=True).stdout.strip()
+            record = [{'tree': tree, **r} for r in record]
+            (self.dir / 'openclaw-upgrade-tests').mkdir(exist_ok=True)
+            (self.dir / f'openclaw-upgrade-tests/{pin}.json').write_text(json.dumps(record))
+        git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.')
+        git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'openclaw')
+
+    PASSED = [{'path': '2026.9.37@v1.46.0', 'pass': True, 'after': '2026.11.3'},
+              {'path': '2026.11.3@v1.47.0', 'pass': True, 'after': '2026.11.3'}]
+
+    def test_openclaw_tested_release(self):
+        self.with_openclaw(record=self.PASSED)
+        r = self.release('99.0.0', 'x')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('upgrade tested from 2026.9.37@v1.46.0, 2026.11.3@v1.47.0', r.stdout)
+
+    def test_refuses_auto_patch(self):
+        self.with_openclaw(auto='true', record=self.PASSED)
+        r = self.release('99.0.0', 'x')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('openclaw_auto_patch is on', r.stderr)
+        self.assertEqual(git(self.dir, 'tag'), '')
+
+    def test_refuses_untested_openclaw(self):
+        self.with_openclaw()
+        r = self.release('99.0.0', 'x')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('no upgrade test for OpenClaw 2026.11.3', r.stderr)
+
+    def test_refuses_failed_or_other_version_upgrade_test(self):
+        for record in ([{**self.PASSED[0], 'pass': False}, self.PASSED[1]],
+                       [{**self.PASSED[0], 'after': '2026.11.4'}],
+                       []):
+            with self.subTest(record=record):
+                self.with_openclaw(record=record)
+                r = self.release('99.0.0', 'x')
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn('did not pass to 2026.11.3', r.stderr)
+
+    def test_refuses_a_test_of_another_tree(self):
+        self.with_openclaw(record=[{**self.PASSED[0], 'tree': 'f' * 64}])
+        r = self.release('99.0.0', 'x')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('another tree than this commit', r.stderr)
+
+    def test_the_tree_covers_more_than_the_roles(self):
+        self.with_openclaw(record=self.PASSED)
+        (self.dir / 'playbook.yml').write_text('changed\n')
+        git(self.dir, 'add', '-A')
+        git(self.dir, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'after the test')
+        self.assertIn('another tree than this commit', self.release('99.0.0', 'x').stderr)
+
+    def test_refuses_a_rust_pin_without_controlclaw_agents(self):
+        role = self.dir / 'roles/controlclaw'
+        (role / 'files/cc-instructions-plugin').mkdir(parents=True)
+        (role / 'files/cc-instructions-plugin/index.js').write_text('')
+        (role / 'vars').mkdir(parents=True)
+        for version, ok in (('1.8.0', False), ('1.9.0', True)):
+            with self.subTest(version=version):
+                (role / 'vars/rust_release.yml').write_text(f'cc_rust_release:\n  version: "{version}"\n')
+                self.with_openclaw(record=self.PASSED)
+                r = self.release('99.0.0', 'x')
+                self.assertEqual(r.returncode == 0, ok, r.stderr)
+                if not ok:
+                    self.assertIn("do not write ControlClaw's instructions", r.stderr)
 
     def test_version_reader(self):
         def read():

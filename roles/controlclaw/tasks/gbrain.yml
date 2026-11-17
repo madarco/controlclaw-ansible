@@ -332,7 +332,7 @@
       cd {{ gbrain_home }}
       out="$(runuser -u {{ gbrain_user }} -- env HOME={{ gbrain_home }} bash -c \
         'set -a; . {{ gbrain_home }}/.gbrain/env; set +a; exec /usr/local/bin/gbrain mcp admin login-link --url http://127.0.0.1:{{ gbrain_port }}/mcp --json' 2>/dev/null)"
-      url="$(printf '%s\n' "$out" | tail -1 | python3 -c 'import sys,json; print(json.load(sys.stdin).get("url",""))' 2>/dev/null || true)"
+      url="$(printf '%s\n' "$out" | tail -1 | python3 -I -c 'import sys,json; print(json.load(sys.stdin).get("url",""))' 2>/dev/null || true)"
       [[ "$url" =~ ^https://[^/]+/admin/auth/[A-Za-z0-9_.~-]+$ ]] || { echo "cc-gbrain-login-link: GBrain gave no login link" >&2; exit 3; }
       printf '%s\n' "$url"
 
