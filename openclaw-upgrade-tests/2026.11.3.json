@@ -1,0 +1,33 @@
+[
+  {
+    "path": "2026.11.3@v1.47.1+big+drive",
+    "pass": true,
+    "why": "",
+    "before": "2026.11.3",
+    "after": "2026.11.3",
+    "update": "done",
+    "readyz": "200",
+    "starts": 3,
+    "databases_before": [
+      {
+        "path": "agents/main/agent/openclaw-agent.sqlite",
+        "version": 27,
+        "sessions": 300
+      }
+    ],
+    "databases_after": [
+      {
+        "path": "agents/main/agent/openclaw-agent.sqlite",
+        "version": 27,
+        "sessions": 300
+      }
+    ],
+    "turn_before": "no model; no model",
+    "turn_after": "no model",
+    "migration_seconds": null,
+    "drive_after": "/home/controlclaw/drive/Slow fuse.rclone",
+    "drive_in_agents_md": true,
+    "candidate_commit": "130fb8fde7b5b770f4cd8d1ad99146d821d9e712",
+    "tree": "7412e93512284e3806139cda528baab0beb0ef822281b1343f04fdce740443e7"
+  }
+]
