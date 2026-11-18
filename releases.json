@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.49.0",
+    "date": "2026-11-18",
+    "changes": [
+      "Agents move to OpenClaw 2026.11.5.",
+      "Realtime phone calls work on OpenClaw 2026.11.5.",
+      "Telegram widgets an agent sends or receives are checked by your content rules."
+    ]
+  },
+  {
     "version": "1.48.1",
     "date": "2026-11-17",
     "changes": [
