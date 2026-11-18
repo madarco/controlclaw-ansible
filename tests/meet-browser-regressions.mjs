@@ -52,6 +52,22 @@ const selectedOutput=JSON.parse(await devicePage.evaluate('('+voiceSource+')()')
 assert.equal(selectedOutput.audioOutputRouted,true,'Meet speaker selection works even with inactive DOM media');
 assert.equal(await devicePage.locator('button[aria-label^="Speaker:"]').getAttribute('aria-label'),'Speaker: cc_meeting_remote Audio/Sink sink');
 await devicePage.close();console.log('PASS Linux virtual mic and current Meet selector route playback separately');
+// 2026.11.5: with no media elements Meet's own check compares device families, and ours has none.
+// A speaker that is not ours must not count as routed (undefined === undefined).
+const webAudioPage=await browser.newPage();
+await webAudioPage.setContent('<button aria-label="Leave call"></button><button aria-label="Microphone: Remapped openclaw_meeting_audio.monitor source"></button><button aria-label="Turn off microphone"></button><button aria-haspopup="menu" aria-label="Speaker: Default"></button>');
+await webAudioPage.evaluate(()=>{
+ Object.defineProperty(navigator,'permissions',{value:{query:async()=>({state:'granted'})}});
+ Object.defineProperty(navigator,'mediaDevices',{value:{enumerateDevices:async()=>[
+  {kind:'audioinput',deviceId:'virtual-mic',label:'Remapped openclaw_meeting_audio.monitor source'},
+  {kind:'audiooutput',deviceId:'remote-playback',label:'cc_meeting_remote Audio/Sink sink'},
+ ]}});
+});
+const webAudioHealth=JSON.parse(await webAudioPage.evaluate('('+voiceSource+')()'));
+assert.equal(webAudioHealth.audioOutputRouted,false,'a speaker that is not cc_meeting_remote is not our route');
+await webAudioPage.evaluate(()=>document.querySelector('button[aria-label^="Speaker:"]').setAttribute('aria-label','Speaker: cc_meeting_remote Audio/Sink sink'));
+assert.equal(JSON.parse(await webAudioPage.evaluate('('+voiceSource+')()')).audioOutputRouted,true,'our speaker selected, no media elements');
+await webAudioPage.close();console.log('PASS WebAudio-only page: only the isolated speaker counts as routed');
 const captionSource=runInNewContext(fn+`;meetStatusScript({allowMicrophone:false,autoJoin:false,captureCaptions:true,captionSessionId:'regression',readOnly:false})`,{});
 const lobbyPage=await browser.newPage();
 await lobbyPage.setContent('<h1>Please wait until a meeting host brings you into the call</h1><button aria-label="Leave call">Leave call</button><div aria-live="polite">No one responded to your request to join.</div>');
@@ -98,8 +114,11 @@ let recoveryParams;
 const probe=runInNewContext(recoveryFn,{
  GOOGLE_MEET_PLATFORM_ADAPTER:{},
  resolveLocalMeetingBrowserRequest:async()=>()=>{},
+ // 2026.11.5 resolves the browser route itself.
+ resolveChromeBrowserRoute:async()=>({callBrowser:async()=>{},transport:'chrome'}),
  shouldCaptureCaptions:()=>true,
  recoverMeetingBrowserTab:async params=>{recoveryParams=params;return {found:false};},
+ formatErrorMessage:error=>String(error?.message ?? error),
 });
 await probe.run({id:'native-test-session',transport:'chrome',mode:'transcribe',url:'https://meet.google.com/abc-defg-hij',chrome:{}});
 assert.equal(recoveryParams.meetingSessionId,'native-test-session','caption session identity survives both recovery layers');

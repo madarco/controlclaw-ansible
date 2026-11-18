@@ -271,9 +271,11 @@
   when: meeting_install_needed | bool
   failed_when: false
 
+# `npm:`: from OpenClaw 2026.11.5 an `@openclaw/` spec without it comes from ClawHub, and `--pin`
+# refuses that ("only supported with npm registry installs"). The record keeps the spec without it.
 - name: Meetings | install the pinned official package
   ansible.builtin.command:
-    argv: [/usr/bin/openclaw, plugins, install, "@openclaw/google-meet@{{ openclaw_meet_version }}", --force, --pin, --no-enable, --accept-capabilities]
+    argv: [/usr/bin/openclaw, plugins, install, "npm:@openclaw/google-meet@{{ openclaw_meet_version }}", --force, --pin, --no-enable, --accept-capabilities]
     chdir: "{{ controlclaw_home }}"
   become: true
   become_user: "{{ controlclaw_user }}"

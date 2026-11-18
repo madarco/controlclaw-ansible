@@ -160,9 +160,9 @@ patchright_prefix: /usr/local/lib/controlclaw-patchright
 #
 # The version is pinned rather than tracking @latest, so two boxes built an hour apart get the same
 # plugin. Each release declares `peerDependencies.openclaw` and `pluginApi` at or above its own
-# number, so this moves with openclaw_version (2026.11.3 needs OpenClaw 2026.11.3 or newer).
+# number, so this moves with openclaw_version (2026.11.5 needs OpenClaw 2026.11.5 or newer).
 openclaw_web_search_provider: parallel-free
-openclaw_search_plugin_version: "2026.11.3"
+openclaw_search_plugin_version: "2026.11.5"
 #
 # tavily and brave are the PAID providers an organisation can switch to from the console
 # (controlclaw apps/saas/docs/features/web-search.md). The key never reaches this box — the org
@@ -536,10 +536,10 @@ agentmail_cli_arches:
     release: arm64
     sha256: 3aaaa675793c6c182ce5877205e7211ed490ec92fcfef1da8ca555dd402d4a6e
 
-# Compatible host and official Google Meet plugin, reviewed 2026-11-15. The Meet plugin declares
+# Compatible host and official Google Meet plugin, reviewed 2026-11-17. The Meet plugin declares
 # pluginApi >= its own version, so the two move together.
-openclaw_version: "2026.11.3"
-openclaw_meet_version: "2026.11.3"
+openclaw_version: "2026.11.5"
+openclaw_meet_version: "2026.11.5"
 
 # Local wake-name listening for meetings (cc-wake, controlclaw docs/plans/gpt-live-and-wake-word.md
 # D6): libvosk.so from the pinned Vosk wheel (the Python package around it is not installed) and
@@ -554,8 +554,8 @@ cc_wake_vosk_wheels:
     sha256: "54efb47dd890e544e9e20f0316413acec7f8680d04ec095c6140ab4e70262704"
 cc_wake_model: vosk-model-small-en-us-0.15
 cc_wake_model_sha256: "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"
-openclaw_host_sha512: "141abfab44c26a80366fba9f755d2af357c7848e91041d730107c941111cd6ed9394ae6485580252c0255ec90b5ad87256a473e4f5848fea0e99f6202b9f1d1e"
-openclaw_meet_sha512: "dee0c15fb8fc2069e6fd59fe4b992a22d98651909bc0f0e33b528c37682fc02a029c3e84c3d4c66bb0aee2e62530b01627cb6cbd36ec02f056b92ca6ed0dd1ac"
+openclaw_host_sha512: "9aa3e5b062ce7bc352f3905f3f5bd65bd615c055dc86c57be504e411bc91e1cb3294e471b6cf9f99f669f7ea9b0fb68f6d740872dca3464f823cbf757c3bf104"
+openclaw_meet_sha512: "ae7fbe97cbe58e0734dd54b6cb366a7a3cb226e4849d8441d42ff9fbd519c46dd197f17250f002601dd00fb40144a4e1747f79039ef80924545246a0dbb420a5"
 
 # Agent Doctor CLI hosts, registry SHA-512 pins. Updates are manual.
 doctor_cli_pins:

@@ -1,6 +1,7 @@
 """Build the actual pinned, patched status-script function for DOM regressions."""
 import importlib.util
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -21,14 +22,16 @@ with tempfile.TemporaryDirectory() as d:
     with contextlib.redirect_stdout(io.StringIO()):
         patcher.patch(dest / 'host', dest / 'plugin')
     if len(sys.argv) > 2 and sys.argv[2] == 'backend':
-        source = (dest / 'host/dist/plugin-sdk/meeting-runtime.js').read_text()
-        start = source.index('async function ensureMeetingAudioBackend(params) {')
+        # 2026.11.5 moved it to its own module (meeting-config), with minified parameter names.
+        [config] = (dest / 'host/dist').glob('meeting-config-????????.mjs')
+        source = config.read_text()
+        start = re.search(r'async function ensureMeetingAudioBackend\(\w+\) \{', source).start()
         print(source[start:source.index('\n}', start)+2])
         print('; ensureMeetingAudioBackend')
         sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[2] == 'consult':
         source = (dest / 'host/dist/plugin-sdk/meeting-runtime.js').read_text()
-        start = source.index('async function consultMeetingAgent(params) {')
+        start = re.search(r'async function consultMeetingAgent\(\w+\) \{', source).start()
         # The model of the meeting's lookups (Model for meetings) comes from a helper next to it.
         if 'function ccMeetingConsultModel(' in source:
             helper = source.index('function ccMeetingConsultModel(')

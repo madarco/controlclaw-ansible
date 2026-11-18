@@ -11,7 +11,7 @@ test('normal generated reply can arrive faster than playback; interruption fence
  const queue=create({bytesPerMs:48,transport:{writeOutput:async b=>{writes.push(b);await new Promise(r=>release=r);},clearOutput:async()=>{clears++;}},onFailure:(_label,e)=>{throw e;}});
  for(let i=0;i<50;i++)assert.equal(queue.enqueue(Buffer.alloc(19200),true,i===0),true,'20 seconds fits the bounded playback queue');
  await new Promise(r=>setImmediate(r));assert.equal(writes.length,1);
- // OpenClaw 2026.11.3 holds at most 120 s of output (OUTPUT_MAX_PENDING_MS), and caps the frames.
+ // OpenClaw 2026.11.3 and 2026.11.5 hold at most 120 s of output (OUTPUT_MAX_PENDING_MS), and cap the frames.
  assert.equal(queue.enqueue(Buffer.alloc(48*121000),true,false),false,'unbounded output is refused');
  queue.invalidate();queue.clear();release();await new Promise(r=>setImmediate(r));
  assert.equal(writes.length,1,'old queued audio must never resume');assert.ok(clears>0);

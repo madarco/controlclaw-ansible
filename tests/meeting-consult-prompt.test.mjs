@@ -15,7 +15,7 @@ const upstream = join(process.env.MEET_UPSTREAM || '/tmp/meet-upstream', 'host/p
 const spec = JSON.parse(execFileSync('python3', ['-c', `
 import importlib.util, json, sys
 s = importlib.util.spec_from_file_location('p', 'roles/controlclaw/files/meeting-runtime-patch.py'); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
-print(json.dumps([p for p in m.PATCHES if p['path'].startswith('dist/agent-run-control-shared-')][0]))`], { encoding: 'utf8' }));
+print(json.dumps([p for p in m.PATCHES if p['path'].startswith('dist/agent-consult-tool-')][0]))`], { encoding: 'utf8' }));
 const PATH = spec.path;
 
 async function patchedTemplate() {
