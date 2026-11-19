@@ -95,7 +95,9 @@ def validate(payload, config):
         raise ValueError('control callback mismatch')
     if variables.get('vm_id') != config['boxId'] or variables.get('vm_hostname') != config['hostname']:
         raise ValueError('identity mismatch')
-    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', variables.get('org_id', '')):
+    # Organization ids are Better Auth's own: 32 of a-z, A-Z and 0-9. Lowercase only refused every
+    # real sign-up, after the claim had spent this box's enrollment (controlclaw T-poolclaim).
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,62}', variables.get('org_id', '')):
         raise ValueError('invalid organization')
     if not re.fullmatch(r'[A-Za-z0-9+/]{43}=', variables.get('luks_recovery_pubkey', '')):
         raise ValueError('invalid recovery public key')
@@ -104,16 +106,29 @@ def validate(payload, config):
         raise ValueError('invalid alias')
     if not variables.get('luks_recovery_pubkey') or variables.get('ssh_debug') != 'false' or variables.get('update_allow_unverified') != 'false':
         raise ValueError('claim hardening missing')
-    progress = payload['progress']
-    if set(progress) != {'url', 'token', 'vmId'} or progress['url'] != base + '/api/vm-agent/provision' or progress['vmId'] != variables['vm_id']:
+    if not progress_target(payload, config) or payload['progress']['vmId'] != variables['vm_id']:
         raise ValueError('progress mismatch')
-    if not re.fullmatch(r'[a-f0-9]{64}', progress['token']):
-        raise ValueError('progress token invalid')
     return variables
+
+
+def progress_target(payload, config):
+    """The claim's own progress report, when it is the one fixed callback with a well-formed token."""
+    progress = payload.get('progress') if isinstance(payload, dict) else None
+    base = config['url'].split('/api/internal/ready-pool/poll')[0]
+    if not isinstance(progress, dict) or set(progress) != {'url', 'token', 'vmId'} or progress['url'] != base + '/api/vm-agent/provision':
+        return None
+    if not isinstance(progress['token'], str) or not re.fullmatch(r'[a-f0-9]{64}', progress['token']):
+        return None
+    if progress['vmId'] != config['boxId']:
+        return None
+    return progress
 
 
 def report_progress(payload, stage, rc=None, task="Ready-pool claim"):
     progress = payload['progress']
+    # The console fails the claim at once on a failed report and shows this task, so a refusal
+    # names its step instead of waiting out the claim deadline. Fixed strings only, never values.
+    task = task[:200]
     request = urllib.request.Request(progress['url'], method='POST',
         data=json.dumps({'vm_id': progress['vmId'], 'stage': stage, 'rc': rc,
                          'task': task}).encode(),
@@ -137,8 +152,14 @@ def claim(config):
     varfile.write_text(json.dumps(variables))
     os.chmod(varfile, 0o600)
     report_progress(payload, 'started', task='Sealing existing disk and registering prepared identity')
-    result = local(config, 'activate')
-    report_progress(payload, 'finished', result.returncode)
+    try:
+        result = local(config, 'activate')
+    except subprocess.TimeoutExpired:
+        result = subprocess.CompletedProcess([], 1)
+        report_progress(payload, 'finished', 1, task='Ready-pool claim: activation did not finish in time')
+    else:
+        report_progress(payload, 'finished', result.returncode,
+                        task='Ready-pool claim: activation failed' if result.returncode else 'Ready-pool claim')
     if result.returncode:
         Path('/etc/controlclaw/pool-failed').touch(mode=0o600)
         # Not activating any more, so off the two-second disk beat too (T-tang).
@@ -149,7 +170,7 @@ def claim(config):
     proof = subprocess.run(['node', str(Path(config['checkout']) / 'roles/controlclaw/files/cc-pool-complete.cjs'), str(varfile)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if proof.returncode:
-        report_progress(payload, 'finished', 1)
+        report_progress(payload, 'finished', 1, task='Ready-pool claim: no completion proof (Tang binding or certificate)')
         Path('/etc/controlclaw/pool-failed').touch(mode=0o600)
         # Not activating any more, so off the two-second disk beat too (T-tang).
         Path('/etc/controlclaw/pool-activating').unlink(missing_ok=True)
@@ -158,6 +179,16 @@ def claim(config):
     CLAIMED.write_text(variables['vm_id'])
     for path in [PAYLOAD, CONFIG, varfile]:
         path.unlink(missing_ok=True)
+    subprocess.run(['systemctl', 'disable', 'cc-pool-worker'], check=False)
+
+
+def refuse(payload, config, error):
+    """A delivered claim this box will not run. The enrollment is spent, so say why and stop."""
+    reason = str(error) if isinstance(error, ValueError) and re.fullmatch(r'[a-z /]{1,60}', str(error)) else 'malformed claim'
+    if progress_target(payload, config):
+        report_progress(payload, 'finished', 1, task=f'Ready-pool claim refused by the box: {reason}')
+    Path('/etc/controlclaw/pool-failed').touch(mode=0o600)
+    Path('/etc/controlclaw/pool-activating').unlink(missing_ok=True)
     subprocess.run(['systemctl', 'disable', 'cc-pool-worker'], check=False)
 
 
@@ -198,7 +229,13 @@ def main():
                 local(config, 'peer', payload['peer'])
             time.sleep(2)
             continue
-        validate(payload, config)
+        try:
+            validate(payload, config)
+        except (ValueError, KeyError, TypeError) as error:
+            if not isinstance(payload, dict) or payload.get('action') != 'claim':
+                raise
+            refuse(payload, config, error)
+            return
         temporary = PAYLOAD.with_suffix('.tmp')
         with open(temporary, 'w') as output:
             json.dump(payload, output)
