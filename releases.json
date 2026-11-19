@@ -1,5 +1,13 @@
 [
   {
+    "version": "1.50.0",
+    "date": "2026-11-19",
+    "changes": [
+      "New agents start in seconds again when a ready-made one is waiting.",
+      "Agents can report a problem to ControlClaw and check its answer."
+    ]
+  },
+  {
     "version": "1.49.0",
     "date": "2026-11-18",
     "changes": [
