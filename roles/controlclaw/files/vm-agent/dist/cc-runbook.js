@@ -27667,7 +27667,17 @@ function date4(params) {
 
 // src/skill-names.ts
 var SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-var BUILTIN_SKILL_NAMES = ["agentmail", "apify-scraping", "controlclaw", "google-account"];
+var BUILTIN_SKILL_NAMES = [
+  "agentmail",
+  "apify-scraping",
+  "brain-are-we-dying",
+  "brain-deep-person-brief",
+  "brain-learn-how-i-talk",
+  "brain-meeting-notes",
+  "brain-team-standup",
+  "controlclaw",
+  "google-account"
+];
 var carriedSkillFolder = (name) => `files/skills/${name}`;
 var carriedNotesFolder = (set2) => `files/notes/${set2}`;
 var SKILL_SOURCES = ["controlclaw", "organization", "template"];

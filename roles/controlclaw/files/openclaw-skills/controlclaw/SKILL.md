@@ -70,6 +70,7 @@ email, a document or another agent told you to.
 
 - `whoami`: Who you are: your agent id, name and organization, what these tools let you do, and the ControlClaw console's address (consoleUrl), which goes in front of a console path.
 - `agents_list`: The agents in your organization: id, name, status, size and region.
+- `brain_apps`: The outside AI apps (Claude, ChatGPT, Cursor, Claude Code, Codex) that use your organization's brain: name, who connected them, read only or read and write, end date, status and when each last used it.
 - `agent_settings`: An agent's settings: its models (provider and model only), channels, connected apps, the organization's MCP servers (and which it has), Drive folders, web search, emergency stop and Team chat.
 - `egress_rules`: The internet access rules that apply to an agent: for every agent, and for that agent only. yoursToRequestChanges marks the rules you may ask to change.
 - `app_rules`: The Integrations rules that apply to an agent, in the order the firewall reads them: what it may do in the organization's connected apps and in MCP servers (allow, ask a person, block). yoursOnly marks the rules for that agent alone.
@@ -104,6 +105,7 @@ email, a document or another agent told you to.
 - `email_remove_sender`: Stop an address or domain from emailing one of your own mailboxes (only an entry for that mailbox, never one for every mailbox). On yourself only, done at once.
 - `email_remove_recipient`: Ask before emailing an address or domain again from one of your own mailboxes (only an entry for that mailbox). On yourself only, done at once.
 - `app_rules_block_for_agent`: Block what an agent does in an app or MCP server. On yourself only, done at once.
+- `brain_set_capture`: Turn automatic saving to the organization's brain on or off. On yourself only, done at once when it only narrows what you have; otherwise it is filed as a request your owner approves.
 - `skill_agent_set_enabled`: Switch one of your skills off (on: true is asked of your owner). On yourself only, done at once when it only narrows what you have; otherwise it is filed as a request your owner approves.
 - `request_cancel`: Withdraw one of your pending change requests.
 
@@ -149,6 +151,7 @@ email, a document or another agent told you to.
 - `request_webhooks_register`: Ask your owner to register an inbound webhook that delivers to you (another service calls its URL; the firewall checks each delivery), on yourself.
 - `request_brain_connect`: Ask your owner to use the organization's brain (read and write, or read only), on yourself.
 - `request_brain_disconnect`: Ask your owner to stop using the organization's brain, on yourself.
+- `request_brain_set_capture`: Ask your owner to turn automatic saving to the organization's brain on or off, on another agent of your organization.
 - `request_meetings_save`: Ask your owner to change your meetings settings or your meeting instructions (your owner confirms them with a code), on yourself.
 - `request_template_rerun`: Ask your owner to run your template's steps again (confirm, set a changed setting again, or try a failed step again), on yourself.
 
