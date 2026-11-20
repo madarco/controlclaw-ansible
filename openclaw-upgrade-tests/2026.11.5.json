@@ -24,14 +24,14 @@
     ],
     "turn_before": "no model; no model",
     "turn_after": "no model",
-    "migration_seconds": 213,
+    "migration_seconds": 196,
     "drive_after": "/home/controlclaw/drive/Slow fuse.rclone",
     "drive_in_agents_md": true,
-    "candidate_commit": "ff9efdc09d51567e1c7a8aac2e9f7985f2d8067d",
-    "tree": "9f1dae6cbd3090116d625cfb24822cd25daaaa28e49375b992197154266de6dd"
+    "candidate_commit": "5e5457c3f0924c249365df01fa6c581e2d020150",
+    "tree": "8c437081700e850ce9db1aeb5f36bef15c3b95c87f0d2a9ff2dc6d87c8ce51fe"
   },
   {
-    "path": "2026.11.5@v1.49.0+big+drive",
+    "path": "2026.11.5@v1.50.0+big+drive",
     "pass": true,
     "why": "",
     "before": "2026.11.5",
@@ -58,7 +58,7 @@
     "migration_seconds": null,
     "drive_after": "/home/controlclaw/drive/Slow fuse.rclone",
     "drive_in_agents_md": true,
-    "candidate_commit": "ff9efdc09d51567e1c7a8aac2e9f7985f2d8067d",
-    "tree": "9f1dae6cbd3090116d625cfb24822cd25daaaa28e49375b992197154266de6dd"
+    "candidate_commit": "5e5457c3f0924c249365df01fa6c581e2d020150",
+    "tree": "8c437081700e850ce9db1aeb5f36bef15c3b95c87f0d2a9ff2dc6d87c8ce51fe"
   }
 ]
