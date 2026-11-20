@@ -519,6 +519,10 @@ gbrain_pg_cluster: gbrain
 gbrain_pg_port: 5432
 # Passed by the control plane per box size; this is the Small figure, for a box built without one.
 gbrain_container_gb: 24
+# The models the owner can pick for the brain's own calls (T-217), the first being the default. The
+# exact ids GBrain sends, which the firewall's allow-list for the brain checks (controlclaw
+# apps/saas/app/(brain)/lib/brain-models.ts). cc-gbrain-model's sudoers lines name the first two.
+gbrain_models: ["gpt-5.6-luna", "gpt-5.6-terra"]
 
 # Official ClawHub plugin, installed before the gateway starts. Its skill is kept in the controlclaw
 # repo (packages/skills/agentmail); update it there when this version changes.

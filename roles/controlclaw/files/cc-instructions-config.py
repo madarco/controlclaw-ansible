@@ -4,8 +4,9 @@
 It adds ControlClaw's instructions (/var/lib/controlclaw-instructions/AGENTS.md, which the vm-agent
 writes through cc-instructions: the Drive folders, the meeting orders) to the system context of every
 run. Its before_prompt_build hook only runs for a plugin from outside OpenClaw's bundle when
-hooks.allowConversationAccess is set (OpenClaw 2026.11); the plugin reads one file and changes nothing
-else. Also drops cc-workspace-context, its name on the builds before it moved out of the workspace.
+hooks.allowConversationAccess is set (OpenClaw 2026.11), and so does its agent_end hook, which keeps a
+finished conversation's turns for the brain while the owner's switch is on (brain-capture.js). It
+changes nothing else. Also drops cc-workspace-context, its name on the builds before it moved out of the workspace.
 """
 import json
 import os

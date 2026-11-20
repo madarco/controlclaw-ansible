@@ -30,8 +30,8 @@ test('the file goes into the system context, read again when it changes', () => 
   rmSync(dir, { recursive: true });
 });
 
-test('it registers one before_prompt_build hook', () => {
+test('it registers the instructions hook and the two brain capture hooks', () => {
   const hooks = [];
   plugin.register({ on: (name, fn) => hooks.push([name, fn]) });
-  assert.deepEqual(hooks.map(([n]) => n), ['before_prompt_build']);
+  assert.deepEqual(hooks.map(([n]) => n), ['before_prompt_build', 'agent_end', 'session_end']);
 });

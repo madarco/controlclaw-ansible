@@ -137,10 +137,11 @@
   notify: reload systemd
 
 # The night's run, with a summary the console's Activity can show (controlclaw docs/plans/gbrain.md
-# §10): what `gbrain dream --json` reports (status, duration, the totals of what it touched) and what
-# its model calls cost, which GBrain logs per call in `chat_usage_log`. Counts and a dollar figure,
-# nothing from any page, so it lives outside the encrypted container where the vm-agent (group
-# controlclaw) can read it. The run's own exit code is the unit's.
+# §10, apps/saas/docs/features/brain.md "The nightly run"): GBrain's job worker for the facts the
+# day's saves queued, `gbrain dream --json`, then extract_atoms for long pages; the totals of what it
+# touched and what its model calls cost, which GBrain logs per call in `chat_usage_log`. Counts and a
+# dollar figure, nothing from any page, so it lives outside the encrypted container where the
+# vm-agent (group controlclaw) can read it. The run's own exit code is `gbrain dream`'s.
 - name: GBrain | cc-gbrain-dream (the nightly run, with its summary)
   ansible.builtin.copy:
     dest: /usr/local/bin/cc-gbrain-dream
@@ -149,32 +150,105 @@
     mode: '0755'
     content: |
       #!/bin/bash
-      # Managed by ControlClaw (gbrain-packages.yml). Runs as {{ gbrain_user }} with GBrain's env file.
+      # Managed by ControlClaw (gbrain-packages.yml). Runs as gbrain with GBrain's env file.
+      #
+      # The night, in four steps inside one cost window (controlclaw apps/saas/docs/features/brain.md):
+      #   1. facts: GBrain queues one `facts-absorb` job per page an agent saves, and a Postgres brain runs
+      #      them only on its job worker. The worker runs here until the queue is empty, at most 30 minutes.
+      #   2. links: the typed links of pages agents saved (no model).
+      #   3. `gbrain dream`: GBrain's maintenance cycle, as configured by gbrain.yml.
+      #   4. long pages: `extract_atoms`, which cuts long pages into short ones, for at most 10 minutes.
+      # The summary for Activity is counts and a cost, nothing from any page.
       set -uo pipefail
-      REPORT_DIR=/var/lib/gbrain-report
+      REPORT_DIR="${CC_GBRAIN_REPORT_DIR:-/var/lib/gbrain-report}"
+      G="${CC_GBRAIN_BIN:-/usr/local/bin/gbrain}"
+      WORKER_SECONDS="${CC_GBRAIN_WORKER_SECONDS:-1800}"
+      ATOMS_SECONDS="${CC_GBRAIN_ATOMS_SECONDS:-600}"
+      sql() { psql "$GBRAIN_DATABASE_URL" -Atc "$1" 2>/dev/null; }
+      num() { case "$1" in ''|*[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }
       started="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
-      out="$(/usr/local/bin/gbrain dream --json)"
+
+      # 1. Facts. Jobs waiting, running, or due within two minutes (GBrain defers the whole queue for a
+      #    short while after a provider error); one deferred for longer is the next night's.
+      queued() { num "$(sql "select count(*) from minion_jobs where queue = 'default' and (status in ('waiting', 'active') or (status = 'delayed' and delay_until <= now() + interval '2 minutes'))")"; }
+      if [ "$(queued)" -gt 0 ]; then
+        "$G" jobs work --concurrency 2 --nice 10 >/dev/null 2>&1 &
+        worker=$!
+        deadline=$((SECONDS + WORKER_SECONDS))
+        while [ "$SECONDS" -lt "$deadline" ] && kill -0 "$worker" 2>/dev/null; do
+          sleep 10
+          [ "$(queued)" -eq 0 ] && break
+        done
+        # SIGTERM lets the job in flight finish (GBrain gives it 35 s) and puts nothing back half-done.
+        kill -TERM "$worker" 2>/dev/null
+        wait "$worker" 2>/dev/null
+      fi
+      pages_fact_checked="$(num "$(sql "select count(*) from minion_jobs where name = 'facts-absorb' and status = 'completed' and finished_at >= '$started'::timestamptz")")"
+      facts_waiting="$(queued)"
+
+      # 2. Links: an agent's page saved over MCP keeps its [[links]] as plain mentions; the typed ones
+      #    ("works at", "joined") are read here, with no model, so the cycle can judge them.
+      "$G" extract all --source db --json >/dev/null 2>&1
+
+      # 3. The maintenance cycle.
+      out="$("$G" dream --json)"
       rc=$?
+
+      # 4. Long pages. Exit 11 means "more to do": the next night goes on.
+      atoms_out="$("$G" dream --phase extract_atoms --drain --window "$ATOMS_SECONDS" --json 2>/dev/null)"
+      atoms_rc=$?
+
       finished="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
-      usage="$(psql "$GBRAIN_DATABASE_URL" -Atc "select coalesce(sum(cost_usd),0)||' '||count(*) from chat_usage_log where created_at >= '$started'::timestamptz" 2>/dev/null || echo "")"
+      # What the night added and retired, by the rows' own times: not a difference of totals, which the
+      # cycle's own merging would eat into.
+      facts_new="$(num "$(sql "select count(*) from facts where created_at >= '$started'::timestamptz")")"
+      facts_retired="$(num "$(sql "select count(*) from facts where expired_at >= '$started'::timestamptz")")"
+      atoms_new="$(num "$(sql "select count(*) from pages where type = 'atom' and deleted_at is null and created_at >= '$started'::timestamptz")")"
+      usage="$(sql "select coalesce(sum(cost_usd),0)||' '||count(*) from chat_usage_log where created_at >= '$started'::timestamptz" || echo "")"
       if [ -d "$REPORT_DIR" ]; then
         tmp="$(mktemp "$REPORT_DIR/.last-cycle.XXXXXX")"
-        OUT="$out" RC="$rc" STARTED="$started" FINISHED="$finished" USAGE="$usage" python3 - > "$tmp" <<'PY'
+        OUT="$out" RC="$rc" STARTED="$started" FINISHED="$finished" USAGE="$usage" ATOMS="$atoms_out" ATOMS_RC="$atoms_rc" \
+          FACTS_NEW="$facts_new" FACTS_RETIRED="$facts_retired" ATOMS_NEW="$atoms_new" CHECKED="$pages_fact_checked" WAITING="$facts_waiting" \
+          python3 - > "$tmp" <<'PY'
       import json, os
-      try:
-          d = json.loads(os.environ["OUT"])
-      except Exception:
-          d = {}
+      def load(name):
+          try:
+              d = json.loads(os.environ.get(name, ""))
+              return d if isinstance(d, dict) else {}
+          except Exception:
+              return {}
+      def n(v):
+          return v if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+      d = load("OUT")
       usage = os.environ.get("USAGE", "").split()
       totals = d.get("totals") if isinstance(d.get("totals"), dict) else {}
+      totals = {k: v for k, v in totals.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+      phases = [p for p in d.get("phases", []) if isinstance(p, dict)]
+      def details(name):
+          for p in phases:
+              if p.get("phase") == name and isinstance(p.get("details"), dict):
+                  return p["details"]
+          return {}
+      # What this run added to GBrain's own totals (counts only).
+      totals["facts_extracted"] = int(os.environ["FACTS_NEW"])
+      totals["pages_fact_checked"] = int(os.environ["CHECKED"])
+      totals["facts_waiting"] = int(os.environ["WAITING"])
+      edges = details("edge_contradictions")
+      totals["relationships_ended"] = n(edges.get("applied")) + n(edges.get("declared_applied"))
+      # Facts a newer one replaced, and relationships that ended: what the night retired.
+      totals["facts_retired"] = int(os.environ["FACTS_RETIRED"]) + totals["relationships_ended"]
+      atoms = load("ATOMS")
+      # Short pages cut from long ones, and the long pages still waiting for it.
+      totals["atoms_written"] = int(os.environ["ATOMS_NEW"])
+      totals["pages_to_split"] = n(atoms.get("remaining"))
       print(json.dumps({
           "started_at": os.environ["STARTED"],
           "finished_at": os.environ["FINISHED"],
           "exit_code": int(os.environ["RC"]),
           "status": d.get("status") if isinstance(d.get("status"), str) else ("failed" if os.environ["RC"] != "0" else "unknown"),
           "duration_ms": d.get("duration_ms") if isinstance(d.get("duration_ms"), (int, float)) else None,
-          "phases": [{"phase": p.get("phase"), "status": p.get("status")} for p in d.get("phases", []) if isinstance(p, dict)][:40],
-          "totals": {k: v for k, v in totals.items() if isinstance(v, (int, float))},
+          "phases": [{"phase": p.get("phase"), "status": p.get("status")} for p in phases][:40],
+          "totals": totals,
           "cost_usd": float(usage[0]) if len(usage) == 2 else None,
           "model_calls": int(usage[1]) if len(usage) == 2 else None,
       }))
@@ -212,9 +286,9 @@
       EnvironmentFile={{ gbrain_home }}/.gbrain/env
       Environment=NODE_EXTRA_CA_CERTS={{ mitm_ca_path }}
       ExecStart=/usr/local/bin/cc-gbrain-dream
-      # A run on a large brain takes minutes (195 s for 1,000 pages in the spike); an hour is the
-      # line past which something is wrong, not slow.
-      TimeoutStartSec=1h
+      # The facts step stops itself after 30 minutes and long pages after 10; the cycle took 195 s
+      # for 1,000 pages in the spike. Two hours is the line past which something is wrong, not slow.
+      TimeoutStartSec=2h
       NoNewPrivileges=true
       PrivateTmp=true
   notify: reload systemd

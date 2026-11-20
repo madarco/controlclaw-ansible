@@ -133,9 +133,14 @@
     - gbrain_link is changed
 
 # Every run, so a box always has the settings this commit says, whatever it was built with.
-#   - model tiers: GBrain's defaults name models the AI Gateway does not serve (bare `gpt-5.6`);
-#     Luna for everything routine, Terra only for "deep" answers (docs/plans/gbrain.md §6).
+#   - model tiers: GBrain's defaults name models the AI Gateway does not serve (bare `gpt-5.6`, and
+#     `gpt-6.1-sol` for the two repair steps). Everything routine runs on the brain's model, which the
+#     owner picks on the Brain page (cc-gbrain-model below keeps the choice in {{ gbrain_home }}/.gbrain/cc-model;
+#     Luna when there is none); Terra for "deep" answers only (docs/plans/gbrain.md §6).
 #   - agent.use_gateway_loop: without it the nightly cycle wants an Anthropic key.
+#   - the nightly run learns by itself (T-217): facts from whole conversation pages, and a newer
+#     relationship ends the one it contradicts (two employers at once) instead of filing a proposal
+#     nobody on a brain reviews. cc-gbrain-dream adds the facts worker and long pages.
 # self_upgrade is NOT set here: see the next task.
 - name: GBrain | Settings
   ansible.builtin.shell:
@@ -143,17 +148,54 @@
       set -eu
       set -a; . {{ gbrain_home }}/.gbrain/env; set +a
       g=/usr/local/bin/gbrain
-      $g config set models.tier.utility openai:gpt-5.6-luna >/dev/null
-      $g config set models.tier.reasoning openai:gpt-5.6-luna >/dev/null
-      $g config set models.tier.subagent openai:gpt-5.6-luna >/dev/null
+      model="$(cat {{ gbrain_home }}/.gbrain/cc-model 2>/dev/null || true)"
+      case "$model" in {{ gbrain_models | join('|') }}) ;; *) model={{ gbrain_models[0] }} ;; esac
+      for k in models.tier.utility models.tier.reasoning models.tier.subagent models.fence_repair models.content_repair; do
+        $g config set "$k" "openai:$model" >/dev/null
+      done
       $g config set models.tier.deep openai:gpt-5.6-terra >/dev/null
       $g config set agent.use_gateway_loop true >/dev/null
+      $g config set cycle.conversation_facts_backfill.enabled true >/dev/null
+      $g config set dream.edge_contradictions.mode apply >/dev/null
+      $g config set dream.single_value.mode apply >/dev/null
     chdir: "{{ gbrain_home }}"
   become: true
   become_user: "{{ gbrain_user }}"
   environment:
     HOME: "{{ gbrain_home }}"
   changed_when: false
+
+# The brain's model, as the owner picks it on the Brain page (T-217). The vm-agent gets it from the
+# console and cannot run GBrain's CLI (the env file is GBrain's account's), so this root helper takes
+# one of the allowed names as its only argument, keeps it in cc-model for the Settings task above, and
+# sets the same keys. It restarts GBrain only when the model changed, so query expansion picks it up.
+- name: GBrain | cc-gbrain-model (root-owned, one of the allowed models)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-gbrain-model
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Managed by ControlClaw (gbrain.yml). Usage: cc-gbrain-model {{ gbrain_models | join('|') }}
+      set -euo pipefail
+      model="${1:-}"
+      case "$model" in {{ gbrain_models | join('|') }}) ;; *) echo "cc-gbrain-model: not a brain model" >&2; exit 2 ;; esac
+      f={{ gbrain_home }}/.gbrain/cc-model
+      [ -d {{ gbrain_home }}/.gbrain ] || { echo "cc-gbrain-model: no brain here yet" >&2; exit 3; }
+      if [ "$(cat "$f" 2>/dev/null || true)" = "$model" ]; then
+        echo unchanged
+        exit 0
+      fi
+      cd {{ gbrain_home }}
+      runuser -u {{ gbrain_user }} -- env HOME={{ gbrain_home }} M="$model" bash -c '
+        set -eu; set -a; . {{ gbrain_home }}/.gbrain/env; set +a
+        for k in models.tier.utility models.tier.reasoning models.tier.subagent models.fence_repair models.content_repair; do
+          /usr/local/bin/gbrain config set "$k" "openai:$M" >/dev/null
+        done
+        umask 077; printf "%s\n" "$M" > {{ gbrain_home }}/.gbrain/cc-model'
+      systemctl try-restart gbrain.service || true
+      echo changed
 
 # self_upgrade.mode off: the version is this role's pin, and nothing else's. In config.json itself,
 # because `gbrain init` writes `self_upgrade.mode: notify` there, and the file plane SHADOWS the
@@ -423,7 +465,8 @@
       # the console's Start / Stop / Restart / Logs for this box, and hands GBrain the model key the
       # firewall pushed (cc-gbrain-key), and mints and revokes the connected agents' tokens
       # (cc-gbrain-token), and asks GBrain for an owner login link (cc-gbrain-login-link, no
-      # arguments). Exactly these, nothing wider.
+      # arguments), and sets the brain's model to one of the allowed ones (cc-gbrain-model).
+      # Exactly these, nothing wider.
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl start gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl stop gbrain
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/bin/systemctl restart gbrain
@@ -431,6 +474,8 @@
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-key
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-token
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-login-link ""
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-model {{ gbrain_models[0] }}
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-model {{ gbrain_models[1] }}
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-backup stage
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-backup clean
       {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-backup restore

@@ -10,7 +10,11 @@
 // (Codex reads the workspace's root one itself), and a file outside the workspace is not a context
 // file at all. before_prompt_build runs for the embedded (Pi) and Codex harnesses, sub-agents and
 // heartbeats; a plugin from outside OpenClaw's bundle needs hooks.allowConversationAccess for it.
+//
+// It also keeps what a conversation taught the agent for the organization's brain, while the owner's
+// switch for this agent is on (brain-capture.js). agent_end needs the same grant.
 import fs from "node:fs";
+import { markEnded, recordTurn } from "./brain-capture.js";
 
 const MAX_CHARS = 20_000;
 export const FILE = "/var/lib/controlclaw-instructions/AGENTS.md";
@@ -41,5 +45,11 @@ export default {
   id: "cc-instructions",
   register(api) {
     api.on("before_prompt_build", () => promptContext(readInstructions()));
+    api.on("agent_end", (event, ctx) => {
+      recordTurn(event, ctx);
+    });
+    api.on("session_end", (event, ctx) => {
+      markEnded(event, ctx);
+    });
   },
 };
