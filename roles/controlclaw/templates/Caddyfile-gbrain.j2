@@ -7,9 +7,10 @@
 #
 # The reachable surface of a brain is what this file serves, and it stays small on purpose: the
 # vm-agent (which checks the control plane's bearer itself), the Open exchange, GBrain's admin page
-# behind the ControlClaw session, the locked-disk route while the disk is shut, and a bare 404 for
-# everything else. GBrain's MCP, OAuth and metadata routes are in that 404: nothing made on the admin
-# page (a client, a token) can reach the brain from outside.
+# behind the ControlClaw session, the outside apps' MCP address (served by the vm-agent, below), the
+# locked-disk route while the disk is shut, and a bare 404 for everything else. GBrain's own MCP,
+# OAuth and metadata routes are never reached from here: nothing made on the admin page (a client,
+# a token) can reach the brain from outside.
 {
     email {{ caddy_acme_email }}
     # The same issuers, in the same order, as every other box: Let's Encrypt, then ZeroSSL.
@@ -73,6 +74,18 @@
             header_up -Upgrade
         }
         reverse_proxy 127.0.0.1:{{ gbrain_port }} {
+            flush_interval -1
+        }
+    }
+
+    # Outside AI apps (controlclaw T-219, apps/saas/docs/features/brain.md): one MCP address and the
+    # OAuth around it, all answered by the vm-agent (gbrain/oauth.rs), which swaps the app's token for
+    # that app's own GBrain token, as the agents' gate does. GBrain's /oauth/* and /.well-known/* are
+    # not proxied: the vm-agent serves its own. /mcp streams (SSE), so no buffering.
+    @apps path /mcp /oauth/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/* /.well-known/oauth-authorization-server /.well-known/oauth-authorization-server/*
+    handle @apps {
+        reverse_proxy {{ vm_agent_upstreams }} {
+            import vm_agent
             flush_interval -1
         }
     }
