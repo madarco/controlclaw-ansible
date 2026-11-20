@@ -1,5 +1,17 @@
 [
   {
+    "version": "1.51.0",
+    "date": "2026-11-20",
+    "changes": [
+      "Your organization's brain now learns facts each night from what was saved that day.",
+      "Agents connected to the brain with Read and write save what they learn automatically; each has its own switch.",
+      "Owners and admins can read, correct, search, import and export the brain's pages on the brain itself.",
+      "Claude, ChatGPT and other AI apps can use the brain once an owner or admin approves them with a code.",
+      "You can choose the model the brain uses for its own work.",
+      "Five new skills let agents use the organization's brain."
+    ]
+  },
+  {
     "version": "1.50.0",
     "date": "2026-11-19",
     "changes": [
