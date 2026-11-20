@@ -307,6 +307,11 @@
   ansible.builtin.include_tasks: gbrain.yml
   when: vm_id is defined and box_role == 'gbrain' and not ci_test
 
+# The brain's own pages (Pages, Lately, Ask, Import, Export): the vm-agent's helper for GBrain.
+- name: Include the brain's pages (the vm-agent's GBrain helper)
+  ansible.builtin.include_tasks: gbrain-pages.yml
+  when: vm_id is defined and box_role == 'gbrain' and not ci_test
+
 # A failure anywhere in openclaw.yml stops the play before the handlers, and several of its steps
 # stop the gateway first (an OpenClaw upgrade, its state migration, a Meet plugin install). So an
 # Update that failed there used to leave the agent stopped until somebody pressed Restart: the

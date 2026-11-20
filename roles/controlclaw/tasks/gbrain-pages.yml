@@ -1,0 +1,195 @@
+---
+# The brain's own pages (controlclaw apps/saas/docs/features/brain.md, "The brain's pages"): Pages,
+# Export, Import, Lately and Ask, served by the vm-agent under /__cc/brain/ to an owner or admin the
+# console signed in. What the pages show never leaves this box.
+#
+# The vm-agent reads and writes pages over GBrain's MCP on loopback with a token of its own. What it
+# cannot do itself (mint that token, run GBrain's export and import, read what an answer cost) needs
+# GBrain's env file, which only GBrain's account can read, so it goes through this root helper with
+# fixed verbs and fixed paths. Runs after gbrain.yml.
+
+# Where the helper hands files to the vm-agent and takes the upload from it: the vm-agent's, inside
+# the encrypted container (the state directory is on it).
+- name: GBrain pages | The vm-agent's hand-over directory
+  ansible.builtin.file:
+    path: /opt/controlclaw/state/gbrain-pages
+    state: directory
+    owner: "{{ controlclaw_user }}"
+    group: "{{ controlclaw_user }}"
+    mode: '0750'
+
+# Unzips an upload as GBrain's account into a fresh directory. Markdown only (.md, .markdown); other
+# files (an Obsidian vault's pictures, its .obsidian settings) are skipped and counted. A path that
+# leaves the directory is refused, and so is an archive past the limits, before and while it is read.
+# One top folder that holds everything (a Notion export's) is dropped, so it is not part of every slug.
+- name: GBrain pages | cc-gbrain-unzip (the import's reader)
+  ansible.builtin.copy:
+    dest: /usr/local/lib/cc-gbrain-unzip.py
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by ControlClaw (gbrain-pages.yml). Usage: python3 -I cc-gbrain-unzip.py <zip> <dir>
+      import json, os, posixpath, sys, zipfile
+
+      MAX_FILES = 20000
+      MAX_FILE = 20 * 1024 * 1024
+      MAX_TOTAL = 512 * 1024 * 1024
+      MARKDOWN = (".md", ".markdown")
+
+      def fail(code, message):
+          print(json.dumps({"error": code, "message": message}))
+          sys.exit(3)
+
+      src, dest = sys.argv[1], sys.argv[2]
+      try:
+          z = zipfile.ZipFile(src)
+      except Exception:
+          fail("not_zip", "The file is not a zip archive.")
+      names = []
+      skipped = 0
+      for info in z.infolist():
+          if info.is_dir():
+              continue
+          name = info.filename.replace("\\", "/")
+          parts = [p for p in name.split("/") if p not in ("", ".")]
+          if not parts or name.startswith("/") or ".." in parts:
+              fail("bad_path", "The archive has a file outside its own folder.")
+          hidden = any(p.startswith(".") or p == "__MACOSX" for p in parts)
+          if hidden or not parts[-1].lower().endswith(MARKDOWN):
+              skipped += 1
+              continue
+          if info.file_size > MAX_FILE:
+              fail("too_large", "A page in the archive is over 20 MB.")
+          names.append((info, parts))
+      if not names:
+          fail("no_markdown", "The archive has no Markdown files.")
+      if len(names) > MAX_FILES:
+          fail("too_many", "The archive has more than 20,000 Markdown files.")
+      if sum(i.file_size for i, _ in names) > MAX_TOTAL:
+          fail("too_large", "The archive holds more than 512 MB of Markdown.")
+      tops = {parts[0] for _, parts in names}
+      strip = len(tops) == 1 and all(len(parts) > 1 for _, parts in names)
+      total = 0
+      for info, parts in names:
+          rel = posixpath.join(*(parts[1:] if strip else parts))
+          out = os.path.join(dest, rel)
+          if not os.path.realpath(out).startswith(os.path.realpath(dest) + os.sep):
+              fail("bad_path", "The archive has a file outside its own folder.")
+          os.makedirs(os.path.dirname(out), exist_ok=True)
+          written = 0
+          with z.open(info) as r, open(out, "wb") as w:
+              while True:
+                  chunk = r.read(65536)
+                  if not chunk:
+                      break
+                  written += len(chunk)
+                  total += len(chunk)
+                  # The sizes in the archive are what it says; this is what it holds.
+                  if written > MAX_FILE or total > MAX_TOTAL:
+                      fail("too_large", "The archive holds more than 512 MB of Markdown.")
+                  w.write(chunk)
+      print(json.dumps({"files": len(names), "skipped": skipped}))
+
+- name: GBrain pages | cc-gbrain-pages (root-owned, fixed verbs)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/cc-gbrain-pages
+    owner: root
+    group: root
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Managed by ControlClaw (gbrain-pages.yml).
+      # Usage: cc-gbrain-pages token          prints a new token for the vm-agent's pages
+      #        cc-gbrain-pages export         GBrain's export into OUT/export, the vm-agent's to zip and remove
+      #        cc-gbrain-pages import         imports OUT/import/upload.zip; progress in OUT/import/progress
+      #        cc-gbrain-pages cost <since>   what GBrain's model calls cost since an ISO time: "<usd> <calls>"
+      set -euo pipefail
+      OUT=/opt/controlclaw/state/gbrain-pages
+      NAME=controlclaw-pages
+      g() {
+        cd {{ gbrain_home }}
+        runuser -u {{ gbrain_user }} -- env HOME={{ gbrain_home }} bash -c \
+          'set -a; . {{ gbrain_home }}/.gbrain/env; set +a; exec "$@"' _ "$@"
+      }
+      # A work directory of GBrain's own, inside the container, emptied first and removed at the end.
+      work() {
+        WORK="{{ gbrain_home }}/.cc-pages-$1"
+        rm -rf "$WORK"
+        install -d -m 0700 -o {{ gbrain_user }} -g {{ gbrain_user }} "$WORK"
+        trap 'rm -rf "$WORK"' EXIT
+      }
+      case "${1:-}" in
+        token)
+          # Read and write, like a Read and write agent, and every page: the pages show the whole
+          # brain to an owner or admin. Not `cc-`, so Activity does not count it as an agent and the
+          # agents' rescope leaves it alone. Earlier ones are revoked first (names are not unique).
+          g /usr/local/bin/gbrain auth revoke "$NAME" >/dev/null 2>&1 || true
+          out="$(g /usr/local/bin/gbrain auth create "$NAME" --scopes read,write --reads-unscoped --yes)"
+          token="$(printf '%s\n' "$out" | sed -nE 's/^[[:space:]]+([A-Za-z0-9_]{32,})[[:space:]]*$/\1/p' | head -1)"
+          [ -n "$token" ] || { echo "cc-gbrain-pages: GBrain printed no token" >&2; exit 3; }
+          printf '%s\n' "$token"
+          ;;
+        export)
+          work export
+          rm -rf "$OUT/export"
+          g /usr/local/bin/gbrain export --dir "$WORK/out" >/dev/null 2>"$WORK/log" || {
+            echo "cc-gbrain-pages: $(tail -1 "$WORK/log")" >&2; exit 3; }
+          grep -q COMPLETE "$WORK/out/.gbrain-export-status" || {
+            echo "cc-gbrain-pages: the export did not finish" >&2; exit 3; }
+          rm -f "$WORK/out/.gbrain-export-status"
+          mv "$WORK/out" "$OUT/export"
+          chown -R {{ controlclaw_user }}:{{ controlclaw_user }} "$OUT/export"
+          chmod -R u+rwX,go-rwx "$OUT/export"
+          echo exported
+          ;;
+        import)
+          [ -s "$OUT/import/upload.zip" ] || { echo "cc-gbrain-pages: no upload" >&2; exit 3; }
+          work import
+          install -m 0600 -o {{ gbrain_user }} -g {{ gbrain_user }} "$OUT/import/upload.zip" "$WORK/upload.zip"
+          rm -f "$OUT/import/upload.zip"
+          install -d -m 0700 -o {{ gbrain_user }} -g {{ gbrain_user }} "$WORK/pages"
+          if ! read_out="$(g python3 -I /usr/local/lib/cc-gbrain-unzip.py "$WORK/upload.zip" "$WORK/pages")"; then
+            printf '%s\n' "$read_out"
+            exit 3
+          fi
+          rm -f "$WORK/upload.zip"
+          printf 'read %s\n' "$read_out" > "$OUT/import/progress"
+          # GBrain prints "[import.files] 12/40 (30%) ..." on stderr; the last one is the progress.
+          summary="$(g /usr/local/bin/gbrain import "$WORK/pages" --json --allow-noncanonical-root 2> >(
+            while IFS= read -r line; do
+              if [[ "$line" =~ ^\[import\.files\]\ ([0-9]+)/([0-9]+) ]]; then
+                printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" > "$OUT/import/progress.tmp"
+                mv -f "$OUT/import/progress.tmp" "$OUT/import/progress"
+              fi
+            done))" || { echo "cc-gbrain-pages: GBrain's import failed" >&2; exit 3; }
+          # Links between the new pages ([[wikilinks]]) and their timelines are read by a pass of
+          # their own. No AI. A failure here leaves the pages in, without those links yet.
+          g /usr/local/bin/gbrain extract all --source db >/dev/null 2>&1 || echo "cc-gbrain-pages: link extraction failed" >&2
+          printf '%s\n' "$summary" | tail -1
+          ;;
+        cost)
+          since="${2:-}"
+          [[ "$since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$ ]] || {
+            echo "cc-gbrain-pages: bad time" >&2; exit 2; }
+          # The time is checked above, so it can be part of the statement.
+          sql="select coalesce(sum(cost_usd),0)||' '||count(*) from chat_usage_log where created_at >= '$since'::timestamptz"
+          g bash -c 'exec psql "$GBRAIN_DATABASE_URL" -Atc "$1"' _ "$sql"
+          ;;
+        *) echo "cc-gbrain-pages: token, export, import or cost" >&2; exit 2 ;;
+      esac
+
+- name: GBrain pages | The vm-agent may run it
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/controlclaw-gbrain-pages
+    owner: root
+    group: root
+    mode: '0440'
+    validate: 'visudo -cf %s'
+    content: |
+      # Managed by ControlClaw (gbrain-pages.yml). The brain's pages: the vm-agent's own GBrain
+      # token, the export, the import, and what an answer cost. Exactly these.
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-pages token
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-pages export
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-pages import
+      {{ controlclaw_user }} ALL=(root) NOPASSWD: /usr/local/bin/cc-gbrain-pages cost *
