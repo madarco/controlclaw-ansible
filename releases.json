@@ -1,5 +1,12 @@
 [
   {
+    "version": "1.52.0",
+    "date": "2026-11-23",
+    "changes": [
+      "The brain's own pages have a new look: kinds in colour, backlinks and a timeline on each page, a day-by-day chart on Lately, and the sources of each answer on Ask."
+    ]
+  },
+  {
     "version": "1.51.1",
     "date": "2026-11-20",
     "changes": [
