@@ -1,4 +1,4 @@
-"use client";import{y as u}from"./chunk-STDNKMAN.js";import{a as M,b as x}from"./chunk-YEAN2OM6.js";import{c as n}from"./chunk-OOJM4CTU.js";var e=n(M());var r=n(x()),N=`
+"use client";import{F as u}from"./chunk-I5CN4ANO.js";import{a as M,b as x}from"./chunk-YEAN2OM6.js";import{c as n}from"./chunk-OOJM4CTU.js";var e=n(M());var r=n(x()),N=`
 .cc-crepe { --crepe-color-background: transparent; }
 .cc-crepe .milkdown {
   background: transparent;
