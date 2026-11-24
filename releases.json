@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.53.0",
+    "date": "2026-11-24",
+    "changes": [
+      "The agent's own pages (Meetings, Calls, Files, Logs, WhatsApp) and the firewall's pages have a new look.",
+      "Browser is now called Screen: it opens with the sidebar and has a Full screen button.",
+      "Meetings stays in the agent's sidebar on every page once the agent has saved meetings."
+    ]
+  },
+  {
     "version": "1.52.0",
     "date": "2026-11-23",
     "changes": [
