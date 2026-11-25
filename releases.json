@@ -1,5 +1,16 @@
 [
   {
+    "version": "1.54.0",
+    "date": "2026-11-25",
+    "changes": [
+      "The firewall's own pages (Logs, Doctor, Website logins, Content rules, AI review history) have a new look that matches the agent pages.",
+      "Doctor's answers are formatted, its steps fold into one line, and each link shows where it goes.",
+      "Ask Doctor on a finding can include your question; the code message shows it in full.",
+      "Doctor works with an AI Gateway key.",
+      "Cards on the agent and firewall pages have one border, and Logs show the newest lines first."
+    ]
+  },
+  {
     "version": "1.53.0",
     "date": "2026-11-24",
     "changes": [
