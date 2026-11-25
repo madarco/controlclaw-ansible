@@ -1,23 +1,23 @@
-# Made by rust/scripts/build-release.sh 1.9.4 from controlclaw 14797fd9a5f4e54d0f7644a2a65a7c749ea19d87. Do not edit by hand.
+# Made by rust/scripts/build-release.sh 1.9.5 from controlclaw 962bc091f0fcf411abae350212f2fb4663c7b74b. Do not edit by hand.
 cc_rust_release:
-  version: "1.9.4"
-  commit: "14797fd9a5f4e54d0f7644a2a65a7c749ea19d87"
-  base_url: "https://github.com/madarco/controlclaw-ansible/releases/download/rust-v1.9.4"
+  version: "1.9.5"
+  commit: "962bc091f0fcf411abae350212f2fb4663c7b74b"
+  base_url: "https://github.com/madarco/controlclaw-ansible/releases/download/rust-v1.9.5"
   binaries:
-    vm-agent: { asset: "vm-agent-x86_64-linux-musl", sha256: "f3471a3457e7210ca8752661d35ada4261245c6f240c9c726e5e8f1fa5302583" }
-    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "f7b68cc3a8cfadb6d8e9d24ded80769fa025a00605f649957804ef6afc7a9cac" }
-    cc-proxy: { asset: "cc-proxy-x86_64-linux-musl", sha256: "86ee60548fd9ed3bc259b8fdd2b34f9674694dae6a0bf7ccc89311388fa32335" }
+    vm-agent: { asset: "vm-agent-x86_64-linux-musl", sha256: "c513ee87df57fa233619f28a0a73a9e5ae829047b201b82acb4618183ad9976a" }
+    mitm-agent: { asset: "mitm-agent-x86_64-linux-musl", sha256: "119d62205a6b21560099a4a105cd3d398fd4b2732918e4bff616ffad3c46edf1" }
+    cc-proxy: { asset: "cc-proxy-x86_64-linux-musl", sha256: "29a45079633d85de33648900d41bc28b5ffb828dbdfee3017952bfd83b5b7c3e" }
     cc-migrate: { asset: "cc-migrate-x86_64-linux-musl", sha256: "195afe3a4bc2665b78dced52da6422c98366300bd44eb697b87bf9e99ac56084" }
   ui:
-    app.css: { asset: "mitm-agent-ui-app.css", sha256: "341d35dee390efba9b9b003d6e476717b72b742f415427f21e80758e1f4ab6b8" }
-    app.js: { asset: "mitm-agent-ui-app.js", sha256: "c234adce36205a1e6fcea90ee91854746865b809048c9b5ec3eeb10e147fe091" }
-    doctor-start.js: { asset: "mitm-agent-ui-doctor-start.js", sha256: "0ffdb3e38baac49c6dcfeaf562a980ea7b0a68e4664afb6fa392d945b614e850" }
+    app.css: { asset: "mitm-agent-ui-app.css", sha256: "10369640735648ed7d5dc4930db226905e35b4350bede2a7e24759d6efff0fd7" }
+    app.js: { asset: "mitm-agent-ui-app.js", sha256: "09dec44ad82d70cb54e6662cbe42549c10cc7cfacf5eddae78e004ead2172855" }
+    doctor-start.js: { asset: "mitm-agent-ui-doctor-start.js", sha256: "e2e96bd2b445d07c2f8cbc81b2d3243e75e73426307aaeb460f88c6fbfb73ca0" }
     panel.html: { asset: "mitm-agent-ui-panel.html", sha256: "6f229276910d6ef39be70ffcd91e4e71738e8588409c964945e4b43539318d70" }
-    panel.js: { asset: "mitm-agent-ui-panel.js", sha256: "e64f5b7eb69d65e9461b5beecb25cd4923bb9e7c198cdeb80a3c57fde9f94b00" }
-    panel.css: { asset: "mitm-agent-ui-panel.css", sha256: "efba770b78fbfb86592380b200f16ae752467b4c1b9f8af01a725510825ce76c" }
+    panel.js: { asset: "mitm-agent-ui-panel.js", sha256: "9022b1ec256a49105d647c3edf64435fa499e488c678e81532da984075dd6bbc" }
+    panel.css: { asset: "mitm-agent-ui-panel.css", sha256: "0c179e8ccef8635756937ae391e8c68433cadb1aed5bc8ab006f7b000d79dbef" }
     connector-icons.pack: { asset: "mitm-agent-ui-connector-icons.pack", sha256: "a2893c845676cf4823bf60259e9d675b56a076262858cbd6fa5121a97c0daa21" }
   binaries_aarch64:
-    vm-agent: { asset: "vm-agent-aarch64-linux-musl", sha256: "57ff1e70f6a65841c5d6357d317e370fc1fb07d0d5300c54d13ffeead6bc3712" }
-    mitm-agent: { asset: "mitm-agent-aarch64-linux-musl", sha256: "271db645e2c7474041cace2bfd35ae398753bea841cca44b989861cc24209668" }
-    cc-proxy: { asset: "cc-proxy-aarch64-linux-musl", sha256: "fcbabd118a2f54a7dac7cda51b4399490582f0836162cde6e4f1fcab7c4bf12d" }
+    vm-agent: { asset: "vm-agent-aarch64-linux-musl", sha256: "952c0f5a1e6d0d5a03bf5335da960db429ca3ee033241c849f859f8e35f04e2c" }
+    mitm-agent: { asset: "mitm-agent-aarch64-linux-musl", sha256: "0b89fee4852c038ecfabd6932266e80d78714fd57767ce87c7e0f42d9dd11f53" }
+    cc-proxy: { asset: "cc-proxy-aarch64-linux-musl", sha256: "00d36b96c7f0aa7de7db3f610c0ae148ef089d0a7e9745ab3ec41a6c98a5f792" }
     cc-migrate: { asset: "cc-migrate-aarch64-linux-musl", sha256: "b952eb0d79548fbcc47ee363a8dcf85d96333eb6a4eacf9165669d9aa79d64c9" }
