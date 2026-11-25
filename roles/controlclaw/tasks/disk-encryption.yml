@@ -137,7 +137,7 @@
 
 # tangd serves the key database from INSIDE the container, on loopback only. The gate in
 # cc-secure-daemon is what faces the private network.
-- name: Disk encryption | tangd drop-in directories
+- name: Disk encryption | tangd and fstrim drop-in directories
   ansible.builtin.file:
     path: "/etc/systemd/system/{{ item }}.d"
     state: directory
@@ -145,6 +145,7 @@
   loop:
     - tangd.socket
     - tangd@.service
+    - fstrim.service
 
 - name: Disk encryption | tangd listens on loopback and is NOT started at boot
   ansible.builtin.copy:
@@ -392,6 +393,40 @@
       No partner can bind a keyslot to it, and any box it is supposed to open will not come back from
       its next reboot. Check `systemctl status tangd.socket` and `cc-secure mount` on this box.
     success_msg: tang answers on loopback; this box can be bound to and can open its partner
+
+# Discards through the encryption to the image file, the `discard` mount option off, and one trim
+# the first time (T-diskspace; cc-secure discard says how). It reloads the open mapping in place:
+# nothing is unmounted or stopped. A failure here is reported and does not stop the Update, because
+# the box works as it did before, it only keeps the space its filesystem freed.
+# The weekly trim of the container. Ubuntu's fstrim.service trims what /etc/fstab lists and stops
+# there (`--listed-in /etc/fstab:/proc/self/mountinfo` reads the first non-empty file only), and the
+# container is mounted by cc-secure, not fstab. A second command in the same oneshot; the `-` lets
+# a week where the container is not mounted pass.
+- name: Disk encryption | the weekly trim covers the container
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/fstrim.service.d/controlclaw-secure.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # ControlClaw (roles/controlclaw/tasks/disk-encryption.yml): also trim the encrypted container.
+      [Service]
+      ExecStart=-/sbin/fstrim --verbose {{ luks_secure_mount }}
+  notify: reload systemd for disk encryption
+
+- name: Disk encryption | give freed space in the container back to the disk
+  ansible.builtin.command: /usr/local/bin/cc-secure discard
+  register: luks_discard
+  changed_when: luks_discard.stdout == 'changed'
+  failed_when: false
+  environment:
+    CC_SECURE_IMG: "{{ luks_image_path }}"
+    CC_SECURE_MOUNT: "{{ luks_secure_mount }}"
+
+- name: Disk encryption | say so when the container could not be set to give space back
+  ansible.builtin.debug:
+    msg: "cc-secure discard failed ({{ luks_discard.rc }}): {{ luks_discard.stderr | default('') }}"
+  when: luks_discard.rc != 0
 
 # The gate, not tangd, is what listens here. Per partner IP rather than the whole private subnet:
 # §8.1 is about what the difference buys.

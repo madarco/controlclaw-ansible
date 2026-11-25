@@ -222,6 +222,11 @@
 # runaway browser must not be able to fill it. LimitNOFILE in the unit below is what lets redsocks
 # hold that many (six descriptors each). The rest makes a full table drain in minutes and a dead
 # peer get noticed.
+#
+# log_info off (T-diskspace): at info redsocks writes accepted / connected / dropping client for every
+# connection, ~250,000 lines a day and 88% of a busy agent's journal. Nothing reads them. What it
+# still writes is notice and up: `redsocks started, conn_max=…`, `reached redsocks_conn_max limit`
+# and `accept: backing off`, which are the lines the T-browserhang checks look for.
 - name: Write redsocks config (transparent → explicit CONNECT to the mitm proxy)
   ansible.builtin.copy:
     dest: /etc/controlclaw/egress/redsocks.conf
@@ -229,7 +234,7 @@
     content: |
       base {
         log_debug = off;
-        log_info = on;
+        log_info = off;
         log = "syslog:daemon";
         daemon = off;
         redirector = iptables;

@@ -1,0 +1,96 @@
+# Logs that fit the disk, and a weekly trim (T-diskspace). Every role.
+#
+# A small agent box was at 80% of its 40 GB disk with this as the cause: journald had no limit of its
+# own (systemd's default is 10% of the filesystem, at most 4 GB) and held 3.7 GB, and rsyslog wrote
+# the same lines again to /var/log/syslog (about 500 MB). Nothing on a box reads /var/log/syslog:
+# fail2ban reads the journal (`backend = systemd` in firewall-linux.yml), and so do the firewall's
+# Logs page (cc-fw-logs), the vm-agent and the doctor.
+#
+# 500 MB is an eighth of the old ceiling and still days of a busy agent once redsocks no longer logs
+# every connection (openclaw-egress.yml); the firewall's Logs page reads at most one day. 14 days is
+# the age past which nobody has looked at a line when something goes wrong.
+
+# Ubuntu ships no /etc/systemd/journald.conf.d.
+- name: Disk space | journald's drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+# Named to sort after the systemd package's /usr/lib/systemd/journald.conf.d/syslog.conf, which sets
+# ForwardToSyslog=yes: journald reads the drop-ins of both directories in file-name order, and the
+# last one read wins.
+- name: Disk space | journald's limits, and no copy to syslog
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/zz-controlclaw.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # ControlClaw (roles/controlclaw/tasks/disk-space.yml)
+      [Journal]
+      SystemMaxUse=500M
+      MaxRetentionSec=14day
+      ForwardToSyslog=no
+  register: journald_dropin
+
+# journald keeps the services' stdout streams across a restart (they are in its descriptor store),
+# so nothing loses its log. Only when the drop-in changed.
+- name: Disk space | journald reads its new limits
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+  when: journald_dropin is changed
+
+- name: Disk space | bring the journal under its limits now
+  ansible.builtin.command: journalctl --rotate --vacuum-size=500M --vacuum-time=14d
+  changed_when: true
+  when: journald_dropin is changed
+
+# rsyslog would only write duplicates now: nothing forwards to it. Stopped and disabled, not removed,
+# so a package upgrade does not bring it back and someone who wants it can turn it on again.
+- name: Disk space | is rsyslog installed
+  ansible.builtin.stat:
+    path: /lib/systemd/system/rsyslog.service
+  register: rsyslog_unit
+
+- name: Disk space | rsyslog off
+  ansible.builtin.systemd:
+    name: rsyslog
+    state: stopped
+    enabled: false
+  when: rsyslog_unit.stat.exists
+
+- name: Disk space | rsyslog's socket off
+  ansible.builtin.systemd:
+    name: syslog.socket
+    state: stopped
+  when: rsyslog_unit.stat.exists
+  failed_when: false
+
+# The files rsyslog wrote (Ubuntu's 50-default.conf and 20-ufw.conf), rotated copies included. They
+# are a copy of what the journal holds, and with rsyslog off they no longer grow.
+- name: Disk space | remove what rsyslog wrote
+  ansible.builtin.shell: |
+    set -eu
+    removed=0
+    for f in /var/log/syslog* /var/log/kern.log* /var/log/auth.log* /var/log/ufw.log* \
+             /var/log/mail.log* /var/log/mail.err* /var/log/cron.log* /var/log/user.log*; do
+      [ -f "$f" ] || continue
+      rm -f -- "$f"; removed=$((removed + 1))
+    done
+    echo "$removed"
+  register: rsyslog_files
+  changed_when: rsyslog_files.stdout | int > 0
+  when: rsyslog_unit.stat.exists
+
+# Ubuntu's weekly trim of the filesystems in /etc/fstab. The encrypted container is not in fstab, and
+# fstrim reads only the first non-empty list it is given, so disk-encryption.yml adds the container
+# to the same run.
+- name: Disk space | the weekly trim
+  ansible.builtin.systemd:
+    name: fstrim.timer
+    enabled: true
+    state: started

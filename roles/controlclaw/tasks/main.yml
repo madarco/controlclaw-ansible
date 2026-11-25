@@ -117,6 +117,11 @@
 - name: Include user creation tasks
   ansible.builtin.include_tasks: user.yml
 
+# Every role: journald's limits, rsyslog off, the weekly trim (T-diskspace).
+- name: Include disk space tasks (log limits, the weekly trim)
+  ansible.builtin.include_tasks: disk-space.yml
+  when: not ci_test
+
 # Every agent box, whatever tailscale_enabled says: the console's owner access over Tailscale needs
 # the package, the cc-tailscale helper and its sudoers line on the box before anyone asks to join.
 # tailscale_enabled only decides whether tailscaled runs from provisioning (see the file's header).

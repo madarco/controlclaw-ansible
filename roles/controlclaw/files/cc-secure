@@ -116,12 +116,15 @@ cmd_init() {
 
   cryptsetup luksFormat --type luks2 --batch-mode --key-file "$tmp" "$loop" \
     || { rm -f "$tmp" "$IMG"; die "luksFormat failed"; }
-  cryptsetup luksOpen --key-file "$tmp" --allow-discards "$loop" "$MAPPER" \
+  # --persistent writes allow-discards into the LUKS2 header, so every later open has it, the
+  # partner's `clevis luks unlock` included (clevis 20 cannot pass cryptsetup options). See cmd_discard.
+  cryptsetup luksOpen --key-file "$tmp" --allow-discards --persistent "$loop" "$MAPPER" \
     || { rm -f "$tmp"; die "luksOpen failed"; }
 
   # -E nodiscard so mkfs does not spend minutes discarding a file that is already sparse.
   mkfs.ext4 -q -E nodiscard -L cc-secure "/dev/mapper/$MAPPER"
-  mount -o discard "/dev/mapper/$MAPPER" "$SECURE"
+  # No `-o discard`: freed space is given back by the weekly fstrim.timer instead (cmd_discard).
+  mount "/dev/mapper/$MAPPER" "$SECURE"
   # 0711, not 0700: tangd runs as _tang and has to traverse this to reach $TANG_DB. 0700 here makes
   # /adv answer nothing, which looks like a tang problem and is a permissions one. 0711 lists nothing
   # to anybody; the sensitive subdirectories below keep their own modes.
@@ -190,7 +193,7 @@ bind_entry() {
 cmd_mount() {
   is_open || die "container is not open"
   take_lock
-  is_mounted || { mkdir -p "$SECURE"; mount -o discard "/dev/mapper/$MAPPER" "$SECURE"; }
+  is_mounted || { mkdir -p "$SECURE"; mount "/dev/mapper/$MAPPER" "$SECURE"; }
   mkdir -p "$SECURE/keys" "$SECURE/state" "$TANG_DB"
   chmod 0711 "$SECURE"          # traversable by _tang; see cmd_init
   chmod 0700 "$SECURE/keys" "$TANG_DB"
@@ -949,6 +952,76 @@ cmd_grow() {
   cmd_size
 }
 
+# ---------------------------------------------------------------------------- discard
+
+# Give the space the filesystem frees back to the server's disk (T-diskspace). The image is a sparse
+# file, so a block the filesystem stops using is still allocated on the plain root until a discard
+# reaches the loop device, which punches a hole in the file. dm-crypt drops discards unless the
+# mapping allows them, and the partner's `clevis luks unlock` opened it without: a box whose
+# filesystem used 2.9 GB had an 11 GB image.
+#
+# Three steps, each done only when it is needed, so a second run changes nothing:
+#   1. `cryptsetup refresh --allow-discards --persistent` on the open mapping. It reloads the
+#      mapping in place (no unmount, nothing stops) and writes the flag into the LUKS2 header, where
+#      every later open reads it, clevis's included. It needs a key, which is $KEYFILE: readable
+#      exactly while the container is mounted. It writes the header, so it runs under the lock.
+#   2. The `discard` mount option off: a discard per delete costs writes, and fstrim.timer does the
+#      same work once a week.
+#   3. One trim, the first time, so the space comes back now and not next week.
+#
+# Prints `changed` or `unchanged` on stdout.
+cmd_discard() {
+  is_mounted || die "container is not mounted"
+  [ -s "$KEYFILE" ] || die "no $KEYFILE; cannot refresh the mapping"
+  take_lock
+  local loop changed=false
+  loop=$(loopdev)
+  stop_leftover_bind "$loop"
+  # Read into variables first: `grep -q` on a pipe ends early, and under pipefail that reads as "no".
+  local header active opts
+  header=$(cryptsetup luksDump "$loop") || die "cannot read the LUKS header of $loop"
+  active=$(cryptsetup status "$MAPPER") || die "cannot read the mapping $MAPPER"
+  if ! grep -qE '^Flags:.*\ballow-discards\b' <<< "$header" || ! grep -qE '^ *flags:.*\bdiscards\b' <<< "$active"; then
+    cryptsetup refresh --key-file "$KEYFILE" --allow-discards --persistent "$MAPPER" \
+      || die "cryptsetup refresh failed; the mapping is as it was"
+    active=$(cryptsetup status "$MAPPER") || true
+    grep -qE '^ *flags:.*\bdiscards\b' <<< "$active" || die "the mapping does not allow discards after the refresh"
+    log "discards now pass through the encryption, on this open and every later one"
+    changed=true
+  fi
+  opts=$(findmnt -no OPTIONS "$SECURE") || die "cannot read the mount options of $SECURE"
+  if tr ',' '\n' <<< "$opts" | grep -qx discard; then
+    mount -o remount,nodiscard "$SECURE" || die "could not remount $SECURE without discard"
+    log "remounted $SECURE without the discard option (fstrim.timer trims it weekly)"
+    changed=true
+  fi
+  # The trim writes no header, so the lock goes first: two passes over a large container can outlast
+  # the 90 s that a bind or a grow waits for it.
+  flock -u 9; exec 9>&-
+  # Until a trim has finished once, recorded inside the container: a run stopped after the refresh
+  # trims on the next one.
+  local marker="$SECURE/state/discard-trimmed"
+  if [ ! -e "$marker" ]; then
+    local before after
+    before=$(( $(stat -c %b "$IMG") * 512 ))
+    # Twice, the first with a large minimum. ext4 keeps, per block group, a note that the group was
+    # trimmed, and while the filesystem was mounted with `-o discard` it never clears that note when
+    # blocks are freed (it assumes the discard went through, and dm-crypt dropped it). A plain fstrim
+    # then skips those groups: measured, it gave back about a seventh of what was free. A trim with a
+    # smaller minimum than the last one ignores the note (ext4_trim_all_free), so the second pass
+    # covers every group.
+    if { fstrim -m 64M "$SECURE" && fstrim "$SECURE"; } >&2; then
+      mkdir -p "$SECURE/state" && date -u +%FT%TZ > "$marker"
+    else
+      log "fstrim failed; the next run tries again"
+    fi
+    after=$(( $(stat -c %b "$IMG") * 512 ))
+    log "the image used $(( before / 1048576 )) MiB of the server's disk and now uses $(( after / 1048576 )) MiB"
+    changed=true
+  fi
+  if [ "$changed" = true ]; then echo changed; else echo unchanged; fi
+}
+
 # ---------------------------------------------------------------------------- status
 
 cmd_status() {
@@ -980,5 +1053,6 @@ case "${1:-}" in
   status)       shift; cmd_status "$@" ;;
   size)         shift; cmd_size "$@" ;;
   grow)         shift; cmd_grow "$@" ;;
-  *) die "usage: cc-secure {init|open|open-with <file>|mount|umount|tang-keygen|thumbprint|bind <url> <thp>|unbind <thp>|list|rekey|reseal <recovery public key>|status|size|grow <gb>}" ;;
+  discard)      shift; cmd_discard "$@" ;;
+  *) die "usage: cc-secure {init|open|open-with <file>|mount|umount|tang-keygen|thumbprint|bind <url> <thp>|unbind <thp>|list|rekey|reseal <recovery public key>|status|size|grow <gb>|discard}" ;;
 esac
