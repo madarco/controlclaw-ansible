@@ -1,4 +1,4 @@
-"use client";import{J as u}from"./chunk-XZX5SX6S.js";import{a as y,b as f}from"./chunk-YEAN2OM6.js";import{c as t}from"./chunk-OOJM4CTU.js";var e=t(y());var r=t(f()),P=`
+"use client";import{J as u}from"./chunk-KV47LBTR.js";import{a as y,b as f}from"./chunk-YEAN2OM6.js";import{c as t}from"./chunk-OOJM4CTU.js";var e=t(y());var r=t(f()),P=`
 .cc-crepe .milkdown {
   --crepe-color-background: var(--surface);
   --crepe-color-on-background: var(--ink);
