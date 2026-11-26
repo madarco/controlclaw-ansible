@@ -7,7 +7,7 @@
     "after": "2026.11.5",
     "update": "done",
     "readyz": "200",
-    "starts": 3,
+    "starts": 4,
     "databases_before": [
       {
         "path": "agents/main/agent/openclaw-agent.sqlite",
@@ -24,21 +24,21 @@
     ],
     "turn_before": "no model; no model",
     "turn_after": "no model",
-    "migration_seconds": 172,
+    "migration_seconds": 116,
     "drive_after": "/home/controlclaw/drive/Slow fuse.rclone",
     "drive_in_agents_md": true,
-    "candidate_commit": "a3b6396598e6f8aa4b8f6fec80497c4d27bfa303",
-    "tree": "223349757f7cfe186c9a4a25a686a15c578f610e6127c7e9cddce3d4c156801d"
+    "candidate_commit": "c119fb48a0336227f75b1dde13817c359b7d1937",
+    "tree": "b79eef51b9d00b18578846dfa34ec62932a3a64aba09e4302bf10d9f853b7100"
   },
   {
-    "path": "2026.11.5@v1.53.0+big+drive",
+    "path": "2026.11.5@v1.54.0+big+drive",
     "pass": true,
     "why": "",
     "before": "2026.11.5",
     "after": "2026.11.5",
     "update": "done",
     "readyz": "200",
-    "starts": 1,
+    "starts": 2,
     "databases_before": [
       {
         "path": "agents/main/agent/openclaw-agent.sqlite",
@@ -58,7 +58,7 @@
     "migration_seconds": null,
     "drive_after": "/home/controlclaw/drive/Slow fuse.rclone",
     "drive_in_agents_md": true,
-    "candidate_commit": "a3b6396598e6f8aa4b8f6fec80497c4d27bfa303",
-    "tree": "223349757f7cfe186c9a4a25a686a15c578f610e6127c7e9cddce3d4c156801d"
+    "candidate_commit": "c119fb48a0336227f75b1dde13817c359b7d1937",
+    "tree": "b79eef51b9d00b18578846dfa34ec62932a3a64aba09e4302bf10d9f853b7100"
   }
 ]
