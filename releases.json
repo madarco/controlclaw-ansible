@@ -1,5 +1,14 @@
 [
   {
+    "version": "1.55.0",
+    "date": "2026-11-26",
+    "changes": [
+      "Agents and firewalls free disk space every night: old Docker images, core dumps and old snap versions, and the download caches when the disk is 85% full.",
+      "The encrypted disk gives freed space back, and system logs are capped at 500 MB.",
+      "The agent's browser keeps at most 256 MB of cache."
+    ]
+  },
+  {
     "version": "1.54.0",
     "date": "2026-11-25",
     "changes": [
