@@ -117,8 +117,9 @@
 - name: Include user creation tasks
   ansible.builtin.include_tasks: user.yml
 
-# Every role: journald's limits, rsyslog off, the weekly trim (T-diskspace).
-- name: Include disk space tasks (log limits, the weekly trim)
+# Every role: journald's limits, rsyslog off, the weekly trim (T-diskspace), the nightly cleanup
+# (T-diskcleanup).
+- name: Include disk space tasks (log limits, the weekly trim, the cleanup)
   ansible.builtin.include_tasks: disk-space.yml
   when: not ci_test
 

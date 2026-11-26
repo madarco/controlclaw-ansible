@@ -74,6 +74,8 @@ openbox &
 # box compromise. The role installs Chrome's own AppArmor profile (Ubuntu 24.04 refuses
 # unprivileged user namespaces without one) and asserts the setuid helper is intact, and
 # verify_sandbox below refuses to serve an unsandboxed browser.
+# --disk-cache-size: 256 MB of HTTP cache. Chrome otherwise sizes it from the free disk, and on a
+# small agent it grew without a bound the cleanup could reach (Chrome holds it open; T-diskcleanup).
 google-chrome-stable \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=${CDP_PORT} \
@@ -83,6 +85,7 @@ google-chrome-stable \
   --no-first-run \
   --no-default-browser-check \
   --disable-dev-shm-usage \
+  --disk-cache-size=268435456 \
   --disable-background-networking \
   --disable-features=TranslateUI,DnsOverHttps \
   --disable-breakpad \

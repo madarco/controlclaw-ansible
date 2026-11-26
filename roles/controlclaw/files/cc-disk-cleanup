@@ -1,0 +1,130 @@
+#!/bin/bash
+# cc-disk-cleanup: frees disk space a box does not need (T-diskcleanup). Run by cc-disk-cleanup.timer
+# at the lowest CPU and I/O priority. One journal line per run says what was freed.
+#
+# Routine, every run: only what costs nothing at the next start or Update.
+#   - core dumps older than 3 days
+#   - dangling Docker images (untagged and unreferenced; an image pulled by digest is neither)
+#   - snaps' disabled revisions
+#   - on an agent, the OpenConnector image (the base image carries it for both roles; only the
+#     firewall runs it, and a firewall's Update pulls it again if it is missing)
+# When the root disk is at LOW_PCT or more, also what only costs a download:
+#   - apt's package cache (`apt-get clean`, under apt's own lock; the lists stay, so an Update
+#     that skips `apt update` still finds its packages)
+#   - npm's caches (root's and the agent user's): the next Update downloads again
+#   - Docker's build cache
+# Chrome's cache is not cleaned here: Chrome runs all the time and holds it open, so
+# browser-stream.sh caps it at 256 MB instead. The OpenClaw kept for a rollback is the role's:
+# it is the copy the next run puts back after an Update that was killed.
+#
+# Never touched: anything inside the encrypted container, the agent's workspace, sessions and
+# memory, and the browser profile's cookies, storage, service workers and logins.
+#
+# The box's role is the one the role was applied with (written to $CONF on every real run, never
+# in an image build). With no role on record, the role-specific step is skipped.
+set -uo pipefail
+
+CONF=${CC_DISK_CLEANUP_CONF:-/etc/controlclaw/disk-cleanup.conf}
+LOW_PCT=85
+BOX_ROLE=""
+USER_NAME=controlclaw
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+USER_HOME=$(getent passwd "$USER_NAME" | cut -d: -f6)
+
+log() { echo "cc-disk-cleanup: $*"; }
+
+# Something is installing: an Update (cc-reprovision stops this run when it starts), the first
+# boot, or apt/dpkg/npm run by hand or by a Doctor session. Checked again before each step.
+installing() {
+  systemctl is-active -q cc-reprovision.service 2>/dev/null && return 0
+  pgrep -f '(^|/)ansible-(pull|playbook)( |$)' >/dev/null && return 0
+  pgrep -x 'apt|apt-get|dpkg|npm' >/dev/null && return 0
+  # unattended-upgrade itself, not the -shutdown helper that waits all the time under the same name.
+  pgrep -f '^/usr/bin/python3 /usr/bin/unattended-upgrade( |$)' >/dev/null && return 0
+  pgrep -f '(^|/)npm(-cli\.js)? (install|i|ci|update)( |$)' >/dev/null && return 0
+  local st; st=$(cloud-init status 2>/dev/null | awk '/^status:/{print $2}')
+  [ -n "$st" ] && [ "$st" != done ] && [ "$st" != error ] && [ "$st" != disabled ] && return 0
+  return 1
+}
+stop_if_installing() {
+  installing || return 0
+  if [ -n "${1:-}" ]; then summary "stopped early, something is installing (an Update, apt, dpkg or npm):"
+  else log "skipped: something is installing (an Update, apt, dpkg or npm)"; fi
+  exit 0
+}
+level=routine
+summary() {
+  local after_kib parts="" key
+  after_kib=$(df --output=used -k / | tail -1 | tr -dc 0-9)
+  for key in "${!freed[@]}"; do parts+="${parts:+, }$key $(( freed[$key] / 1024 ))"; done
+  log "${1:+$1 }$level freed $(( (before_kib - after_kib) > 0 ? (before_kib - after_kib) / 1024 : 0 )) MiB${parts:+ ($parts MiB)}; disk ${before_pct}% -> $(used_pct)%"
+}
+stop_if_installing
+exec 9>/run/cc-disk-cleanup.lock
+flock -n 9 || { log "skipped: another run is going"; exit 0; }
+
+kib() { du -sxk "$@" 2>/dev/null | awk '{s+=$1} END {print s+0}'; }
+used_pct() { df --output=pcent / | tail -1 | tr -dc 0-9; }
+docker_ok() { command -v docker >/dev/null && docker info >/dev/null 2>&1; }
+
+declare -A freed
+note() { [ "${2:-0}" -gt 0 ] && freed[$1]=$(( ${freed[$1]:-0} + $2 )); }
+# Removes the given paths and notes what they held.
+drop() {
+  local key=$1; shift
+  local paths=() p
+  for p in "$@"; do [ -e "$p" ] && paths+=("$p"); done
+  [ ${#paths[@]} -eq 0 ] && return 0
+  local k; k=$(kib "${paths[@]}")
+  rm -rf -- "${paths[@]}" && note "$key" "$k"
+}
+
+before_pct=$(used_pct)
+before_kib=$(df --output=used -k / | tail -1 | tr -dc 0-9)
+
+# ---- routine
+mapfile -t cores < <(find /var/lib/systemd/coredump /var/crash -xdev -type f -mtime +3 2>/dev/null)
+[ ${#cores[@]} -gt 0 ] && drop coredumps "${cores[@]}"
+
+stop_if_installing x
+if docker_ok; then
+  k=$(docker image ls -f dangling=true -q | xargs -r docker image inspect --format '{{.Size}}' 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+  docker image prune -f >/dev/null 2>&1 && note docker-dangling "${k:-0}"
+  if [ "$BOX_ROLE" = openclaw ] && [ -n "${CONNECTOR_IMAGE:-}" ] && [ ! -e /etc/controlclaw/pool-unclaimed ]; then
+    ids=$(docker image ls -q "$CONNECTOR_IMAGE" 2>/dev/null | sort -u)
+    in_use=""
+    for id in $ids; do in_use+=$(docker ps -aq --filter "ancestor=$id"); done
+    if [ -n "$ids" ] && [ -z "$in_use" ]; then
+      k=$(docker image inspect --format '{{.Size}}' $ids 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+      docker image rm -f $ids >/dev/null 2>&1 && note connector-image "${k:-0}"
+    fi
+  fi
+fi
+
+if command -v snap >/dev/null; then
+  while read -r name rev; do
+    k=$(kib "/var/lib/snapd/snaps/${name}_${rev}.snap")
+    snap remove "$name" --revision="$rev" >/dev/null 2>&1 && note snaps "$k"
+  done < <(snap list --all 2>/dev/null | awk '/disabled/{print $1, $3}')
+fi
+
+# ---- low disk
+if [ "$(used_pct)" -ge "$LOW_PCT" ]; then
+  level=low-disk
+  stop_if_installing x
+  k=$(kib /var/cache/apt)
+  apt-get clean >/dev/null 2>&1 && note apt "$k"
+
+  stop_if_installing x
+  for h in /root "$USER_HOME"; do
+    [ -n "$h" ] && [ -d "$h/.npm/_cacache" ] && drop npm "$h/.npm/_cacache"
+  done
+
+  stop_if_installing x
+  if docker_ok; then
+    docker builder prune -af >/dev/null 2>&1
+  fi
+fi
+
+summary

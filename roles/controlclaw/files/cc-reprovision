@@ -332,6 +332,10 @@ print(line[:240])
 }
 
 # --- run ---------------------------------------------------------------------------------------
+# A cleanup that started before this Update (cc-disk-cleanup) stops here: it would remove npm's and
+# apt's files while the play uses them. It checks for a running Update itself, so it does not start
+# again until this one ends.
+systemctl stop cc-disk-cleanup.service 2>/dev/null || true
 say installing "fetching collections"
 ansible-galaxy collection install community.docker community.general ansible.posix \
   >> "$LOG" 2>&1 || say installing "collections already present"

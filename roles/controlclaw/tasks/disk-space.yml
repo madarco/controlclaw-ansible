@@ -94,3 +94,77 @@
     name: fstrim.timer
     enabled: true
     state: started
+
+# The cleanup (T-diskcleanup): files/cc-disk-cleanup says what each level removes. The role it acts
+# on is the one this run was given, written only on a box's own run: an image build (vm_id
+# "image-build") bakes both roles and would put a guess in every box made from it, so it removes the
+# file instead. A ready-pool box has none until it is claimed (its claim runs this role).
+- name: Disk space | the cleanup script
+  ansible.builtin.copy:
+    src: cc-disk-cleanup
+    dest: /usr/local/bin/cc-disk-cleanup
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Disk space | the role the cleanup acts on
+  ansible.builtin.copy:
+    dest: /etc/controlclaw/disk-cleanup.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Written by the controlclaw role (disk-space.yml) on this box's own run.
+      BOX_ROLE={{ box_role }}
+      CONNECTOR_IMAGE={{ connector_image }}
+      USER_NAME={{ controlclaw_user }}
+  when: (vm_id | default('')) != 'image-build'
+
+- name: Disk space | no role on record in an image
+  ansible.builtin.file:
+    path: /etc/controlclaw/disk-cleanup.conf
+    state: absent
+  when: (vm_id | default('')) == 'image-build'
+
+- name: Disk space | the cleanup's unit and timer
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ item.content }}"
+  loop:
+    - name: cc-disk-cleanup.service
+      content: |
+        [Unit]
+        Description=ControlClaw disk cleanup (caches only; see /usr/local/bin/cc-disk-cleanup)
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/cc-disk-cleanup
+        # Lowest priority that still makes progress on a busy box (the idle classes can starve it).
+        Nice=19
+        IOSchedulingClass=best-effort
+        IOSchedulingPriority=7
+        TimeoutStartSec=30min
+    - name: cc-disk-cleanup.timer
+      content: |
+        [Unit]
+        Description=ControlClaw disk cleanup, nightly
+
+        [Timer]
+        OnCalendar=*-*-* 03:40:00
+        RandomizedDelaySec=1h
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control: { label: "{{ item.name }}" }
+  register: disk_cleanup_units
+
+- name: Disk space | the cleanup's timer runs
+  ansible.builtin.systemd:
+    name: cc-disk-cleanup.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ disk_cleanup_units.changed }}"
